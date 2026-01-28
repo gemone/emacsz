@@ -1,0 +1,44 @@
+name: Test Zig Build
+
+on:
+  push:
+    branches: [ main, master, zig-build* ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  test-zig:
+    name: Test Zig Installation and Configuration
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Verify Zig
+        run: |
+          zig version
+          zig env
+
+      - name: Test Zig C compilation
+        run: |
+          echo '#include <stdio.h>' > /tmp/test_zig.c
+          echo 'int main() { printf("Hello from Zig!\\n"); return 0; }' >> /tmp/test_zig.c
+          zig cc /tmp/test_zig.c -o /tmp/test_zig_bin
+          /tmp/test_zig_bin
+
+      - name: Check configure.ac
+        run: |
+          if [ -f "configure.ac" ]; then
+            echo "✓ configure.ac exists"
+            grep -q "ZIG_CC" configure.ac && echo "✓ Zig detection found in configure.ac"
+          else
+            echo "✗ configure.ac not found"
+            exit 1
+          fi
