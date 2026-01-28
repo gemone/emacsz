@@ -85,80 +85,41 @@ jobs:
             autoconf make texinfo pkg-config \
             libx11-dev libxpm-dev libjpeg-dev \
             libpng-dev libgif-dev libtiff5-dev \
-            libgnutls28-dev libncurses5-dev
+            libgnutls28-dev libncurses5-dev \
+            libgtk-3-dev libxft-dev librsvg2-dev
 
       - name: Install dependencies (Windows)
         if: runner.os == 'Windows'
         run: |
-          # Windows dependencies are more complex, using MSYS2
+          # Install MSYS2 and build dependencies
           choco install -y msys2
-          # Add MSYS2 to path
+          # Add MSYS2 to path for future steps (need $env:GITHUB_PATH for persistence)
           echo "C:\tools\msys64\usr\bin" >> $env:GITHUB_PATH
+          echo "C:\tools\msys64\mingw64\bin" >> $env:GITHUB_PATH
         shell: powershell
 
-      - name: Modify configure.ac for Zig
+      - name: Install MSYS2 packages (Windows)
+        if: runner.os == 'Windows'
         run: |
-          # Backup original
-          cp configure.ac configure.ac.backup
+          # Install build tools in MSYS2
+          C:\tools\msys64\usr\bin\bash -lc "pacman -S --noconfirm --needed autoconf make texinfo pkg-config"
+        shell: powershell
 
-          # Add Zig detection after line 1581
-          cat > /tmp/zig_patch.txt << 'EOF'
-          dnl Prefer Zig compiler if available
-          AC_CHECK_PROGS([ZIG_CC], [zig])
-          if test -n "$ZIG_CC"; then
-            AC_MSG_CHECKING([whether $ZIG_CC works])
-            AC_CACHE_VAL([emacs_cv_zig_cc_works],
-              [AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <stdio.h>]], [[printf("test");]])],
-                 [emacs_cv_zig_cc_works=yes],
-                 [emacs_cv_zig_cc_works=no])])
-            AC_MSG_RESULT([$emacs_cv_zig_cc_works])
-            if test "$emacs_cv_zig_cc_works" = yes; then
-              CC="$ZIG_CC cc -target ${{ matrix.zig_target }}"
-              GCC=yes
-              emacs_cv_clang=no
-              AC_MSG_NOTICE([Using Zig as C compiler: $CC])
-            fi
-          fi
-
-          dnl If Zig not available, use standard compiler detection
-          if test -z "$CC" || test "$CC" = no; then
-            dnl Sets GCC=yes if using gcc.
-            AC_PROG_CC([gcc cc cl clang "$XCRUN gcc" "$XCRUN clang"])
-          fi
-          EOF
-
-          # This is a simplified patch - in production, use a proper patch file
-          echo "Zig target: ${{ matrix.zig_target }}"
-
-      - name: Modify configure.ac for platform specifics
+      - name: Setup MSYS2 environment (Windows)
+        if: runner.os == 'Windows'
         run: |
-          # Set up platform-specific configurations
-          if [ "${{ runner.os }}" == "macOS" ]; then
-            # For macOS, add SDK path and change app name to EmacsZ
-            sed -i.bak 's/nextstep\/Emacs\.app/nextstep\/EmacsZ.app/g' configure.ac
-            sed -i.bak 's/Cocoa\/Emacs\.base/Cocoa\/EmacsZ.base/g' configure.ac
-
-            # Add Zig target and SDK configuration
-            cat >> configure.ac << 'EOF'
-
-          dnl Set Zig target triple for macOS
-          if test -n "$ZIG_CC" && test "$emacs_cv_zig_cc_works" = yes; then
-            AC_MSG_CHECKING([for macOS SDK path])
-            MACOS_SDK_PATH=`xcrun --sdk macosx --show-sdk-path 2>/dev/null`
-            if test -n "$MACOS_SDK_PATH" && test -d "$MACOS_SDK_PATH"; then
-              AC_MSG_RESULT([$MACOS_SDK_PATH])
-              CFLAGS="$CFLAGS -isysroot $MACOS_SDK_PATH"
-              LDFLAGS="$LDFLAGS -isysroot $MACOS_SDK_PATH"
-              CFLAGS="$CFLAGS -iframework $MACOS_SDK_PATH/System/Library/Frameworks"
-            fi
-          fi
-          EOF
-          fi
-        shell: bash
+          # Add MSYS2 to current PATH
+          echo "C:\tools\msys64\usr\bin" >> $env:PATH
+          echo "C:\tools\msys64\mingw64\bin" >> $env:PATH
+          # Verify tools are available
+          C:\tools\msys64\usr\bin\bash --version
+          C:\tools\msys64\usr\bin\make --version
+        shell: powershell
 
       - name: Create EmacsZ.base template for macOS
         if: runner.os == 'macOS'
         run: |
+          # Create EmacsZ.base directory from Emacs.base BEFORE running autogen.sh
           mkdir -p nextstep/Cocoa/EmacsZ.base/Contents/Resources/English.lproj
           cp -r nextstep/Cocoa/Emacs.base/* nextstep/Cocoa/EmacsZ.base/
         shell: bash
@@ -170,11 +131,7 @@ jobs:
 
       - name: Configure Emacs
         run: |
-          if [ "${{ runner.os }}" == "Windows" ]; then
-            ./configure ${{ matrix.configure_args }} CC="zig cc -target ${{ matrix.zig_target }}"
-          else
-            ./configure ${{ matrix.configure_args }}
-          fi
+          ./configure ${{ matrix.configure_args }}
         shell: bash
 
       - name: Build Emacs
