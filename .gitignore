@@ -25,6 +25,7 @@
 !.dir-locals.el
 !.gitattributes
 !.gitignore
+!.github/
 !.gitlab-ci.yml
 !.mailmap
 
@@ -391,3 +392,8 @@ exec/config.h.in
 exec/config-mips.m4
 exec/configure
 exec/*.s.s
+
+# Zig build artifacts
+nextstep/EmacsZ.app/
+nextstep/Cocoa/EmacsZ.base/Contents/Info.plist
+nextstep/Cocoa/EmacsZ.base/Contents/Resources/English.lproj/InfoPlist.strings

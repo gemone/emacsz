@@ -1578,12 +1578,83 @@ fi
 
 #### Choose a compiler.
 
-dnl Sets GCC=yes if using gcc.
-AC_PROG_CC([gcc cc cl clang "$XCRUN gcc" "$XCRUN clang"])
+dnl Prefer Zig compiler if available
+AC_CHECK_PROGS([ZIG_CC], [zig])
+if test -n "$ZIG_CC"; then
+  AC_MSG_CHECKING([whether $ZIG_CC works])
+  AC_CACHE_VAL([emacs_cv_zig_cc_works],
+    [AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <stdio.h>]], [[printf("test");]])],
+       [emacs_cv_zig_cc_works=yes],
+       [emacs_cv_zig_cc_works=no])])
+  AC_MSG_RESULT([$emacs_cv_zig_cc_works])
+  if test "$emacs_cv_zig_cc_works" = yes; then
+    CC="$ZIG_CC cc"
+    GCC=yes
+    emacs_cv_clang=no
+    AC_MSG_NOTICE([Using Zig as C compiler: $CC])
+  fi
+fi
+
+dnl If Zig not available, use standard compiler detection
+if test -z "$CC" || test "$CC" = no; then
+  dnl Sets GCC=yes if using gcc.
+  AC_PROG_CC([gcc cc cl clang "$XCRUN gcc" "$XCRUN clang"])
+fi
 
 if test -n "$XCRUN"; then
   AC_CHECK_PROGS([AR], [ar "$XCRUN ar"])
   test -n "$AR" && export AR
+fi
+
+dnl If using Zig compiler, prefer Zig tools for archiving
+if test -n "$ZIG_CC" && test "$emacs_cv_zig_cc_works" = yes; then
+  AC_MSG_CHECKING([for Zig ar])
+  if test -x "$ZIG_CC"; then
+    AR="$ZIG_CC ar"
+    AC_SUBST([AR])
+    AC_MSG_RESULT([$AR])
+
+    AC_MSG_CHECKING([for Zig ranlib])
+    RANLIB="$ZIG_CC ranlib"
+    AC_SUBST([RANLIB])
+    AC_MSG_RESULT([$RANLIB])
+  fi
+fi
+
+dnl Set Zig target triple for macOS
+if test -n "$ZIG_CC" && test "$emacs_cv_zig_cc_works" = yes; then
+  AC_MSG_CHECKING([for Zig target triple])
+
+  case $host_cpu in
+    aarch64|arm64)
+      dnl For Apple Silicon, use arm64-apple-darwin target
+      ZIG_TARGET="arm64-apple-macosx"
+      ;;
+    x86_64|amd64)
+      dnl For Intel Mac, use x86_64-apple-darwin target
+      ZIG_TARGET="x86_64-apple-macosx"
+      ;;
+    *)
+      AC_MSG_ERROR([Unsupported architecture for Zig: $host_cpu])
+      ;;
+  esac
+
+  AC_SUBST([ZIG_TARGET])
+  AC_MSG_RESULT([$ZIG_TARGET])
+
+  dnl Find macOS SDK path for Zig
+  AC_MSG_CHECKING([for macOS SDK path])
+  MACOS_SDK_PATH=`$XCRUN --sdk macosx --show-sdk-path 2>/dev/null`
+  if test -n "$MACOS_SDK_PATH" && test -d "$MACOS_SDK_PATH"; then
+    AC_MSG_RESULT([$MACOS_SDK_PATH])
+    dnl Add SDK path for Zig - use both sysroot and framework search paths
+    CFLAGS="$CFLAGS -isysroot $MACOS_SDK_PATH"
+    LDFLAGS="$LDFLAGS -isysroot $MACOS_SDK_PATH"
+    dnl Add framework path explicitly for Zig
+    CFLAGS="$CFLAGS -iframework $MACOS_SDK_PATH/System/Library/Frameworks"
+  else
+    AC_MSG_RESULT([not found, hoping Zig can find it])
+  fi
 fi
 
 if test x$GCC = xyes; then
@@ -1668,6 +1739,25 @@ if test "$ac_test_CFLAGS" != set; then
 	CFLAGS=$emacs_save_CFLAGS
       fi ;;
   esac
+fi
+
+dnl Filter out GCC/Clang-specific flags not supported by Zig
+if test -n "$ZIG_CC" && test "$emacs_cv_zig_cc_works" = yes; then
+  AC_MSG_CHECKING([filtering Zig-incompatible compiler flags])
+
+  dnl Remove unsupported flags (using a shell loop for portability)
+  save_CFLAGS="$CFLAGS"
+  CFLAGS=
+  for flag in $save_CFLAGS; do
+    case "$flag" in
+      -fno-common|-Werror=*|-Wno-*) ;;
+      *) CFLAGS="$CFLAGS $flag" ;;
+    esac
+  done
+  dnl Trim leading space
+  CFLAGS=${CFLAGS# }
+
+  AC_MSG_RESULT([done])
 fi
 
 # gl_GCC_VERSION_IFELSE([major], [minor], [run-if-found], [run-if-not-found])
@@ -1756,6 +1846,16 @@ if test "$enable_check_lisp_object_type" = yes; then
   AC_DEFINE([CHECK_LISP_OBJECT_TYPE], [1],
     [Define to enable compile-time checks for the Lisp_Object data type.])
 fi
+
+dnl Zig has different warning system
+if test -n "$ZIG_CC" && test "$emacs_cv_zig_cc_works" = yes; then
+  WARN_CFLAGS="-Wall"
+  WERROR_CFLAGS=""
+  GNULIB_WARN_CFLAGS="-Wall"
+  gl_gcc_warnings=no
+  isystem='-I'
+  AC_MSG_NOTICE([Using simplified warning flags for Zig])
+else
 
 WERROR_CFLAGS=
 # When compiling with GCC, prefer -isystem to -I when including system
@@ -1913,6 +2013,7 @@ nw="$nw -Wunused-macros"
 gl_MANYWARN_COMPLEMENT([GNULIB_WARN_CFLAGS], [$WARN_CFLAGS], [$nw])
 
 AC_SUBST([WERROR_CFLAGS])
+fi
 AC_SUBST([GNULIB_WARN_CFLAGS])
 
 edit_cflags="
@@ -2778,12 +2879,12 @@ if test "${with_ns}" != no; then
   # Even a headless Emacs can build macuvs.h, so this should let you bootstrap.
   if test "${opsys}" = darwin && test -f "$srcdir/src/macuvs.h"; then
      NS_IMPL_COCOA=yes
-     ns_appdir=`pwd`/nextstep/Emacs.app
+     ns_appdir=`pwd`/nextstep/EmacsZ.app
      ns_appbindir=${ns_appdir}/Contents/MacOS
      ns_applibexecdir=${ns_appdir}/Contents/MacOS/libexec
      ns_applibdir=${ns_appdir}/Contents/Frameworks
      ns_appresdir=${ns_appdir}/Contents/Resources
-     ns_appsrc=Cocoa/Emacs.base
+     ns_appsrc=Cocoa/EmacsZ.base
      ns_fontfile=macfont.o
   elif flags=`(gnustep-config --objc-flags) 2>/dev/null`; then
      NS_IMPL_GNUSTEP=yes
@@ -7689,10 +7790,17 @@ echo
 
 if test "$HAVE_NS" = "yes"; then
    echo
-   AS_ECHO(["Run '${MAKE-make}' to build Emacs, then run 'src/emacs' to test it.
+   if test -n "$ZIG_CC" && test "$emacs_cv_zig_cc_works" = yes; then
+     AS_ECHO(["Run '${MAKE-make}' to build EmacsZ, then run 'src/emacs' to test it.
+Run '${MAKE-make} install' in order to build an application bundle.
+The application will go to nextstep/EmacsZ.app and can be run or moved
+from there."])
+   else
+     AS_ECHO(["Run '${MAKE-make}' to build Emacs, then run 'src/emacs' to test it.
 Run '${MAKE-make} install' in order to build an application bundle.
 The application will go to nextstep/Emacs.app and can be run or moved
 from there."])
+   fi
    if test "$EN_NS_SELF_CONTAINED" = "yes"; then
       echo "The application will be fully self-contained."
     else
@@ -7728,7 +7836,9 @@ if test "$HAVE_NS" = "yes"; then
     ns_check_file=Resources/Info-gnustep.plist
   else
     AC_CONFIG_FILES([nextstep/Cocoa/Emacs.base/Contents/Info.plist:nextstep/templates/Info.plist.in \
-      nextstep/Cocoa/Emacs.base/Contents/Resources/English.lproj/InfoPlist.strings:nextstep/templates/InfoPlist.strings.in])
+      nextstep/Cocoa/Emacs.base/Contents/Resources/English.lproj/InfoPlist.strings:nextstep/templates/InfoPlist.strings.in \
+      nextstep/Cocoa/EmacsZ.base/Contents/Info.plist:nextstep/templates/Info.plist.in \
+      nextstep/Cocoa/EmacsZ.base/Contents/Resources/English.lproj/InfoPlist.strings:nextstep/templates/InfoPlist.strings.in])
     ns_check_file=Contents/Info.plist
   fi
   AC_SUBST([ns_check_file])
