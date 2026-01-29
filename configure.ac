@@ -1636,8 +1636,27 @@ if test -n "$ZIG_CC"; then
   AC_SUBST([ZIG_TARGET])
   AC_MSG_RESULT([$ZIG_TARGET])
   
-  dnl Set CC with target flag and test if it works
-  CC="$ZIG_CC cc -target $ZIG_TARGET"
+  dnl Determine if we need to add -target flag
+  dnl On native builds (same OS and arch), Zig works better without explicit target
+  dnl Only add -target for cross-compilation or when specifically needed
+  ZIG_NEEDS_TARGET=no
+  case $host in
+    *-*-darwin* | *-*-macosx*)
+      dnl macOS always needs target for SDK specification
+      ZIG_NEEDS_TARGET=yes
+      ;;
+    *-*-cygwin* | *-*-mingw* | *-*-msys*)
+      dnl Windows needs target for proper ABI
+      ZIG_NEEDS_TARGET=yes
+      ;;
+  esac
+  
+  dnl Set CC with or without target flag
+  if test "$ZIG_NEEDS_TARGET" = yes; then
+    CC="$ZIG_CC cc -target $ZIG_TARGET"
+  else
+    CC="$ZIG_CC cc"
+  fi
   
   AC_MSG_CHECKING([whether $CC works])
   AC_CACHE_VAL([emacs_cv_zig_cc_works],
