@@ -98,13 +98,8 @@ jobs:
             base-devel
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-pkg-config
-            mingw-w64-x86_64-autoconf
-            mingw-w64-x86_64-automake
-            mingw-w64-x86_64-make
-            unzip
-            patch
-            file
             mingw-w64-x86_64-texinfo
+            unzip
 
       - name: Create EmacsZ.base template for macOS
         if: runner.os == 'macOS'
