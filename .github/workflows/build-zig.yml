@@ -23,16 +23,16 @@ jobs:
             runner: macos-latest
             zig_target: aarch64-macos-none
             configure_args: --with-ns --without-x
-            artifact_name: EmacsZ.app
-            test_command: ./nextstep/EmacsZ.app/Contents/MacOS/Emacs --batch
+            artifact_name: Emacs.app
+            test_command: ./nextstep/Emacs.app/Contents/MacOS/Emacs --batch
 
           # macOS (Intel)
           - os: macos-intel
             runner: macos-13
             zig_target: x86_64-macos-none
             configure_args: --with-ns --without-x
-            artifact_name: EmacsZ.app
-            test_command: ./nextstep/EmacsZ.app/Contents/MacOS/Emacs --batch
+            artifact_name: Emacs.app
+            test_command: ./nextstep/Emacs.app/Contents/MacOS/Emacs --batch
 
           # Linux (x86_64)
           - os: linux
@@ -86,7 +86,8 @@ jobs:
             autoconf make texinfo pkg-config \
             libx11-dev libxpm-dev libjpeg-dev \
             libpng-dev libgif-dev libtiff5-dev \
-            libgnutls28-dev libncurses5-dev
+            libgnutls28-dev libncurses5-dev \
+            libgtk-3-dev
 
       - name: Setup MSYS2 and install Windows build deps
         if: runner.os == 'Windows'
@@ -97,9 +98,9 @@ jobs:
             base-devel
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-pkg-config
-            mingw-w64-x86_64-autoconf
-            mingw-w64-x86_64-automake
             mingw-w64-x86_64-make
+            autoconf
+            automake
             unzip
             patch
             file
@@ -143,11 +144,8 @@ jobs:
         run: |
           # Set up platform-specific configurations
           if [ "${{ runner.os }}" == "macOS" ]; then
-            # For macOS, add SDK path and change app name to EmacsZ
-            sed -i.bak 's/nextstep\/Emacs\.app/nextstep\/EmacsZ.app/g' configure.ac
-            sed -i.bak 's/Cocoa\/Emacs\.base/Cocoa\/EmacsZ.base/g' configure.ac
-
-            # Add Zig target and SDK configuration
+            # Add Zig target and SDK configuration to end of configure.ac
+            # Note: We keep the app as Emacs.app in configure.ac to avoid AC_CONFIG_FILES conflicts
             cat >> configure.ac << 'EOF'
 
           dnl Set Zig target triple for macOS
@@ -165,11 +163,11 @@ jobs:
           fi
         shell: bash
 
-      - name: Create EmacsZ.base template for macOS
+      - name: Remove EmacsZ template (not needed)
         if: runner.os == 'macOS'
         run: |
-          mkdir -p nextstep/Cocoa/EmacsZ.base/Contents/Resources/English.lproj
-          cp -r nextstep/Cocoa/Emacs.base/* nextstep/Cocoa/EmacsZ.base/
+          # Remove EmacsZ.base if it exists to avoid confusion - we'll use Emacs.base
+          rm -rf nextstep/Cocoa/EmacsZ.base
         shell: bash
 
       - name: Generate configure script
@@ -238,7 +236,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: emacs-${{ matrix.os }}-zig-${{ github.sha }}
-          path: nextstep/EmacsZ.app
+          path: nextstep/Emacs.app
           retention-days: 7
 
       - name: Upload build artifacts (Linux/Windows)
@@ -280,8 +278,8 @@ jobs:
         include:
           - os: macos
             runner: macos-latest
-            artifact_name: EmacsZ.app
-            test_path: ./nextstep/EmacsZ.app/Contents/MacOS/Emacs
+            artifact_name: Emacs.app
+            test_path: ./nextstep/Emacs.app/Contents/MacOS/Emacs
           - os: linux
             runner: ubuntu-latest
             artifact_name: src/emacs
@@ -296,7 +294,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: emacs-${{ matrix.os }}-zig-${{ github.sha }}
-          path: nextstep/EmacsZ.app
+          path: nextstep/Emacs.app
 
       - name: Download artifacts (Linux)
         if: runner.os == 'Linux'
