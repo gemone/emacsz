@@ -104,12 +104,12 @@ jobs:
       - name: Generate configure script
         run: |
           ./autogen.sh
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
 
       - name: Configure Emacs
         run: |
           ./configure ${{ matrix.configure_args }}
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
 
       - name: Build Emacs
         run: |
@@ -118,7 +118,7 @@ jobs:
           else
             make -j$(nproc 2>/dev/null || echo 4)
           fi
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
 
       - name: Install Emacs (macOS)
         if: runner.os == 'macOS'
@@ -132,17 +132,17 @@ jobs:
           else
             file ${{ matrix.artifact_name }}
           fi
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
 
       - name: Test - Basic Lisp evaluation
         run: |
           ${{ matrix.test_command }} --eval "(progn (message \"Hello from Zig-built Emacs on ${{ matrix.os }}!\") (message \"Version: %s\" emacs-version) (kill-emacs))"
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
 
       - name: Test - Basic arithmetic
         run: |
           ${{ matrix.test_command }} --eval "(progn (print (+ 1 2 3 4 5)) (kill-emacs))"
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
 
       - name: Test - Load simple Lisp file
         run: |
@@ -151,12 +151,12 @@ jobs:
           (setq test-result 42)
           ELISP
           ${{ matrix.test_command }} -l /tmp/test.el --eval "(progn (message \"Result: %d\" test-result) (kill-emacs))"
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
 
       - name: Test - Emacs Lisp evaluation
         run: |
           ${{ matrix.test_command }} --eval "(progn (setq x '(1 2 3)) (message \"List: %S\" x) (kill-emacs))"
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
 
       - name: Upload build artifacts (macOS)
         if: runner.os == 'macOS'
@@ -192,7 +192,7 @@ jobs:
           else
             echo "❌ Build failed!" >> $GITHUB_STEP_SUMMARY
           fi
-        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
+        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
 
   # Sanity check job - runs additional tests
   test:
