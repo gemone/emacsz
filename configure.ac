@@ -1636,8 +1636,10 @@ if test -n "$ZIG_CC"; then
   AC_SUBST([ZIG_TARGET])
   AC_MSG_RESULT([$ZIG_TARGET])
   
-  dnl Now test if Zig works with the target
-  AC_MSG_CHECKING([whether $ZIG_CC works])
+  dnl Set CC with target flag and test if it works
+  CC="$ZIG_CC cc -target $ZIG_TARGET"
+  
+  AC_MSG_CHECKING([whether $CC works])
   AC_CACHE_VAL([emacs_cv_zig_cc_works],
     [AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <stdio.h>]], [[printf("test");]])],
        [emacs_cv_zig_cc_works=yes],
@@ -1645,11 +1647,12 @@ if test -n "$ZIG_CC"; then
   AC_MSG_RESULT([$emacs_cv_zig_cc_works])
   
   if test "$emacs_cv_zig_cc_works" = yes; then
-    dnl Set CC with target flag
-    CC="$ZIG_CC cc -target $ZIG_TARGET"
     GCC=yes
     emacs_cv_clang=no
     AC_MSG_NOTICE([Using Zig as C compiler: $CC])
+  else
+    dnl If Zig with target doesn't work, clear CC to use fallback
+    CC=""
   fi
 fi
 
