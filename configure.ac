@@ -1581,14 +1581,72 @@ fi
 dnl Prefer Zig compiler if available
 AC_CHECK_PROGS([ZIG_CC], [zig])
 if test -n "$ZIG_CC"; then
+  dnl First determine the Zig target triple based on host system
+  AC_MSG_CHECKING([for Zig target triple])
+  
+  dnl Determine target based on host OS and CPU architecture
+  case $host in
+    *-*-darwin* | *-*-macosx*)
+      dnl macOS
+      case $host_cpu in
+        aarch64|arm64)
+          ZIG_TARGET="aarch64-macos-none"
+          ;;
+        x86_64|amd64)
+          ZIG_TARGET="x86_64-macos-none"
+          ;;
+        *)
+          AC_MSG_ERROR([Unsupported macOS architecture for Zig: $host_cpu])
+          ;;
+      esac
+      ;;
+    *-*-linux*)
+      dnl Linux
+      case $host_cpu in
+        aarch64|arm64)
+          ZIG_TARGET="aarch64-linux-gnu"
+          ;;
+        x86_64|amd64)
+          ZIG_TARGET="x86_64-linux-gnu"
+          ;;
+        *)
+          AC_MSG_ERROR([Unsupported Linux architecture for Zig: $host_cpu])
+          ;;
+      esac
+      ;;
+    *-*-cygwin* | *-*-mingw* | *-*-msys*)
+      dnl Windows
+      case $host_cpu in
+        x86_64|amd64)
+          ZIG_TARGET="x86_64-windows-gnu"
+          ;;
+        i?86)
+          ZIG_TARGET="i386-windows-gnu"
+          ;;
+        *)
+          AC_MSG_ERROR([Unsupported Windows architecture for Zig: $host_cpu])
+          ;;
+      esac
+      ;;
+    *)
+      AC_MSG_ERROR([Unsupported operating system for Zig: $host])
+      ;;
+  esac
+  
+  AC_SUBST([ZIG_TARGET])
+  AC_MSG_RESULT([$ZIG_TARGET])
+  
+  dnl Now test if Zig works with the target
   AC_MSG_CHECKING([whether $ZIG_CC works])
   AC_CACHE_VAL([emacs_cv_zig_cc_works],
     [AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <stdio.h>]], [[printf("test");]])],
        [emacs_cv_zig_cc_works=yes],
        [emacs_cv_zig_cc_works=no])])
   AC_MSG_RESULT([$emacs_cv_zig_cc_works])
+  
   if test "$emacs_cv_zig_cc_works" = yes; then
-    CC="$ZIG_CC cc"
+    dnl Set CC with target flag
+    CC="$ZIG_CC cc -target $ZIG_TARGET"
     GCC=yes
     emacs_cv_clang=no
     AC_MSG_NOTICE([Using Zig as C compiler: $CC])
@@ -1621,40 +1679,24 @@ if test -n "$ZIG_CC" && test "$emacs_cv_zig_cc_works" = yes; then
   fi
 fi
 
-dnl Set Zig target triple for macOS
+dnl Find macOS SDK path for Zig (only on macOS)
 if test -n "$ZIG_CC" && test "$emacs_cv_zig_cc_works" = yes; then
-  AC_MSG_CHECKING([for Zig target triple])
-
-  case $host_cpu in
-    aarch64|arm64)
-      dnl For Apple Silicon, use arm64-apple-darwin target
-      ZIG_TARGET="arm64-apple-macosx"
-      ;;
-    x86_64|amd64)
-      dnl For Intel Mac, use x86_64-apple-darwin target
-      ZIG_TARGET="x86_64-apple-macosx"
-      ;;
-    *)
-      AC_MSG_ERROR([Unsupported architecture for Zig: $host_cpu])
+  case $host in
+    *-*-darwin* | *-*-macosx*)
+      AC_MSG_CHECKING([for macOS SDK path])
+      MACOS_SDK_PATH=`$XCRUN --sdk macosx --show-sdk-path 2>/dev/null`
+      if test -n "$MACOS_SDK_PATH" && test -d "$MACOS_SDK_PATH"; then
+        AC_MSG_RESULT([$MACOS_SDK_PATH])
+        dnl Add SDK path for Zig - use both sysroot and framework search paths
+        CFLAGS="$CFLAGS -isysroot $MACOS_SDK_PATH"
+        LDFLAGS="$LDFLAGS -isysroot $MACOS_SDK_PATH"
+        dnl Add framework path explicitly for Zig
+        CFLAGS="$CFLAGS -iframework $MACOS_SDK_PATH/System/Library/Frameworks"
+      else
+        AC_MSG_RESULT([not found, hoping Zig can find it])
+      fi
       ;;
   esac
-
-  AC_SUBST([ZIG_TARGET])
-  AC_MSG_RESULT([$ZIG_TARGET])
-
-  dnl Find macOS SDK path for Zig
-  AC_MSG_CHECKING([for macOS SDK path])
-  MACOS_SDK_PATH=`$XCRUN --sdk macosx --show-sdk-path 2>/dev/null`
-  if test -n "$MACOS_SDK_PATH" && test -d "$MACOS_SDK_PATH"; then
-    AC_MSG_RESULT([$MACOS_SDK_PATH])
-    dnl Add SDK path for Zig - use both sysroot and framework search paths
-    CFLAGS="$CFLAGS -isysroot $MACOS_SDK_PATH"
-    LDFLAGS="$LDFLAGS -isysroot $MACOS_SDK_PATH"
-    dnl Add framework path explicitly for Zig
-    CFLAGS="$CFLAGS -iframework $MACOS_SDK_PATH/System/Library/Frameworks"
-  else
-    AC_MSG_RESULT([not found, hoping Zig can find it])
-  fi
 fi
 
 if test x$GCC = xyes; then
