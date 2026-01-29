@@ -2597,7 +2597,7 @@ if test "${with_sound}" != "no"; then
 fi
 
 dnl checks for header files
-AC_CHECK_HEADERS_ONCE(
+AC_CHECK_HEADERS(
  [linux/fs.h
   malloc.h
   sys/systeminfo.h
