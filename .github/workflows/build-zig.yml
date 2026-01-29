@@ -101,62 +101,118 @@ jobs:
           cp -r nextstep/Cocoa/Emacs.base/* nextstep/Cocoa/EmacsZ.base/
         shell: bash
 
-      - name: Generate configure script
+      - name: Generate configure script (Windows)
+        if: runner.os == 'Windows'
         run: |
           ./autogen.sh
-        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
+        shell: msys2 {0}
 
-      - name: Configure Emacs
+      - name: Generate configure script (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ./autogen.sh
+        shell: bash
+
+      - name: Configure Emacs (Windows)
+        if: runner.os == 'Windows'
         run: |
           ./configure ${{ matrix.configure_args }}
-        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
+        shell: msys2 {0}
 
-      - name: Build Emacs
+      - name: Configure Emacs (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ./configure ${{ matrix.configure_args }}
+        shell: bash
+
+      - name: Build Emacs (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          make -j$(nproc 2>/dev/null || echo 4)
+        shell: msys2 {0}
+
+      - name: Build Emacs (Unix)
+        if: runner.os != 'Windows'
         run: |
           if [ "${{ runner.os }}" == "macOS" ]; then
             make -j$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
           else
             make -j$(nproc 2>/dev/null || echo 4)
           fi
-        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
+        shell: bash
 
       - name: Install Emacs (macOS)
         if: runner.os == 'macOS'
         run: |
           make install
 
-      - name: Verify binary architecture
+      - name: Verify binary architecture (Windows)
+        if: runner.os == 'Windows'
         run: |
-          if [ "${{ runner.os }}" == "Windows" ]; then
-            file ${{ matrix.artifact_name }} || true
-          else
-            file ${{ matrix.artifact_name }}
-          fi
-        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
+          file ${{ matrix.artifact_name }} || true
+        shell: msys2 {0}
 
-      - name: Test - Basic Lisp evaluation
+      - name: Verify binary architecture (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          file ${{ matrix.artifact_name }}
+        shell: bash
+
+      - name: Test - Basic Lisp evaluation (Windows)
+        if: runner.os == 'Windows'
         run: |
           ${{ matrix.test_command }} --eval "(progn (message \"Hello from Zig-built Emacs on ${{ matrix.os }}!\") (message \"Version: %s\" emacs-version) (kill-emacs))"
-        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
+        shell: msys2 {0}
 
-      - name: Test - Basic arithmetic
+      - name: Test - Basic Lisp evaluation (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ${{ matrix.test_command }} --eval "(progn (message \"Hello from Zig-built Emacs on ${{ matrix.os }}!\") (message \"Version: %s\" emacs-version) (kill-emacs))"
+        shell: bash
+
+      - name: Test - Basic arithmetic (Windows)
+        if: runner.os == 'Windows'
         run: |
           ${{ matrix.test_command }} --eval "(progn (print (+ 1 2 3 4 5)) (kill-emacs))"
-        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
+        shell: msys2 {0}
 
-      - name: Test - Load simple Lisp file
+      - name: Test - Basic arithmetic (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ${{ matrix.test_command }} --eval "(progn (print (+ 1 2 3 4 5)) (kill-emacs))"
+        shell: bash
+
+      - name: Test - Load simple Lisp file (Windows)
+        if: runner.os == 'Windows'
         run: |
           cat > /tmp/test.el << 'ELISP'
           (message "Test file loaded successfully")
           (setq test-result 42)
           ELISP
           ${{ matrix.test_command }} -l /tmp/test.el --eval "(progn (message \"Result: %d\" test-result) (kill-emacs))"
-        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
+        shell: msys2 {0}
 
-      - name: Test - Emacs Lisp evaluation
+      - name: Test - Load simple Lisp file (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cat > /tmp/test.el << 'ELISP'
+          (message "Test file loaded successfully")
+          (setq test-result 42)
+          ELISP
+          ${{ matrix.test_command }} -l /tmp/test.el --eval "(progn (message \"Result: %d\" test-result) (kill-emacs))"
+        shell: bash
+
+      - name: Test - Emacs Lisp evaluation (Windows)
+        if: runner.os == 'Windows'
         run: |
           ${{ matrix.test_command }} --eval "(progn (setq x '(1 2 3)) (message \"List: %S\" x) (kill-emacs))"
-        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
+        shell: msys2 {0}
+
+      - name: Test - Emacs Lisp evaluation (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ${{ matrix.test_command }} --eval "(progn (setq x '(1 2 3)) (message \"List: %S\" x) (kill-emacs))"
+        shell: bash
 
       - name: Upload build artifacts (macOS)
         if: runner.os == 'macOS'
@@ -176,8 +232,8 @@ jobs:
             src/emacs.pdmp
           retention-days: 7
 
-      - name: Build summary
-        if: always()
+      - name: Build summary (Windows)
+        if: always() && runner.os == 'Windows'
         run: |
           echo "## Build Summary for ${{ matrix.os }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -192,7 +248,25 @@ jobs:
           else
             echo "❌ Build failed!" >> $GITHUB_STEP_SUMMARY
           fi
-        shell: ${{ (runner.os == 'Windows' && 'msys2 {0}') || 'bash' }}
+        shell: msys2 {0}
+
+      - name: Build summary (Unix)
+        if: always() && runner.os != 'Windows'
+        run: |
+          echo "## Build Summary for ${{ matrix.os }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Platform**: ${{ matrix.os }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Zig Target**: ${{ matrix.zig_target }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Configure Args**: \`${{ matrix.configure_args }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Artifact**: ${{ matrix.artifact_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f "${{ matrix.artifact_name }}" ]; then
+            echo "✅ Build successful!" >> $GITHUB_STEP_SUMMARY
+            ls -lh "${{ matrix.artifact_name }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Build failed!" >> $GITHUB_STEP_SUMMARY
+          fi
+        shell: bash
 
   # Sanity check job - runs additional tests
   test:
