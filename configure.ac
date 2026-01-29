@@ -2650,7 +2650,7 @@ AC_PREPROC_IFELSE([AC_LANG_PROGRAM([[#include <term.h>]],[[]])],
      [Define to 1 if you have the <term.h> header file.])])
 AC_HEADER_SYS_WAIT
 
-AC_CHECK_HEADERS_ONCE([sys/socket.h])
+AC_CHECK_HEADERS([sys/socket.h])
 AC_CHECK_HEADERS([net/if.h], [], [], [AC_INCLUDES_DEFAULT
 #if HAVE_SYS_SOCKET_H
 #include <sys/socket.h>
@@ -3502,7 +3502,7 @@ AC_CHECK_LIB([Xbsd], [main], [LD_SWITCH_X_SITE="$LD_SWITCH_X_SITE -lXbsd"])
 
 dnl Check for the POSIX thread library.
 LIB_PTHREAD=
-AC_CHECK_HEADERS_ONCE([pthread.h])
+AC_CHECK_HEADERS([pthread.h])
 if test "$ac_cv_header_pthread_h" && test "$opsys" != "mingw32"; then
   AC_CACHE_CHECK([for pthread library],
     [emacs_cv_pthread_lib],
@@ -5655,7 +5655,7 @@ fi
 AC_SUBST([LIBGPM])
 
 dnl Check for malloc/malloc.h on darwin
-AC_CHECK_HEADERS_ONCE([malloc/malloc.h])
+AC_CHECK_HEADERS([malloc/malloc.h])
 
 GNUSTEP_CFLAGS=
 ### Use NeXTstep API to implement GUI.
@@ -6157,7 +6157,7 @@ if test $emacs_cv_func___builtin_unwind_init = yes; then
 	    [Define to 1 if you have the '__builtin_unwind_init' function.])
 fi
 
-AC_CHECK_HEADERS_ONCE([sys/un.h])
+AC_CHECK_HEADERS([sys/un.h])
 
 AC_FUNC_FSEEKO
 
