@@ -26,14 +26,6 @@ jobs:
             artifact_name: EmacsZ.app
             test_command: ./nextstep/EmacsZ.app/Contents/MacOS/Emacs --batch
 
-          # macOS (Intel)
-          - os: macos-intel
-            runner: macos-13
-            zig_target: x86_64-macos-none
-            configure_args: --with-ns --without-x
-            artifact_name: EmacsZ.app
-            test_command: ./nextstep/EmacsZ.app/Contents/MacOS/Emacs --batch
-
           # Linux (x86_64)
           - os: linux
             runner: ubuntu-latest
