@@ -71,6 +71,7 @@ jobs:
         run: |
           zig version
           zig env
+        shell: bash
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
@@ -88,33 +89,22 @@ jobs:
             libgnutls28-dev libncurses5-dev \
             libgtk-3-dev libxft-dev librsvg2-dev
 
-      - name: Install dependencies (Windows)
+      - name: Setup MSYS2 and install Windows build deps
         if: runner.os == 'Windows'
-        run: |
-          # Install MSYS2 and build dependencies
-          choco install -y msys2
-          # Add MSYS2 to path for future steps (need $env:GITHUB_PATH for persistence)
-          echo "C:\tools\msys64\usr\bin" >> $env:GITHUB_PATH
-          echo "C:\tools\msys64\mingw64\bin" >> $env:GITHUB_PATH
-        shell: powershell
-
-      - name: Install MSYS2 packages (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          # Install build tools in MSYS2
-          C:\tools\msys64\usr\bin\bash -lc "pacman -S --noconfirm --needed autoconf make texinfo pkg-config"
-        shell: powershell
-
-      - name: Setup MSYS2 environment (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          # Add MSYS2 to current PATH
-          echo "C:\tools\msys64\usr\bin" >> $env:PATH
-          echo "C:\tools\msys64\mingw64\bin" >> $env:PATH
-          # Verify tools are available
-          C:\tools\msys64\usr\bin\bash --version
-          C:\tools\msys64\usr\bin\make --version
-        shell: powershell
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: >
+            base-devel
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-autoconf
+            mingw-w64-x86_64-automake
+            mingw-w64-x86_64-make
+            unzip
+            patch
+            file
+            mingw-w64-x86_64-texinfo
 
       - name: Create EmacsZ.base template for macOS
         if: runner.os == 'macOS'
@@ -136,7 +126,11 @@ jobs:
 
       - name: Build Emacs
         run: |
-          make -j$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+          if [ "${{ runner.os }}" == "macOS" ]; then
+            make -j$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
+          else
+            make -j$(nproc 2>/dev/null || echo 4)
+          fi
         shell: bash
 
       - name: Install Emacs (macOS)
