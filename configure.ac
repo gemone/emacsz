@@ -1,4 +1,3 @@
-dnl  Autoconf script for GNU Emacs
 dnl To rebuild the 'configure' script from this, execute the command
 dnl	autoconf
 dnl in the directory containing this script.
@@ -1581,97 +1580,17 @@ fi
 dnl Prefer Zig compiler if available
 AC_CHECK_PROGS([ZIG_CC], [zig])
 if test -n "$ZIG_CC"; then
-  dnl First determine the Zig target triple based on host system
-  AC_MSG_CHECKING([for Zig target triple])
-  
-  dnl Determine target based on host OS and CPU architecture
-  case $host in
-    *-*-darwin* | *-*-macosx*)
-      dnl macOS
-      case $host_cpu in
-        aarch64|arm64)
-          ZIG_TARGET="aarch64-macos-none"
-          ;;
-        x86_64|amd64)
-          ZIG_TARGET="x86_64-macos-none"
-          ;;
-        *)
-          AC_MSG_ERROR([Unsupported macOS architecture for Zig: $host_cpu])
-          ;;
-      esac
-      ;;
-    *-*-linux*)
-      dnl Linux
-      case $host_cpu in
-        aarch64|arm64)
-          ZIG_TARGET="aarch64-linux-gnu"
-          ;;
-        x86_64|amd64)
-          ZIG_TARGET="x86_64-linux-gnu"
-          ;;
-        *)
-          AC_MSG_ERROR([Unsupported Linux architecture for Zig: $host_cpu])
-          ;;
-      esac
-      ;;
-    *-*-cygwin* | *-*-mingw* | *-*-msys*)
-      dnl Windows
-      case $host_cpu in
-        x86_64|amd64)
-          ZIG_TARGET="x86_64-windows-gnu"
-          ;;
-        i?86)
-          ZIG_TARGET="i386-windows-gnu"
-          ;;
-        *)
-          AC_MSG_ERROR([Unsupported Windows architecture for Zig: $host_cpu])
-          ;;
-      esac
-      ;;
-    *)
-      AC_MSG_ERROR([Unsupported operating system for Zig: $host])
-      ;;
-  esac
-  
-  AC_SUBST([ZIG_TARGET])
-  AC_MSG_RESULT([$ZIG_TARGET])
-  
-  dnl Determine if we need to add -target flag
-  dnl On native builds (same OS and arch), Zig works better without explicit target
-  dnl Only add -target for cross-compilation or when specifically needed
-  ZIG_NEEDS_TARGET=no
-  case $host in
-    *-*-darwin* | *-*-macosx*)
-      dnl macOS always needs target for SDK specification
-      ZIG_NEEDS_TARGET=yes
-      ;;
-    *-*-cygwin* | *-*-mingw* | *-*-msys*)
-      dnl Windows needs target for proper ABI
-      ZIG_NEEDS_TARGET=yes
-      ;;
-  esac
-  
-  dnl Set CC with or without target flag
-  if test "$ZIG_NEEDS_TARGET" = yes; then
-    CC="$ZIG_CC cc -target $ZIG_TARGET"
-  else
-    CC="$ZIG_CC cc"
-  fi
-  
-  AC_MSG_CHECKING([whether $CC works])
+  AC_MSG_CHECKING([whether $ZIG_CC works])
   AC_CACHE_VAL([emacs_cv_zig_cc_works],
     [AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <stdio.h>]], [[printf("test");]])],
        [emacs_cv_zig_cc_works=yes],
        [emacs_cv_zig_cc_works=no])])
   AC_MSG_RESULT([$emacs_cv_zig_cc_works])
-  
   if test "$emacs_cv_zig_cc_works" = yes; then
+    CC="$ZIG_CC cc"
     GCC=yes
     emacs_cv_clang=no
     AC_MSG_NOTICE([Using Zig as C compiler: $CC])
-  else
-    dnl If Zig with target doesn't work, clear CC to use fallback
-    CC=""
   fi
 fi
 
@@ -1701,24 +1620,40 @@ if test -n "$ZIG_CC" && test "$emacs_cv_zig_cc_works" = yes; then
   fi
 fi
 
-dnl Find macOS SDK path for Zig (only on macOS)
+dnl Set Zig target triple for macOS
 if test -n "$ZIG_CC" && test "$emacs_cv_zig_cc_works" = yes; then
-  case $host in
-    *-*-darwin* | *-*-macosx*)
-      AC_MSG_CHECKING([for macOS SDK path])
-      MACOS_SDK_PATH=`$XCRUN --sdk macosx --show-sdk-path 2>/dev/null`
-      if test -n "$MACOS_SDK_PATH" && test -d "$MACOS_SDK_PATH"; then
-        AC_MSG_RESULT([$MACOS_SDK_PATH])
-        dnl Add SDK path for Zig - use both sysroot and framework search paths
-        CFLAGS="$CFLAGS -isysroot $MACOS_SDK_PATH"
-        LDFLAGS="$LDFLAGS -isysroot $MACOS_SDK_PATH"
-        dnl Add framework path explicitly for Zig
-        CFLAGS="$CFLAGS -iframework $MACOS_SDK_PATH/System/Library/Frameworks"
-      else
-        AC_MSG_RESULT([not found, hoping Zig can find it])
-      fi
+  AC_MSG_CHECKING([for Zig target triple])
+
+  case $host_cpu in
+    aarch64|arm64)
+      dnl For Apple Silicon, use arm64-apple-darwin target
+      ZIG_TARGET="arm64-apple-macosx"
+      ;;
+    x86_64|amd64)
+      dnl For Intel Mac, use x86_64-apple-darwin target
+      ZIG_TARGET="x86_64-apple-macosx"
+      ;;
+    *)
+      AC_MSG_ERROR([Unsupported architecture for Zig: $host_cpu])
       ;;
   esac
+
+  AC_SUBST([ZIG_TARGET])
+  AC_MSG_RESULT([$ZIG_TARGET])
+
+  dnl Find macOS SDK path for Zig
+  AC_MSG_CHECKING([for macOS SDK path])
+  MACOS_SDK_PATH=`$XCRUN --sdk macosx --show-sdk-path 2>/dev/null`
+  if test -n "$MACOS_SDK_PATH" && test -d "$MACOS_SDK_PATH"; then
+    AC_MSG_RESULT([$MACOS_SDK_PATH])
+    dnl Add SDK path for Zig - use both sysroot and framework search paths
+    CFLAGS="$CFLAGS -isysroot $MACOS_SDK_PATH"
+    LDFLAGS="$LDFLAGS -isysroot $MACOS_SDK_PATH"
+    dnl Add framework path explicitly for Zig
+    CFLAGS="$CFLAGS -iframework $MACOS_SDK_PATH/System/Library/Frameworks"
+  else
+    AC_MSG_RESULT([not found, hoping Zig can find it])
+  fi
 fi
 
 if test x$GCC = xyes; then
@@ -2661,7 +2596,7 @@ if test "${with_sound}" != "no"; then
 fi
 
 dnl checks for header files
-AC_CHECK_HEADERS(
+AC_CHECK_HEADERS_ONCE(
  [linux/fs.h
   malloc.h
   sys/systeminfo.h
@@ -2714,7 +2649,7 @@ AC_PREPROC_IFELSE([AC_LANG_PROGRAM([[#include <term.h>]],[[]])],
      [Define to 1 if you have the <term.h> header file.])])
 AC_HEADER_SYS_WAIT
 
-AC_CHECK_HEADERS([sys/socket.h])
+AC_CHECK_HEADERS_ONCE([sys/socket.h])
 AC_CHECK_HEADERS([net/if.h], [], [], [AC_INCLUDES_DEFAULT
 #if HAVE_SYS_SOCKET_H
 #include <sys/socket.h>
@@ -3566,7 +3501,7 @@ AC_CHECK_LIB([Xbsd], [main], [LD_SWITCH_X_SITE="$LD_SWITCH_X_SITE -lXbsd"])
 
 dnl Check for the POSIX thread library.
 LIB_PTHREAD=
-AC_CHECK_HEADERS([pthread.h])
+AC_CHECK_HEADERS_ONCE([pthread.h])
 if test "$ac_cv_header_pthread_h" && test "$opsys" != "mingw32"; then
   AC_CACHE_CHECK([for pthread library],
     [emacs_cv_pthread_lib],
@@ -5719,7 +5654,7 @@ fi
 AC_SUBST([LIBGPM])
 
 dnl Check for malloc/malloc.h on darwin
-AC_CHECK_HEADERS([malloc/malloc.h])
+AC_CHECK_HEADERS_ONCE([malloc/malloc.h])
 
 GNUSTEP_CFLAGS=
 ### Use NeXTstep API to implement GUI.
@@ -6221,7 +6156,7 @@ if test $emacs_cv_func___builtin_unwind_init = yes; then
 	    [Define to 1 if you have the '__builtin_unwind_init' function.])
 fi
 
-AC_CHECK_HEADERS([sys/un.h])
+AC_CHECK_HEADERS_ONCE([sys/un.h])
 
 AC_FUNC_FSEEKO
 
@@ -7895,13 +7830,13 @@ esac
 
 if test "$HAVE_NS" = "yes"; then
   if test "$NS_IMPL_GNUSTEP" = yes; then
-    AC_CONFIG_FILES([nextstep/GNUstep/Emacs.base/Resources/Info-gnustep.plist:nextstep/templates/Info-gnustep.plist.in\
+    AC_CONFIG_FILES([nextstep/GNUstep/Emacs.base/Resources/Info-gnustep.plist:nextstep/templates/Info-gnustep.plist.in \
       nextstep/GNUstep/Emacs.base/Resources/Emacs.desktop:nextstep/templates/Emacs.desktop.in])
     ns_check_file=Resources/Info-gnustep.plist
   else
-    AC_CONFIG_FILES([nextstep/Cocoa/Emacs.base/Contents/Info.plist:nextstep/templates/Info.plist.in\
-      nextstep/Cocoa/Emacs.base/Contents/Resources/English.lproj/InfoPlist.strings:nextstep/templates/InfoPlist.strings.in\
-      nextstep/Cocoa/EmacsZ.base/Contents/Info.plist:nextstep/templates/Info.plist.in\
+    AC_CONFIG_FILES([nextstep/Cocoa/Emacs.base/Contents/Info.plist:nextstep/templates/Info.plist.in \
+      nextstep/Cocoa/Emacs.base/Contents/Resources/English.lproj/InfoPlist.strings:nextstep/templates/InfoPlist.strings.in \
+      nextstep/Cocoa/EmacsZ.base/Contents/Info.plist:nextstep/templates/Info.plist.in \
       nextstep/Cocoa/EmacsZ.base/Contents/Resources/English.lproj/InfoPlist.strings:nextstep/templates/InfoPlist.strings.in])
     ns_check_file=Contents/Info.plist
   fi
