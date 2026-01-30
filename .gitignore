@@ -394,6 +394,14 @@ exec/configure
 exec/*.s.s
 
 # Zig build artifacts
-nextstep/EmacsZ.app/
-nextstep/Cocoa/EmacsZ.base/Contents/Info.plist
-nextstep/Cocoa/EmacsZ.base/Contents/Resources/English.lproj/InfoPlist.strings
+zig-out/
+# Zig build system
+/.zig-cache/
+/zig-out/
+/build-config/
+*.pdmp
+
+# Zig test artifacts
+/test/*.log
+/test/lisp/**/bc-test-*
+

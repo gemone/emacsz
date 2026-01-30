@@ -214,6 +214,12 @@ xcode-select --install
 ### Zig Warnings During Build
 Expected and generally harmless. Zig's warning system differs from GCC/Clang. Only actionable if symbols fail to link.
 
+### Build System Integrity
+
+- **Fix the Source, Not the Artifact**: Always resolve build-related issues by modifying **`build.zig`**. Do **not** manually edit generated files such as `Makefile`, `src/config.h`, or other Autotools output to bypass errors. 
+- **Single Source of Truth**: Treat the `zig build` system as the future single source of truth. Ensure all compiler flags, include paths, and dependency logic are correctly implemented using the `std.Build` API (v0.15.2).
+- **Correct Tooling Usage**: Use `zig build --summary legacy` or similar flags to debug the build graph instead of hacking temporary build directories.
+
 ### Target Triple Issues
 Verify Zig supports your target:
 ```bash
@@ -234,3 +240,6 @@ zig targets | grep -E "arch|abi"
 - `CONTRIBUTE` - Contribution guidelines
 - `.github/workflows/build-zig.yml` - CI/CD examples
 - [Zig 0.15.2 Documentation](https://ziglang.org/documentation/0.15.2/)
+
+
+

@@ -6,7 +6,7 @@ set -e
 
 EMACS="$(pwd)/zig-out/bin/temacs"
 TEST_DIR="$(pwd)/test"
-SELECTOR="${TEST_SELECTOR:-(not (or (tag :expensive-test) (tag :unstable))}"
+SELECTOR="${TEST_SELECTOR:-\"(not (or (tag :expensive-test) (tag :unstable)))\"}"
 
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║       Zig Build - All Tests                            ║"
@@ -31,11 +31,11 @@ for i in $(seq 1 "$TOTAL"); do
         echo "[$i/$TOTAL] ⊘ SKIPPED $TEST_FILE (file not found)"
         continue
     fi
-
+    
     TEST_NAME=$(basename "$TEST_FILE" .el)
-
+    
     echo "[$i/$TOTAL] Running $TEST_NAME..."
-
+    
     if HOME=/nonexistent EMACS_TEST_DIRECTORY="$(pwd)" "$EMACS" --batch \
         -L . -L ../lisp \
         -l ert \

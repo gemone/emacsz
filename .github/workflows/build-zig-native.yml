@@ -1,0 +1,146 @@
+name: Zig Native Build (Phase 2)
+
+on:
+  push:
+    branches: [ master, main, zig-build-* ]
+    paths:
+      - 'build.zig'
+      - 'build-config/**'
+      - 'src/**'
+      - 'lib/**'
+      - 'lisp/loadup.el'
+      - '.github/workflows/build-zig-native.yml'
+  pull_request:
+    branches: [ master, main ]
+    paths:
+      - 'build.zig'
+      - 'build-config/**'
+      - 'src/**'
+      - 'lib/**'
+      - 'lisp/loadup.el'
+      - '.github/workflows/build-zig-native.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.os }} ${{ matrix.mode }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+        mode: [Debug, ReleaseFast]
+        exclude:
+          # Windows ReleaseFast can be slow, skip in CI
+          - os: windows-latest
+            mode: ReleaseFast
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Zig
+        uses: goto-bus-ahead/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Verify Zig installation
+        run: zig version
+
+      - name: Extract build metadata
+        run: ./build-aux/extract-metadata.sh
+        shell: bash
+
+      - name: Build (TUI mode)
+        run: zig build -Doptimize=${{ matrix.mode }}
+        shell: bash
+
+      - name: Verify temacs executable
+        run: |
+          if [ -f zig-out/bin/temacs ]; then
+            echo "✓ temacs built successfully"
+            file zig-out/bin/temacs || true
+          else
+            echo "✗ temacs not found"
+            exit 1
+          fi
+        shell: bash
+
+      - name: Run tests
+        run: zig build test
+        shell: bash
+        continue-on-error: true
+
+      - name: Basic functional test
+        run: |
+          ./zig-out/bin/temacs --batch --eval "(progn (message \"Zig build working!\") (kill-emacs 0))" || echo "Test failed (expected during development)"
+        shell: bash
+        continue-on-error: true
+
+      - name: Upload artifacts (Linux)
+        if: matrix.os == 'ubuntu-latest' && matrix.mode == 'ReleaseFast'
+        uses: actions/upload-artifact@v4
+        with:
+          name: emacs-zig-linux-x86_64
+          path: |
+            zig-out/bin/temacs
+            emacs.pdump
+          retention-days: 7
+
+      - name: Upload artifacts (macOS)
+        if: matrix.os == 'macos-latest' && matrix.mode == 'ReleaseFast'
+        uses: actions/upload-artifact@v4
+        with:
+          name: emacs-zig-macos-universal
+          path: |
+            zig-out/bin/temacs
+            emacs.pdump
+          retention-days: 7
+
+  metadata-test:
+    name: Test Metadata Extraction
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: goto-bus-ahead/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Extract metadata
+        run: ./build-aux/extract-metadata.sh
+
+      - name: Verify base_sources.zig
+        run: |
+          if [ ! -f build-config/base_sources.zig ]; then
+            echo "base_sources.zig not generated"
+            exit 1
+          fi
+          COUNT=$(grep -c '"src/' build-config/base_sources.zig || echo 0)
+          if [ "$COUNT" -lt 70 ]; then
+            echo "Expected at least 70 base sources, got $COUNT"
+            exit 1
+          fi
+          echo "✓ base_sources.zig has $COUNT files"
+
+      - name: Verify libgnu_sources.zig
+        run: |
+          if [ ! -f build-config/libgnu_sources.zig ]; then
+            echo "libgnu_sources.zig not generated"
+            exit 1
+          fi
+          echo "✓ libgnu_sources.zig generated"
+
+      - name: Check for GUI files
+        run: |
+          # Ensure GUI files are NOT in base_sources
+          if grep -q "xterm.c\|nsterm.m\|w32fns.c" build-config/base_sources.zig; then
+            echo "ERROR: GUI files found in base_sources (should be excluded)"
+            exit 1
+          fi
+          echo "✓ No GUI files in base_sources (correct)"

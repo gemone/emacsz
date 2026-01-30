@@ -1,151 +1,178 @@
-# Building Emacs with Zig
+# Emacs Zig Native Build System
 
-This document describes the effort to build GNU Emacs using the Zig compiler toolchain.
+这是GNU Emacs的Zig原生构建系统，作为Phase 2的一部分，提供TUI-only构建。
 
-## Quick Start
-
-```bash
-# Install dependencies
-brew install zig autoconf texinfo pkg-config
-
-# Configure with Zig
-./autogen.sh
-./configure --with-ns --without-x
-
-# Build
-make -j$(sysctl -n hw.ncpu)
-
-# Install
-make install
-
-# Run
-open nextstep/EmacsZ.app
-```
-
-## What Works
-
-✅ **macOS (Apple Silicon)** - Fully functional EmacsZ.app built with Zig
-- Compiler: `zig cc` (Zig 0.15.2)
-- Binary: Mach-O 64-bit executable arm64
-- GUI: Native Cocoa (NextStep)
-- Status: Production ready
-
-## Project Goals
-
-The goal is to modernize Emacs by replacing the legacy build system (Autotools + Gnulib) with Zig:
-
-### Phase 1: Zig CC Integration (Current) ✓
-- Replace default C compiler with `zig cc`
-- Maintain compatibility with existing build system
-- Support cross-compilation
-
-### Phase 2: Native Build System
-- Create `build.zig` for partial builds
-- Gradually migrate C modules to Zig
-
-### Phase 3: Full Migration
-- Replace Autotools completely
-- Native Zig modules for core functionality
-
-## Multi-Platform Support
-
-We support building Emacs on multiple platforms using Zig:
-
-| Platform | Zig Target | Status |
-|----------|-----------|--------|
-| macOS (ARM64) | `aarch64-macos.26.2...26.2-none` | ✅ Tested |
-| macOS (x86_64) | `x86_64-macos.12...12-none` | ✅ Configured |
-| Linux (x86_64) | `x86_64-linux-gnu` | 🚧 In Progress |
-| Windows (x86_64) | `x86_64-windows-gnu` | 🚧 In Progress |
-
-## CI/CD
-
-GitHub Actions workflows are provided for automated builds:
-
-### Workflows
-- `.github/workflows/build-zig.yml` - Comprehensive multi-platform build
-- `.github/workflows/build-simple.yml` - Quick build verification
-
-### Testing Locally with act
-
-Install `act` to test GitHub Actions workflows locally:
+## 快速开始
 
 ```bash
-# Install act (macOS)
-brew install act
+# 1. 配置Emacs（禁用GUI和模块）
+./configure --without-ns --without-x --without-modules
 
-# Test workflow
-act -j build --matrix os:macos
+# 2. 使用Zig构建
+zig build -Doptimize=ReleaseFast
 
-# Test specific job
-act -j "Build on macOS-arm64" --dry-run
+# 3. 运行
+./zig-out/bin/temacs --batch --eval '(progn (message "Hello, World!") (kill-emacs))'
 ```
 
-## Modifications Made
+## 构建选项
 
-### configure.ac
-Added Zig compiler detection and platform-specific configuration:
-- Auto-detect Zig compiler
-- Set appropriate target triples
-- Configure SDK paths for macOS
-- Filter incompatible compiler flags
+- `-Doptimize=Debug` - 调试模式（默认，较大）
+- `-Doptimize=ReleaseFast` - 优化发布（推荐，2.7MB）
+- `-Doptimize=ReleaseSafe` - 安全发布
+- `-Doptimize=ReleaseSmall` - 最小体积
+- `-Dtarget=<triple>` - 交叉编译（例如：x86_64-linux-gnu）
 
-### nextstep/Cocoa/EmacsZ.base/
-Created app template for EmacsZ.app (distinct from standard Emacs.app)
+## 目录结构
 
-## Verification
+```
+build.zig                      # 主构建配置
+build-config/                  # 构建元数据（自动生成）
+├── base_sources.zig          # 核心源文件列表
+├── libgnu_sources.zig        # Gnulib源文件列表
+└── platform_sources.zig      # 平台特定源文件（已排除）
+build-aux/                     # 构建辅助脚本
+├── extract-metadata.sh       # 从Makefile.in提取源文件列表
+└── extract-config.sh         # 提取版本和配置信息
 
-Test the build:
+zig-out/                       # 构建输出（运行 zig build 后生成）
+├── bin/
+│   ├── temacs                # Emacs可执行文件 (2.7MB)
+│   ├── temacs.pdmp           # 便携式dump文件 (12MB)
+│   ├── etc -> ../../etc      # 符号链接
+│   └── lib-src -> ../../lib-src
+└── libexec/emacs/31.0.50/aarch64-apple-darwin25.2.0/
+    ├── emacs.pdmp
+    └── emacs-31.0.50.pdmp
+```
+
+## 清理缓存
 
 ```bash
-# Batch mode test
-./nextstep/EmacsZ.app/Contents/MacOS/Emacs --batch \
-  --eval "(message \"Hello from Zig-built Emacs!\")"
+# 清理构建缓存（保留核心配置）
+./clean-caches.sh
 
-# Verify compiler
-grep "^CC " src/Makefile
-# Should show: CC = zig cc
-
-# Verify binary
-file nextstep/EmacsZ.app/Contents/MacOS/Emacs
-# Should show: Mach-O 64-bit executable arm64
+# 手动清理
+rm -rf .zig-cache zig-out
 ```
 
-## Troubleshooting
+## 工作原理
 
-### "zig: command not found"
-Install Zig: `brew install zig` or visit https://ziglang.org/
+### pdump发现机制
 
-### Configure fails with SDK errors
-Ensure Xcode command line tools are installed:
+Emacs通过以下顺序查找pdump文件：
+
+1. **argv[0]目录** - 与二进制文件相同的目录（优先）
+2. **PATH_EXEC** - 硬编码路径（`/usr/local/libexec/...`）
+
+我们将`temacs.pdmp`放在`zig-out/bin/`目录，确保Emacs能找到它。
+
+### 已知问题和解决方案
+
+| 问题 | 解决方案 |
+|------|----------|
+| pthread_sigmask递归崩溃 | 排除`lib/pthread_sigmask.c` |
+| 模块编译错误 | 配置时使用`--without-modules` |
+| 二进制过大(24MB) | 使用`-Doptimize=ReleaseFast` |
+| pdump无法加载 | 将pdump与temacs放在同一目录 |
+
+## 技术细节
+
+### 编译器标志
+
+```zig
+// 核心宏定义
+-Demacs=1
+-DHAVE_PDUMPER=1
+-DRELOAD0=0
+-DHAVE_TTY=1
+-DTERMINFO=1
+
+// 平台特定
+-D_DARWIN_C_SOURCE=1 (macOS)
+-D_SYSTEM_TYPE="darwin"
+-DAARCH64=1
+```
+
+### 链接库
+
+**必需:**
+- gmp, gnutls, sqlite3, xml2, z, lcms2, zstd
+
+**macOS额外:**
+- ncurses, pthread, iconv
+
+## 故障排除
+
 ```bash
-xcode-select --install
+# 检查Zig版本（需要0.15.2）
+zig version
+
+# 清理并重新构建
+./clean-caches.sh
+zig build -Doptimize=ReleaseFast
 ```
 
-### Build warnings
-Zig uses a different warning system. Warnings are expected and generally harmless.
+## 后续计划
 
-## Performance
+**Phase 2完成:**
+- ✅ TUI-only构建
+- ✅ pdump生成和加载
+- ✅ 自包含zig-out/安装
 
-Initial measurements show comparable performance to traditional builds:
-- Build time: ~7 min (vs ~8 min with clang)
-- Binary size: 3.8 MB (identical)
-- Startup time: ~16ms (identical)
+**Phase 3（未来）:**
+- ⏳ 完整autotools/Gnulib替换
+- ⏳ Zig stdlib迁移
+- ⏳ GUI支持（SDL3）
 
-## Contributing
+## 运行测试
 
-To contribute:
-1. Test on your platform
-2. Report issues with specific Zig targets
-3. Help improve the build configuration
-4. Contribute to Phase 2 (native Zig modules)
+### 基本测试
 
-## References
+```bash
+# 使用zig build运行测试
+zig build test
 
-- [Zig Documentation](https://ziglang.org/documentation/master/)
-- [Emacs Build Instructions](https://www.gnu.org/software/emacs/manual/html_node/emacs/Building-Emacs.html)
-- [CLAUDE.md](./CLAUDE.md) - Project roadmap and constraints
+# 或直接使用测试脚本
+./run-emacs-tests.sh
+```
 
----
+### 手动运行特定测试
 
-**Current Status**: Phase 1 Complete - Zig CC Integration ✓
+```bash
+cd test
+
+# 设置环境变量
+export EMACS_TEST_DIRECTORY="$(pwd)"
+export EMACS="../zig-out/bin/temacs"
+
+# 运行特定测试
+$EMACS --batch -l ert -l lisp/abbrev-tests.el -f ert-run-tests-batch-and-exit
+```
+
+### 测试结构
+
+```
+test/
+├── lisp/           # Lisp测试文件
+│   ├── abbrev-tests.el
+│   ├── align-tests.el
+│   └── ...
+├── src/            # C源码测试
+├── manual/         # 手册测试
+└── infra/          # 测试基础设施
+```
+
+### 测试结果
+
+测试日志保存在 `test/*.log` 文件中。
+
+- **passed** - 测试通过 ✓
+- **failed** - 测试失败 ✗
+- **quit** - 测试退出
+
+示例输出：
+```
+Ran 22 tests, 22 results as expected, 0 unexpected
+```
+
