@@ -18,45 +18,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS (Apple Silicon)
           - os: macos
             runner: macos-latest
             zig_target: aarch64-macos-none
-            configure_args: --with-ns --without-x
-            artifact_name: EmacsZ.app
-            test_command: ./nextstep/EmacsZ.app/Contents/MacOS/Emacs --batch
+            optimize: ReleaseFast
 
-          # macOS (Intel)
           - os: macos-intel
             runner: macos-13
             zig_target: x86_64-macos-none
-            configure_args: --with-ns --without-x
-            artifact_name: EmacsZ.app
-            test_command: ./nextstep/EmacsZ.app/Contents/MacOS/Emacs --batch
+            optimize: ReleaseFast
 
-          # Linux (x86_64)
           - os: linux
             runner: ubuntu-latest
             zig_target: x86_64-linux-gnu
-            configure_args: --with-x --without-ns
-            artifact_name: src/emacs
-            test_command: ./src/emacs --batch
+            optimize: ReleaseFast
 
-          # Linux (aarch64)
           - os: linux-arm64
             runner: ubuntu-latest
             zig_target: aarch64-linux-gnu
-            configure_args: --with-x --without-ns
-            artifact_name: src/emacs
-            test_command: ./src/emacs --batch
+            optimize: ReleaseFast
 
-          # Windows (x86_64)
           - os: windows
             runner: windows-latest
             zig_target: x86_64-windows-gnu
-            configure_args: --without-ns --without-x
-            artifact_name: src/emacs.exe
-            test_command: ./src/emacs.exe --batch
+            optimize: ReleaseFast
 
     steps:
       - name: Checkout Emacs repository
@@ -75,124 +60,36 @@ jobs:
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install autoconf texinfo pkg-config libjpeg-turbo libpng giflib
+          brew install pkg-config libjpeg-turbo libpng giflib
 
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            autoconf make texinfo pkg-config \
+            pkg-config \
             libx11-dev libxpm-dev libjpeg-dev \
             libpng-dev libgif-dev libtiff5-dev \
             libgnutls28-dev libncurses5-dev \
             libgtk-3-dev libxft-dev librsvg2-dev
 
-      - name: Install dependencies (Windows)
-        if: runner.os == 'Windows'
+      - name: Build Emacs with Zig
         run: |
-          # Install MSYS2 and build dependencies
-          choco install -y msys2
-          # Add MSYS2 to path for future steps (need $env:GITHUB_PATH for persistence)
-          echo "C:\tools\msys64\usr\bin" >> $env:GITHUB_PATH
-          echo "C:\tools\msys64\mingw64\bin" >> $env:GITHUB_PATH
-        shell: powershell
+          zig build -Doptimize=${{ matrix.optimize }}
 
-      - name: Install MSYS2 packages (Windows)
-        if: runner.os == 'Windows'
+      - name: Verify build output
         run: |
-          # Install build tools in MSYS2
-          C:\tools\msys64\usr\bin\bash -lc "pacman -S --noconfirm --needed autoconf make texinfo pkg-config"
-        shell: powershell
-
-      - name: Setup MSYS2 environment (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          # Add MSYS2 to current PATH
-          echo "C:\tools\msys64\usr\bin" >> $env:PATH
-          echo "C:\tools\msys64\mingw64\bin" >> $env:PATH
-          # Verify tools are available
-          C:\tools\msys64\usr\bin\bash --version
-          C:\tools\msys64\usr\bin\make --version
-        shell: powershell
-
-      - name: Create EmacsZ.base template for macOS
-        if: runner.os == 'macOS'
-        run: |
-          # Create EmacsZ.base directory from Emacs.base BEFORE running autogen.sh
-          mkdir -p nextstep/Cocoa/EmacsZ.base/Contents/Resources/English.lproj
-          cp -r nextstep/Cocoa/Emacs.base/* nextstep/Cocoa/EmacsZ.base/
-        shell: bash
-
-      - name: Generate configure script
-        run: |
-          ./autogen.sh
-        shell: bash
-
-      - name: Configure Emacs
-        run: |
-          ./configure ${{ matrix.configure_args }}
-        shell: bash
-
-      - name: Build Emacs
-        run: |
-          make -j$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
-        shell: bash
-
-      - name: Install Emacs (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          make install
-
-      - name: Verify binary architecture
-        run: |
-          if [ "${{ runner.os }}" == "Windows" ]; then
-            file ${{ matrix.artifact_name }} || true
-          else
-            file ${{ matrix.artifact_name }}
-          fi
-        shell: bash
+          ls -lh zig-out/bin/temacs
 
       - name: Test - Basic Lisp evaluation
         run: |
-          ${{ matrix.test_command }} --eval "(progn (message \"Hello from Zig-built Emacs on ${{ matrix.os }}!\") (message \"Version: %s\" emacs-version) (kill-emacs))"
-        shell: bash
+          ./zig-out/bin/temacs --batch --eval "(progn (message \"Hello from Zig-built Emacs on ${{ matrix.os }}!\") (message \"Version: %s\" emacs-version) (kill-emacs))"
 
-      - name: Test - Basic arithmetic
-        run: |
-          ${{ matrix.test_command }} --eval "(progn (print (+ 1 2 3 4 5)) (kill-emacs))"
-        shell: bash
-
-      - name: Test - Load simple Lisp file
-        run: |
-          cat > /tmp/test.el << 'ELISP'
-          (message "Test file loaded successfully")
-          (setq test-result 42)
-          ELISP
-          ${{ matrix.test_command }} -l /tmp/test.el --eval "(progn (message \"Result: %d\" test-result) (kill-emacs))"
-        shell: bash
-
-      - name: Test - Emacs Lisp evaluation
-        run: |
-          ${{ matrix.test_command }} --eval "(progn (setq x '(1 2 3)) (message \"List: %S\" x) (kill-emacs))"
-        shell: bash
-
-      - name: Upload build artifacts (macOS)
-        if: runner.os == 'macOS'
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: emacs-${{ matrix.os }}-zig-${{ github.sha }}
-          path: nextstep/EmacsZ.app
-          retention-days: 7
-
-      - name: Upload build artifacts (Linux/Windows)
-        if: runner.os != 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: emacs-${{ matrix.os }}-zig-${{ github.sha }}
-          path: |
-            src/emacs*
-            src/emacs.pdmp
+          path: zig-out/
           retention-days: 7
 
       - name: Build summary
@@ -202,20 +99,17 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Platform**: ${{ matrix.os }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Zig Target**: ${{ matrix.zig_target }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Configure Args**: \`${{ matrix.configure_args }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Artifact**: ${{ matrix.artifact_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Optimize**: ${{ matrix.optimize }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -f "${{ matrix.artifact_name }}" ]; then
+          if [ -f "zig-out/bin/temacs" ]; then
             echo "✅ Build successful!" >> $GITHUB_STEP_SUMMARY
-            ls -lh "${{ matrix.artifact_name }}" >> $GITHUB_STEP_SUMMARY
+            ls -lh zig-out/bin/temacs >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ Build failed!" >> $GITHUB_STEP_SUMMARY
           fi
-        shell: bash
 
-  # Sanity check job - runs additional tests
   test:
-    name: Extended Tests on ${{ matrix.os }}
+    name: Full Test Suite on ${{ matrix.os }}
     needs: build
     runs-on: ${{ matrix.runner }}
     if: success()
@@ -224,70 +118,30 @@ jobs:
         include:
           - os: macos
             runner: macos-latest
-            artifact_name: EmacsZ.app
-            test_path: ./nextstep/EmacsZ.app/Contents/MacOS/Emacs
           - os: linux
             runner: ubuntu-latest
-            artifact_name: src/emacs
-            test_path: ./src/emacs
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download artifacts (macOS)
-        if: runner.os == 'macOS'
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           name: emacs-${{ matrix.os }}-zig-${{ github.sha }}
-          path: nextstep/EmacsZ.app
-
-      - name: Download artifacts (Linux)
-        if: runner.os == 'Linux'
-        uses: actions/download-artifact@v4
-        with:
-          name: emacs-${{ matrix.os }}-zig-${{ github.sha }}
-          path: .
+          path: zig-out/
 
       - name: Make binary executable
         run: |
-          chmod +x ${{ matrix.test_path }}
+          chmod +x zig-out/bin/temacs
 
-      - name: Extended Lisp Tests
+      - name: Run full test suite with Zig
         run: |
-          ${{ matrix.test_path }} --batch --eval "(progn \
-            (message \"Extended test suite...\") \
-            (setq list-test '(a b c d e)) \
-            (message \"List length: %d\" (length list-test)) \
-            (message \"Mapcar: %S\" (mapcar (lambda (x) (+ x 1)) '(1 2 3))) \
-            (message \"String operations: %s\" (upcase \"hello zig!\")) \
-            (kill-emacs) \
-          )"
-
-      - name: Test file operations
-        run: |
-          cat > /tmp/test-file.el << 'EOF'
-          ;; Test file content
-          (defun test-func (x)
-            (* x x))
-
-          (message \"Square of 5: %d\" (test-func 5))
-          EOF
-
-          ${{ matrix.test_path }} --batch -l /tmp/test-file.el --eval "(kill-emacs)"
-
-      - name: Test completion
-        run: |
-          ${{ matrix.test_path }} --batch --eval "(progn \
-            (require 'cl-lib) \
-            (message \"CL-LIB available: %S\" (featurep 'cl-lib)) \
-            (message \"Test completed successfully!\") \
-            (kill-emacs) \
-          )"
+          zig build test
 
       - name: Upload test results
         if: always()
         run: |
           echo "## Test Results: ${{ matrix.os }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "All extended tests passed for ${{ matrix.os }}" >> $GITHUB_STEP_SUMMARY
+          echo "Full test suite executed via zig build test" >> $GITHUB_STEP_SUMMARY
