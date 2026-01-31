@@ -14,10 +14,11 @@ echo "Extracting build metadata from src/Makefile.in..."
 
 # Extract base_obj files (line 450-469), converting .o to .c
 # Filter out GUI-specific files (X11, Cocoa, Windows, GTK)
+# Add TUI-specific files that are normally added via configure variables
 extract_base_sources() {
     # Extract the multi-line base_obj definition
     awk '/^base_obj = / {p=1} p {print} /^$/ {if(p) exit}' "$SRC_DIR/Makefile.in" | \
-        sed 's/base_obj = //; s/ \\$//; s/\.o/.c/g; s/$(XMENU_OBJ)//g; s/$(XOBJ)//g; s/$(GTK_OBJ)//g; s/$(DBUS_OBJ)//g; s/$(CM_OBJ)//g; s/$(MODULES_OBJ)//g; s/$(DYNLIB_OBJ)//g; s/$(NOTIFY_OBJ)//g; s/$(XWIDGETS_OBJ)//g; s/$(MSDOS_OBJ)//g; s/$(MSDOS_X_OBJ)//g; s/$(NS_OBJ)//g; s/$(CYGWIN_OBJ)//g; s/$(FONT_OBJ)//g; s/$(W32_OBJ)//g; s/$(WINDOW_SYSTEM_OBJ)//g; s/$(XGSELOBJ)//g; s/$(HAIKU_OBJ)//g; s/$(PGTK_OBJ)//g; s/$(ANDROID_OBJ)//g' | \
+        sed 's/base_obj = //; s/ \\$//; s/\.o/.c/g; s/$(XMENU_OBJ)//g; s/$(XOBJ)//g; s/$(GTK_OBJ)//g; s/$(DBUS_OBJ)//g; s/$(CM_OBJ)/cm.c/g; s/$(MODULES_OBJ)//g; s/$(DYNLIB_OBJ)//g; s/$(NOTIFY_OBJ)//g; s/$(XWIDGETS_OBJ)//g; s/$(MSDOS_OBJ)//g; s/$(MSDOS_X_OBJ)//g; s/$(NS_OBJ)//g; s/$(CYGWIN_OBJ)//g; s/$(FONT_OBJ)//g; s/$(W32_OBJ)//g; s/$(WINDOW_SYSTEM_OBJ)//g; s/$(XGSELOBJ)//g; s/$(HAIKU_OBJ)//g; s/$(PGTK_OBJ)//g; s/$(ANDROID_OBJ)//g' | \
         tr ' ' '\n' | \
         grep -v "^$" | \
         grep -v "^\\$" | \
@@ -29,7 +30,7 @@ extract_libgnu_sources() {
     # Get C source files from lib directory that are commonly needed
     # Include all needed utility files for TUI build
     find lib -name "*.c" -type f | \
-        grep -E "(acl|alloca|binary-io|boot-time|byteswap|c-ctype|c-str|canonicalize|careadlinkat|chmodat|cloexec|close-stream|copy-file-range|dirent|dirfd|dtoastr|dtotimespec|dup2|fallocat|fchmodat|fd-open|filemode|filename|filevercmp|flexmember|fpending|fingerprint|futimens|free|fsusage|gen_tempname|get-permissions|getdelim|getrandom|getline|getprogname|hard-locale|isset|issymlink|lstat|malloc|md5|memchr|memcmp|memmem|memset_explicit|memmove|memcpy|memrchr|mkdir|mkancesdirs|mkostemp|mktime|nanosleep|nproc|nstrftime|openat-die|openat|pathmax|pending|pipe2|pthread|qcopy-acl|quotearl|read|realloc|same|save-cwd|set-permissions|sha|sig2str|sigdescr_np|streq|stat|stdc|strchr|strcmp|strchrnul|strcpy|strerror|strlen|string|strncase|strndup|strnlen|strncmp|strto|tempname|time|timespec|u64|unsetenv|utimens|waitpid|wctype|xmalloc)" | \
+        grep -E "(acl|alloca|binary-io|boot-time|byteswap|c-ctype|c-str|canonicalize|careadlinkat|chmodat|cloexec|close-stream|copy-file-range|dirent|dirfd|dtoastr|dtotimespec|dup2|fallocat|fchmodat|fd-open|filemode|filename|filevercmp|flexmember|fpending|fingerprint|futimens|free|fsusage|gen_tempname|get-permissions|getdelim|getrandom|getline|getprogname|hard-locale|isset|issymlink|lstat|malloc|md5|memchr|memcmp|memmem|memset_explicit|memmove|memcpy|memrchr|mkdir|mkancesdirs|mkostemp|mktime|nanosleep|nproc|nstrftime|openat-die|openat|pathmax|pending|pipe2|pthread|qcopy-acl|quotearl|read|realloc|same|save-cwd|set-permissions|sha|sig2str|sigdescr_np|streq|stat|stdbit|stdc|strchr|strcmp|strchrnul|strcpy|strerror|strlen|string|strncase|strndup|strnlen|strncmp|strto|tempname|time|timespec|u64|unsetenv|utimens|waitpid|wctype|xmalloc)" | \
         grep -v -E "(regex|strtoimax|strtoumax|printf|strftime|at-func|dynarray-skeleton|ialloca|malloc/dynarray|pthread_sigmask)" | \
         sort
 }
@@ -49,6 +50,18 @@ generate_base_sources() {
             fi
         fi
     done
+
+    # Add TUI-specific files that are always needed
+    # These are typically added by configure via TERMCAP_OBJ and other variables
+    # Add TUI-specific files that are always needed
+    # Note: kqueue.c is NOT added here - it's BSD/macOS-specific (HAVE_KQUEUE)
+    # and should be conditionally compiled based on platform
+    for extra_file in termcap.c tparam.c; do
+        if [ -f "$SRC_DIR/$extra_file" ]; then
+            echo "    \"src/$extra_file\","
+        fi
+    done
+
     echo "};"
 }
 
@@ -63,6 +76,12 @@ generate_libgnu_sources() {
             echo "    \"$file\","
         fi
     done
+
+    # Add nstrftime.c explicitly (needed by timefns.c)
+    if [ -f "lib/nstrftime.c" ]; then
+        echo "    \"lib/nstrftime.c\","
+    fi
+
     echo "};"
 }
 
