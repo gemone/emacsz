@@ -158,6 +158,39 @@ target_link_libraries(emacs_renderer PUBLIC
 target_compile_features(emacs_renderer PUBLIC cxx_std_20)
 
 # ==============================================================================
+# Display Adapter (Phase 5.1)
+# ==============================================================================
+add_library(emacs_display_adapter STATIC
+    emacs_display_adapter.cpp
+    emacs_display_adapter.hpp
+)
+target_include_directories(emacs_display_adapter PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(emacs_display_adapter PUBLIC
+    emacs_allocator
+    emacs_grid
+    emacs_renderer
+)
+target_compile_features(emacs_display_adapter PUBLIC cxx_std_20)
+
+# ==============================================================================
+# Input Adapter (Phase 5.2)
+# ==============================================================================
+add_library(emacs_input_adapter STATIC
+    emacs_input_adapter.cpp
+    emacs_input_adapter.hpp
+)
+target_include_directories(emacs_input_adapter PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(emacs_input_adapter PUBLIC
+    emacs_allocator
+    emacs_input_parser
+)
+target_compile_features(emacs_input_adapter PUBLIC cxx_std_20)
+
+# ==============================================================================
 # Termbox2 TUI Backend
 # ==============================================================================
 add_library(emacs_termbox2_backend STATIC
@@ -275,6 +308,8 @@ install(TARGETS
     emacs_input_parser
     emacs_event_loop
     emacs_renderer
+    emacs_display_adapter
+    emacs_input_adapter
     emacs_termbox2_backend
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -287,6 +322,8 @@ install(FILES
     input_parser.hpp
     event_loop.hpp
     renderer.hpp
+    emacs_display_adapter.hpp
+    emacs_input_adapter.hpp
     terminal_concept.hpp
     termhooks.hpp
     termbox2_term.hpp
@@ -316,6 +353,8 @@ message(STATUS "  Grid module: emacs_grid")
 message(STATUS "  Input Parser module: emacs_input_parser")
 message(STATUS "  Event Loop module: emacs_event_loop")
 message(STATUS "  Renderer module: emacs_renderer")
+message(STATUS "  Display Adapter module: emacs_display_adapter (Phase 5.1)")
+message(STATUS "  Input Adapter module: emacs_input_adapter (Phase 5.2)")
 message(STATUS "  gnulib replacement: emacs_gnulib_replacement (header-only)")
 message(STATUS "  Terminal concept: emacs_terminal_concept")
 message(STATUS "  Termbox2 backend: emacs_termbox2_backend")
