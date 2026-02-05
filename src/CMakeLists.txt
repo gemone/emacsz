@@ -141,6 +141,23 @@ target_link_libraries(emacs_event_loop PUBLIC
 target_compile_features(emacs_event_loop PUBLIC cxx_std_20)
 
 # ==============================================================================
+# Renderer (Phase 4 TUI)
+# ==============================================================================
+add_library(emacs_renderer STATIC
+    renderer.cpp
+    renderer.hpp
+)
+target_include_directories(emacs_renderer PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}
+)
+target_link_libraries(emacs_renderer PUBLIC
+    emacs_allocator
+    emacs_grid
+)
+target_compile_features(emacs_renderer PUBLIC cxx_std_20)
+
+# ==============================================================================
 # Termbox2 TUI Backend
 # ==============================================================================
 add_library(emacs_termbox2_backend STATIC
@@ -211,6 +228,7 @@ target_link_libraries(emacs_terminal INTERFACE
     emacs_grid
     emacs_input_parser
     emacs_event_loop
+    emacs_renderer
 )
 
 # ==============================================================================
@@ -256,6 +274,7 @@ install(TARGETS
     emacs_grid
     emacs_input_parser
     emacs_event_loop
+    emacs_renderer
     emacs_termbox2_backend
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -267,6 +286,7 @@ install(FILES
     grid.hpp
     input_parser.hpp
     event_loop.hpp
+    renderer.hpp
     terminal_concept.hpp
     termhooks.hpp
     termbox2_term.hpp
@@ -295,6 +315,7 @@ message(STATUS "  Strings module: emacs_strings")
 message(STATUS "  Grid module: emacs_grid")
 message(STATUS "  Input Parser module: emacs_input_parser")
 message(STATUS "  Event Loop module: emacs_event_loop")
+message(STATUS "  Renderer module: emacs_renderer")
 message(STATUS "  gnulib replacement: emacs_gnulib_replacement (header-only)")
 message(STATUS "  Terminal concept: emacs_terminal_concept")
 message(STATUS "  Termbox2 backend: emacs_termbox2_backend")
