@@ -108,6 +108,22 @@ target_link_libraries(emacs_grid PUBLIC
 target_compile_features(emacs_grid PUBLIC cxx_std_20)
 
 # ==============================================================================
+# Input Parser (Phase 4 TUI)
+# ==============================================================================
+add_library(emacs_input_parser STATIC
+    input_parser.cpp
+    input_parser.hpp
+)
+target_include_directories(emacs_input_parser PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}
+)
+target_link_libraries(emacs_input_parser PUBLIC
+    emacs_allocator
+)
+target_compile_features(emacs_input_parser PUBLIC cxx_std_20)
+
+# ==============================================================================
 # Termbox2 TUI Backend
 # ==============================================================================
 add_library(emacs_termbox2_backend STATIC
@@ -176,6 +192,7 @@ target_link_libraries(emacs_terminal INTERFACE
     emacs_terminal_concept
     emacs_termbox2_backend
     emacs_grid
+    emacs_input_parser
 )
 
 # ==============================================================================
@@ -219,6 +236,7 @@ install(TARGETS
     emacs_allocator
     emacs_strings
     emacs_grid
+    emacs_input_parser
     emacs_termbox2_backend
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -228,6 +246,7 @@ install(FILES
     allocator.hpp
     strings.hpp
     grid.hpp
+    input_parser.hpp
     terminal_concept.hpp
     termhooks.hpp
     termbox2_term.hpp
@@ -254,6 +273,7 @@ message(STATUS "Emacs C++20 src/ configuration:")
 message(STATUS "  Allocator module: emacs_allocator")
 message(STATUS "  Strings module: emacs_strings")
 message(STATUS "  Grid module: emacs_grid")
+message(STATUS "  Input Parser module: emacs_input_parser")
 message(STATUS "  gnulib replacement: emacs_gnulib_replacement (header-only)")
 message(STATUS "  Terminal concept: emacs_terminal_concept")
 message(STATUS "  Termbox2 backend: emacs_termbox2_backend")
