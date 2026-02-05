@@ -1,0 +1,77 @@
+{
+  "name": "emacs",
+  "version-string": "31.0.50",
+  "description": "GNU Emacs text editor - C++20 migration",
+  "dependencies": [
+    {
+      "name": "gmp",
+      "platform": "!uwp"
+    },
+    {
+      "name": "libuv",
+      "platform": "!uwp"
+    },
+    {
+      "name": "sqlite3",
+      "platform": "!uwp"
+    },
+    {
+      "name": "libxml2",
+      "platform": "!uwp"
+    },
+    {
+      "name": "tree-sitter",
+      "platform": "!uwp"
+    },
+    {
+      "name": "unibilium",
+      "platform": "!windows"
+    }
+  ],
+  "features": {
+    "tui": {
+      "description": "Terminal UI support with libuv and unibilium",
+      "dependencies": [
+        "libuv",
+        {
+          "name": "unibilium",
+          "platform": "!windows"
+        }
+      ]
+    },
+    "images": {
+      "description": "Image format support",
+      "dependencies": [
+        {
+          "name": "zlib",
+          "platform": "!windows"
+        },
+        {
+          "name": "libpng",
+          "platform": "!windows"
+        },
+        {
+          "name": "libjpeg-turbo",
+          "platform": "!windows"
+        },
+        {
+          "name": "libtiff",
+          "platform": "!windows"
+        },
+        {
+          "name": "giflib",
+          "platform": "!windows"
+        }
+      ]
+    },
+    "tls": {
+      "description": "TLS/SSL support",
+      "dependencies": [
+        {
+          "name": "gnutls",
+          "platform": "!windows"
+        }
+      ]
+    }
+  }
+}
