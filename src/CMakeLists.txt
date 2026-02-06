@@ -208,6 +208,43 @@ target_link_libraries(emacs_window_adapter PUBLIC
 target_compile_features(emacs_window_adapter PUBLIC cxx_std_20)
 
 # ==============================================================================
+# Event Loop Adapter (Phase 5.4)
+# ==============================================================================
+add_library(emacs_event_loop_adapter STATIC
+    emacs_event_loop_adapter.cpp
+    emacs_event_loop_adapter.hpp
+)
+target_include_directories(emacs_event_loop_adapter PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(emacs_event_loop_adapter PUBLIC
+    emacs_allocator
+    emacs_event_loop
+    emacs_input_adapter
+    emacs_input_parser
+)
+target_compile_features(emacs_event_loop_adapter PUBLIC cxx_std_20)
+
+# ==============================================================================
+# Redisplay Adapter (Phase 5.5)
+# ==============================================================================
+add_library(emacs_redisplay_adapter STATIC
+    emacs_redisplay_adapter.cpp
+    emacs_redisplay_adapter.hpp
+)
+target_include_directories(emacs_redisplay_adapter PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(emacs_redisplay_adapter PUBLIC
+    emacs_allocator
+    emacs_grid
+    emacs_renderer
+    emacs_display_adapter
+    emacs_window_adapter
+)
+target_compile_features(emacs_redisplay_adapter PUBLIC cxx_std_20)
+
+# ==============================================================================
 # Termbox2 TUI Backend
 # ==============================================================================
 add_library(emacs_termbox2_backend STATIC
@@ -328,6 +365,8 @@ install(TARGETS
     emacs_display_adapter
     emacs_input_adapter
     emacs_window_adapter
+    emacs_event_loop_adapter
+    emacs_redisplay_adapter
     emacs_termbox2_backend
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -343,6 +382,8 @@ install(FILES
     emacs_display_adapter.hpp
     emacs_input_adapter.hpp
     emacs_window_adapter.hpp
+    emacs_event_loop_adapter.hpp
+    emacs_redisplay_adapter.hpp
     terminal_concept.hpp
     termhooks.hpp
     termbox2_term.hpp
@@ -375,6 +416,8 @@ message(STATUS "  Renderer module: emacs_renderer")
 message(STATUS "  Display Adapter module: emacs_display_adapter (Phase 5.1)")
 message(STATUS "  Input Adapter module: emacs_input_adapter (Phase 5.2)")
 message(STATUS "  Window Adapter module: emacs_window_adapter (Phase 5.3)")
+message(STATUS "  Event Loop Adapter module: emacs_event_loop_adapter (Phase 5.4)")
+message(STATUS "  Redisplay Adapter module: emacs_redisplay_adapter (Phase 5.5)")
 message(STATUS "  gnulib replacement: emacs_gnulib_replacement (header-only)")
 message(STATUS "  Terminal concept: emacs_terminal_concept")
 message(STATUS "  Termbox2 backend: emacs_termbox2_backend")
