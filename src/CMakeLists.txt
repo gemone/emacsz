@@ -245,6 +245,24 @@ target_link_libraries(emacs_redisplay_adapter PUBLIC
 target_compile_features(emacs_redisplay_adapter PUBLIC cxx_std_20)
 
 # ==============================================================================
+# Mouse Adapter (Phase 5.6)
+# ==============================================================================
+add_library(emacs_mouse_adapter STATIC
+    emacs_mouse_adapter.cpp
+    emacs_mouse_adapter.hpp
+)
+target_include_directories(emacs_mouse_adapter PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(emacs_mouse_adapter PUBLIC
+    emacs_allocator
+    emacs_input_adapter
+    emacs_window_adapter
+    emacs_redisplay_adapter
+)
+target_compile_features(emacs_mouse_adapter PUBLIC cxx_std_20)
+
+# ==============================================================================
 # Termbox2 TUI Backend
 # ==============================================================================
 add_library(emacs_termbox2_backend STATIC
@@ -367,6 +385,7 @@ install(TARGETS
     emacs_window_adapter
     emacs_event_loop_adapter
     emacs_redisplay_adapter
+    emacs_mouse_adapter
     emacs_termbox2_backend
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -384,6 +403,7 @@ install(FILES
     emacs_window_adapter.hpp
     emacs_event_loop_adapter.hpp
     emacs_redisplay_adapter.hpp
+    emacs_mouse_adapter.hpp
     terminal_concept.hpp
     termhooks.hpp
     termbox2_term.hpp
@@ -418,6 +438,7 @@ message(STATUS "  Input Adapter module: emacs_input_adapter (Phase 5.2)")
 message(STATUS "  Window Adapter module: emacs_window_adapter (Phase 5.3)")
 message(STATUS "  Event Loop Adapter module: emacs_event_loop_adapter (Phase 5.4)")
 message(STATUS "  Redisplay Adapter module: emacs_redisplay_adapter (Phase 5.5)")
+message(STATUS "  Mouse Adapter module: emacs_mouse_adapter (Phase 5.6)")
 message(STATUS "  gnulib replacement: emacs_gnulib_replacement (header-only)")
 message(STATUS "  Terminal concept: emacs_terminal_concept")
 message(STATUS "  Termbox2 backend: emacs_termbox2_backend")
