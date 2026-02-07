@@ -3,8 +3,8 @@
 **Project**: GNU Emacs - C++20 Migration Branch
 **Build System**: CMake (C++20) + autotools (legacy)
 **Language**: C11 → C++20 (incremental migration)
-**Current Phase**: Phase 8 - GUI & Platform (Phase 0-8.5 Complete ✅)
-**Overall Progress**: 85.6%
+**Current Phase**: Phase 9 - I/O, Test & Polish (Phase 0-8.5, 9.1 Complete ✅)
+**Overall Progress**: 87.2%
 **Last Updated**: 2026-02-07
 
 ---
@@ -20,8 +20,8 @@ Phase 4: Terminal/TUI           ████████████████
 Phase 5: Emacs Core Integration ████████████████  100%  ✅
 Phase 6: Lisp Interpreter Core  ████████████████  100%  ✅
 Phase 7: Command System         ████████████████  100%  ✅
-Phase 8: GUI & Platform         ███████████░░░░░   70%  ← CURRENT
-Phase 9: I/O, Test & Polish    ░░░░░░░░░░░░░░░░    0%
+Phase 8: GUI & Platform         ███████████░░░░░   70%  ✅
+Phase 9: I/O, Test & Polish    ██░░░░░░░░░░░░░░   10%  ← CURRENT
 ```
 
 **Completed Modules (Phase 0-3):**
@@ -67,7 +67,7 @@ Phase 9: I/O, Test & Polish    ░░░░░░░░░░░░░░░░ 
 - ✅ Basic commands — 15 editing commands: self-insert, forward/backward-char, beginning/end-of-line, delete, newline, kill-line, undo/redo, next/previous-line (567 lines, 21 tests)
 - ✅ Integration tests — 12 end-to-end tests covering full keystroke→command→buffer→display pipeline (12 tests)
 
-**Next Priority:** Phase 8 - GUI & Platform
+**Next Priority:** Phase 9 - I/O, Test & Polish
 
 **Completed Modules (Phase 8 - GUI & Platform):**
 - ✅ Buffer correctness (8.1) — mark, narrowing, integrated undo, undo amalgamation — `src/emacs_buffer.hpp/cpp` (expanded, 33 tests)
@@ -83,6 +83,17 @@ Phase 9: I/O, Test & Polish    ░░░░░░░░░░░░░░░░ 
   - extern "C" bridge for C interop
 - ✅ Integration Tests (8.5) — 15 cross-component tests — `test/cxx/test_phase8_integration.cpp`
 - ⏭️ Platform backends (8.6) — xterm, Windows TUI, nsterm, haiku, android — deferred to Phase 9
+
+**Completed Modules (Phase 9 - I/O, Test & Polish):**
+- ✅ Text Properties (9.1) — interval-based text property system with face rendering — `src/text_properties.hpp/cpp` (~340 lines, 30 tests)
+  - PropertyInterval: half-open [start,end), 1-based, front/rear sticky
+  - TextPropertyValue: variant<CellAttributes, gc_string, ptrdiff_t>
+  - put/get/remove/get_face/put_face, for_each_in_range, next_property_change
+  - Auto-adjust on insert/delete (hooked into EmacsBuffer)
+  - Per-character face rendering in BufferBridge
+  - extern "C" bridge: put_text_property, put_face, remove_text_property, has_text_property
+- ⏭️ Platform backends (9.2) — xterm, Windows TUI, nsterm, haiku, android
+- ⏭️ File I/O & System (9.3) — gnulib replacements (filesystem, locale, chrono, regex)
 
 ---
 
@@ -180,7 +191,7 @@ g++ -std=c++20 -I src test/cxx/test_gap_buffer.cpp \
 
 g++ -std=c++20 -I src test/cxx/test_emacs_buffer.cpp \
     src/emacs_buffer.cpp src/gap_buffer.cpp src/emacs_undo.cpp \
-    src/allocator.cpp \
+    src/text_properties.cpp src/allocator.cpp \
     -o /tmp/test_emacs_buffer && /tmp/test_emacs_buffer
 
 g++ -std=c++20 -I src test/cxx/test_emacs_undo.cpp \
@@ -195,7 +206,7 @@ g++ -std=c++20 -I src test/cxx/test_buffer_bridge.cpp \
 # Phase 6 integration tests (15 end-to-end tests)
 g++ -std=c++20 -I src test/cxx/test_phase6_integration.cpp \
     src/emacs_buffer_bridge.cpp src/emacs_buffer.cpp src/gap_buffer.cpp \
-    src/emacs_undo.cpp src/emacs_mouse_adapter.cpp \
+    src/emacs_undo.cpp src/text_properties.cpp src/emacs_mouse_adapter.cpp \
     src/emacs_redisplay_adapter.cpp src/emacs_event_loop_adapter.cpp \
     src/emacs_display_adapter.cpp src/emacs_input_adapter.cpp \
     src/emacs_window_adapter.cpp src/event_loop.cpp src/input_parser.cpp \
@@ -217,21 +228,23 @@ g++ -std=c++20 -Wall -Wextra -Wpedantic -Wno-unused-variable -I src \
     test/cxx/test_command_dispatcher.cpp src/emacs_command_dispatcher.cpp \
     src/emacs_command_registry.cpp src/emacs_keymap.cpp \
     src/emacs_buffer.cpp src/gap_buffer.cpp src/emacs_undo.cpp \
-    src/input_parser.cpp src/allocator.cpp \
+    src/text_properties.cpp src/input_parser.cpp src/allocator.cpp \
     -o /tmp/test_command_dispatcher && /tmp/test_command_dispatcher
 
 g++ -std=c++20 -Wall -Wextra -Wpedantic -Wno-unused-variable -I src \
     test/cxx/test_minibuffer.cpp src/emacs_minibuffer.cpp \
     src/emacs_command_registry.cpp src/emacs_command_dispatcher.cpp \
     src/emacs_keymap.cpp src/emacs_buffer.cpp src/gap_buffer.cpp \
-    src/emacs_undo.cpp src/input_parser.cpp src/allocator.cpp \
+    src/emacs_undo.cpp src/text_properties.cpp src/input_parser.cpp \
+    src/allocator.cpp \
     -o /tmp/test_minibuffer && /tmp/test_minibuffer
 
 g++ -std=c++20 -Wall -Wextra -Wpedantic -Wno-unused-variable -I src \
     test/cxx/test_basic_commands.cpp src/emacs_basic_commands.cpp \
     src/emacs_command_dispatcher.cpp src/emacs_command_registry.cpp \
     src/emacs_keymap.cpp src/emacs_buffer.cpp src/gap_buffer.cpp \
-    src/emacs_undo.cpp src/input_parser.cpp src/allocator.cpp \
+    src/emacs_undo.cpp src/text_properties.cpp src/input_parser.cpp \
+    src/allocator.cpp \
     -o /tmp/test_basic_commands && /tmp/test_basic_commands
 
 # Phase 7 integration tests (12 end-to-end tests)
@@ -268,6 +281,13 @@ g++ -std=c++20 -Wall -Wextra -Wpedantic -Wno-unused-variable -I src \
     src/emacs_buffer.cpp src/gap_buffer.cpp src/emacs_undo.cpp \
     src/input_parser.cpp src/allocator.cpp \
     -o /tmp/test_phase8_integration && /tmp/test_phase8_integration
+
+# Phase 9 unit tests (per module)
+g++ -std=c++20 -Wall -Wextra -Wpedantic -Wno-unused-variable -I src \
+    test/cxx/test_text_properties.cpp src/text_properties.cpp \
+    src/emacs_buffer.cpp src/emacs_buffer_bridge.cpp \
+    src/gap_buffer.cpp src/emacs_undo.cpp src/grid.cpp src/allocator.cpp \
+    -o /tmp/test_text_properties && /tmp/test_text_properties
 ```
 
 ### Test Subsets
@@ -608,6 +628,9 @@ emacs_basic_commands     # 15 core editing commands
 emacs_mcp_server         # JSON-RPC 2.0 MCP server for AI agents
 emacs_sdl2_backend       # SDL2 graphical backend (ifdef EMACS_USE_SDL2)
 emacs_mode               # Major/minor mode system
+
+# Phase 9 modules (I/O, Test & Polish)
+emacs_text_properties    # Interval-based text properties with face rendering
 ```
 
 ### Executables
@@ -695,6 +718,7 @@ emacs_tui_demo      # TUI demonstration (working)
 - `src/emacs_mcp_server.hpp/cpp` - JSON-RPC 2.0 MCP server for AI agents (~724 lines)
 - `src/sdl2_term.hpp/cpp` - SDL2 graphical backend with glyph caching (~597 lines)
 - `src/emacs_mode.hpp/cpp` - Major/minor mode system (416 lines)
+- `src/text_properties.hpp/cpp` - Interval-based text properties with face rendering (~340 lines)
 
 ---
 
@@ -839,26 +863,39 @@ Terminal (stdin) → EventLoop → InputParser → InputEvent
                       └── Renderer (Grid → ANSI → TTY)
 ```
 
-### Current Migration Target: Phase 8 - GUI & Platform
+### Current Migration Target: Phase 9 - I/O, Test & Polish
 
-**Objective**: Implement platform-specific GUI backends and terminal backends beyond the current Termbox2-only implementation.
+**Objective**: Complete remaining infrastructure: text properties ✅, platform backends, file I/O gnulib replacements, and polish.
 
-**Why Phase 8 is Critical:**
-- Only Termbox2Backend is fully implemented; xterm, nsterm, w32term etc. are stubs
+**Why Phase 9 is Critical:**
+- Text properties now complete — enables syntax highlighting, font-lock
+- Platform backends still stubs (xterm, nsterm, w32term)
+- File I/O gnulib functions need C++20 replacements
 - Windows TUI not implemented (highest priority platform gap)
-- Text properties (deferred from 6.6) needed for syntax highlighting
-- Mode system infrastructure for major/minor modes
 
-### Phase 8 Planned Components:
+### Phase 9 Planned Components:
 
 | ID | Component | Description | Status |
 |----|-----------|-------------|--------|
-| 8.1 | Buffer Correctness | Mark, narrowing, integrated undo, amalgamation | ✅ DONE |
-| 8.2 | MCP Server | JSON-RPC 2.0 stdio server for AI agent control | ✅ DONE |
-| 8.3 | SDL2 Backend | Graphical GUI backend with font rendering | ✅ DONE |
-| 8.4 | Mode System | Major/minor mode infrastructure | ✅ DONE |
-| 8.5 | Integration Tests | Cross-component tests (15 tests) | ✅ DONE |
-| 8.6 | Platform Backends | xterm, Windows TUI, nsterm, haiku, android | ⏭️ Phase 9 |
+| 9.1 | Text Properties | Interval-based text properties with face rendering | ✅ DONE |
+| 9.2 | Platform Backends | xterm, Windows TUI, nsterm, haiku, android | ⏭️ Pending |
+| 9.3 | File I/O & System | gnulib replacements (filesystem, locale, chrono, regex) | ⏭️ Pending |
+
+### Phase 9 Test Summary:
+| Module | Tests | Test File |
+|--------|-------|-----------|
+| Text Properties | 30 | `test/cxx/test_text_properties.cpp` |
+| **Total** | **30** | |
+
+**Cumulative Test Summary (Phases 5-9):**
+| Phase | Tests |
+|-------|-------|
+| Phase 5 (Emacs Core Integration) | 12 |
+| Phase 6 (Buffer/Text Engine) | 85 |
+| Phase 7 (Command System) | 105 |
+| Phase 8 (GUI & Platform) | 103 |
+| Phase 9 (I/O, Test & Polish) | 30 |
+| **Grand Total** | **335** |
 
 ### Phase 8 Test Summary:
 | Module | Tests | Test File |
@@ -870,16 +907,23 @@ Terminal (stdin) → EventLoop → InputParser → InputEvent
 | Integration (E2E) | 15 | `test/cxx/test_phase8_integration.cpp` |
 | **Total** | **103** | |
 
-**Cumulative Test Summary (Phases 5-8):**
+### Phase 9 Test Summary:
+| Module | Tests | Test File |
+|--------|-------|-----------|
+| Text Properties | 30 | `test/cxx/test_text_properties.cpp` |
+| **Total** | **30** | |
+
+**Cumulative Test Summary (Phases 5-9):**
 | Phase | Tests |
 |-------|-------|
 | Phase 5 (Emacs Core Integration) | 12 |
 | Phase 6 (Buffer/Text Engine) | 85 |
 | Phase 7 (Command System) | 105 |
 | Phase 8 (GUI & Platform) | 103 |
-| **Grand Total** | **305** |
+| Phase 9 (I/O, Test & Polish) | 30 |
+| **Grand Total** | **335** |
 
-**Architecture (Phases 4-8, all tested, 305 tests total):**
+**Architecture (Phases 4-9, all tested, 335 tests total):**
 ```
 Terminal (stdin) → EventLoop → InputParser → InputEvent
     OR                                         ↓
@@ -906,6 +950,8 @@ SDL2 Window → SDL_Event → InputEvent      EmacsInputAdapter
                     ┌─── BufferBridge (6.5) ───┐
                     │ buffer → Grid cells      │
                     │ point → cursor (row,col) │
+                    │ TextProperties (9.1)     │
+                    │   → per-char face render  │
                     └──────────┬───────────────┘
                                ↓
                     Grid → Renderer → TerminalBackend
@@ -920,7 +966,7 @@ SDL2 Window → SDL_Event → InputEvent      EmacsInputAdapter
 
 ## 📋 Next Action Plan (Immediate)
 
-### For Phase 9 Kickoff:
+### For Phase 9 Continuation:
 
 1. **Platform Backends** (HIGH PRIORITY)
    - xterm backend (full terminal emulation)
@@ -928,12 +974,7 @@ SDL2 Window → SDL_Event → InputEvent      EmacsInputAdapter
    - nsterm backend (macOS native)
    - haikuterm, androidterm real implementations
 
-2. **Text Properties** (deferred from 6.6)
-   - Interval tree or sorted list for text property ranges
-   - Face attributes: foreground, background, bold, italic, underline
-   - Integration with CellAttributes in Grid
-
-3. **File I/O & System** (gnulib replacements)
+2. **File I/O & System** (gnulib replacements)
    - faccessat, lstat, tempfile → std::filesystem
    - mbrtowc, wcwidth, iswprint → std::locale
    - gettimeofday, nanosleep → std::chrono
@@ -942,15 +983,12 @@ SDL2 Window → SDL_Event → InputEvent      EmacsInputAdapter
 ### Immediate Commands:
 
 ```bash
-# 1. Verify all tests pass (Phase 8 integration)
+# 1. Verify all tests pass (Phase 9.1 text properties)
 g++ -std=c++20 -Wall -Wextra -Wpedantic -Wno-unused-variable -I src \
-    -I third_party test/cxx/test_phase8_integration.cpp \
-    src/emacs_mcp_server.cpp src/emacs_mode.cpp \
-    src/emacs_basic_commands.cpp src/emacs_command_dispatcher.cpp \
-    src/emacs_command_registry.cpp src/emacs_keymap.cpp \
-    src/emacs_buffer.cpp src/gap_buffer.cpp src/emacs_undo.cpp \
-    src/input_parser.cpp src/allocator.cpp \
-    -o /tmp/test_phase8_integration && /tmp/test_phase8_integration
+    test/cxx/test_text_properties.cpp src/text_properties.cpp \
+    src/emacs_buffer.cpp src/emacs_buffer_bridge.cpp \
+    src/gap_buffer.cpp src/emacs_undo.cpp src/grid.cpp src/allocator.cpp \
+    -o /tmp/test_text_properties && /tmp/test_text_properties
 
 # 2. Reconfigure CMake
 cmake -B build-cpp -S . -DCMAKE_BUILD_TYPE=Debug
@@ -962,8 +1000,8 @@ cmake --build build-cpp --config Debug
 ---
 
 **Last Updated**: 2026-02-07
-**Current Phase**: Phase 8 - GUI & Platform (Phase 8.1-8.5 Complete ✅)
-**Next Milestone**: Phase 9 - Platform Backends + File I/O
-**Critical Path**: Platform backends → Text properties → File I/O → Polish
+**Current Phase**: Phase 9 - I/O, Test & Polish (Phase 0-8.5, 9.1 Complete ✅)
+**Next Milestone**: Phase 9.2 - Platform Backends
+**Critical Path**: Platform backends → File I/O → Polish
 
 **For Questions**: See `doc/cxx-builder/README.md` or consult phase documentation in `doc/cxx-builder/phases/`

@@ -60,7 +60,7 @@ Marker::set_insertion_type (MarkerInsertionType type) noexcept
 EmacsBuffer::EmacsBuffer (std::string_view name)
     : name_ (name.begin (), name.end ()), text_ (), modified_ (false),
       markers_ (), mark_ (0), mark_active_ (false), narrow_beg_ (0),
-      narrow_end_ (0), undo_manager_ (),
+      narrow_end_ (0), undo_manager_ (), text_properties_ (),
       inhibit_undo_recording_ (false), self_insert_count_ (0),
       self_insert_pos_ (0), self_insert_text_ ()
 {
@@ -71,8 +71,9 @@ EmacsBuffer::EmacsBuffer (std::string_view name,
     : name_ (name.begin (), name.end ()), text_ (initial_text),
       modified_ (false), markers_ (), mark_ (0), mark_active_ (false),
       narrow_beg_ (0), narrow_end_ (0), undo_manager_ (),
-      inhibit_undo_recording_ (false), self_insert_count_ (0),
-      self_insert_pos_ (0), self_insert_text_ ()
+      text_properties_ (), inhibit_undo_recording_ (false),
+      self_insert_count_ (0), self_insert_pos_ (0),
+      self_insert_text_ ()
 {
 }
 
@@ -96,6 +97,7 @@ EmacsBuffer::EmacsBuffer (EmacsBuffer &&other) noexcept
       narrow_beg_ (other.narrow_beg_),
       narrow_end_ (other.narrow_end_),
       undo_manager_ (std::move (other.undo_manager_)),
+      text_properties_ (std::move (other.text_properties_)),
       inhibit_undo_recording_ (other.inhibit_undo_recording_),
       self_insert_count_ (other.self_insert_count_),
       self_insert_pos_ (other.self_insert_pos_),
@@ -145,6 +147,7 @@ EmacsBuffer::operator= (EmacsBuffer &&other) noexcept
   narrow_beg_ = other.narrow_beg_;
   narrow_end_ = other.narrow_end_;
   undo_manager_ = std::move (other.undo_manager_);
+  text_properties_ = std::move (other.text_properties_);
   inhibit_undo_recording_ = other.inhibit_undo_recording_;
   self_insert_count_ = other.self_insert_count_;
   self_insert_pos_ = other.self_insert_pos_;
@@ -346,6 +349,7 @@ EmacsBuffer::insert_char (char c)
     }
   text_.insert_char (c);
   adjust_markers_for_insert (insert_pos, 1);
+  text_properties_.adjust_for_insert (insert_pos, 1);
   if (narrow_end_ != 0)
     {
       narrow_end_ += 1;
@@ -414,6 +418,9 @@ EmacsBuffer::insert_string (std::string_view text)
   text_.insert_string (text);
   adjust_markers_for_insert (insert_pos,
 			     static_cast<ptrdiff_t> (text.size ()));
+  text_properties_.adjust_for_insert (insert_pos,
+				      static_cast<ptrdiff_t> (
+					text.size ()));
   if (narrow_end_ != 0)
     {
       narrow_end_ += static_cast<ptrdiff_t> (text.size ());
@@ -472,6 +479,7 @@ EmacsBuffer::delete_forward (ptrdiff_t n)
 
   ptrdiff_t deleted = before_size - after_size;
   adjust_markers_for_delete (delete_pos, deleted);
+  text_properties_.adjust_for_delete (delete_pos, deleted);
   if (narrow_end_ != 0)
     {
       narrow_end_ -= deleted;
@@ -538,6 +546,7 @@ EmacsBuffer::delete_backward (ptrdiff_t n)
   ptrdiff_t deleted = before_size - after_size;
   delete_pos = before_point - deleted;
   adjust_markers_for_delete (delete_pos, deleted);
+  text_properties_.adjust_for_delete (delete_pos, deleted);
   if (narrow_end_ != 0)
     {
       narrow_end_ -= deleted;
@@ -740,6 +749,18 @@ EmacsBuffer::undo_manager () const noexcept
   return undo_manager_;
 }
 
+TextProperties &
+EmacsBuffer::text_properties () noexcept
+{
+  return text_properties_;
+}
+
+const TextProperties &
+EmacsBuffer::text_properties () const noexcept
+{
+  return text_properties_;
+}
+
 void
 EmacsBuffer::adjust_markers_for_insert (ptrdiff_t pos,
 					ptrdiff_t length)
@@ -922,5 +943,62 @@ extern "C"
   {
     auto *buffer = static_cast<emacs::EmacsBuffer *> (buf);
     return buffer && buffer->is_modified () ? 1 : 0;
+  }
+
+  void emacs_cxx_buffer_put_text_property (void *buf, ptrdiff_t start,
+					   ptrdiff_t end,
+					   const char *key,
+					   const char *value)
+  {
+    auto *buffer = static_cast<emacs::EmacsBuffer *> (buf);
+    if (!buffer || !key || !value)
+      {
+	return;
+      }
+    emacs::gc_string val (value);
+    buffer->text_properties ().put (start, end, key,
+				    emacs::TextPropertyValue (
+				      std::move (val)));
+  }
+
+  void emacs_cxx_buffer_put_face (void *buf, ptrdiff_t start,
+				  ptrdiff_t end, uint32_t fg,
+				  uint32_t bg, uint16_t flags)
+  {
+    auto *buffer = static_cast<emacs::EmacsBuffer *> (buf);
+    if (!buffer)
+      {
+	return;
+      }
+    emacs::tui::CellAttributes attrs;
+    attrs.fg = fg;
+    attrs.bg = bg;
+    attrs.flags = flags;
+    buffer->text_properties ().put_face (start, end, attrs);
+  }
+
+  void emacs_cxx_buffer_remove_text_property (void *buf,
+					      ptrdiff_t start,
+					      ptrdiff_t end,
+					      const char *key)
+  {
+    auto *buffer = static_cast<emacs::EmacsBuffer *> (buf);
+    if (!buffer || !key)
+      {
+	return;
+      }
+    buffer->text_properties ().remove (start, end, key);
+  }
+
+  int emacs_cxx_buffer_has_text_property (void *buf, ptrdiff_t pos,
+					  const char *key)
+  {
+    auto *buffer = static_cast<emacs::EmacsBuffer *> (buf);
+    if (!buffer || !key)
+      {
+	return 0;
+      }
+    return buffer->text_properties ().get (pos, key).has_value () ? 1
+								  : 0;
   }
 }

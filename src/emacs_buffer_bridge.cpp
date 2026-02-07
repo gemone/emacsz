@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cstring>
 
+#include "text_properties.hpp"
+
 namespace emacs
 {
 namespace tui
@@ -48,7 +50,7 @@ BufferBridge::render_buffer_to_grid (const emacs::EmacsBuffer &buffer,
 				     Grid &grid,
 				     ptrdiff_t window_start,
 				     int window_rows, int window_cols,
-				     const CellAttributes &attrs,
+				     const CellAttributes &base_attrs,
 				     int row_offset, int col_offset)
 {
   if (window_rows <= 0 || window_cols <= 0)
@@ -56,54 +58,118 @@ BufferBridge::render_buffer_to_grid (const emacs::EmacsBuffer &buffer,
       return;
     }
 
-  gc_vector_t<gc_string> lines
-    = extract_visible_lines (buffer, window_start, window_rows,
-			     window_cols);
-
-  lines_rendered_ += lines.size ();
-
-  Cell space_cell (" ", attrs, 1);
-  Cell cell (" ", attrs, 1);
-
-  for (int row = 0; row < window_rows; ++row)
+  ptrdiff_t start = window_start;
+  if (start < 1)
     {
-      int target_row = row_offset + row;
-      size_t line_index = static_cast<size_t> (row);
-      const gc_string *line_ptr = nullptr;
+      start = 1;
+    }
 
-      if (line_index < lines.size ())
-	{
-	  line_ptr = &lines[line_index];
-	}
+  ptrdiff_t buf_size = buffer.size ();
+  const auto &props = buffer.text_properties ();
 
-      int col = 0;
-      if (line_ptr)
-	{
-	  for (; col < window_cols
-		 && col < static_cast<int> (line_ptr->size ());
-	       ++col)
-	    {
-	      char ch = (*line_ptr)[static_cast<size_t> (col)];
-	      char ch_str[2] = { ch, '\0' };
-	      cell.ch = gc_string (ch_str);
-	      cell.attrs = attrs;
-	      cell.width = 1;
+  Cell space_cell (" ", base_attrs, 1);
+  Cell cell (" ", base_attrs, 1);
 
-	      if (grid.set_cell (target_row, col_offset + col, cell))
-		{
-		  ++cells_written_;
-		}
-	    }
-	}
+  int row = 0;
+  int col = 0;
+  ptrdiff_t idx = start;
 
+  auto fill_rest_of_row = [&] ()
+    {
       for (; col < window_cols; ++col)
 	{
-	  if (grid.set_cell (target_row, col_offset + col,
+	  if (grid.set_cell (row_offset + row, col_offset + col,
 			     space_cell))
 	    {
 	      ++cells_written_;
 	    }
 	}
+    };
+
+  while (row < window_rows && idx <= buf_size)
+    {
+      char ch = buffer.char_at (idx);
+
+      if (ch == '\n')
+	{
+	  fill_rest_of_row ();
+	  ++lines_rendered_;
+	  ++row;
+	  col = 0;
+	  ++idx;
+	  continue;
+	}
+
+      if (ch == '\t')
+	{
+	  int spaces = tab_spaces (col);
+	  auto face = props.get_face (idx);
+	  CellAttributes tab_attrs
+	    = face.has_value () ? *face : base_attrs;
+	  Cell tab_cell (" ", tab_attrs, 1);
+	  for (int i = 0; i < spaces; ++i)
+	    {
+	      if (col >= window_cols)
+		{
+		  ++lines_rendered_;
+		  ++row;
+		  col = 0;
+		  if (row >= window_rows)
+		    {
+		      break;
+		    }
+		}
+	      if (grid.set_cell (row_offset + row, col_offset + col,
+				 tab_cell))
+		{
+		  ++cells_written_;
+		}
+	      ++col;
+	    }
+	  ++idx;
+	  continue;
+	}
+
+      if (col >= window_cols)
+	{
+	  ++lines_rendered_;
+	  ++row;
+	  col = 0;
+	  if (row >= window_rows)
+	    {
+	      break;
+	    }
+	}
+
+      auto face = props.get_face (idx);
+      CellAttributes char_attrs
+	= face.has_value () ? *face : base_attrs;
+
+      char ch_str[2] = { ch, '\0' };
+      cell.ch = gc_string (ch_str);
+      cell.attrs = char_attrs;
+      cell.width = 1;
+
+      if (grid.set_cell (row_offset + row, col_offset + col, cell))
+	{
+	  ++cells_written_;
+	}
+      ++col;
+      ++idx;
+    }
+
+  if (row < window_rows && col > 0)
+    {
+      fill_rest_of_row ();
+      ++lines_rendered_;
+      ++row;
+      col = 0;
+    }
+
+  for (; row < window_rows; ++row)
+    {
+      col = 0;
+      fill_rest_of_row ();
     }
 }
 

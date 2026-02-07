@@ -12,6 +12,7 @@
 #include "containers.hpp"
 #include "emacs_undo.hpp"
 #include "gap_buffer.hpp"
+#include "text_properties.hpp"
 
 namespace emacs
 {
@@ -304,6 +305,10 @@ public:
   [[nodiscard]] UndoManager &undo_manager () noexcept;
   [[nodiscard]] const UndoManager &undo_manager () const noexcept;
 
+  [[nodiscard]] TextProperties &text_properties () noexcept;
+  [[nodiscard]] const TextProperties &
+  text_properties () const noexcept;
+
 private:
   gc_string name_;
   GapBuffer text_;
@@ -314,6 +319,7 @@ private:
   ptrdiff_t narrow_beg_;
   ptrdiff_t narrow_end_;
   UndoManager undo_manager_;
+  TextProperties text_properties_;
   bool inhibit_undo_recording_;
   size_t self_insert_count_;
   ptrdiff_t self_insert_pos_;
@@ -363,6 +369,20 @@ extern "C"
   void emacs_cxx_buffer_delete_forward (void *buf, ptrdiff_t n);
   void emacs_cxx_buffer_delete_backward (void *buf, ptrdiff_t n);
   int emacs_cxx_buffer_is_modified (void *buf);
+
+  void emacs_cxx_buffer_put_text_property (void *buf, ptrdiff_t start,
+					   ptrdiff_t end,
+					   const char *key,
+					   const char *value);
+  void emacs_cxx_buffer_put_face (void *buf, ptrdiff_t start,
+				  ptrdiff_t end, uint32_t fg,
+				  uint32_t bg, uint16_t flags);
+  void emacs_cxx_buffer_remove_text_property (void *buf,
+					      ptrdiff_t start,
+					      ptrdiff_t end,
+					      const char *key);
+  int emacs_cxx_buffer_has_text_property (void *buf, ptrdiff_t pos,
+					  const char *key);
 
 #ifdef __cplusplus
 }
