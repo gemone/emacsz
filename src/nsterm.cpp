@@ -1,11 +1,12 @@
 // src/nsterm.cpp
 #include <cstring>
+#include <fcntl.h>
 #include <format>
 #include <vector>
 
 #ifdef EMACS_USE_NSTERM
-# include <termios.h>
 # include <sys/ioctl.h>
+# include <termios.h>
 # include <unistd.h>
 #endif
 
@@ -16,7 +17,7 @@ namespace emacs
 
 #ifdef EMACS_USE_NSTERM
 
-MacOSNativeBackend::MacOSNativeBackend ()
+MacOSNativeBackend::MacOSNativeBackend () noexcept
     : initialized_ (false), cursor_ ({ 0, 0 }), raw_mode_ (false),
       output_buffer_ (), input_queue_ (), is_iterm_ (false),
       is_apple_terminal_ (false)
@@ -40,7 +41,6 @@ MacOSNativeBackend::enable_raw_mode () noexcept
   original_termios_ = raw;
   cfmakeraw (&raw);
   raw.c_lflag &= ~ECHO;
-  raw.c_lflag |= ISIG;
   raw.c_cc[VMIN] = 1;
   raw.c_cc[VTIME] = 0;
 
@@ -439,7 +439,7 @@ MacOSNativeBackend::clear_frame () noexcept
 }
 
 void
-MacOSNativeBackend::clear_end_of_line (CursorPosition) noexcept
+MacOSNativeBackend::clear_end_of_line (CursorPosition pos) noexcept
 {
 }
 
@@ -524,7 +524,7 @@ MacOSNativeBackend::flush () noexcept
 }
 
 void
-MacOSNativeBackend::enable_bracketed_paste (bool) noexcept
+MacOSNativeBackend::enable_bracketed_paste (bool enable) noexcept
 {
 }
 
@@ -534,7 +534,7 @@ MacOSNativeBackend::set_color (uint8_t, uint8_t) noexcept
 }
 
 void
-MacOSNativeBackend::set_truecolor (uint8_t, uint8_t,
+MacOSNativeBackend::set_truecolor (uint8_t r, uint8_t,
 				     uint8_t) noexcept
 {
 }

@@ -11,8 +11,8 @@
 #include "terminal_concept.hpp"
 
 #ifdef EMACS_USE_NSTERM
-# include <termios.h>
 # include <sys/ioctl.h>
+# include <termios.h>
 # include <unistd.h>
 #endif
 
@@ -68,7 +68,7 @@ public:
   [[nodiscard]] CursorPosition get_cursor_position () const noexcept;
 
   void insert_glyphs (CursorPosition pos,
-		  std::span<TerminalGlyph> glyphs) noexcept;
+		      std::span<TerminalGlyph> glyphs) noexcept;
   void delete_glyphs (CursorPosition pos, std::size_t n) noexcept;
   void insert_lines (CursorPosition pos, std::size_t n) noexcept;
   void delete_lines (CursorPosition pos, std::size_t n) noexcept;
@@ -88,7 +88,7 @@ public:
   void set_color (uint8_t fg, uint8_t bg = 7) noexcept;
   void set_truecolor (uint8_t r, uint8_t g, uint8_t b) noexcept;
   void set_attribute (bool bold, bool italic, bool underline,
-		  bool inverse) noexcept;
+		      bool inverse) noexcept;
 };
 
 #else
@@ -122,7 +122,7 @@ public:
   [[nodiscard]] CursorPosition get_cursor_position () const noexcept;
 
   void insert_glyphs (CursorPosition pos,
-		  std::span<TerminalGlyph> glyphs) noexcept;
+		      std::span<TerminalGlyph> glyphs) noexcept;
   void delete_glyphs (CursorPosition pos, std::size_t n) noexcept;
   void insert_lines (CursorPosition pos, std::size_t n) noexcept;
   void delete_lines (CursorPosition pos, std::size_t n) noexcept;
@@ -142,7 +142,7 @@ public:
   void set_color (uint8_t fg, uint8_t bg = 7) noexcept;
   void set_truecolor (uint8_t r, uint8_t g, uint8_t b) noexcept;
   void set_attribute (bool bold, bool italic, bool underline,
-		  bool inverse) noexcept;
+		      bool inverse) noexcept;
 };
 
 #endif
