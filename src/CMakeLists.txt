@@ -263,6 +263,155 @@ target_link_libraries(emacs_mouse_adapter PUBLIC
 target_compile_features(emacs_mouse_adapter PUBLIC cxx_std_20)
 
 # ==============================================================================
+# Gap Buffer (Phase 6.1)
+# ==============================================================================
+add_library(emacs_gap_buffer STATIC
+    gap_buffer.cpp
+    gap_buffer.hpp
+)
+target_include_directories(emacs_gap_buffer PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(emacs_gap_buffer PUBLIC
+    emacs_allocator
+)
+target_compile_features(emacs_gap_buffer PUBLIC cxx_std_20)
+
+# ==============================================================================
+# Emacs Buffer + Marker System (Phase 6.2-6.3)
+# ==============================================================================
+add_library(emacs_buffer STATIC
+    emacs_buffer.cpp
+    emacs_buffer.hpp
+)
+target_include_directories(emacs_buffer PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(emacs_buffer PUBLIC
+    emacs_allocator
+    emacs_gap_buffer
+)
+target_compile_features(emacs_buffer PUBLIC cxx_std_20)
+
+# ==============================================================================
+# Undo System (Phase 6.4)
+# ==============================================================================
+add_library(emacs_undo STATIC
+    emacs_undo.cpp
+    emacs_undo.hpp
+)
+target_include_directories(emacs_undo PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(emacs_undo PUBLIC
+    emacs_allocator
+)
+target_compile_features(emacs_undo PUBLIC cxx_std_20)
+
+# ==============================================================================
+# Buffer-Window Bridge (Phase 6.5)
+# ==============================================================================
+add_library(emacs_buffer_bridge STATIC
+    emacs_buffer_bridge.cpp
+    emacs_buffer_bridge.hpp
+)
+target_include_directories(emacs_buffer_bridge PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(emacs_buffer_bridge PUBLIC
+    emacs_allocator
+    emacs_buffer
+    emacs_gap_buffer
+    emacs_grid
+)
+target_compile_features(emacs_buffer_bridge PUBLIC cxx_std_20)
+
+# ==============================================================================
+# Command Registry (Phase 7.1)
+# ==============================================================================
+add_library(emacs_command_registry STATIC
+    emacs_command_registry.cpp
+    emacs_command_registry.hpp
+)
+target_include_directories(emacs_command_registry PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(emacs_command_registry PUBLIC
+    emacs_allocator
+)
+target_compile_features(emacs_command_registry PUBLIC cxx_std_20)
+
+# ==============================================================================
+# Keymap System (Phase 7.2)
+# ==============================================================================
+add_library(emacs_keymap STATIC
+    emacs_keymap.cpp
+    emacs_keymap.hpp
+)
+target_include_directories(emacs_keymap PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(emacs_keymap PUBLIC
+    emacs_allocator
+    emacs_input_parser
+)
+target_compile_features(emacs_keymap PUBLIC cxx_std_20)
+
+# ==============================================================================
+# Command Dispatcher (Phase 7.3)
+# ==============================================================================
+add_library(emacs_command_dispatcher STATIC
+    emacs_command_dispatcher.cpp
+    emacs_command_dispatcher.hpp
+)
+target_include_directories(emacs_command_dispatcher PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(emacs_command_dispatcher PUBLIC
+    emacs_allocator
+    emacs_command_registry
+    emacs_keymap
+    emacs_buffer
+    emacs_input_parser
+)
+target_compile_features(emacs_command_dispatcher PUBLIC cxx_std_20)
+
+# ==============================================================================
+# Minibuffer (Phase 7.4)
+# ==============================================================================
+add_library(emacs_minibuffer STATIC
+    emacs_minibuffer.cpp
+    emacs_minibuffer.hpp
+)
+target_include_directories(emacs_minibuffer PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(emacs_minibuffer PUBLIC
+    emacs_allocator
+    emacs_command_registry
+)
+target_compile_features(emacs_minibuffer PUBLIC cxx_std_20)
+
+# ==============================================================================
+# Basic Commands (Phase 7.5)
+# ==============================================================================
+add_library(emacs_basic_commands STATIC
+    emacs_basic_commands.cpp
+    emacs_basic_commands.hpp
+)
+target_include_directories(emacs_basic_commands PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(emacs_basic_commands PUBLIC
+    emacs_allocator
+    emacs_buffer
+    emacs_command_registry
+    emacs_command_dispatcher
+    emacs_undo
+)
+target_compile_features(emacs_basic_commands PUBLIC cxx_std_20)
+
+# ==============================================================================
 # Termbox2 TUI Backend
 # ==============================================================================
 add_library(emacs_termbox2_backend STATIC
@@ -386,6 +535,15 @@ install(TARGETS
     emacs_event_loop_adapter
     emacs_redisplay_adapter
     emacs_mouse_adapter
+    emacs_gap_buffer
+    emacs_buffer
+    emacs_undo
+    emacs_buffer_bridge
+    emacs_command_registry
+    emacs_keymap
+    emacs_command_dispatcher
+    emacs_minibuffer
+    emacs_basic_commands
     emacs_termbox2_backend
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -404,6 +562,15 @@ install(FILES
     emacs_event_loop_adapter.hpp
     emacs_redisplay_adapter.hpp
     emacs_mouse_adapter.hpp
+    gap_buffer.hpp
+    emacs_buffer.hpp
+    emacs_undo.hpp
+    emacs_buffer_bridge.hpp
+    emacs_command_registry.hpp
+    emacs_keymap.hpp
+    emacs_command_dispatcher.hpp
+    emacs_minibuffer.hpp
+    emacs_basic_commands.hpp
     terminal_concept.hpp
     termhooks.hpp
     termbox2_term.hpp
@@ -439,6 +606,15 @@ message(STATUS "  Window Adapter module: emacs_window_adapter (Phase 5.3)")
 message(STATUS "  Event Loop Adapter module: emacs_event_loop_adapter (Phase 5.4)")
 message(STATUS "  Redisplay Adapter module: emacs_redisplay_adapter (Phase 5.5)")
 message(STATUS "  Mouse Adapter module: emacs_mouse_adapter (Phase 5.6)")
+message(STATUS "  Gap Buffer module: emacs_gap_buffer (Phase 6.1)")
+message(STATUS "  Buffer module: emacs_buffer (Phase 6.2-6.3)")
+message(STATUS "  Undo module: emacs_undo (Phase 6.4)")
+message(STATUS "  Buffer Bridge module: emacs_buffer_bridge (Phase 6.5)")
+message(STATUS "  Command Registry module: emacs_command_registry (Phase 7.1)")
+message(STATUS "  Keymap module: emacs_keymap (Phase 7.2)")
+message(STATUS "  Command Dispatcher module: emacs_command_dispatcher (Phase 7.3)")
+message(STATUS "  Minibuffer module: emacs_minibuffer (Phase 7.4)")
+message(STATUS "  Basic Commands module: emacs_basic_commands (Phase 7.5)")
 message(STATUS "  gnulib replacement: emacs_gnulib_replacement (header-only)")
 message(STATUS "  Terminal concept: emacs_terminal_concept")
 message(STATUS "  Termbox2 backend: emacs_termbox2_backend")
