@@ -904,7 +904,7 @@ Terminal (stdin) → EventLoop → InputParser → InputEvent
                       └── Renderer (Grid → ANSI → TTY)
 ```
 
-### Current Migration Target: Phase 9.2 - Platform Backends (Phase 9.1 Complete ✅)
+### Current Migration Target: Phase 9.3 - File I/O & System (gnulib replacements) (Phase 0-9.2 Complete ✅)
 
 ### Phase 9.2 Planned Components:
 
