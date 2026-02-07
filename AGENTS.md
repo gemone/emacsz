@@ -3,8 +3,9 @@
 **Project**: GNU Emacs - C++20 Migration Branch
 **Build System**: CMake (C++20) + autotools (legacy)
 **Language**: C11 → C++20 (incremental migration)
-**Current Phase**: Phase 9 - I/O, Test & Polish (Phase 0-8.5, 9.1 Complete ✅)
+**Current Phase**: Phase 9.2 - Platform Backends (Phase 0-9.1 Complete ✅)
 **Overall Progress**: 87.2%
+
 **Last Updated**: 2026-02-07
 
 ---
@@ -34,6 +35,8 @@ Phase 9: I/O, Test & Polish    ██░░░░░░░░░░░░░░ 
 - ✅ Entry point (C++20 main with RAII) — `src/main_minimal.cpp`
 - ✅ Termbox2 TUI backend (working demo) — `src/termbox2_term.cpp` (555 lines)
 - ✅ gnulib replacements (32 headers) — `src/gnulib/`
+- ✅ POSIX TTY backend (termios + ANSI) — `src/xterm.hpp/cpp` (rewritten)
+- ✅ Platform stub backends — `src/w32term.hpp/cpp`, `src/nsterm.hpp/cpp`, `src/haikuterm.hpp/cpp`, `src/androidterm.hpp/cpp`
 
 **Completed Modules (Phase 4 - Terminal/TUI):**
 - ✅ Grid system — double-buffered `Cell` grid with dirty region tracking (436 lines)
@@ -70,6 +73,44 @@ Phase 9: I/O, Test & Polish    ██░░░░░░░░░░░░░░ 
 **Next Priority:** Phase 9 - I/O, Test & Polish
 
 **Completed Modules (Phase 8 - GUI & Platform):**
+- ✅ Buffer correctness (8.1) — mark, narrowing, integrated undo, undo amalgamation — `src/emacs_buffer.hpp/cpp` (expanded, 33 tests)
+- ✅ MCP Server (8.2) — JSON-RPC 2.0 stdio server for AI agent control — `src/emacs_mcp_server.hpp/cpp` (~724 lines, 20 tests)
+  - Tools: buffer_open, buffer_list, buffer_content, buffer_insert, buffer_delete, execute_command, cursor_get, cursor_set, buffer_state
+  - Vendored: `third_party/nlohmann/json.hpp` (nlohmann/json v3.11.3)
+- ✅ SDL2 Backend (8.3) — graphical GUI backend with font rendering and glyph caching — `src/sdl2_term.hpp/cpp` (~597 lines, 15 mock tests)
+  - Guarded by `#ifdef EMACS_USE_SDL2`, requires SDL2 + SDL2_ttf
+  - Satisfies `TerminalBackend` concept
+- ✅ Mode System (8.4) — major/minor mode infrastructure — `src/emacs_mode.hpp/cpp` (416 lines, 20 tests)
+  - ModeManager singleton with define/activate/enable/disable
+  - Keymap wiring through KeymapManager, mode inheritance (parent keymap fallback)
+  - extern "C" bridge for C interop
+- ✅ Integration Tests (8.5) — 15 cross-component tests — `test/cxx/test_phase8_integration.cpp`
+- ⏭️ Platform backends (8.6) — xterm, Windows TUI, nsterm, haiku, android — deferred to Phase 9
+
+**Completed Modules (Phase 9 - I/O, Test & Polish):**
+- ✅ Text Properties (9.1) — interval-based text property system with face rendering — `src/text_properties.hpp/cpp` (~340 lines, 30 tests)
+  - PropertyInterval: half-open [start,end), 1-based, front/rear sticky
+  - TextPropertyValue: variant<CellAttributes, gc_string, ptrdiff_t>
+  - put/get/remove/get_face/put_face, for_each_in_range, next_property_change
+  - Auto-adjust on insert/delete (hooked into EmacsBuffer)
+  - Per-character face rendering in BufferBridge
+  - extern "C" bridge: put_text_property, put_face, remove_text_property, has_text_property
+- ✅ POSIX TTY Backend (9.2) — full terminal emulation using termios + ANSI escape sequences — `src/xterm.hpp/cpp` (~560 lines)
+  - PosixTtyBackend class satisfying TerminalBackend concept
+  - termios raw mode, alternate screen buffer, mouse tracking (SGR mode)
+  - 24-bit TrueColor support (RGB foreground/background)
+  - ANSI attributes: bold, italic, underline, blink, inverse
+  - Cursor positioning, clear operations, line/glyph operations
+  - Guarded by `#ifdef EMACS_USE_POSIX_TTY` with clean stub when disabled
+  - input parsing for keys and mouse events
+  - ioctl TIOCGWINSZ for terminal size detection
+- ✅ Platform Stub Backends (9.2) — cross-platform guarded stub implementations — `src/w32term.hpp/cpp`, `src/nsterm.hpp/cpp`, `src/haikuterm.hpp/cpp`, `src/androidterm.hpp/cpp`
+  - WindowsConsoleBackend (EMACS_USE_W32): Windows Console API + VT100 fallback
+  - MacOSNativeBackend (EMACS_USE_NSTERM): macOS-enhanced POSIX TTY (termios + ANSI)
+  - HaikuBackend (EMACS_USE_HAIKU): Haiku Be API stub
+  - AndroidBackend (EMACS_USE_ANDROID): Android NDK stub
+  - All satisfy TerminalBackend concept via `static_assert`
+  - Stub implementations compile on all platforms (verified on macOS)
 - ✅ Buffer correctness (8.1) — mark, narrowing, integrated undo, undo amalgamation — `src/emacs_buffer.hpp/cpp` (expanded, 33 tests)
 - ✅ MCP Server (8.2) — JSON-RPC 2.0 stdio server for AI agent control — `src/emacs_mcp_server.hpp/cpp` (~724 lines, 20 tests)
   - Tools: buffer_open, buffer_list, buffer_content, buffer_insert, buffer_delete, execute_command, cursor_get, cursor_set, buffer_state
@@ -863,17 +904,9 @@ Terminal (stdin) → EventLoop → InputParser → InputEvent
                       └── Renderer (Grid → ANSI → TTY)
 ```
 
-### Current Migration Target: Phase 9 - I/O, Test & Polish
+### Current Migration Target: Phase 9.2 - Platform Backends (Phase 9.1 Complete ✅)
 
-**Objective**: Complete remaining infrastructure: text properties ✅, platform backends, file I/O gnulib replacements, and polish.
-
-**Why Phase 9 is Critical:**
-- Text properties now complete — enables syntax highlighting, font-lock
-- Platform backends still stubs (xterm, nsterm, w32term)
-- File I/O gnulib functions need C++20 replacements
-- Windows TUI not implemented (highest priority platform gap)
-
-### Phase 9 Planned Components:
+### Phase 9.2 Planned Components:
 
 | ID | Component | Description | Status |
 |----|-----------|-------------|--------|
