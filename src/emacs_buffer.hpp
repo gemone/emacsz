@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include "containers.hpp"
+#include "emacs_undo.hpp"
 #include "gap_buffer.hpp"
 
 namespace emacs
@@ -43,7 +44,7 @@ public:
    */
   Marker (EmacsBuffer *buffer, ptrdiff_t pos,
 	  MarkerInsertionType type
-	  = MarkerInsertionType::AFTER_INSERTION);
+	  = MarkerInsertionType::BEFORE_INSERTION);
 
   /**
    * Unregister marker from its buffer.
@@ -166,6 +167,46 @@ public:
   [[nodiscard]] ptrdiff_t point_max () const noexcept;
 
   /**
+   * Is a mark set?
+   */
+  [[nodiscard]] bool has_mark () const noexcept;
+
+  /**
+   * Current mark position (1-based), or 0 if unset.
+   */
+  [[nodiscard]] ptrdiff_t mark () const noexcept;
+
+  /**
+   * Set mark position (1-based).
+   */
+  void set_mark (ptrdiff_t pos);
+
+  /**
+   * Deactivate mark without clearing it.
+   */
+  void deactivate_mark () noexcept;
+
+  /**
+   * Is mark active?
+   */
+  [[nodiscard]] bool mark_active () const noexcept;
+
+  /**
+   * Swap point and mark.
+   */
+  void exchange_point_and_mark ();
+
+  /**
+   * Region beginning (min of point and mark).
+   */
+  [[nodiscard]] ptrdiff_t region_beginning () const noexcept;
+
+  /**
+   * Region end (max of point and mark).
+   */
+  [[nodiscard]] ptrdiff_t region_end () const noexcept;
+
+  /**
    * Character at position.
    */
   [[nodiscard]] char char_at (ptrdiff_t pos) const;
@@ -202,6 +243,16 @@ public:
   void delete_backward (ptrdiff_t n = 1);
 
   /**
+   * Undo last change group.
+   */
+  void undo ();
+
+  /**
+   * Redo last undone group.
+   */
+  void redo ();
+
+  /**
    * Modified flag.
    */
   [[nodiscard]] bool is_modified () const noexcept;
@@ -210,6 +261,21 @@ public:
    * Set modified flag.
    */
   void set_modified (bool modified) noexcept;
+
+  /**
+   * Narrow buffer to [beg, end).
+   */
+  void narrow_to_region (ptrdiff_t beg, ptrdiff_t end);
+
+  /**
+   * Clear narrowing.
+   */
+  void widen () noexcept;
+
+  /**
+   * Is buffer narrowed?
+   */
+  [[nodiscard]] bool is_narrowed () const noexcept;
 
   /**
    * Marker registration (called by Marker).
@@ -232,11 +298,26 @@ public:
   [[nodiscard]] const GapBuffer &gap_buffer () const noexcept;
   [[nodiscard]] GapBuffer &gap_buffer () noexcept;
 
+  /**
+   * Access undo manager.
+   */
+  [[nodiscard]] UndoManager &undo_manager () noexcept;
+  [[nodiscard]] const UndoManager &undo_manager () const noexcept;
+
 private:
   gc_string name_;
   GapBuffer text_;
   bool modified_;
   gc_vector_t<Marker *> markers_;
+  ptrdiff_t mark_;
+  bool mark_active_;
+  ptrdiff_t narrow_beg_;
+  ptrdiff_t narrow_end_;
+  UndoManager undo_manager_;
+  bool inhibit_undo_recording_;
+  size_t self_insert_count_;
+  ptrdiff_t self_insert_pos_;
+  gc_string self_insert_text_;
 
   /**
    * Adjust markers after insertion.
@@ -259,6 +340,8 @@ private:
    * - position <= pos: unchanged
    */
   void adjust_markers_for_delete (ptrdiff_t pos, ptrdiff_t length);
+
+  void flush_self_insert_group ();
 };
 
 } // namespace emacs

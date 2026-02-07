@@ -3,8 +3,8 @@
 **Project**: GNU Emacs - C++20 Migration Branch
 **Build System**: CMake (C++20) + autotools (legacy)
 **Language**: C11 → C++20 (incremental migration)
-**Current Phase**: Phase 8 - GUI & Platform (Phase 0-7 Complete ✅)
-**Overall Progress**: 77.8%
+**Current Phase**: Phase 8 - GUI & Platform (Phase 0-8.5 Complete ✅)
+**Overall Progress**: 85.6%
 **Last Updated**: 2026-02-07
 
 ---
@@ -20,7 +20,7 @@ Phase 4: Terminal/TUI           ████████████████
 Phase 5: Emacs Core Integration ████████████████  100%  ✅
 Phase 6: Lisp Interpreter Core  ████████████████  100%  ✅
 Phase 7: Command System         ████████████████  100%  ✅
-Phase 8: GUI & Platform         ░░░░░░░░░░░░░░░░    0%  ← NEXT
+Phase 8: GUI & Platform         ███████████░░░░░   70%  ← CURRENT
 Phase 9: I/O, Test & Polish    ░░░░░░░░░░░░░░░░    0%
 ```
 
@@ -68,6 +68,21 @@ Phase 9: I/O, Test & Polish    ░░░░░░░░░░░░░░░░ 
 - ✅ Integration tests — 12 end-to-end tests covering full keystroke→command→buffer→display pipeline (12 tests)
 
 **Next Priority:** Phase 8 - GUI & Platform
+
+**Completed Modules (Phase 8 - GUI & Platform):**
+- ✅ Buffer correctness (8.1) — mark, narrowing, integrated undo, undo amalgamation — `src/emacs_buffer.hpp/cpp` (expanded, 33 tests)
+- ✅ MCP Server (8.2) — JSON-RPC 2.0 stdio server for AI agent control — `src/emacs_mcp_server.hpp/cpp` (~724 lines, 20 tests)
+  - Tools: buffer_open, buffer_list, buffer_content, buffer_insert, buffer_delete, execute_command, cursor_get, cursor_set, buffer_state
+  - Vendored: `third_party/nlohmann/json.hpp` (nlohmann/json v3.11.3)
+- ✅ SDL2 Backend (8.3) — graphical GUI backend with font rendering and glyph caching — `src/sdl2_term.hpp/cpp` (~597 lines, 15 mock tests)
+  - Guarded by `#ifdef EMACS_USE_SDL2`, requires SDL2 + SDL2_ttf
+  - Satisfies `TerminalBackend` concept
+- ✅ Mode System (8.4) — major/minor mode infrastructure — `src/emacs_mode.hpp/cpp` (416 lines, 20 tests)
+  - ModeManager singleton with define/activate/enable/disable
+  - Keymap wiring through KeymapManager, mode inheritance (parent keymap fallback)
+  - extern "C" bridge for C interop
+- ✅ Integration Tests (8.5) — 15 cross-component tests — `test/cxx/test_phase8_integration.cpp`
+- ⏭️ Platform backends (8.6) — xterm, Windows TUI, nsterm, haiku, android — deferred to Phase 9
 
 ---
 
@@ -164,7 +179,8 @@ g++ -std=c++20 -I src test/cxx/test_gap_buffer.cpp \
     -o /tmp/test_gap_buffer && /tmp/test_gap_buffer
 
 g++ -std=c++20 -I src test/cxx/test_emacs_buffer.cpp \
-    src/emacs_buffer.cpp src/gap_buffer.cpp src/allocator.cpp \
+    src/emacs_buffer.cpp src/gap_buffer.cpp src/emacs_undo.cpp \
+    src/allocator.cpp \
     -o /tmp/test_emacs_buffer && /tmp/test_emacs_buffer
 
 g++ -std=c++20 -I src test/cxx/test_emacs_undo.cpp \
@@ -173,7 +189,7 @@ g++ -std=c++20 -I src test/cxx/test_emacs_undo.cpp \
 
 g++ -std=c++20 -I src test/cxx/test_buffer_bridge.cpp \
     src/emacs_buffer_bridge.cpp src/emacs_buffer.cpp \
-    src/gap_buffer.cpp src/grid.cpp src/allocator.cpp \
+    src/gap_buffer.cpp src/emacs_undo.cpp src/grid.cpp src/allocator.cpp \
     -o /tmp/test_buffer_bridge && /tmp/test_buffer_bridge
 
 # Phase 6 integration tests (15 end-to-end tests)
@@ -200,15 +216,15 @@ g++ -std=c++20 -Wall -Wextra -Wpedantic -Wno-unused-variable -I src \
 g++ -std=c++20 -Wall -Wextra -Wpedantic -Wno-unused-variable -I src \
     test/cxx/test_command_dispatcher.cpp src/emacs_command_dispatcher.cpp \
     src/emacs_command_registry.cpp src/emacs_keymap.cpp \
-    src/emacs_buffer.cpp src/gap_buffer.cpp src/input_parser.cpp \
-    src/allocator.cpp \
+    src/emacs_buffer.cpp src/gap_buffer.cpp src/emacs_undo.cpp \
+    src/input_parser.cpp src/allocator.cpp \
     -o /tmp/test_command_dispatcher && /tmp/test_command_dispatcher
 
 g++ -std=c++20 -Wall -Wextra -Wpedantic -Wno-unused-variable -I src \
     test/cxx/test_minibuffer.cpp src/emacs_minibuffer.cpp \
     src/emacs_command_registry.cpp src/emacs_command_dispatcher.cpp \
     src/emacs_keymap.cpp src/emacs_buffer.cpp src/gap_buffer.cpp \
-    src/input_parser.cpp src/allocator.cpp \
+    src/emacs_undo.cpp src/input_parser.cpp src/allocator.cpp \
     -o /tmp/test_minibuffer && /tmp/test_minibuffer
 
 g++ -std=c++20 -Wall -Wextra -Wpedantic -Wno-unused-variable -I src \
@@ -226,6 +242,32 @@ g++ -std=c++20 -Wall -Wextra -Wpedantic -Wno-unused-variable -I src \
     src/emacs_buffer.cpp src/gap_buffer.cpp src/emacs_undo.cpp \
     src/input_parser.cpp src/allocator.cpp \
     -o /tmp/test_phase7_integration && /tmp/test_phase7_integration
+
+# Phase 8 unit tests (per module)
+g++ -std=c++20 -Wall -Wextra -Wpedantic -Wno-unused-variable -I src \
+    -I third_party test/cxx/test_mcp_server.cpp \
+    src/emacs_mcp_server.cpp src/emacs_buffer.cpp src/gap_buffer.cpp \
+    src/emacs_undo.cpp src/emacs_command_registry.cpp src/allocator.cpp \
+    -o /tmp/test_mcp_server && /tmp/test_mcp_server
+
+g++ -std=c++20 -Wall -Wextra -Wpedantic -Wno-unused-variable -I src \
+    test/cxx/test_sdl2_backend.cpp src/allocator.cpp \
+    -o /tmp/test_sdl2_backend && /tmp/test_sdl2_backend
+
+g++ -std=c++20 -Wall -Wextra -Wpedantic -Wno-unused-variable -I src \
+    test/cxx/test_mode.cpp src/emacs_mode.cpp \
+    src/emacs_keymap.cpp src/input_parser.cpp src/allocator.cpp \
+    -o /tmp/test_mode && /tmp/test_mode
+
+# Phase 8 integration tests (15 cross-component tests)
+g++ -std=c++20 -Wall -Wextra -Wpedantic -Wno-unused-variable -I src \
+    -I third_party test/cxx/test_phase8_integration.cpp \
+    src/emacs_mcp_server.cpp src/emacs_mode.cpp \
+    src/emacs_basic_commands.cpp src/emacs_command_dispatcher.cpp \
+    src/emacs_command_registry.cpp src/emacs_keymap.cpp \
+    src/emacs_buffer.cpp src/gap_buffer.cpp src/emacs_undo.cpp \
+    src/input_parser.cpp src/allocator.cpp \
+    -o /tmp/test_phase8_integration && /tmp/test_phase8_integration
 ```
 
 ### Test Subsets
@@ -561,6 +603,11 @@ emacs_keymap             # Hierarchical keymaps (global→major→minor→local)
 emacs_command_dispatcher # InputEvent → keymap → command execution
 emacs_minibuffer         # Single-line input with completion
 emacs_basic_commands     # 15 core editing commands
+
+# Phase 8 modules (GUI & Platform)
+emacs_mcp_server         # JSON-RPC 2.0 MCP server for AI agents
+emacs_sdl2_backend       # SDL2 graphical backend (ifdef EMACS_USE_SDL2)
+emacs_mode               # Major/minor mode system
 ```
 
 ### Executables
@@ -645,6 +692,9 @@ emacs_tui_demo      # TUI demonstration (working)
 - `src/emacs_command_dispatcher.hpp/cpp` - Key dispatch with prefix arg (364 lines)
 - `src/emacs_minibuffer.hpp/cpp` - Minibuffer with tab completion (404 lines)
 - `src/emacs_basic_commands.hpp/cpp` - 15 core editing commands (567 lines)
+- `src/emacs_mcp_server.hpp/cpp` - JSON-RPC 2.0 MCP server for AI agents (~724 lines)
+- `src/sdl2_term.hpp/cpp` - SDL2 graphical backend with glyph caching (~597 lines)
+- `src/emacs_mode.hpp/cpp` - Major/minor mode system (416 lines)
 
 ---
 
@@ -801,48 +851,106 @@ Terminal (stdin) → EventLoop → InputParser → InputEvent
 
 ### Phase 8 Planned Components:
 
-| ID | Component | Description | Priority |
-|----|-----------|-------------|----------|
-| 8.1 | Text Properties | Overlays, faces, syntax properties (deferred from 6.6) | HIGH |
-| 8.2 | Mode System | Major/minor mode infrastructure | HIGH |
-| 8.3 | xterm Backend | Full xterm terminal backend | MEDIUM |
-| 8.4 | Windows TUI | VT100 + Console API fallback | HIGH |
-| 8.5 | nsterm Backend | macOS native terminal backend | MEDIUM |
-| 8.6 | Platform Backends | haikuterm, androidterm stubs → real | LOW |
-| 8.7 | Integration Tests | Cross-platform GUI/terminal tests | HIGH |
+| ID | Component | Description | Status |
+|----|-----------|-------------|--------|
+| 8.1 | Buffer Correctness | Mark, narrowing, integrated undo, amalgamation | ✅ DONE |
+| 8.2 | MCP Server | JSON-RPC 2.0 stdio server for AI agent control | ✅ DONE |
+| 8.3 | SDL2 Backend | Graphical GUI backend with font rendering | ✅ DONE |
+| 8.4 | Mode System | Major/minor mode infrastructure | ✅ DONE |
+| 8.5 | Integration Tests | Cross-component tests (15 tests) | ✅ DONE |
+| 8.6 | Platform Backends | xterm, Windows TUI, nsterm, haiku, android | ⏭️ Phase 9 |
+
+### Phase 8 Test Summary:
+| Module | Tests | Test File |
+|--------|-------|-----------|
+| Buffer (expanded) | 33 | `test/cxx/test_emacs_buffer.cpp` |
+| MCP Server | 20 | `test/cxx/test_mcp_server.cpp` |
+| SDL2 Backend (mock) | 15 | `test/cxx/test_sdl2_backend.cpp` |
+| Mode System | 20 | `test/cxx/test_mode.cpp` |
+| Integration (E2E) | 15 | `test/cxx/test_phase8_integration.cpp` |
+| **Total** | **103** | |
+
+**Cumulative Test Summary (Phases 5-8):**
+| Phase | Tests |
+|-------|-------|
+| Phase 5 (Emacs Core Integration) | 12 |
+| Phase 6 (Buffer/Text Engine) | 85 |
+| Phase 7 (Command System) | 105 |
+| Phase 8 (GUI & Platform) | 103 |
+| **Grand Total** | **305** |
+
+**Architecture (Phases 4-8, all tested, 305 tests total):**
+```
+Terminal (stdin) → EventLoop → InputParser → InputEvent
+    OR                                         ↓
+SDL2 Window → SDL_Event → InputEvent      EmacsInputAdapter
+                                               ↓
+                              EmacsEventLoopAdapter (kbd_buffer)
+                                               ↓
+                    ┌─────── Phase 7 ─────────────────────────┐
+                    │ CommandDispatcher → KeymapManager        │
+                    │   → CommandRegistry.execute()            │
+                    │ Minibuffer (M-x, prompts, completion)    │
+                    │ Basic Commands (15 editing commands)      │
+                    └──────────────┬──────────────────────────┘
+                                   ↓
+                    ┌─── Phase 8 ──────────────────────────┐
+                    │ ModeManager (8.4)                     │
+                    │   → major/minor mode activation       │
+                    │   → keymap wiring + hooks             │
+                    │ EmacsBuffer (6 + 8.1)                │
+                    │   + Mark, Narrowing, Integrated Undo  │
+                    │ UndoManager (undo/redo groups)        │
+                    └──────────────┬───────────────────────┘
+                                   ↓
+                    ┌─── BufferBridge (6.5) ───┐
+                    │ buffer → Grid cells      │
+                    │ point → cursor (row,col) │
+                    └──────────┬───────────────┘
+                               ↓
+                    Grid → Renderer → TerminalBackend
+                                        ├── Termbox2Backend (TUI)
+                                        └── SDL2Backend (8.3, GUI)
+
+   MCP Server (8.2) ←→ EmacsBuffer + CommandRegistry
+   (stdio JSON-RPC)     (AI agent control interface)
+```
 
 ---
 
 ## 📋 Next Action Plan (Immediate)
 
-### For Phase 8 Kickoff:
+### For Phase 9 Kickoff:
 
-1. **Design Text Properties** (2 hours)
+1. **Platform Backends** (HIGH PRIORITY)
+   - xterm backend (full terminal emulation)
+   - Windows TUI (VT100 + Console API fallback)
+   - nsterm backend (macOS native)
+   - haikuterm, androidterm real implementations
+
+2. **Text Properties** (deferred from 6.6)
    - Interval tree or sorted list for text property ranges
    - Face attributes: foreground, background, bold, italic, underline
    - Integration with CellAttributes in Grid
 
-2. **Design Mode System** (2 hours)
-   - Major mode: one active per buffer (fundamental-mode, text-mode)
-   - Minor modes: multiple active, stacking keymaps
-   - Mode hooks for activation/deactivation
-
-3. **Windows TUI Implementation** (3-5 days)
-   - VT100 escape sequences for modern Windows Terminal
-   - Console API fallback for legacy cmd.exe
-   - Platform detection via `if constexpr`
+3. **File I/O & System** (gnulib replacements)
+   - faccessat, lstat, tempfile → std::filesystem
+   - mbrtowc, wcwidth, iswprint → std::locale
+   - gettimeofday, nanosleep → std::chrono
+   - regcomp, regexec → std::regex
 
 ### Immediate Commands:
 
 ```bash
-# 1. Verify all tests pass
+# 1. Verify all tests pass (Phase 8 integration)
 g++ -std=c++20 -Wall -Wextra -Wpedantic -Wno-unused-variable -I src \
-    test/cxx/test_phase7_integration.cpp src/emacs_basic_commands.cpp \
-    src/emacs_minibuffer.cpp src/emacs_command_dispatcher.cpp \
+    -I third_party test/cxx/test_phase8_integration.cpp \
+    src/emacs_mcp_server.cpp src/emacs_mode.cpp \
+    src/emacs_basic_commands.cpp src/emacs_command_dispatcher.cpp \
     src/emacs_command_registry.cpp src/emacs_keymap.cpp \
     src/emacs_buffer.cpp src/gap_buffer.cpp src/emacs_undo.cpp \
     src/input_parser.cpp src/allocator.cpp \
-    -o /tmp/test_phase7_integration && /tmp/test_phase7_integration
+    -o /tmp/test_phase8_integration && /tmp/test_phase8_integration
 
 # 2. Reconfigure CMake
 cmake -B build-cpp -S . -DCMAKE_BUILD_TYPE=Debug
@@ -854,8 +962,8 @@ cmake --build build-cpp --config Debug
 ---
 
 **Last Updated**: 2026-02-07
-**Current Phase**: Phase 8 - GUI & Platform (Not Started)
-**Next Milestone**: Text Properties + Mode System
-**Critical Path**: Text properties → Mode system → Platform backends
+**Current Phase**: Phase 8 - GUI & Platform (Phase 8.1-8.5 Complete ✅)
+**Next Milestone**: Phase 9 - Platform Backends + File I/O
+**Critical Path**: Platform backends → Text properties → File I/O → Polish
 
 **For Questions**: See `doc/cxx-builder/README.md` or consult phase documentation in `doc/cxx-builder/phases/`

@@ -184,6 +184,20 @@ test_marker_create ()
 }
 
 static void
+test_marker_default_insertion_type ()
+{
+  std::printf ("Testing marker default insertion type...\n");
+  EmacsBuffer buffer ("buf", "hello");
+  Marker marker (&buffer, 3);
+  buffer.set_point (3);
+  buffer.insert_string ("XX");
+  assert (marker.position () == 3);
+  assert_content (buffer, "heXXllo");
+  std::printf ("\xe2\x9c\x93 marker default insertion type passed\n");
+  ++g_tests_run;
+}
+
+static void
 test_marker_auto_unregister ()
 {
   std::printf ("Testing marker auto unregister...\n");
@@ -305,6 +319,214 @@ test_marker_buffer_ref ()
 }
 
 static void
+test_mark_set_and_exchange ()
+{
+  std::printf ("Testing mark set/exchange...\n");
+  EmacsBuffer buffer ("buf", "hello");
+  assert (!buffer.has_mark ());
+  assert (buffer.mark () == 0);
+  assert (!buffer.mark_active ());
+  buffer.set_mark (2);
+  assert (buffer.has_mark ());
+  assert (buffer.mark () == 2);
+  assert (buffer.mark_active ());
+  buffer.deactivate_mark ();
+  assert (!buffer.mark_active ());
+  buffer.set_point (5);
+  buffer.exchange_point_and_mark ();
+  assert (buffer.point () == 2);
+  assert (buffer.mark () == 5);
+  std::printf ("\xe2\x9c\x93 mark set/exchange passed\n");
+  ++g_tests_run;
+}
+
+static void
+test_mark_adjust_on_edits ()
+{
+  std::printf ("Testing mark adjustment on edits...\n");
+  EmacsBuffer buffer ("buf", "hello");
+  buffer.set_mark (3);
+  buffer.set_point (3);
+  buffer.insert_string ("XX");
+  assert (buffer.mark () == 3);
+  buffer.set_point (1);
+  buffer.insert_char ('A');
+  assert (buffer.mark () == 4);
+  buffer.delete_forward (1);
+  assert (buffer.mark () == 3);
+  buffer.set_point (2);
+  buffer.delete_forward (3);
+  assert (buffer.mark () == 2);
+  std::printf ("\xe2\x9c\x93 mark adjustment on edits passed\n");
+  ++g_tests_run;
+}
+
+static void
+test_region_helpers ()
+{
+  std::printf ("Testing region helpers...\n");
+  EmacsBuffer buffer ("buf", "hello");
+  buffer.set_point (4);
+  assert (buffer.region_beginning () == 4);
+  assert (buffer.region_end () == 4);
+  buffer.set_mark (2);
+  assert (buffer.region_beginning () == 2);
+  assert (buffer.region_end () == 4);
+  std::printf ("\xe2\x9c\x93 region helpers passed\n");
+  ++g_tests_run;
+}
+
+static void
+test_narrowing_basic ()
+{
+  std::printf ("Testing narrowing basics...\n");
+  EmacsBuffer buffer ("buf", "hello world");
+  buffer.narrow_to_region (3, 8);
+  assert (buffer.is_narrowed ());
+  assert (buffer.point_min () == 3);
+  assert (buffer.point_max () == 8);
+  buffer.set_point (1);
+  assert (buffer.point () == 3);
+  buffer.set_point (20);
+  assert (buffer.point () == 8);
+  buffer.widen ();
+  assert (!buffer.is_narrowed ());
+  assert (buffer.point_min () == 1);
+  assert (buffer.point_max () == buffer.size () + 1);
+  std::printf ("\xe2\x9c\x93 narrowing basics passed\n");
+  ++g_tests_run;
+}
+
+static void
+test_narrowing_insert_delete ()
+{
+  std::printf ("Testing narrowing insert/delete...\n");
+  EmacsBuffer buffer ("buf", "abcdef");
+  buffer.narrow_to_region (2, 5);
+  buffer.set_point (2);
+  buffer.insert_string ("XX");
+  assert (buffer.point_max () == 7);
+  assert_content (buffer, "aXXbcdef");
+  buffer.set_point (3);
+  buffer.delete_forward (2);
+  assert (buffer.point_max () == 5);
+  assert_content (buffer, "aXcdef");
+  buffer.set_point (1);
+  buffer.insert_char ('Z');
+  assert_content (buffer, "aZXcdef");
+  std::printf ("\xe2\x9c\x93 narrowing insert/delete passed\n");
+  ++g_tests_run;
+}
+
+static void
+test_undo_insert_and_redo ()
+{
+  std::printf ("Testing undo/redo insert...\n");
+  EmacsBuffer buffer ("buf");
+  buffer.insert_string ("hello");
+  assert (buffer.undo_manager ().can_undo ());
+  buffer.undo ();
+  assert_content (buffer, "");
+  assert (buffer.undo_manager ().can_redo ());
+  buffer.redo ();
+  assert_content (buffer, "hello");
+  std::printf ("\xe2\x9c\x93 undo/redo insert passed\n");
+  ++g_tests_run;
+}
+
+static void
+test_undo_delete_forward ()
+{
+  std::printf ("Testing undo delete forward...\n");
+  EmacsBuffer buffer ("buf", "hello");
+  buffer.set_point (2);
+  buffer.delete_forward (2);
+  assert_content (buffer, "hlo");
+  buffer.undo ();
+  assert_content (buffer, "hello");
+  std::printf ("\xe2\x9c\x93 undo delete forward passed\n");
+  ++g_tests_run;
+}
+
+static void
+test_undo_delete_backward ()
+{
+  std::printf ("Testing undo delete backward...\n");
+  EmacsBuffer buffer ("buf", "hello");
+  buffer.set_point (4);
+  buffer.delete_backward (2);
+  assert_content (buffer, "hlo");
+  buffer.undo ();
+  assert_content (buffer, "hello");
+  std::printf ("\xe2\x9c\x93 undo delete backward passed\n");
+  ++g_tests_run;
+}
+
+static void
+test_undo_recording_inhibited ()
+{
+  std::printf ("Testing undo recording inhibition...\n");
+  EmacsBuffer buffer ("buf");
+  buffer.insert_string ("abc");
+  buffer.undo ();
+  assert (!buffer.undo_manager ().can_undo ());
+  assert (buffer.undo_manager ().can_redo ());
+  buffer.redo ();
+  assert (buffer.undo_manager ().can_undo ());
+  assert (!buffer.undo_manager ().can_redo ());
+  std::printf ("\xe2\x9c\x93 undo recording inhibition passed\n");
+  ++g_tests_run;
+}
+
+static void
+test_self_insert_amalgamation ()
+{
+  std::printf ("Testing self-insert amalgamation...\n");
+  EmacsBuffer buffer ("buf");
+  buffer.insert_char ('a');
+  buffer.insert_char ('b');
+  buffer.insert_char ('c');
+  buffer.undo ();
+  assert_content (buffer, "");
+  std::printf ("\xe2\x9c\x93 self-insert amalgamation passed\n");
+  ++g_tests_run;
+}
+
+static void
+test_self_insert_group_split ()
+{
+  std::printf ("Testing self-insert group split...\n");
+  EmacsBuffer buffer ("buf");
+  buffer.insert_char ('a');
+  buffer.insert_char ('b');
+  buffer.set_point (1);
+  buffer.insert_char ('c');
+  buffer.undo ();
+  assert_content (buffer, "ab");
+  buffer.undo ();
+  assert_content (buffer, "");
+  std::printf ("\xe2\x9c\x93 self-insert group split passed\n");
+  ++g_tests_run;
+}
+
+static void
+test_self_insert_flush_on_insert_string ()
+{
+  std::printf ("Testing self-insert flush on insert string...\n");
+  EmacsBuffer buffer ("buf");
+  buffer.insert_char ('a');
+  buffer.insert_char ('b');
+  buffer.insert_string ("ZZ");
+  buffer.undo ();
+  assert_content (buffer, "ab");
+  buffer.undo ();
+  assert_content (buffer, "");
+  std::printf (
+    "\xe2\x9c\x93 self-insert flush on insert string passed\n");
+  ++g_tests_run;
+}
+
+static void
 test_extern_c_api ()
 {
   std::printf ("Testing extern C API...\n");
@@ -340,6 +562,7 @@ main ()
   test_content_range ();
   test_modified_flag ();
   test_marker_create ();
+  test_marker_default_insertion_type ();
   test_marker_auto_unregister ();
   test_marker_adjust_insert_after ();
   test_marker_adjust_insert_before ();
@@ -348,6 +571,18 @@ main ()
   test_marker_adjust_delete_through ();
   test_multiple_markers ();
   test_marker_buffer_ref ();
+  test_mark_set_and_exchange ();
+  test_mark_adjust_on_edits ();
+  test_region_helpers ();
+  test_narrowing_basic ();
+  test_narrowing_insert_delete ();
+  test_undo_insert_and_redo ();
+  test_undo_delete_forward ();
+  test_undo_delete_backward ();
+  test_undo_recording_inhibited ();
+  test_self_insert_amalgamation ();
+  test_self_insert_group_split ();
+  test_self_insert_flush_on_insert_string ();
   test_extern_c_api ();
 
   std::printf ("\n=== All %d tests passed! ===\n", g_tests_run);
