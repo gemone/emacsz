@@ -2,12 +2,10 @@
 #pragma once
 
 #include <clocale>
+#include <cstring>
 #include <cwchar>
 #include <string>
 #include <string_view>
-#include <utility>
-
-#include "terminal_concept.hpp"
 
 namespace emacs
 {
@@ -17,7 +15,7 @@ namespace emacs
  *
  * Replaces:
  * - mbrtowc() → std::mbrtowc() for multibyte to wide conversion
- * - wcwidth() → std::mbrtowc() for character width
+ * - wcwidth() → simple width calculation for common characters
  * - iswprint() → std::iswprint() for printable character check
  *
  * Uses:
@@ -29,33 +27,21 @@ class LocaleUtils
 {
 public:
   LocaleUtils () noexcept = default;
-  ~LocaleUtils () = default;
+  ~LocaleUtils () noexcept = default;
 
   // mbrtowc() - convert multibyte string to wide character string
-  [[nodiscard]] std::size_t mbrtowc (const char *s, std::size_t n,
-				     wchar_t *pwc) noexcept
-  {
-    std::mbstate_t state = {};
-    return std::mbrtowc (s, n, pwc, &state);
-  }
+  [[nodiscard]] static std::size_t
+  mbrtowc (wchar_t *pwc, const char *s, std::size_t n,
+	   std::mbstate_t *ps) noexcept;
 
   // wcwidth() - get column width of a wide character
-  [[nodiscard]] int wcwidth (wchar_t c) noexcept
-  {
-    return std::mbrtowc (&c);
-  }
+  [[nodiscard]] static int wcwidth (wchar_t c) noexcept;
 
   // iswprint() - check if character is printable
-  [[nodiscard]] bool iswprint (wchar_t c) noexcept
-  {
-    return std::iswprint (c);
-  }
+  [[nodiscard]] static bool iswprint (wchar_t c) noexcept;
 
   // mbsinit() - initialize mbstate_t
-  void mbsinit (std::mbstate_t *ps) noexcept
-  {
-    std::memset (ps, 0, sizeof (std::mbstate_t));
-  }
+  static void mbsinit (std::mbstate_t *ps) noexcept;
 };
 
 } // namespace emacs
@@ -64,7 +50,8 @@ public:
 extern "C"
 {
   // mbrtowc() - convert multibyte string to wide character string
-  int emacs_mbrtowc (const char *s, std::size_t n, wchar_t *pwc);
+  int emacs_mbrtowc (wchar_t *pwc, const char *s, std::size_t n,
+		     std::mbstate_t *ps);
 
   // wcwidth() - get column width of a wide character
   int emacs_wcwidth (wchar_t c);

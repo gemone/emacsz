@@ -1,49 +1,134 @@
 // src/filesystem.cpp
-#include <cstring>
-#include <filesystem>
-
 #include "filesystem.hpp"
+#include <unistd.h>
 
 namespace emacs
 {
 
-FilesystemUtils::FilesystemUtils () {}
+// Convert std::filesystem::perms to POSIX mode_t
+mode_t
+FilesystemUtils::perms_to_posix (std::filesystem::perms p) noexcept
+{
+  mode_t mode = 0;
 
-FilesystemUtils::~FilesystemUtils () {}
+  if ((p & std::filesystem::perms::owner_read)
+      != std::filesystem::perms::none)
+    mode |= S_IRUSR;
+  if ((p & std::filesystem::perms::owner_write)
+      != std::filesystem::perms::none)
+    mode |= S_IWUSR;
+  if ((p & std::filesystem::perms::owner_exec)
+      != std::filesystem::perms::none)
+    mode |= S_IXUSR;
+
+  if ((p & std::filesystem::perms::group_read)
+      != std::filesystem::perms::none)
+    mode |= S_IRGRP;
+  if ((p & std::filesystem::perms::group_write)
+      != std::filesystem::perms::none)
+    mode |= S_IWGRP;
+  if ((p & std::filesystem::perms::group_exec)
+      != std::filesystem::perms::none)
+    mode |= S_IXGRP;
+
+  if ((p & std::filesystem::perms::others_read)
+      != std::filesystem::perms::none)
+    mode |= S_IROTH;
+  if ((p & std::filesystem::perms::others_write)
+      != std::filesystem::perms::none)
+    mode |= S_IWOTH;
+  if ((p & std::filesystem::perms::others_exec)
+      != std::filesystem::perms::none)
+    mode |= S_IXOTH;
+
+  return mode;
+}
 
 int
 FilesystemUtils::faccessat (const char *path, int mode) noexcept
 {
   std::error_code ec;
-  auto perms = std::filesystem::permissions (path, mode, ec);
+  auto status = std::filesystem::status (path, ec);
+
   if (ec)
     return -1;
-  return perms == std::filesystem::perms::none ? 0 : 1;
+
+  auto perms = status.permissions ();
+
+  if ((mode & R_OK)
+      && (perms & std::filesystem::perms::owner_read)
+	   == std::filesystem::perms::none
+      && (perms & std::filesystem::perms::group_read)
+	   == std::filesystem::perms::none
+      && (perms & std::filesystem::perms::others_read)
+	   == std::filesystem::perms::none)
+    return -1;
+
+  if ((mode & W_OK)
+      && (perms & std::filesystem::perms::owner_write)
+	   == std::filesystem::perms::none
+      && (perms & std::filesystem::perms::group_write)
+	   == std::filesystem::perms::none
+      && (perms & std::filesystem::perms::others_write)
+	   == std::filesystem::perms::none)
+    return -1;
+
+  if ((mode & X_OK)
+      && (perms & std::filesystem::perms::owner_exec)
+	   == std::filesystem::perms::none
+      && (perms & std::filesystem::perms::group_exec)
+	   == std::filesystem::perms::none
+      && (perms & std::filesystem::perms::others_exec)
+	   == std::filesystem::perms::none)
+    return -1;
+
+  return 0;
 }
 
 bool
 FilesystemUtils::lstat (const char *path, struct stat *buf) noexcept
 {
   std::error_code ec;
-  auto status
-    = std::filesystem::status (std::filesystem::path (path), ec);
-  if (ec)
+  auto status = std::filesystem::symlink_status (path, ec);
+
+  if (ec || !buf)
     {
-      buf->st_mode = 0;
-      buf->st_nlink = 0;
-      buf->st_uid = 0;
-      buf->st_gid = 0;
+      if (buf)
+	{
+	  std::memset (buf, 0, sizeof (*buf));
+	}
       return false;
     }
 
-  auto s = status.permissions ();
-  std::filesystem::perms rwxr (static_cast<int> (s));
+  auto type = status.type ();
+  auto perms = status.permissions ();
 
-  buf->st_mode = static_cast<mode_t> (rwxr_to_posix (rwxr));
-  buf->st_nlink
-    = static_cast<nlink_t> (s.count (std::filesystem::perms::others));
+  mode_t mode = 0;
+
+  if (type == std::filesystem::file_type::regular)
+    mode |= S_IFREG;
+  else if (type == std::filesystem::file_type::directory)
+    mode |= S_IFDIR;
+  else if (type == std::filesystem::file_type::symlink)
+    mode |= S_IFLNK;
+  else if (type == std::filesystem::file_type::block)
+    mode |= S_IFBLK;
+  else if (type == std::filesystem::file_type::character)
+    mode |= S_IFCHR;
+  else if (type == std::filesystem::file_type::fifo)
+    mode |= S_IFIFO;
+  else if (type == std::filesystem::file_type::socket)
+    mode |= S_IFSOCK;
+
+  mode |= perms_to_posix (perms);
+
+  buf->st_mode = mode;
+  buf->st_nlink = static_cast<nlink_t> (
+    std::filesystem::hard_link_count (path, ec));
   buf->st_uid = 0;
   buf->st_gid = 0;
+  buf->st_size
+    = static_cast<off_t> (std::filesystem::file_size (path, ec));
 
   return true;
 }
@@ -51,30 +136,23 @@ FilesystemUtils::lstat (const char *path, struct stat *buf) noexcept
 char *
 FilesystemUtils::tempfile (const char *prefix) noexcept
 {
-  static std::string filename;
-  filename.resize (64);
-
   std::error_code ec;
   auto temp_dir = std::filesystem::temp_directory_path (ec);
-  auto temp_path
-    = temp_dir
-      / (filename.empty () ? "emacs_XXXXXX" : (prefix + filename));
 
-  auto unique_path = std::filesystem::unique_path (temp_path, ec);
   if (ec)
-    {
-      return nullptr;
-    }
+    return nullptr;
 
-  filename = unique_path.filename ().string ();
+  static unsigned long counter = 0;
+  counter++;
 
-  static std::vector<char> result (filename.begin (),
-				   filename.end () + 1);
-  result.push_back ('\0');
+  std::string filename
+    = (prefix ? std::string (prefix) : std::string ("emacs_"))
+      + std::to_string (counter) + "XXXXXX";
 
-  char *c_str = new (char[result.size ()];
-  std::copy (result.begin (), result.end (), c_str);
-  c_str[result.size () - 1] = '\0';
+  auto temp_path = temp_dir / filename;
+
+  char *c_str = new char[temp_path.string ().size () + 1];
+  std::strcpy (c_str, temp_path.c_str ());
 
   return c_str;
 }
@@ -82,9 +160,34 @@ FilesystemUtils::tempfile (const char *prefix) noexcept
 void
 FilesystemUtils::tempfile_cleanup (char *temp_filename) noexcept
 {
-  delete[] temp_filename;
+  if (temp_filename)
+    {
+      delete[] temp_filename;
+    }
 }
 
 } // namespace emacs
 
-// extern "C" bridge functions already in filesystem.hpp
+// extern "C" bridge functions for C compatibility
+extern "C"
+{
+  int emacs_faccessat (const char *path, int mode)
+  {
+    return emacs::FilesystemUtils::faccessat (path, mode);
+  }
+
+  int emacs_lstat (const char *path, struct stat *buf)
+  {
+    return emacs::FilesystemUtils::lstat (path, buf) ? 1 : 0;
+  }
+
+  char *emacs_tempfile (const char *prefix)
+  {
+    return emacs::FilesystemUtils::tempfile (prefix);
+  }
+
+  void emacs_tempfile_cleanup (char *temp_filename)
+  {
+    emacs::FilesystemUtils::tempfile_cleanup (temp_filename);
+  }
+}

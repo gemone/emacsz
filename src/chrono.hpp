@@ -3,11 +3,9 @@
 
 #include <chrono>
 #include <cstdint>
-#include <string>
-#include <string_view>
-#include <utility>
-
-#include "terminal_concept.hpp"
+#include <sys/time.h>
+#include <sys/types.h>
+#include <thread>
 
 namespace emacs
 {
@@ -30,30 +28,13 @@ class TimeUtils
 {
 public:
   TimeUtils () noexcept = default;
-  ~TimeUtils () = default;
+  ~TimeUtils () noexcept = default;
 
   // gettimeofday() - get current time with microsecond precision
-  [[nodiscard]] void gettimeofday (struct timeval *tv) noexcept
-  {
-    auto now = std::chrono::system_clock::now ();
-    auto epoch = now.time_since_epoch ();
-    std::chrono::duration<std::int64_t> micros = epoch;
-    auto seconds = std::chrono::duration_cast<std::int64_t> (micros);
-
-    if (tv)
-      {
-	tv->tv_sec = static_cast<time_t> (seconds.count ());
-	tv->tv_usec
-	  = static_cast<__suseconds_t> (micros.count () % 1000000);
-      }
-  }
+  static void gettimeofday (struct timeval *tv) noexcept;
 
   // nanosleep() - high-resolution sleep
-  void nanosleep (const struct timespec *req) noexcept
-  {
-    std::chrono::nanoseconds dur (req->tv_sec, req->tv_nsec);
-    std::this_thread::sleep_for (dur);
-  }
+  static void nanosleep (const struct timespec *req) noexcept;
 };
 
 } // namespace emacs

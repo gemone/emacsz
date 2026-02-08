@@ -1,12 +1,11 @@
 // src/regex.hpp
 #pragma once
 
+#include <cstring>
 #include <regex>
 #include <string>
 #include <string_view>
-#include <utility>
-
-#include "terminal_concept.hpp"
+#include <vector>
 
 namespace emacs
 {
@@ -16,42 +15,50 @@ namespace emacs
  * gnulib
  *
  * Replaces:
- * - regcomp() → std::regex::regex_compile()
- * - regexec() → std::regex::regex_search() for pattern matching
- * - regfree() → std::regex::regex_free() for freeing regex
+ * - regcomp() → std::regex constructor
+ * - regexec() → std::regex_search() for pattern matching
+ * - regfree() → std::regex destructor (automatic)
  *
  * Uses:
  * - std::regex exclusively (no POSIX regex.h functions)
  */
 
+struct EmacsRegex
+{
+  std::regex pattern;
+  std::string error_msg;
+
+  EmacsRegex () = default;
+  explicit EmacsRegex (const std::string &p, int flags = 0);
+};
+
+struct RegexMatch
+{
+  size_t rm_so;
+  size_t rm_eo;
+
+  RegexMatch () : rm_so (0), rm_eo (0) {}
+};
+
 class RegexUtils
 {
 public:
   RegexUtils () noexcept = default;
-  ~RegexUtils () = default;
+  ~RegexUtils () noexcept = default;
 
   // regcomp() - compile regex pattern
-  [[nodiscard]] int regcomp (const char *pattern, int cflags,
-			     std::regex_t **preg) noexcept
-  {
-    std::memset (preg, 0, sizeof (std::regex_t));
-    return std::regex::regex_comp (pattern, cflags, preg);
-  }
+  [[nodiscard]] static int regcomp (EmacsRegex *preg,
+				    const char *pattern,
+				    int cflags) noexcept;
 
   // regexec() - execute regex match
-  [[nodiscard]] int regexec (const std::regex_t *preg,
-			     const char *string, size_t nmatch,
-			     std::regex::regmatch_t pmatch[],
-			     size_t n) noexcept
-  {
-    return std::regex::regex_search (string, n, pmatch);
-  }
+  [[nodiscard]] static int regexec (const EmacsRegex *preg,
+				    const char *string, size_t nmatch,
+				    RegexMatch pmatch[],
+				    int eflags) noexcept;
 
-  // regfree() - free compiled regex
-  void regfree (std::regex_t *preg) noexcept
-  {
-    std::regex::regex_free (preg);
-  }
+  // regfree() - free compiled regex (no-op, automatic RAII)
+  static void regfree (EmacsRegex *preg) noexcept;
 };
 
 } // namespace emacs
@@ -60,11 +67,14 @@ public:
 extern "C"
 {
   // regcomp() - compile regex pattern
-  int emacs_regcomp (const char *pattern, int cflags,
-		     std::regex_t **preg);
+  int emacs_regcomp (emacs::EmacsRegex *preg, const char *pattern,
+		     int cflags);
 
   // regexec() - execute regex match
-  int emacs_regexec (const std::regex_t *preg, const char *string,
-		     size_t nmatch, std::regex::regmatch_t pmatch[],
-		     size_t n);
+  int emacs_regexec (const emacs::EmacsRegex *preg,
+		     const char *string, size_t nmatch,
+		     emacs::RegexMatch pmatch[], int eflags);
+
+  // regfree() - free compiled regex
+  void emacs_regfree (emacs::EmacsRegex *preg);
 }
