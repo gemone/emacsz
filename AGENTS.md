@@ -927,8 +927,8 @@ Terminal (stdin) → EventLoop → InputParser → InputEvent
 | Phase 6 (Buffer/Text Engine) | 85 |
 | Phase 7 (Command System) | 105 |
 | Phase 8 (GUI & Platform) | 103 |
-| Phase 9 (I/O, Test & Polish) | 30 |
-| **Grand Total** | **335** |
+| Phase 9 (I/O, Test & Polish) | 35 |
+| **Grand Total** | **340** |
 
 ### Phase 8 Test Summary:
 | Module | Tests | Test File |
@@ -944,7 +944,8 @@ Terminal (stdin) → EventLoop → InputParser → InputEvent
 | Module | Tests | Test File |
 |--------|-------|-----------|
 | Text Properties | 30 | `test/cxx/test_text_properties.cpp` |
-| **Total** | **30** | |
+| Filesystem (gnulib) | 5 | `test/cxx/test_phase93_gnulib.cpp` |
+| **Total** | **35** | |
 
 **Cumulative Test Summary (Phases 5-9):**
 | Phase | Tests |
@@ -953,7 +954,7 @@ Terminal (stdin) → EventLoop → InputParser → InputEvent
 | Phase 6 (Buffer/Text Engine) | 85 |
 | Phase 7 (Command System) | 105 |
 | Phase 8 (GUI & Platform) | 103 |
-| Phase 9 (I/O, Test & Polish) | 30 |
+| Phase 9 (I/O, Test & Polish) | 35 |
 | **Grand Total** | **335** |
 
 **Architecture (Phases 4-9, all tested, 335 tests total):**
