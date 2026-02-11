@@ -41,6 +41,3 @@ set(SOURCES ${CMAKE_SOURCE_DIR}/src/regex.cpp)
 # === Unit Tests (Phase 9.3) ===
 # Add test_phase93_gnulib.cpp
 set(SOURCES ${CMAKE_SOURCE_DIR}/test/cxx/test_phase93_gnulib.cpp)
-
-# === CMakeLists.txt Update ===
-'
