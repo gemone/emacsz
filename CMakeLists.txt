@@ -21,23 +21,3 @@ include(FetchContent)
 include(cmake/termbox2.cmake)
 
 add_subdirectory(src)
-
-# === Gnulib Replacements (Phase 9.3) ===
-# Filesystem.hpp/cpp — faccessat, lstat, tempfile → std::filesystem
-set(SOURCES ${CMAKE_SOURCE_DIR}/src/filesystem.cpp)
-
-# === Locale utilities (Phase 9.3) ===
-# locale.hpp/cpp — mbrtowc, wcwidth, iswprint → std::locale
-set(SOURCES ${CMAKE_SOURCE_DIR}/src/locale.cpp)
-
-# === Time utilities (Phase 9.3) ===
-# chrono.hpp/cpp — gettimeofday, nanosleep → std::chrono
-set(SOURCES ${CMAKE_SOURCE_DIR}/src/chrono.cpp)
-
-# === Regex utilities (Phase 9.3) ===
-# regex.hpp/cpp — regcomp, regexec → std::regex
-set(SOURCES ${CMAKE_SOURCE_DIR}/src/regex.cpp)
-
-# === Unit Tests (Phase 9.3) ===
-# Add test_phase93_gnulib.cpp
-set(SOURCES ${CMAKE_SOURCE_DIR}/test/cxx/test_phase93_gnulib.cpp)

@@ -80,6 +80,66 @@ target_compile_features(emacs_gnulib_replacement INTERFACE cxx_std_20)
 target_link_libraries(emacs_gnulib_replacement INTERFACE Threads::Threads)
 
 # ==============================================================================
+# Phase 9.3: File I/O & System (Gnulib Replacements)
+# ==============================================================================
+# Filesystem utilities
+add_library(emacs_filesystem STATIC
+    filesystem.cpp
+)
+target_include_directories(emacs_filesystem PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_features(emacs_filesystem PUBLIC cxx_std_20)
+target_link_libraries(emacs_filesystem PUBLIC
+    emacs_allocator
+    emacs_gnulib_replacement
+)
+
+# Locale utilities
+add_library(emacs_locale STATIC
+    locale.cpp
+)
+target_include_directories(emacs_locale PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_features(emacs_locale PUBLIC cxx_std_20)
+target_link_libraries(emacs_locale PUBLIC
+    emacs_allocator
+    emacs_gnulib_replacement
+)
+
+# Chrono utilities
+add_library(emacs_chrono STATIC
+    chrono.cpp
+)
+target_include_directories(emacs_chrono PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_features(emacs_chrono PUBLIC cxx_std_20)
+target_link_libraries(emacs_chrono PUBLIC
+    emacs_allocator
+    emacs_gnulib_replacement
+)
+
+# Regex utilities
+add_library(emacs_regex STATIC
+    regex.cpp
+)
+target_include_directories(emacs_regex PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_features(emacs_regex PUBLIC cxx_std_20)
+target_link_libraries(emacs_regex PUBLIC
+    emacs_allocator
+    emacs_gnulib_replacement
+)
+
+message(STATUS "  Filesystem (Phase 9.3): emacs_filesystem")
+message(STATUS "  Locale (Phase 9.3): emacs_locale")
+message(STATUS "  Chrono (Phase 9.3): emacs_chrono")
+message(STATUS "  Regex (Phase 9.3): emacs_regex")
+
+# ==============================================================================
 # Terminal Concept Library (Header-only)
 # ==============================================================================
 add_library(emacs_terminal_concept INTERFACE)
