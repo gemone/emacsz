@@ -422,6 +422,7 @@ add_library(emacs_termbox2_backend STATIC
 target_include_directories(emacs_termbox2_backend PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}
+    ${termbox2_SOURCE_DIR}
 )
 
 # Link termbox2 library from cmake module
