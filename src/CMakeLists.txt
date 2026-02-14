@@ -547,6 +547,39 @@ target_link_libraries(emacs_terminal INTERFACE
 )
 
 # ==============================================================================
+# Phase 11: Lisp Core (C++20 Wrappers)
+# ==============================================================================
+# Lisp Types Wrapper
+add_library(emacs_lisp STATIC
+    emacs_lisp.cpp
+    emacs_lisp.hpp
+)
+target_include_directories(emacs_lisp PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(emacs_lisp PUBLIC
+    emacs_allocator
+)
+target_compile_features(emacs_lisp PUBLIC cxx_std_20)
+
+# Evaluator Wrapper
+add_library(emacs_eval STATIC
+    emacs_eval.cpp
+    emacs_eval.hpp
+)
+target_include_directories(emacs_eval PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(emacs_eval PUBLIC
+    emacs_lisp
+    emacs_allocator
+)
+target_compile_features(emacs_eval PUBLIC cxx_std_20)
+
+message(STATUS "  Lisp Types (Phase 11): emacs_lisp")
+message(STATUS "  Evaluator (Phase 11): emacs_eval")
+
+# ==============================================================================
 # Minimal Main Executable (Phase 2/3 validation)
 # ==============================================================================
 add_executable(emacs_minimal
@@ -606,6 +639,8 @@ install(TARGETS
     emacs_minibuffer
     emacs_basic_commands
     emacs_termbox2_backend
+    emacs_lisp
+    emacs_eval
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
@@ -635,6 +670,8 @@ install(FILES
     terminal_concept.hpp
     termhooks.hpp
     termbox2_term.hpp
+    emacs_lisp.hpp
+    emacs_eval.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/emacs
 )
 

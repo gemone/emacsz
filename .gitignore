@@ -391,3 +391,27 @@ exec/config.h.in
 exec/config-mips.m4
 exec/configure
 exec/*.s.s
+
+# C++20 Migration - Build artifacts
+build-cpp/
+build-cpp-fresh/
+build-phase4/
+build/
+cmake/
+CMakeFiles/
+cmake_install.cmake
+src/CMakeFiles/
+src/cmake_install.cmake
+src/CMakeLists.txt.disabled
+
+# Backup files
+*.bak
+*.bak2
+
+# Temporary files
+compile_errors.txt
+smoke_test
+submodule.foreignCommands
+
+# External dependencies (not part of source)
+external/
