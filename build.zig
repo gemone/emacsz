@@ -226,6 +226,98 @@ pub fn build(b: *std.Build) void {
     const gen_epaths_step = b.step("generate-epaths", "Generate epaths.h with build-tree paths");
     gen_epaths_step.dependOn(&epaths_wf.step);
 
+    // Generate src/config.h from the zig-authored template (src/config.h.in)
+    // via std.Build.addConfigHeader with `.autoconf_undef`. The values struct
+    // MUST be bijective with the template's `#undef NAME` lines: any `#undef`
+    // without a value -> "unspecified config header value" error; any value
+    // without an `#undef` -> "config header value unused" error. The generated
+    // header lands in .zig-cache (gitignored), NOT src/. This slice lands only
+    // a ~20-knob critical subset (I4a); I4b expands to the full ~770 knobs,
+    // I4c wires the generated header onto temacs's include path (currently the
+    // bootstrap gitignored src/config.h stays active so the green build is
+    // unaffected). Standalone step -- does NOT depend on `exe`.
+    // addConfigHeader dispatches on each field's Zig type, not on a Value
+    // union: a `[]const u8` -> .string (quoted), `1` -> .int, `void` ({}) ->
+    // .defined, `null` -> .undef. Char-literal idents (DIRECTORY_SEP/SEPCHAR)
+    // cannot be expressed as enum literals (their tag must be a valid ident),
+    // so they are added post-hoc via addIdent below.
+    const config_h_in = b.path("src/config.h.in");
+    const config_h = b.addConfigHeader(.{
+        .style = .{ .autoconf_undef = config_h_in },
+        .include_path = "config.h",
+    }, .{
+        .SYSTEM_TYPE = "gnu/linux",
+        .EMACS_CONFIGURATION = "x86_64-pc-linux-gnu",
+        .GNU_LINUX = {},
+        .HAVE_PDUMPER = 1,
+        .SYSTEM_MALLOC = 1,
+        .HAVE_ALSA = 1,
+        .HAVE_DBUS = 1,
+        .HAVE_GPM = 1,
+        .HAVE_INOTIFY = 1,
+        .HAVE_LIBXML2 = 1,
+        .HAVE_SQLITE3 = 1,
+        .HAVE_LCMS2 = 1,
+        .HAVE_GNUTLS = 1,
+        .HAVE_TREE_SITTER = 1,
+        .HAVE_GETRANDOM = 1,
+        .HAVE_MODULES = null,
+        .HAVE_NS = null,
+        .HAVE_ANDROID = null,
+    });
+    // Raw/unquoted ident values for char-literal macros. addIdent inserts
+    // directly into the values map, satisfying the autoconf_undef bijection
+    // (every #undef in the template has a value, every value has a #undef).
+    config_h.addIdent("DIRECTORY_SEP", "'/'");
+    config_h.addIdent("SEPCHAR", "':'");
+    const gen_config_step = b.step(
+        "generate-config",
+        "Generate src/config.h from the zig-authored template",
+    );
+    gen_config_step.dependOn(&config_h.step);
+
+    // Verify the generated config.h carries the load-bearing subset of knobs
+    // the rest of the build will eventually rely on. The generated file path
+    // is passed in as $1 via the standard addFileArg idiom; any failed grep
+    // exits non-zero and fails the step. Standalone -- does NOT depend on exe.
+    const verify_config_cmd = b.addSystemCommand(&[_][]const u8{
+        "sh",
+        "-c",
+        \\set -e
+        \\f="$1"
+        \\grep -qE '^#ifndef EMACS_CONFIG_H$' "$f"
+        \\grep -qE '^#define EMACS_CONFIG_H$' "$f"
+        \\grep -qE '^#include <conf_post\.h>$' "$f"
+        \\grep -qE '^#define SYSTEM_TYPE "gnu/linux"$' "$f"
+        \\grep -qE '^#define EMACS_CONFIGURATION "x86_64-pc-linux-gnu"$' "$f"
+        \\grep -qE '^#define HAVE_PDUMPER 1$' "$f"
+        \\grep -qE '^#define SYSTEM_MALLOC 1$' "$f"
+        \\grep -qE '^#define HAVE_ALSA 1$' "$f"
+        \\grep -qE '^#define HAVE_DBUS 1$' "$f"
+        \\grep -qE '^#define HAVE_GPM 1$' "$f"
+        \\grep -qE '^#define HAVE_INOTIFY 1$' "$f"
+        \\grep -qE '^#define HAVE_LIBXML2 1$' "$f"
+        \\grep -qE '^#define HAVE_SQLITE3 1$' "$f"
+        \\grep -qE '^#define HAVE_LCMS2 1$' "$f"
+        \\grep -qE '^#define HAVE_GNUTLS 1$' "$f"
+        \\grep -qE '^#define HAVE_TREE_SITTER 1$' "$f"
+        \\grep -qE '^#define HAVE_GETRANDOM 1$' "$f"
+        \\grep -qE '^#define GNU_LINUX$' "$f"
+        \\grep -qE "^#define DIRECTORY_SEP '/'$" "$f"
+        \\grep -qE "^#define SEPCHAR ':'$" "$f"
+        \\grep -qE '^/\* #undef HAVE_MODULES \*/$' "$f"
+        \\grep -qE '^/\* #undef HAVE_NS \*/$' "$f"
+        \\grep -qE '^/\* #undef HAVE_ANDROID \*/$' "$f"
+        \\echo "config.h OK"
+    });
+    verify_config_cmd.addArg("config-h");
+    verify_config_cmd.addFileArg(config_h.getOutputFile());
+    const verify_config_step = b.step(
+        "verify-config",
+        "Verify the generated src/config.h carries the load-bearing knob subset",
+    );
+    verify_config_step.dependOn(&verify_config_cmd.step);
+
     // Create temacs executable
     const exe = b.addExecutable(.{
         .name = "temacs",

@@ -1,0 +1,39 @@
+/* src/config.h.in -- zig-authored template processed by std.Build.addConfigHeader
+   with `.style = .{ .autoconf_undef = ... }`. The generated config.h lands in
+   .zig-cache (already gitignored) and is NOT committed; this template is the
+   committed source of truth. Each `#undef NAME` below is bijective with a key
+   in the values struct passed to addConfigHeader in build.zig -- any mismatch
+   (extra `#undef`, or missing value) hard-errors the build. */
+
+#ifndef EMACS_CONFIG_H
+#define EMACS_CONFIG_H
+
+#define _GL_CONFIG_H_INCLUDED 1
+
+#ifndef _GNU_SOURCE
+# define _GNU_SOURCE 1
+#endif
+
+#undef SYSTEM_TYPE
+#undef EMACS_CONFIGURATION
+#undef GNU_LINUX
+#undef HAVE_PDUMPER
+#undef SYSTEM_MALLOC
+#undef HAVE_ALSA
+#undef HAVE_DBUS
+#undef HAVE_GPM
+#undef HAVE_INOTIFY
+#undef HAVE_LIBXML2
+#undef HAVE_SQLITE3
+#undef HAVE_LCMS2
+#undef HAVE_GNUTLS
+#undef HAVE_TREE_SITTER
+#undef HAVE_GETRANDOM
+#undef HAVE_MODULES
+#undef HAVE_NS
+#undef HAVE_ANDROID
+#undef DIRECTORY_SEP
+#undef SEPCHAR
+
+#include <conf_post.h>
+#endif /* EMACS_CONFIG_H */
