@@ -510,6 +510,13 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         "printf",         "strftime",      "at-func",
         "dynarray-skeleton", "ialloca",    "malloc/dynarray",
         "pthread_sigmask",
+        // lib/getrandom.c: with HAVE_GETRANDOM and the rpl substitution
+        // disabled (lib/sys/random.h guards `#define getrandom rpl_getrandom`
+        // under `#if 0`), compiling this file produces a self-recursive
+        // getrandom -- its internal call resolves to its own definition,
+        // overflowing the stack at startup. Callers (fns.c, sysdep.c) use the
+        // libc getrandom directly, so the gnulib rpl provider is unneeded.
+        "getrandom",
     };
 
     var libdir = try std.Io.Dir.cwd().openDir(io, "lib", .{ .iterate = true });
