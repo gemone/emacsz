@@ -277,6 +277,15 @@ pub fn build(b: *std.Build) void {
         // linking it only breaks the build.
         if (target.result.os.tag == .linux) {
             exe.root_module.linkSystemLibrary("acl", .{});
+
+            // Tree-sitter (HAVE_TREE_SITTER): ts_* symbols from src/treesit.c.
+            exe.root_module.linkSystemLibrary("tree-sitter", .{});
+            // ALSA audio (HAVE_ALSA): snd_* symbols from src/sound.c.
+            exe.root_module.linkSystemLibrary("asound", .{});
+            // Linux console mouse (HAVE_GPM): Gpm_*/gpm_* symbols from src/term.c.
+            exe.root_module.linkSystemLibrary("gpm", .{});
+            // Extended-attribute ACL copy: attr_copy_* from lib/qcopy-acl.c (libattr.so.1).
+            exe.root_module.linkSystemLibrary("attr", .{});
         }
     }
 
