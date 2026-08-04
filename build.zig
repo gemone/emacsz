@@ -45,6 +45,31 @@ pub fn build(b: *std.Build) void {
     const generate_step = b.step("generate-headers", "Generate Gnulib .gl.h headers");
     generate_step.dependOn(&generate_headers.step);
 
+    // Generate lisp/international/{charscript,emoji-zwj}.el from admin/unidata
+    // via gawk. Mirrors `make -C admin/unidata charscript.el emoji-zwj.el`.
+    // Outputs land in the SOURCE TREE (where make places them, where the
+    // future I9c dump step reads them via EMACSLOADPATH=$PWD/lisp); both are
+    // gitignored (.gitignore:268), so source-tree writes do not dirty the
+    // index. Use gawk explicitly (the AWK the Makefile sets), not awk, to
+    // avoid mawk portability issues. Standalone only -- NOT wired into the
+    // default install/zig build (deferred to the I9c dump increment).
+    const gen_unidata = b.addSystemCommand(&[_][]const u8{
+        "sh",
+        "-c",
+        \\set -e
+        \\gawk -f admin/unidata/blocks.awk \
+        \\  admin/unidata/Blocks.txt admin/unidata/emoji-data.txt \
+        \\  > lisp/international/charscript.el
+        \\gawk -f admin/unidata/emoji-zwj.awk \
+        \\  admin/unidata/emoji-zwj-sequences.txt admin/unidata/emoji-sequences.txt \
+        \\  > lisp/international/emoji-zwj.el
+    });
+    const gen_unidata_step = b.step(
+        "generate-unidata",
+        "Generate lisp/international/{charscript,emoji-zwj}.el from admin/unidata",
+    );
+    gen_unidata_step.dependOn(&gen_unidata.step);
+
     // Build make-docfile as a HOST tool (it runs at build time, so it must
     // target the build host rather than the cross target). Reuses the same
     // config.h-aware flags as the libgnu compile; all gnulib headers that
