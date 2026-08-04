@@ -45,6 +45,71 @@ pub fn build(b: *std.Build) void {
     const generate_step = b.step("generate-headers", "Generate Gnulib .gl.h headers");
     generate_step.dependOn(&generate_headers.step);
 
+    // Build make-docfile as a HOST tool (it runs at build time, so it must
+    // target the build host rather than the cross target). Reuses the same
+    // config.h-aware flags as the libgnu compile; all gnulib headers that
+    // make-docfile.c includes are already present under lib/.
+    //
+    // Three extra -D shims are needed because make-docfile.c transitively
+    // reaches the gnulib <string.h>/<fcntl.h> replacements (via config.h and
+    // <binary-io.h>); in this bootstrap context those generated headers do
+    // not exist, so streq, memeq, and O_BINARY must be provided inline. Their
+    // definitions mirror gnulib exactly (string.in.h: streq -> !strcmp,
+    // memeq -> !memcmp; fcntl.in.h: O_BINARY -> 0 on POSIX).
+    const mdf_flags = &[_][]const u8{
+        "-std=gnu2x",
+        "-fno-common",
+        "-D_GNU_SOURCE",
+        "-DHAVE_CONFIG_H",
+        "-DO_BINARY=0",
+        "-Dstreq(a,b)=(!strcmp((a),(b)))",
+        "-Dmemeq(a,b,n)=(!memcmp((a),(b),(n)))",
+        "-I.",
+        "-Ibuild-config",
+        "-Isrc",
+        "-Ilib",
+    };
+    const mdf = b.addExecutable(.{
+        .name = "make-docfile",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .link_libc = true,
+        }),
+    });
+    const mdf_sources = [_][]const u8{
+        "lib-src/make-docfile.c",
+        "lib/c-ctype.c",
+        "lib/binary-io.c",
+    };
+    for (mdf_sources) |src| {
+        mdf.root_module.addCSourceFile(.{
+            .file = b.path(src),
+            .flags = mdf_flags,
+        });
+    }
+
+    // Run `make-docfile -d src -g <names>` and capture stdout as globals.h.
+    // make-docfile only rewrites a trailing ".o" to ".c"/".m" (scan_c_file at
+    // ~line 809), so a bare basename is NOT accepted — pass the full
+    // "foo.c" name. Just strip the leading "src/" prefix so the name resolves
+    // after the -d src chdir. On a Linux TTY build there is no NS_OBJC_OBJ, so
+    // base_obj == doc_obj.
+    const run_mdf = b.addRunArtifact(mdf);
+    run_mdf.addArg("-d");
+    run_mdf.addArg("src");
+    run_mdf.addArg("-g");
+    for (base_sources) |s| {
+        // Strip leading "src/"; keep the ".c" extension.
+        var name: []const u8 = s;
+        if (std.mem.startsWith(u8, name, "src/")) name = name["src/".len..];
+        run_mdf.addArg(name);
+    }
+    const globals_h = run_mdf.captureStdOut(.{ .basename = "globals.h" });
+
+    const gen_globals_step = b.step("generate-globals", "Generate src/globals.h via make-docfile");
+    gen_globals_step.dependOn(&run_mdf.step);
+
     // Create temacs executable
     const exe = b.addExecutable(.{
         .name = "temacs",
@@ -196,6 +261,11 @@ pub fn build(b: *std.Build) void {
 
     // Make the executable compilation depend on header generation
     exe.step.dependOn(&generate_headers.step);
+
+    // temacs needs globals.h on its include path; the header lives under
+    // zig-cache, NOT in src/ (the source tree stays clean).
+    exe.root_module.addIncludePath(globals_h.dirname());
+    exe.step.dependOn(&run_mdf.step);
 
     // Test step
     const test_step = b.step("test", "Run all tests");
