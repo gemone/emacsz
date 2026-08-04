@@ -136,32 +136,32 @@ pub fn build(b: *std.Build) void {
     }
 
     // Link system libraries (phase 2: based on src/Makefile)
-    exe.linkSystemLibrary("m");
+    exe.root_module.linkSystemLibrary("m", .{});
 
     if (!is_windows) {
         // Core libraries
-        exe.linkSystemLibrary("gmp");
-        exe.linkSystemLibrary("gnutls");
+        exe.root_module.linkSystemLibrary("gmp", .{});
+        exe.root_module.linkSystemLibrary("gnutls", .{});
 
         // Terminal support
-        exe.linkSystemLibrary("ncurses");
+        exe.root_module.linkSystemLibrary("ncurses", .{});
 
         // XML parsing
-        exe.linkSystemLibrary("xml2");
+        exe.root_module.linkSystemLibrary("xml2", .{});
 
         // Compression
-        exe.linkSystemLibrary("z");
+        exe.root_module.linkSystemLibrary("z", .{});
 
         // Color management
-        exe.linkSystemLibrary("lcms2");
+        exe.root_module.linkSystemLibrary("lcms2", .{});
 
         // SQLite database
-        exe.linkSystemLibrary("sqlite3");
+        exe.root_module.linkSystemLibrary("sqlite3", .{});
 
         // ACL support (Linux only, for file access control lists)
         if (target.result.os.tag == .linux) {
-            exe.linkSystemLibrary("acl");
-            exe.linkSystemLibrary("selinux");
+            exe.root_module.linkSystemLibrary("acl", .{});
+            exe.root_module.linkSystemLibrary("selinux", .{});
         }
     }
 
