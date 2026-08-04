@@ -112,6 +112,17 @@ pub fn build(b: *std.Build) void {
         if (std.mem.startsWith(u8, name, "src/")) name = name["src/".len..];
         run_mdf.addArg(name);
     }
+    // Autotools folds $(DBUS_OBJ)/$(DYNLIB_OBJ)/$(NOTIFY_OBJ) into base_obj
+    // (and thus doc_obj) on Linux; parseBaseSources drops $(...) vars, so the
+    // Linux-only DEFSYM providers must be re-added here, otherwise globals.h
+    // is missing QCbyte/QCstring/... (dbusbind.c, 33 DEFSYMs) and
+    // Qaccess/Qcreate/... (inotify.c, 21 DEFSYMs) and the compile fails with
+    // "use of undeclared identifier". dynlib.c has zero DEFSYMs but is added
+    // for parity with the compile gate.
+    if (target.result.os.tag == .linux) {
+        const linux_doc_sources = [_][]const u8{ "dbusbind.c", "dynlib.c", "inotify.c" };
+        for (linux_doc_sources) |name| run_mdf.addArg(name);
+    }
     const globals_h = run_mdf.captureStdOut(.{ .basename = "globals.h" });
 
     const gen_globals_step = b.step("generate-globals", "Generate src/globals.h via make-docfile");
@@ -187,6 +198,33 @@ pub fn build(b: *std.Build) void {
             });
         }
 
+        // Linux-only sources. Mirrors the kqueue gate above but keyed on
+        // .linux, inside the !is_windows branch.
+        //   - src/dynlib.c:HAVE_MODULES is undef in config.h, but treesit.c
+        //     calls dynlib_{error,open,sym,addr} unconditionally; the POSIX
+        //     branch uses dlopen/dlsym (in libc on glibc).
+        //   - src/inotify.c:HAVE_INOTIFY=1 in config.h; inotify_init1 in libc.
+        //   - src/dbusbind.c:HAVE_DBUS=1 in config.h; needs the two dbus
+        //     include dirs `pkg-config --cflags dbus-1` reports on this host.
+        if (target.result.os.tag == .linux) {
+            exe.root_module.addCSourceFile(.{
+                .file = b.path("src/dynlib.c"),
+                .flags = base_flags,
+            });
+            exe.root_module.addCSourceFile(.{
+                .file = b.path("src/inotify.c"),
+                .flags = base_flags,
+            });
+            const dbus_flags = base_flags ++ [_][]const u8{
+                "-I/usr/include/dbus-1.0",
+                "-I/usr/lib64/dbus-1.0/include",
+            };
+            exe.root_module.addCSourceFile(.{
+                .file = b.path("src/dbusbind.c"),
+                .flags = dbus_flags,
+            });
+        }
+
         // Add Gnulib sources
         const libgnu_flags = &[_][]const u8{
             "-std=gnu2x",
@@ -202,10 +240,21 @@ pub fn build(b: *std.Build) void {
             "-I/usr/include/libxml2",
         };
 
+        // lib/mktime.c is compiled in the 92-file libgnu set, but its body is
+        // #if'd out unless -DNEED_MKTIME_INTERNAL=1 is set per-file (Autotools
+        // passes this on the mktime.o compile line, NOT via config.h). lib/
+        // mktime-internal.h:72 renames __mktime_internal -> mktime_internal
+        // when !_LIBC, so timegm.o references mktime_internal; without the
+        // flag the symbol is left undefined. DO NOT add -DNEED_MKTIME_WORKING
+        // (it would rename mktime -> rpl_mktime and break other callers).
+        const libgnu_mktime_flags = libgnu_flags ++ [_][]const u8{ "-DNEED_MKTIME_INTERNAL=1" };
+
         for (libgnu_sources) |src| {
+            const flags: []const []const u8 =
+                if (std.mem.eql(u8, src, "lib/mktime.c")) libgnu_mktime_flags else libgnu_flags;
             exe.root_module.addCSourceFile(.{
                 .file = b.path(src),
-                .flags = libgnu_flags,
+                .flags = flags,
             });
         }
     } else {
@@ -286,6 +335,8 @@ pub fn build(b: *std.Build) void {
             exe.root_module.linkSystemLibrary("gpm", .{});
             // Extended-attribute ACL copy: attr_copy_* from lib/qcopy-acl.c (libattr.so.1).
             exe.root_module.linkSystemLibrary("attr", .{});
+            // D-Bus (HAVE_DBUS): dbus_* symbols from src/dbusbind.c.
+            exe.root_module.linkSystemLibrary("dbus-1", .{});
         }
     }
 
@@ -429,13 +480,15 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         "careadlinkat", "chmodat",    "cloexec",        "close-stream",
         "copy-file-range", "dirent",  "dirfd",          "dtoastr",
         "dtotimespec", "dup2",        "fallocat",       "fchmodat",
-        "fd-open",    "filemode",     "filename",       "filevercmp",
-        "flexmember", "fpending",     "fingerprint",    "futimens",
+        "fcntl",      "fd-open",      "filemode",       "filename",
+        "filevercmp", "flexmember",   "fpending",       "fingerprint",
+        "futimens",
         "free",       "fsusage",      "gen_tempname",   "get-permissions",
         "getdelim",   "getrandom",    "getline",        "getprogname",
         "hard-locale", "isset",       "issymlink",      "lstat",
         "malloc",     "md5",          "memchr",         "memcmp",
-        "memmem",     "memset_explicit", "memmove",     "memcpy",
+        "memeq",      "memmem",       "memset_explicit", "memmove",
+        "memcpy",
         "memrchr",    "mkdir",        "mkancesdirs",    "mkostemp",
         "mktime",     "nanosleep",    "nproc",          "nstrftime",
         "openat-die", "openat",       "pathmax",        "pending",
@@ -445,7 +498,8 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         "streq",      "stat",         "stdbit",         "stdc",
         "strchr",     "strcmp",       "strchrnul",      "strcpy",
         "strerror",   "strlen",       "string",         "strncase",
-        "strndup",    "strnlen",      "strncmp",        "strto",
+        "strndup",    "strnlen",      "strncmp",        "strnul",
+        "strto",
         "tempname",   "time",         "timespec",       "u64",
         "unsetenv",   "utimens",      "waitpid",        "wctype",
         "xmalloc",
