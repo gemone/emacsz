@@ -117,6 +117,7 @@ pub fn build(b: *std.Build) void {
     const mdf_flags = &[_][]const u8{
         "-std=gnu2x",
         "-fno-common",
+        "-fno-strict-aliasing",
         "-D_GNU_SOURCE",
         "-DHAVE_CONFIG_H",
         "-I.",
@@ -431,6 +432,7 @@ pub fn build(b: *std.Build) void {
         const base_flags = &[_][]const u8{
             "-std=gnu2x",  // Allow C23 features like _Static_assert without message
             "-fno-common",
+        "-fno-strict-aliasing",
             "-D_GNU_SOURCE",
             "-DHAVE_CONFIG_H",
             "-I.",
@@ -495,6 +497,7 @@ pub fn build(b: *std.Build) void {
         const libgnu_flags = &[_][]const u8{
             "-std=gnu2x",
             "-fno-common",
+        "-fno-strict-aliasing",
             "-D_GNU_SOURCE",
             "-DHAVE_CONFIG_H",
             "-I.",
@@ -528,6 +531,7 @@ pub fn build(b: *std.Build) void {
         const base_flags = &[_][]const u8{
             "-std=gnu2x",
             "-fno-common",
+        "-fno-strict-aliasing",
             "-D_GNU_SOURCE",
             "-DHAVE_CONFIG_H",
             "-I.",
@@ -547,6 +551,7 @@ pub fn build(b: *std.Build) void {
         const libgnu_flags = &[_][]const u8{
             "-std=gnu2x",
             "-fno-common",
+        "-fno-strict-aliasing",
             "-D_GNU_SOURCE",
             "-DHAVE_CONFIG_H",
             "-I.",
