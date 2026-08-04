@@ -182,10 +182,12 @@ pub fn build(b: *std.Build) void {
         // SQLite database
         exe.root_module.linkSystemLibrary("sqlite3", .{});
 
-        // ACL support (Linux only, for file access control lists)
+        // ACL support (Linux only). Link libacl: config.h defines HAVE_ACL_*
+        // and the library is installed. Do NOT link libselinux: config.h has
+        // HAVE_LIBSELINUX undefined and the library is absent on the host, so
+        // linking it only breaks the build.
         if (target.result.os.tag == .linux) {
             exe.root_module.linkSystemLibrary("acl", .{});
-            exe.root_module.linkSystemLibrary("selinux", .{});
         }
     }
 
