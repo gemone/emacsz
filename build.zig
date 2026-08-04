@@ -70,6 +70,40 @@ pub fn build(b: *std.Build) void {
     );
     gen_unidata_step.dependOn(&gen_unidata.step);
 
+    // Generate etc/charsets/*.map (131 maps) and lisp/international/
+    // {cp51932,eucjp-ms}.el from admin/charsets via the bootstrap Makefile.
+    // Mirrors `make -C admin/charsets charsetdir=$PWD/etc/charsets
+    // top_srcdir=$PWD` (plan lines 26,72). Outputs land in the SOURCE TREE
+    // (where the I9c dump step reads them via EMACSLOADPATH=$PWD/lisp and
+    // EMACSDATA=$PWD/etc); all are gitignored (.gitignore:266,268), so
+    // source-tree writes do not dirty the index. admin/charsets/Makefile is
+    // a CONFIGURE PRODUCT (only Makefile.in is tracked), so the step
+    // degrades gracefully when configure has not run -- identical in spirit
+    // to the dump step requiring the bootstrap config.h. `$PWD` is the repo
+    // root because setCwd(b.path(".")) (same as the dump step below);
+    // `make -C` then cd's into admin/charsets so ${srcdir}=. resolves
+    // mapfiles/awk scripts, while charsetdir/top_srcdir are overridden on
+    // the cmdline. Standalone only -- NOT wired into the default
+    // install/zig build (mirrors generate-unidata above).
+    const gen_charsets = b.addSystemCommand(&[_][]const u8{
+        "sh",
+        "-c",
+        \\set -e
+        \\if [ ! -f admin/charsets/Makefile ]; then
+        \\  echo "Warning: admin/charsets/Makefile not present (run configure);" \
+        \\    "skipping charset map generation"
+        \\  exit 0
+        \\fi
+        \\make -C admin/charsets \
+        \\  charsetdir="$PWD/etc/charsets" top_srcdir="$PWD"
+    });
+    gen_charsets.setCwd(b.path("."));
+    const gen_charsets_step = b.step(
+        "generate-charsets",
+        "Generate etc/charsets/*.map and cp51932/eucjp-ms.el from admin/charsets",
+    );
+    gen_charsets_step.dependOn(&gen_charsets.step);
+
     // Build make-docfile as a HOST tool (it runs at build time, so it must
     // target the build host rather than the cross target). Reuses the same
     // config.h-aware flags as the libgnu compile; all gnulib headers that
@@ -590,7 +624,7 @@ pub fn build(b: *std.Build) void {
     // needs the bootstrap data files (etc/charsets/*.map,
     // lisp/international/{charscript,emoji-zwj}.el) and src/config.h present --
     // transitional dependencies, like config.h. Run `zig build generate-unidata`
-    // (and provide the charset maps) first.
+    // and `zig build generate-charsets` first.
     //
     // --temacs=pbootstrap (NOT pdump) is mandatory for the first, from-source
     // dump: it sets will_bootstrap (emacs.c:1377), bypassing fns.c:3833's guard
