@@ -381,6 +381,35 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addIncludePath(buildobj_wf.getDirectory());
     exe.step.dependOn(&buildobj_wf.step);
 
+    // Dump step (`zig build dump`): produce a runnable bootstrap-emacs.pdmp by
+    // running the built temacs over loadup in bootstrap mode. The dumped emacs
+    // can then evaluate Lisp, e.g.:
+    //   ./zig-out/bin/temacs --dump-file=zig-out/bin/bootstrap-emacs.pdmp \
+    //     --batch --eval '(princ emacs-version)'   -> "32.0.50"
+    // It is a SEPARATE step (not part of the default `zig build`) because it
+    // needs the bootstrap data files (etc/charsets/*.map,
+    // lisp/international/{charscript,emoji-zwj}.el) and src/config.h present --
+    // transitional dependencies, like config.h. Run `zig build generate-unidata`
+    // (and provide the charset maps) first.
+    //
+    // --temacs=pbootstrap (NOT pdump) is mandatory for the first, from-source
+    // dump: it sets will_bootstrap (emacs.c:1377), bypassing fns.c:3833's guard
+    // that forbids autoloads while preparing to dump, so files.el's
+    // (eval-when-compile (require 'pcase)) can load pcase. EMACSLOADPATH and
+    // EMACSDATA point loadup and the charset loader at the source tree, since
+    // the epaths.h install paths don't exist yet (I7). loadup writes the dump
+    // next to the running temacs (zig-out/bin/), where the install put it.
+    const run_dump = b.addSystemCommand(&[_][]const u8{
+        "sh",
+        "-c",
+        \\EMACSLOADPATH="$PWD/lisp" EMACSDATA="$PWD/etc" LC_ALL=C \
+        \\  ./zig-out/bin/temacs -batch -l loadup --temacs=pbootstrap
+    });
+    run_dump.setCwd(b.path("."));
+    const dump_step = b.step("dump", "Dump a runnable bootstrap-emacs.pdmp via temacs loadup");
+    dump_step.dependOn(b.getInstallStep());
+    dump_step.dependOn(&run_dump.step);
+
     // Test step
     const test_step = b.step("test", "Run all tests");
     const run_tests = b.addSystemCommand(&[_][]const u8{
