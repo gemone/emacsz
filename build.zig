@@ -260,55 +260,71 @@ pub fn build(b: *std.Build) void {
     const gen_epaths_step = b.step("generate-epaths", "Generate epaths.h with build-tree paths");
     gen_epaths_step.dependOn(&epaths_wf.step);
 
-    // Generate src/config.h from the zig-authored template (src/config.h.in)
-    // via std.Build.addConfigHeader with `.autoconf_undef`. The values struct
-    // MUST be bijective with the template's `#undef NAME` lines: any `#undef`
-    // without a value -> "unspecified config header value" error; any value
-    // without an `#undef` -> "config header value unused" error. The generated
-    // header lands in .zig-cache (gitignored), NOT src/. This slice lands only
-    // a ~20-knob critical subset (I4a); I4b expands to the full ~770 knobs,
-    // I4c wires the generated header onto temacs's include path (currently the
-    // bootstrap gitignored src/config.h stays active so the green build is
-    // unaffected). Standalone step -- does NOT depend on `exe`.
-    // addConfigHeader dispatches on each field's Zig type, not on a Value
-    // union: a `[]const u8` -> .string (quoted), `1` -> .int, `void` ({}) ->
-    // .defined, `null` -> .undef. Char-literal idents (DIRECTORY_SEP/SEPCHAR)
-    // cannot be expressed as enum literals (their tag must be a valid ident),
-    // so they are added post-hoc via addIdent below.
-    const config_h_in = b.path("src/config.h.in");
-    const config_h = b.addConfigHeader(.{
-        .style = .{ .autoconf_undef = config_h_in },
-        .include_path = "config.h",
-    }, .{
-        .SYSTEM_TYPE = "gnu/linux",
-        .EMACS_CONFIGURATION = "x86_64-pc-linux-gnu",
-        .GNU_LINUX = {},
-        .HAVE_PDUMPER = 1,
-        .SYSTEM_MALLOC = 1,
-        .HAVE_ALSA = 1,
-        .HAVE_DBUS = 1,
-        .HAVE_GPM = 1,
-        .HAVE_INOTIFY = 1,
-        .HAVE_LIBXML2 = 1,
-        .HAVE_SQLITE3 = 1,
-        .HAVE_LCMS2 = 1,
-        .HAVE_GNUTLS = 1,
-        .HAVE_TREE_SITTER = 1,
-        .HAVE_GETRANDOM = 1,
-        .HAVE_MODULES = null,
-        .HAVE_NS = null,
-        .HAVE_ANDROID = null,
-    });
-    // Raw/unquoted ident values for char-literal macros. addIdent inserts
-    // directly into the values map, satisfying the autoconf_undef bijection
-    // (every #undef in the template has a value, every value has a #undef).
-    config_h.addIdent("DIRECTORY_SEP", "'/'");
-    config_h.addIdent("SEPCHAR", "':'");
+    // Generate src/config.h via a CUSTOM generator (not addConfigHeader).
+    // addConfigHeader needs a comptime values struct, unwieldy for the ~760
+    // config.h knobs; this reads the lean zig-authored template (src/config.h.in:
+    // guard + _GNU_SOURCE + every `#undef NAME` from config.in + conf_post) plus
+    // the zig-owned answer data (src/config_values.txt: `NAME=value`, or bare
+    // `NAME` for undef) and substitutes each `#undef NAME` -> the value --
+    // the macro processing autoconf's config.status does. Text-based, so every
+    // value type (ints, strings, char literals, /**/) is handled uniformly.
+    // Output lands in .zig-cache (gitignored). Standalone -- does NOT depend on exe.
+    const config_h_in_text = std.Io.Dir.cwd().readFileAlloc(
+        io, "src/config.h.in", b.allocator, .limited(4 * 1024 * 1024),
+    ) catch @panic("build.zig: failed to read src/config.h.in");
+    const config_values_text = std.Io.Dir.cwd().readFileAlloc(
+        io, "src/config_values.txt", b.allocator, .limited(4 * 1024 * 1024),
+    ) catch @panic("build.zig: failed to read src/config_values.txt");
+    var config_values = std.StringHashMap([]const u8).init(b.allocator);
+    defer config_values.deinit();
+    {
+        var vit = std.mem.splitScalar(u8, config_values_text, '\n');
+        while (vit.next()) |vline| {
+            if (vline.len == 0) continue;
+            if (std.mem.indexOfScalar(u8, vline, '=')) |eq| {
+                config_values.put(vline[0..eq], vline[eq + 1 ..]) catch
+                    @panic("build.zig: OOM building config values map");
+            } else {
+                config_values.put(vline, "") catch
+                    @panic("build.zig: OOM building config values map");
+            }
+        }
+    }
+    const config_h_body = blk: {
+        const a = b.allocator;
+        var buf: std.ArrayList(u8) = .empty;
+        var tit = std.mem.splitScalar(u8, config_h_in_text, '\n');
+        var first = true;
+        while (tit.next()) |tline| {
+            if (!first) buf.append(a, '\n') catch
+                @panic("build.zig: OOM building config.h");
+            first = false;
+            if (std.mem.startsWith(u8, tline, "#undef ")) {
+                const name = std.mem.trim(u8, tline["#undef ".len..], " \t\r");
+                const v = config_values.get(name);
+                const has_val = v != null and v.?.len > 0;
+                const rendered = if (has_val)
+                    std.fmt.allocPrint(a, "#define {s} {s}", .{ name, v.? }) catch
+                        @panic("build.zig: OOM building config.h")
+                else
+                    std.fmt.allocPrint(a, "/* #undef {s} */", .{name}) catch
+                        @panic("build.zig: OOM building config.h");
+                buf.appendSlice(a, rendered) catch
+                    @panic("build.zig: OOM building config.h");
+            } else {
+                buf.appendSlice(a, tline) catch
+                    @panic("build.zig: OOM building config.h");
+            }
+        }
+        break :blk buf.toOwnedSlice(a) catch @panic("build.zig: OOM building config.h");
+    };
+    const config_h_wf = b.addWriteFiles();
+    const config_h_file = config_h_wf.add("config.h", config_h_body);
     const gen_config_step = b.step(
         "generate-config",
-        "Generate src/config.h from the zig-authored template",
+        "Generate src/config.h from the zig-authored template + values",
     );
-    gen_config_step.dependOn(&config_h.step);
+    gen_config_step.dependOn(&config_h_wf.step);
 
     // Verify the generated config.h carries the load-bearing subset of knobs
     // the rest of the build will eventually rely on. The generated file path
@@ -336,7 +352,7 @@ pub fn build(b: *std.Build) void {
         \\grep -qE '^#define HAVE_GNUTLS 1$' "$f"
         \\grep -qE '^#define HAVE_TREE_SITTER 1$' "$f"
         \\grep -qE '^#define HAVE_GETRANDOM 1$' "$f"
-        \\grep -qE '^#define GNU_LINUX$' "$f"
+        \\grep -qE '^#define GNU_LINUX\b' "$f"
         \\grep -qE "^#define DIRECTORY_SEP '/'$" "$f"
         \\grep -qE "^#define SEPCHAR ':'$" "$f"
         \\grep -qE '^/\* #undef HAVE_MODULES \*/$' "$f"
@@ -345,7 +361,7 @@ pub fn build(b: *std.Build) void {
         \\echo "config.h OK"
     });
     verify_config_cmd.addArg("config-h");
-    verify_config_cmd.addFileArg(config_h.getOutputFile());
+    verify_config_cmd.addFileArg(config_h_file);
     const verify_config_step = b.step(
         "verify-config",
         "Verify the generated src/config.h carries the load-bearing knob subset",
@@ -386,13 +402,13 @@ pub fn build(b: *std.Build) void {
         \\exit 0
     });
     diff_config_cmd.addArg("config-diff");
-    diff_config_cmd.addFileArg(config_h.getOutputFile());
+    diff_config_cmd.addFileArg(config_h_file);
     diff_config_cmd.addFileArg(b.path("src/config.h"));
     const diff_config_step = b.step(
         "config-diff",
         "Report the config.h knob gap vs the gitignored reference",
     );
-    diff_config_step.dependOn(&config_h.step);
+    diff_config_step.dependOn(&config_h_wf.step);
     diff_config_step.dependOn(&diff_config_cmd.step);
 
     // Create temacs executable
