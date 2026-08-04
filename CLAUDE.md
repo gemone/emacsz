@@ -136,9 +136,9 @@ Zig-built Emacs creates `EmacsZ.app` instead of `Emacs.app` to distinguish the b
 4. **Preserve Lisp Object Tagging**: Emacs uses pointer tagging; alignment is critical
 
 ### Zig Version Constraints
-- **Required**: Zig 0.15.2 (strict)
+- **Required**: Zig 0.16.0 (strict)
 - **Documentation**: Always check latest docs via context7 (`/zig-doc` command)
-- **API Changes**: Zig's Build API changes frequently; verify syntax for 0.15.2
+- **API Changes**: Zig's Build API changes frequently; verify syntax for 0.16.0
 
 ### Gnulib Replacement Priority
 High-value targets for Zig stdlib migration:
@@ -191,7 +191,7 @@ readelf -d src/emacs                               # Linux
 ```
 
 ### Zig Documentation Lookup
-Use the context7 MCP server to query Zig 0.15.2 documentation:
+Use the context7 MCP server to query Zig 0.16.0 documentation:
 ```
 /zig-doc std.Build.Module
 ```
@@ -199,7 +199,7 @@ Use the context7 MCP server to query Zig 0.15.2 documentation:
 ## Troubleshooting
 
 ### Build Fails with "zig: command not found"
-Install Zig 0.15.2:
+Install Zig 0.16.0:
 ```bash
 brew install zig        # macOS
 # Or visit https://ziglang.org/download/
@@ -217,7 +217,7 @@ Expected and generally harmless. Zig's warning system differs from GCC/Clang. On
 ### Build System Integrity
 
 - **Fix the Source, Not the Artifact**: Always resolve build-related issues by modifying **`build.zig`**. Do **not** manually edit generated files such as `Makefile`, `src/config.h`, or other Autotools output to bypass errors. 
-- **Single Source of Truth**: Treat the `zig build` system as the future single source of truth. Ensure all compiler flags, include paths, and dependency logic are correctly implemented using the `std.Build` API (v0.15.2).
+- **Single Source of Truth**: Treat the `zig build` system as the future single source of truth. Ensure all compiler flags, include paths, and dependency logic are correctly implemented using the `std.Build` API (v0.16.0).
 - **Correct Tooling Usage**: Use `zig build --summary legacy` or similar flags to debug the build graph instead of hacking temporary build directories.
 
 ### Target Triple Issues
@@ -239,7 +239,7 @@ zig targets | grep -E "arch|abi"
 - `INSTALL` - Full installation guide
 - `CONTRIBUTE` - Contribution guidelines
 - `.github/workflows/build-zig.yml` - CI/CD examples
-- [Zig 0.15.2 Documentation](https://ziglang.org/documentation/0.15.2/)
+- [Zig 0.16.0 Documentation](https://ziglang.org/documentation/0.16.0/)
 
 
 
