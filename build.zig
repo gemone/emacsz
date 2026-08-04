@@ -50,20 +50,16 @@ pub fn build(b: *std.Build) void {
     // config.h-aware flags as the libgnu compile; all gnulib headers that
     // make-docfile.c includes are already present under lib/.
     //
-    // Three extra -D shims are needed because make-docfile.c transitively
-    // reaches the gnulib <string.h>/<fcntl.h> replacements (via config.h and
-    // <binary-io.h>); in this bootstrap context those generated headers do
-    // not exist, so streq, memeq, and O_BINARY must be provided inline. Their
-    // definitions mirror gnulib exactly (string.in.h: streq -> !strcmp,
-    // memeq -> !memcmp; fcntl.in.h: O_BINARY -> 0 on POSIX).
+    // NO extra -D shims are needed: lib/string.h already defines streq and
+    // memeq as inline functions (under `#if 1 && !0`) and lib/fcntl.h defines
+    // O_BINARY=0 under `#ifndef O_BINARY`. Command-line `-Dstreq`/`-Dmemeq`
+    // macros actively break the build because they rewrite the inline function
+    // identifier in lib/string.h and produce `expected identifier or '('`.
     const mdf_flags = &[_][]const u8{
         "-std=gnu2x",
         "-fno-common",
         "-D_GNU_SOURCE",
         "-DHAVE_CONFIG_H",
-        "-DO_BINARY=0",
-        "-Dstreq(a,b)=(!strcmp((a),(b)))",
-        "-Dmemeq(a,b,n)=(!memcmp((a),(b),(n)))",
         "-I.",
         "-Ibuild-config",
         "-Isrc",
@@ -77,10 +73,21 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    // Source set. make-docfile.c + c-ctype.c + binary-io.c mirror the autotools
+    // build; streq.c / memeq.c / realloc.c provide the out-of-line definitions
+    // of the gnulib inline functions that make-docfile.c references (lib/string.h
+    // declares streq & memeq as plain C99 `inline`, and lib/stdlib.h #defines
+    // realloc -> rpl_realloc). Autotools pulls these from ../lib/libgnu.a; here
+    // we compile the three specific providers directly. Each is self-contained
+    // (streq.c/memeq.c just re-include <string.h> with the extern-inline macro;
+    // realloc.c sets _GL_USE_STDLIB_ALLOC=1 so its realloc() call hits libc).
     const mdf_sources = [_][]const u8{
         "lib-src/make-docfile.c",
         "lib/c-ctype.c",
         "lib/binary-io.c",
+        "lib/streq.c",
+        "lib/memeq.c",
+        "lib/realloc.c",
     };
     for (mdf_sources) |src| {
         mdf.root_module.addCSourceFile(.{
@@ -109,6 +116,23 @@ pub fn build(b: *std.Build) void {
 
     const gen_globals_step = b.step("generate-globals", "Generate src/globals.h via make-docfile");
     gen_globals_step.dependOn(&run_mdf.step);
+
+    // Generate buildobj.h: a flat comma-list of object file names consumed by
+    // src/doc.c:547's `static char const *const buildobj[] = { #include "buildobj.h" };`.
+    // Mirrors Makefile.in:673-679's sed (strip dir, .c -> .o, wrap as "<name>.o",),
+    // built purely from the in-memory base/lib source slices. The header lands
+    // in the zig cache (NOT src/), keeping the source tree clean.
+    const buildobj_body = blk: {
+        const a = b.allocator;
+        var buf: std.ArrayList(u8) = .empty;
+        for (base_sources) |src| appendBuildobjEntry(a, &buf, src) catch @panic("build.zig: OOM building buildobj.h");
+        for (libgnu_sources) |src| appendBuildobjEntry(a, &buf, src) catch @panic("build.zig: OOM building buildobj.h");
+        break :blk buf.toOwnedSlice(a) catch @panic("build.zig: OOM building buildobj.h");
+    };
+    const buildobj_wf = b.addWriteFiles();
+    _ = buildobj_wf.add("buildobj.h", buildobj_body);
+    const gen_buildobj_step = b.step("generate-buildobj", "Generate buildobj.h");
+    gen_buildobj_step.dependOn(&buildobj_wf.step);
 
     // Create temacs executable
     const exe = b.addExecutable(.{
@@ -266,6 +290,11 @@ pub fn build(b: *std.Build) void {
     // zig-cache, NOT in src/ (the source tree stays clean).
     exe.root_module.addIncludePath(globals_h.dirname());
     exe.step.dependOn(&run_mdf.step);
+
+    // temacs also needs buildobj.h (included by src/doc.c:547) on its include
+    // path; the header lives under zig-cache alongside globals.h.
+    exe.root_module.addIncludePath(buildobj_wf.getDirectory());
+    exe.step.dependOn(&buildobj_wf.step);
 
     // Test step
     const test_step = b.step("test", "Run all tests");
@@ -448,6 +477,25 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         }
     }.lt);
     return list.toOwnedSlice(a);
+}
+
+/// Append one `"<basename>.o",\n` line to `buf`, mirroring Makefile.in:673-679:
+/// strip the directory prefix (everything up to and including the last `/`),
+/// rewrite the trailing `.c` suffix to `.o`, and wrap with a leading `"` and a
+/// trailing `",`. Our parsed source lists are `.c`-suffixed, so the sed's
+/// `.obj` -> `.o` rule does not apply here.
+fn appendBuildobjEntry(a: std.mem.Allocator, buf: *std.ArrayList(u8), src: []const u8) !void {
+    const base: []const u8 = if (std.mem.lastIndexOfScalar(u8, src, '/')) |idx|
+        src[idx + 1 ..]
+    else
+        src;
+    const stem: []const u8 = if (std.mem.endsWith(u8, base, ".c"))
+        base[0 .. base.len - ".c".len]
+    else
+        base;
+    try buf.appendSlice(a, "\"");
+    try buf.appendSlice(a, stem);
+    try buf.appendSlice(a, ".o\",\n");
 }
 
 fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
