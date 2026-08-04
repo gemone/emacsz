@@ -318,6 +318,49 @@ pub fn build(b: *std.Build) void {
     );
     verify_config_step.dependOn(&verify_config_cmd.step);
 
+    // Diagnostic: quantify the gap between the generated config.h and the
+    // gitignored reference src/config.h (the local autogen+configure output).
+    // Soft (always exits 0) -- the gap is expected until I4b finishes. This
+    // step is what makes subsequent I4b chunks verifiable: run it after each
+    // chunk and watch `missing:` shrink toward 0. Standalone -- depends only
+    // on config_h, not on exe.
+    const diff_config_cmd = b.addSystemCommand(&[_][]const u8{
+        "sh",
+        "-c",
+        \\set -u
+        \\gen="$1"; ref="$2"
+        \\if [ ! -f "$ref" ]; then
+        \\  echo "reference src/config.h not present; skipping diff"
+        \\  exit 0
+        \\fi
+        \\extract() {
+        \\  grep -hoE '^#define [A-Z_][A-Z_0-9]*' "$1" | awk '{print $2}'
+        \\  grep -hoE '^/\* #undef [A-Z_][A-Z_0-9]* \*/' "$1" | awk '{print $3}'
+        \\}
+        \\extract "$gen" | sort -u | grep -vxE 'EMACS_CONFIG_H|_GL_CONFIG_H_INCLUDED' > "$gen.knobs"
+        \\extract "$ref" | sort -u | grep -vxE 'EMACS_CONFIG_H|_GL_CONFIG_H_INCLUDED' > "$ref.knobs"
+        \\g=$(wc -l < "$gen.knobs"); r=$(wc -l < "$ref.knobs")
+        \\miss=$(comm -23 "$ref.knobs" "$gen.knobs" | wc -l)
+        \\extra=$(comm -13 "$ref.knobs" "$gen.knobs" | wc -l)
+        \\echo "generated: $g knobs"
+        \\echo "reference: $r knobs"
+        \\echo "missing: $miss"
+        \\echo "extra: $extra"
+        \\echo "--- first missing ---"
+        \\comm -23 "$ref.knobs" "$gen.knobs" | head -10
+        \\rm -f "$gen.knobs" "$ref.knobs"
+        \\exit 0
+    });
+    diff_config_cmd.addArg("config-diff");
+    diff_config_cmd.addFileArg(config_h.getOutputFile());
+    diff_config_cmd.addFileArg(b.path("src/config.h"));
+    const diff_config_step = b.step(
+        "config-diff",
+        "Report the config.h knob gap vs the gitignored reference",
+    );
+    diff_config_step.dependOn(&config_h.step);
+    diff_config_step.dependOn(&diff_config_cmd.step);
+
     // Create temacs executable
     const exe = b.addExecutable(.{
         .name = "temacs",
