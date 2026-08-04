@@ -1,7 +1,8 @@
-/* Zig-authored config.h template (lean). Processed by the build.zig
-   config.h generator: each #undef NAME is replaced per config_values.txt
-   (#define NAME VALUE) or left as /* #undef NAME */. Structural #defines
-   pass through verbatim. */
+/* Zig-authored config.h template (lean). The build.zig config.h generator
+   replaces each `#undef NAME` per src/config_values.txt (NAME=value becomes
+   `#define NAME value`; a bare NAME stays an undef). All other lines (this
+   header, the guard, _GNU_SOURCE, structural defines, and the conf_post
+   include) pass through verbatim. */
 #ifndef EMACS_CONFIG_H
 #define EMACS_CONFIG_H
 #define _GL_CONFIG_H_INCLUDED 1
