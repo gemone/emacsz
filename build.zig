@@ -821,6 +821,13 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // overflowing the stack at startup. Callers (fns.c, sysdep.c) use the
         // libc getrandom directly, so the gnulib rpl provider is unneeded.
         "getrandom",
+        // lib/fchmodat.c: same self-recursion as getrandom. lib/sys/stat.h
+        // guards `#define fchmodat rpl_fchmodat` under `#if 0` (rpl off), so
+        // compiling this file defines a plain `fchmodat` whose internal
+        // orig_fchmodat call resolves to itself -> stack overflow. It crashes
+        // byte-compilation (the byte-compiler fchmodat's its temp files).
+        // Callers use the libc fchmodat (HAVE_FCHMODAT=1).
+        "fchmodat",
     };
 
     var libdir = try std.Io.Dir.cwd().openDir(io, "lib", .{ .iterate = true });
