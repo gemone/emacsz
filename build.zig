@@ -737,18 +737,23 @@ pub fn build(b: *std.Build) void {
     const help_step = b.step("help", "Show build information");
     const help_cmd = b.addSystemCommand(&[_][]const u8{
         "echo",
-        \\Emacs Zig Native Build System - Phase 2
-        \\=======================================
+        \\Emacs Zig Native Build
+        \\======================
         \\
         \\Available steps:
-        \\  zig build      - Build temacs
-        \\  zig build test  - Run all tests
-        \\  zig build help  - Show this message
+        \\  zig build                   - Build temacs
+        \\  zig build dump              - Dump a runnable bootstrap-emacs.pdmp
+        \\  zig build check             - Run built-in ert test suites (314 tests)
+        \\  zig build test              - Alias of check
+        \\  zig build generate-headers  - Generate Gnulib .gl.h headers
+        \\  zig build generate-unidata  - Generate charscript/emoji-zwj.el
+        \\  zig build generate-charsets - Generate charset maps
+        \\  zig build help              - Show this message
         \\
-        \\Status: Phase 2 In Progress
-        \\  - Metadata extraction: ✓ Complete
-        \\  - Source file organization: ✓ Complete
-        \\  - Compilation: ✓ Complete
+        \\Status: Linux TTY build works
+        \\  - zig build: temacs (non-PIE, -O0)
+        \\  - zig build dump: runnable emacs (32.0.50)
+        \\  - zig build check: 314/314 built-in tests pass
     });
     help_step.dependOn(&help_cmd.step);
 }
