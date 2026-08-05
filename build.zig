@@ -462,6 +462,21 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-ctype", .root_module = gnulib_ctype_mod });
     exe.root_module.linkLibrary(gnulib_ctype_lib);
 
+    // gnulib-stdbit: an independent Zig package (tools/gnulib-stdbit)
+    // providing gnulib's C23 <stdbit.h> bit-count functions
+    // (stdc_leading_zeros/_trailing_zeros/_count_ones/_bit_width and their
+    // type-specific _uc/_us/_ui/_ul/_ull variants) that lib/stdc_*.c would
+    // otherwise emit. Each is a single @clz/@ctz/@popCount builtin with
+    // exact C23 semantics; no libc call. Built ReleaseFast (leaf bit ops).
+    const gnulib_stdbit_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_stdbit", .{}).path("src/stdbit.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const gnulib_stdbit_lib =
+        b.addLibrary(.{ .name = "gnulib-stdbit", .root_module = gnulib_stdbit_mod });
+    exe.root_module.linkLibrary(gnulib_stdbit_lib);
+
     // Determine if we're building for Unix-like systems
     const is_windows = target.result.os.tag == .windows;
 
@@ -1030,6 +1045,16 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // exported symbols are linked into temacs below. (make-docfile, a
         // host tool, still compiles its own copy of lib/c-ctype.c.)
         "c-ctype",
+        // lib/stdc_leading_zeros.c, lib/stdc_trailing_zeros.c,
+        // lib/stdc_count_ones.c, lib/stdc_bit_width.c are provided by an
+        // independent Zig package (tools/gnulib-stdbit, dependency
+        // `gnulib_stdbit`) -- the C23 stdbit bit-count functions replaced
+        // by Zig @clz/@ctz/@popCount. Excluded by exact name so
+        // lib/stdc_memreverse8u.c (not yet replaced) still compiles.
+        "stdc_leading_zeros",
+        "stdc_trailing_zeros",
+        "stdc_count_ones",
+        "stdc_bit_width",
     };
 
     var libdir = try std.Io.Dir.cwd().openDir(io, "lib", .{ .iterate = true });

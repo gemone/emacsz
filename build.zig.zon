@@ -38,6 +38,14 @@
         .gnulib_ctype = .{
             .path = "tools/gnulib-ctype",
         },
+        // gnulib-stdbit: gnulib's C23 <stdbit.h> bit-count functions
+        // (stdc_leading_zeros/_trailing_zeros/_count_ones/_bit_width,
+        // each _uc/_us/_ui/_ul/_ull) provided by an independent Zig
+        // package instead of C (lib/stdc_*.c). Linked into temacs; exact
+        // semantic match via @clz/@ctz/@popCount, no libc call.
+        .gnulib_stdbit = .{
+            .path = "tools/gnulib-stdbit",
+        },
     },
     .paths = .{
         "build.zig",
