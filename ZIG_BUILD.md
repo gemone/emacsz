@@ -5,23 +5,27 @@
 ## 快速开始
 
 ```bash
-# 1. 配置Emacs（禁用GUI和模块）
-./configure --without-ns --without-x --without-modules
+# zig build 是唯一入口：首次构建会自动运行 ./configure 生成 src/config.h，
+# 然后编译链接 temacs。无需手动 configure，也无需 make。
+zig build
 
-# 2. 使用Zig构建
-zig build -Doptimize=ReleaseFast
+# 转储一个可运行的 bootstrap emacs（先生成 charset/unidata 数据）
+zig build generate-charsets
+zig build generate-unidata
+zig build dump
 
-# 3. 运行
-./zig-out/bin/temacs --batch --eval '(progn (message "Hello, World!") (kill-emacs))'
+# 运行
+./zig-out/bin/emacs --batch --eval '(progn (message "Hello, World!") (kill-emacs))'
 ```
 
 ## 构建选项
 
-- `-Doptimize=Debug` - 调试模式（默认，较大）
-- `-Doptimize=ReleaseFast` - 优化发布（推荐，2.7MB）
-- `-Doptimize=ReleaseSafe` - 安全发布
-- `-Doptimize=ReleaseSmall` - 最小体积
+- `-Doptimize=Debug` - 调试模式（默认，**目前唯一可靠**）
 - `-Dtarget=<triple>` - 交叉编译（例如：x86_64-linux-gnu）
+
+注意：`ReleaseFast`/`ReleaseSafe` 目前会让 temacs 在加载转储时崩溃
+（clang -O1+ 暴露了 pdumper 单-delta 重定位的缺陷）。在深层 pdumper
+多-delta 修复完成之前，请使用默认的 Debug（-O0）。
 
 ## 目录结构
 

@@ -6,54 +6,56 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repository contains GNU Emacs with an ongoing effort to modernize the build system and codebase by migrating from Autotools + Gnulib to Zig.
 
-### Current Status: Phase 1 Complete, Phase 2 In Progress
-- **Phase 1**: Replace default C compiler with `zig cc` ✅ Complete
-- **Phase 2**: Create native `build.zig` and begin migrating C modules 🚧 In Progress
-- **Phase 3**: Complete Autotools/Gnulib replacement 🔮 Future
+### Current Status
+- **Goal 1 — Build entirely with `zig build`, no `automake`/`make`: ✅ Done.**
+  `zig build` is self-sufficient: it runs `./configure` as a build step
+  (generating `src/config.h` via real autoconf feature probes), then
+  compiles and links `temacs`. No manual `./configure`/`make` step is
+  needed, locally or in CI.
+- **Goal 2 — Zig controls linking, decouple from libc: 🚧 In progress.**
+  Zig drives all compile/link. The first runtime gnulib functions are
+  provided by independent Zig packages (`tools/gnulib-str` provides
+  `memeq`/`streq`, replacing `lib/memeq.c`/`lib/streq.c` with no libc
+  call). Deeper libc decoupling (file-I/O, time modules) is ongoing.
+- **Goal 3 — Runnable on Linux: ✅ Done.** `zig build dump` produces a
+  runnable `bootstrap-emacs.pdmp`; `zig build check` runs 578 built-in
+  `ert` tests across 39 suites (all passing).
+
+Zig version: **0.16.0** (strict).
 
 ## Development Commands
 
-### Primary Build Workflow (Current - Using Zig as C Compiler)
+### Primary Build Workflow
 ```bash
-# Initial setup (run after cloning or modifying configure.ac)
-./autogen.sh
+zig build              # Build temacs + emacs wrapper (self-sufficient)
+zig build dump         # Dump a runnable bootstrap-emacs.pdmp
+zig build smoke        # Verify the dumped emacs starts + evals Lisp
+zig build check        # Run 578 built-in ert tests (alias: zig build test)
+zig build help         # Show available steps + current status
+```
 
-# Configure with Zig (auto-detected if available)
-./configure --with-ns --without-x    # macOS
-./configure --with-x --without-ns    # Linux
+`zig build` is the single entry point — there is **no `make` and no
+manual `./configure` step**. The first `zig build` in a fresh checkout
+runs `./configure` (slow, one-time) to produce `src/config.h`; later
+builds skip it (guarded on `src/config.h` existence).
 
-# Build
-make -j$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null)
-
-# Install (macOS - creates EmacsZ.app)
-make install
-
-# Run
-open nextstep/EmacsZ.app                 # macOS
-./src/emacs --batch --eval "(...)"       # Any platform
+### Bootstrap data for `dump`/`check`
+`zig build dump` and `zig build check` need generated charset + unicode
+data (gitignored). Generate once:
+```bash
+zig build generate-charsets   # etc/charsets/*.map + cp51932/eucjp-ms.el
+zig build generate-unidata    # lisp/international/{charscript,emoji-zwj}.el
 ```
 
 ### Testing
 ```bash
-# Verify Zig is being used
-grep "^CC " src/Makefile    # Should show: CC = zig cc
-
-# Verify binary architecture
-file nextstep/EmacsZ.app/Contents/MacOS/Emacs    # macOS
-file src/emacs                                   # Linux
-
-# Run local Zig configuration tests
-./test-zig-build.sh
-
-# Test GitHub Actions workflows locally (requires act)
-act -j build --matrix os:macos
+zig build check                            # 578 ert tests across 39 suites
+file zig-out/bin/temacs                    # Verify the produced binary
 ```
 
-### CI/CD Testing
-GitHub Actions workflows are in `.github/workflows/`:
-- `build-zig.yml` - Multi-platform build matrix (macOS, Linux, Windows, ARM64)
-- `build-simple.yml` - Quick verification
-- Use `act` to test workflows locally before pushing
+### CI/CD
+GitHub Actions workflow `.github/workflows/build-zig-native.yml` is a
+pure `zig build` flow end-to-end (no `make`, no separate configure step).
 
 ## Architecture Overview
 
@@ -148,10 +150,17 @@ High-value targets for Zig stdlib migration:
 4. Time functions (`lib/time*.c`) → `std.time`
 
 ### Build System Migration Strategy
-1. Don't break existing `./configure && make` workflow
-2. Gradually add `build.zig` steps for individual modules
-3. Use `zig cc` compatibility as bridge during transition
-4. Test on all target platforms (macOS ARM64/x86_64, Linux, Windows)
+1. `zig build` is the single source of truth — it self-configures (runs
+   `./configure` as a build step for `src/config.h`) and performs all
+   compile/link. There is no `make` and no separate `./configure` step.
+2. Generated headers (`config.h`, `globals.h`, `epaths.h`, the `.gl.h`)
+   are produced at build time by zig-owned generators; never commit
+   autoconf-generated artifacts (`config.h`, `config.in`, Makefiles).
+3. Runtime gnulib functions are progressively replaced by independent
+   Zig packages (e.g. `tools/gnulib-str` for `memeq`/`streq`), linked in
+   place of the C source — each as its own zon dependency.
+4. Fix the source, not the artifact — resolve build issues in `build.zig`,
+   not by editing generated files.
 
 ## Critical Constraints
 
@@ -180,15 +189,13 @@ Required for Emacs compatibility:
 zig cc -target aarch64-macos-none -c foo.c -o foo.o
 ```
 
-### Checking if Zig is Being Used
+### Checking the Build
 ```bash
-# In Makefile
-grep "^CC.*zig" src/Makefile
-
-# In binary
-otool -L nextstep/EmacsZ.app/Contents/MacOS/Emacs  # macOS
-readelf -d src/emacs                               # Linux
+file zig-out/bin/temacs        # Linux: ELF 64-bit, non-PIE
+readelf -d zig-out/bin/temacs  # Dynamic deps (zig decides the link)
 ```
+`zig build` uses `zig cc` as the C compiler throughout — there is no
+`src/Makefile` to inspect.
 
 ### Zig Documentation Lookup
 Use the context7 MCP server to query Zig 0.16.0 documentation:
