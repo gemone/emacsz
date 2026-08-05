@@ -421,6 +421,12 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    // Non-PIE: zig-cc PIE + pdumper mis-relocates static pointers
+    // (mem_root, dump_hooks, ...) -> NULL/garbage on dump load ->
+    // crashes. A non-PIE binary has fixed static addresses, so no
+    // runtime relocation is needed. (The target requires PIC code,
+    // but PIC code in a non-PIE exe still gets fixed statics.)
+    exe.pie = false;
 
     // Determine if we're building for Unix-like systems
     const is_windows = target.result.os.tag == .windows;
@@ -430,12 +436,10 @@ pub fn build(b: *std.Build) void {
     if (!is_windows) {
         // Unix-like systems (macOS, Linux) - with libxml2 include path
         const base_flags = &[_][]const u8{
-            // No -O flag: rely on the module optimize mode (Debug=-O0).
-            // -O1 and above trigger a pdumper relocation bug -- on dump
-            // load the static dump_hooks[] function-pointer array comes
-            // back with garbage values (random mid-function addresses)
-            // and pdumper_load SIGSEGVs. Only -O0 avoids it, so temacs
-            // stays unoptimized until the relocation bug is fixed.
+            // No -O flag (module Debug=-O0). -O2 has a separate bug (a
+            // -O2 file corrupts lisp state during dump -> bad relocation
+            // entries -> SIGSEGV on load) that is NOT fixed by non-PIE
+            // or pdumper.c -O0; stay at -O0 until that is root-caused.
             "-std=gnu2x",  // Allow C23 features like _Static_assert without message
             "-fno-common",
         "-fno-strict-aliasing",
@@ -501,7 +505,7 @@ pub fn build(b: *std.Build) void {
 
         // Add Gnulib sources
         const libgnu_flags = &[_][]const u8{
-            // No -O flag: see base_flags (pdumper relocation bug at -O1+).
+            // No -O flag: see base_flags (separate -O2 lisp-corruption bug).
             "-std=gnu2x",
             "-fno-common",
         "-fno-strict-aliasing",
