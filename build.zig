@@ -530,10 +530,20 @@ pub fn build(b: *std.Build) void {
             "-I/usr/include/libxml2",  // libxml2 headers
         };
 
+        // src/timefns.c:monotonic_coarse_timespec is provided by the
+        // emacs-time Zig package (per-platform native backend, no libc)
+        // instead of C; the body is #ifndef'd out in src/timefns.c when
+        // EMACS_USE_ZIG_MONOTONIC_COARSE is defined. Passed per-file (like
+        // lib/mktime.c above) so only this translation unit is affected.
+        const timefns_flags = base_flags ++
+            [_][]const u8{"-DEMACS_USE_ZIG_MONOTONIC_COARSE"};
+
         for (base_sources) |src| {
+            const flags: []const []const u8 =
+                if (std.mem.eql(u8, src, "src/timefns.c")) timefns_flags else base_flags;
             exe.root_module.addCSourceFile(.{
                 .file = b.path(src),
-                .flags = base_flags,
+                .flags = flags,
             });
         }
 
@@ -625,10 +635,20 @@ pub fn build(b: *std.Build) void {
             "-Ilib",
         };
 
+        // src/timefns.c:monotonic_coarse_timespec is provided by the
+        // emacs-time Zig package (Windows QueryPerformanceCounter backend,
+        // no msvcrt) instead of C; the body is #ifndef'd out when
+        // EMACS_USE_ZIG_MONOTONIC_COARSE is defined. See the Unix branch
+        // above for the full rationale.
+        const timefns_flags = base_flags ++
+            [_][]const u8{"-DEMACS_USE_ZIG_MONOTONIC_COARSE"};
+
         for (base_sources) |src| {
+            const flags: []const []const u8 =
+                if (std.mem.eql(u8, src, "src/timefns.c")) timefns_flags else base_flags;
             exe.root_module.addCSourceFile(.{
                 .file = b.path(src),
-                .flags = base_flags,
+                .flags = flags,
             });
         }
 

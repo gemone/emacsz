@@ -47,3 +47,67 @@ export fn current_timespec() timespec {
     gettime(&ts);
     return ts;
 }
+
+// Return the current monotonic time as a struct timespec, with an
+// Emacs-instance-local epoch (e.g. system boot). The clock is unaffected
+// by changes to the system time and cheap to read; its resolution suits
+// human time scales (better than ~10 ms is fine). Falls back to realtime
+// (current_timespec) if no monotonic source is available.
+//
+// Replaces src/timefns.c:monotonic_coarse_timespec. Per-platform NATIVE
+// backends, NO libc:
+//   Linux   -> std.os.linux.clock_gettime(.MONOTONIC_COARSE), falling
+//              back to .MONOTONIC, then to current_timespec() (the
+//              realtime read above). MONOTONIC_COARSE is a vsyscall-free
+//              fast path with coarse (~ms) resolution.
+//   Windows -> kernel32/ntdll QueryPerformanceCounter (the monotonic
+//              high-resolution clock; epoch fixed at boot, unaffected by
+//              system-time changes) converted to sec/nsec via
+//              QueryPerformanceFrequency. QPC is Windows' only monotonic
+//              source (no CLOCK_MONOTONIC). Falls back to realtime if QPC
+//              is unavailable (it never fails on XP+).
+export fn monotonic_coarse_timespec() timespec {
+    var ts: timespec = undefined;
+    switch (builtin.os.tag) {
+        .linux => {
+            const linux = std.os.linux;
+            const lts: *linux.timespec = @ptrCast(&ts);
+            // Prefer the coarse clock (fast, vsyscall-free, ms-scale
+            // resolution suited to human time scales), then the finer
+            // monotonic clock, then realtime as a last resort -- matching
+            // the priority of the C original.
+            if (linux.clock_gettime(.MONOTONIC_COARSE, lts) == 0)
+                return ts;
+            if (linux.clock_gettime(.MONOTONIC, lts) == 0)
+                return ts;
+            return current_timespec();
+        },
+        .windows => {
+            const w = std.os.windows;
+            var freq: w.LARGE_INTEGER = undefined;
+            var counter: w.LARGE_INTEGER = undefined;
+            // QPC is Windows' monotonic clock; ntdll's Rtl* forms are the
+            // actual implementations (kernel32's are thin wrappers) and
+            // are what Zig's own std uses. They never fail on XP+, but if
+            // one did, fall back to realtime like the C version does.
+            if (!w.ntdll.RtlQueryPerformanceFrequency(&freq).toBool() or
+                !w.ntdll.RtlQueryPerformanceCounter(&counter).toBool())
+            {
+                return current_timespec();
+            }
+            // freq > 0 and counter >= 0 always (boot-origin monotonic).
+            // tv_sec = counter / freq; tv_nsec = (counter % freq) * 1e9 /
+            // freq. The remainder is < freq, so for any real QPC frequency
+            // (<= ~1e8) the product stays far within i64 range.
+            const freq_i: i64 = freq;
+            const counter_i: i64 = counter;
+            ts.tv_sec = @divTrunc(counter_i, freq_i);
+            const rem: i64 = @rem(counter_i, freq_i);
+            ts.tv_nsec = @divTrunc(rem * 1_000_000_000, freq_i);
+            return ts;
+        },
+        else => @compileError(
+            "emacs-time: monotonic_coarse_timespec not implemented for this OS",
+        ),
+    }
+}

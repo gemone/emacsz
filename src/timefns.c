@@ -140,7 +140,15 @@ make_timeval (struct timespec t)
    (e.g., system boot).  The clock should be unaffected by changes to
    the system time, and should be cheap to access.  Its resolution
    should be appropriate for human time scales, e.g., better than 10 ms.
-   Make do with realtime if such a clock is not available.  */
+   Make do with realtime if such a clock is not available.
+
+   When EMACS_USE_ZIG_MONOTONIC_COARSE is defined (the zig build passes
+   it on the src/timefns.c compile line), this definition is omitted and
+   the symbol is instead provided by the emacs-time Zig package
+   (tools/emacs-time), whose per-platform native backend (Linux
+   clock_gettime syscall / Windows QueryPerformanceCounter, no libc) is
+   linked into temacs.  The declaration in systime.h is unchanged.  */
+#ifndef EMACS_USE_ZIG_MONOTONIC_COARSE
 struct timespec
 monotonic_coarse_timespec (void)
 {
@@ -155,6 +163,7 @@ monotonic_coarse_timespec (void)
   ts = current_timespec ();
   return ts;
 }
+#endif /* EMACS_USE_ZIG_MONOTONIC_COARSE */
 
 /* Yield A's UTC offset, or an unspecified value if unknown.  */
 static long int
