@@ -236,7 +236,7 @@ zig targets | grep -E "arch|abi"
 ## Contributing
 
 1. Test on your platform before pushing
-2. Run `./test-zig-build.sh` to verify configuration
+2. Run `zig build check` to verify the build (578 built-in ert tests)
 3. Use GitHub Actions matrix to test multiple platforms
 4. Document new Zig dependencies in `CLAUDE.md` and `ZIG_BUILD.md`
 
@@ -245,7 +245,7 @@ zig targets | grep -E "arch|abi"
 - `ZIG_BUILD.md` - Detailed build instructions
 - `INSTALL` - Full installation guide
 - `CONTRIBUTE` - Contribution guidelines
-- `.github/workflows/build-zig.yml` - CI/CD examples
+- `.github/workflows/build-zig-native.yml` - CI build (pure `zig build`)
 - [Zig 0.16.0 Documentation](https://ziglang.org/documentation/0.16.0/)
 
 
