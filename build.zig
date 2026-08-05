@@ -816,6 +816,13 @@ pub fn build(b: *std.Build) void {
         "sh",
         "-c",
         \\set -e
+        \\# Bootstrap dump must NOT see loaddefs.el: loadup uses
+        \\# ldefs-boot.el, and a stale loaddefs.el in lisp/ makes loadup
+        \\# abort (e.g. void frameset-filter-alist at tab-bar). loaddefs
+        \\# is regenerated AFTER the dump (zig build generate-loaddefs),
+        \\# so scrub it here to keep the bootstrap environment clean.
+        \\rm -f lisp/loaddefs.el
+        \\find lisp -mindepth 2 -name '*-loaddefs.el' -delete 2>/dev/null || true
         \\export EMACSLOADPATH="$PWD/lisp" EMACSDATA="$PWD/etc" LC_ALL=C
         \\# Disable ASLR for a deterministic dump + load (setarch -R).
         \\# The pdumper heap relocation is ASLR-sensitive: the pdmp's
@@ -951,6 +958,24 @@ pub fn build(b: *std.Build) void {
         "Generate lisp/international/{charprop,uni-*}.el from admin/unidata",
     );
     gen_charprop_step.dependOn(&gen_charprop.step);
+
+    // generate-loaddefs: produce lisp/loaddefs.el + per-subdir
+    // *-loaddefs.el (autoload cookies) via the dumped emacs. Mirrors
+    // lisp/Makefile.in's `autoloads` target. Required at runtime by
+    // suites that (require 'foo-loaddefs) (calendar, calc, org, ...);
+    // without it they fail to load ("Cannot open load file: X-loaddefs")
+    // -- the single biggest check-all failure bucket. Outputs gitignored.
+    // Standalone (like generate-charprop); run before check-all.
+    const gen_loaddefs = b.addSystemCommand(&[_][]const u8{
+        "sh", "build-aux/generate-loaddefs.sh",
+    });
+    gen_loaddefs.setCwd(b.path("."));
+    gen_loaddefs.step.dependOn(&run_smoke.step);
+    const gen_loaddefs_step = b.step(
+        "generate-loaddefs",
+        "Generate lisp/loaddefs.el + *-loaddefs.el autoload files",
+    );
+    gen_loaddefs_step.dependOn(&gen_loaddefs.step);
 
     // check-all step: run EVERY *-tests.el under test/ — no skip. Each
     // suite runs in its own temacs process under a per-suite timeout so a
