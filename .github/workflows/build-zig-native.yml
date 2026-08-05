@@ -5,7 +5,6 @@ on:
     branches: [ master, main, zig-build-* ]
     paths:
       - 'build.zig'
-      - 'build-config/**'
       - 'src/**'
       - 'lib/**'
       - 'lisp/loadup.el'
@@ -14,7 +13,6 @@ on:
     branches: [ master, main ]
     paths:
       - 'build.zig'
-      - 'build-config/**'
       - 'src/**'
       - 'lib/**'
       - 'lisp/loadup.el'
@@ -74,10 +72,6 @@ jobs:
 
       - name: Setup build environment (unified)
         run: ./build-aux/setup-build-environment.sh
-        shell: bash
-
-      - name: Extract build metadata
-        run: ./build-aux/extract-metadata.sh
         shell: bash
 
       - name: Pre-generate required files
@@ -144,49 +138,3 @@ jobs:
             zig-out/bin/temacs
             emacs.pdump
           retention-days: 7
-
-  metadata-test:
-    name: Test Metadata Extraction
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Zig
-        uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: 0.16.0
-
-      - name: Extract metadata
-        run: ./build-aux/extract-metadata.sh
-
-      - name: Verify base_sources.zig
-        run: |
-          if [ ! -f build-config/base_sources.zig ]; then
-            echo "base_sources.zig not generated"
-            exit 1
-          fi
-          COUNT=$(grep -c '"src/' build-config/base_sources.zig || echo 0)
-          if [ "$COUNT" -lt 70 ]; then
-            echo "Expected at least 70 base sources, got $COUNT"
-            exit 1
-          fi
-          echo "✓ base_sources.zig has $COUNT files"
-
-      - name: Verify libgnu_sources.zig
-        run: |
-          if [ ! -f build-config/libgnu_sources.zig ]; then
-            echo "libgnu_sources.zig not generated"
-            exit 1
-          fi
-          echo "✓ libgnu_sources.zig generated"
-
-      - name: Check for GUI files
-        run: |
-          # Ensure GUI files are NOT in base_sources
-          if grep -q "xterm.c\|nsterm.m\|w32fns.c" build-config/base_sources.zig; then
-            echo "ERROR: GUI files found in base_sources (should be excluded)"
-            exit 1
-          fi
-          echo "✓ No GUI files in base_sources (correct)"

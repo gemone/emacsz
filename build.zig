@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     // `-Dshow-sources=true`: print the parsed base/lib source lists to stderr
     // (two counts followed by the lists) and exit without installing artifacts.
-    // Used to verify the build-time parsers against the legacy build-config/*.zig.
+    // Used to verify the build-time parsers against the autotools source lists.
     const show_sources = b.option(bool, "show-sources", "Print parsed base/lib source lists and exit") orelse false;
 
     // Build-time file interface (single-threaded, synchronous). Used to parse
@@ -133,7 +133,6 @@ pub fn build(b: *std.Build) void {
         "-D_GNU_SOURCE",
         "-DHAVE_CONFIG_H",
         "-I.",
-        "-Ibuild-config",
         "-Isrc",
         "-Ilib",
     };
@@ -444,7 +443,6 @@ pub fn build(b: *std.Build) void {
     const is_windows = target.result.os.tag == .windows;
 
     // Add base C sources with proper flags
-    // Note: build-config must come before src to override epaths.h
     if (!is_windows) {
         // Unix-like systems (macOS, Linux) - with libxml2 include path
         const base_flags = &[_][]const u8{
@@ -458,7 +456,6 @@ pub fn build(b: *std.Build) void {
             "-D_GNU_SOURCE",
             "-DHAVE_CONFIG_H",
             "-I.",
-            "-Ibuild-config",  // Before src to override epaths.h
             "-Isrc",
             "-Ilib",
             "-Ilib/malloc",  // Gnulib generated headers
@@ -524,7 +521,6 @@ pub fn build(b: *std.Build) void {
             "-D_GNU_SOURCE",
             "-DHAVE_CONFIG_H",
             "-I.",
-            "-Ibuild-config",
             "-Isrc",
             "-Ilib",
             "-Ilib/malloc",  // Gnulib generated headers
@@ -558,7 +554,6 @@ pub fn build(b: *std.Build) void {
             "-D_GNU_SOURCE",
             "-DHAVE_CONFIG_H",
             "-I.",
-            "-Ibuild-config",
             "-Isrc",
             "-Ilib",
         };
@@ -578,7 +573,6 @@ pub fn build(b: *std.Build) void {
             "-D_GNU_SOURCE",
             "-DHAVE_CONFIG_H",
             "-I.",
-            "-Ibuild-config",
             "-Isrc",
             "-Ilib",
         };

@@ -27,12 +27,7 @@ zig build -Doptimize=ReleaseFast
 
 ```
 build.zig                      # 主构建配置
-build-config/                  # 构建元数据（自动生成）
-├── base_sources.zig          # 核心源文件列表
-├── libgnu_sources.zig        # Gnulib源文件列表
-└── platform_sources.zig      # 平台特定源文件（已排除）
 build-aux/                     # 构建辅助脚本
-├── extract-metadata.sh       # 从Makefile.in提取源文件列表
 └── extract-config.sh         # 提取版本和配置信息
 
 zig-out/                       # 构建输出（运行 zig build 后生成）
