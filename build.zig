@@ -32,16 +32,25 @@ pub fn build(b: *std.Build) void {
         return;
     }
 
-    // Generate Gnulib .gl.h headers before compilation
-    const generate_headers = b.addSystemCommand(&[_][]const u8{
-        "sh",
-        "-c",
-        \\if [ -f build-aux/generate-gl-headers.sh ]; then
-        \\  ./build-aux/generate-gl-headers.sh
-        \\else
-        \\  echo "Warning: generate-gl-headers.sh not found, skipping..."
-        \\fi
+    // Generate Gnulib .gl.h headers before compilation. A native Zig tool
+    // (build-aux/generate-gl-headers.zig) replaces the former shell-out;
+    // mirrors the same sed pipeline so the tracked lib/malloc/*.gl.h outputs
+    // stay byte-identical. The tool runs at build time, so like make-docfile
+    // (lines 128-135) it targets the build host (b.graph.host) rather than
+    // the cross target. The run step is wired into both the standalone
+    // `generate-headers` step and the exe (line 638), preserving the prior
+    // behavior -- the port is purely an implementation swap.
+    const gl_tool = b.addExecutable(.{
+        .name = "generate-gl-headers",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .link_libc = true,
+            .root_source_file = b.path("build-aux/generate-gl-headers.zig"),
+        }),
     });
+    const generate_headers = b.addRunArtifact(gl_tool);
+    generate_headers.setCwd(b.path("."));
     const generate_step = b.step("generate-headers", "Generate Gnulib .gl.h headers");
     generate_step.dependOn(&generate_headers.step);
 
