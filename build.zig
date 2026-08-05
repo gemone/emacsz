@@ -631,6 +631,40 @@ pub fn build(b: *std.Build) void {
     // Install the executable
     b.installArtifact(exe);
 
+    // Install the `emacs` wrapper script (build-aux/emacs-launcher.sh) as
+    // zig-out/bin/emacs. The wrapper resolves temacs and bootstrap-emacs.pdmp
+    // relative to its own location ($0), so the dumped bootstrap emacs can be
+    // invoked like a normal editor command (`zig-out/bin/emacs --version`)
+    // without manually passing --dump-file=... on every invocation. It is the
+    // literal <bootstrap-emacs> prerequisite of the I9d lisp-bootstrap
+    // transitional bridge. The script is committed source (like make-docfile.c
+    // above), NOT a generated artifact -- only build-aux/emacs-launcher.sh and
+    // build.zig are touched.
+    //
+    // Not gated on run_dump: the wrapper is a static script, so the default
+    // `zig build` stays light (dump still needs bootstrap data + config.h).
+    // The wrapper errors clearly if the pdmp is absent -- the user runs
+    // `zig build dump` first.
+    //
+    // Exec-bit defense: 0.16.0's InstallFile step has no .mode option (it
+    // delegates to Io.Dir.updateFile with default options, which copies the
+    // source mode). The source file is committed +x, but to be robust against
+    // filesystems/checkouts that drop the bit, run chmod +x after install so
+    // acceptance `test -x zig-out/bin/emacs` holds unconditionally.
+    const install_emacs_wrapper = b.addInstallFileWithDir(
+        b.path("build-aux/emacs-launcher.sh"),
+        .bin,
+        "emacs",
+    );
+    b.getInstallStep().dependOn(&install_emacs_wrapper.step);
+    const chmod_emacs_wrapper = b.addSystemCommand(&[_][]const u8{
+        "chmod",
+        "+x",
+        b.pathJoin(&.{ b.install_path, "bin", "emacs" }),
+    });
+    chmod_emacs_wrapper.step.dependOn(&install_emacs_wrapper.step);
+    b.getInstallStep().dependOn(&chmod_emacs_wrapper.step);
+
     // Make the executable compilation depend on header generation
     exe.step.dependOn(&generate_headers.step);
 
@@ -697,6 +731,13 @@ pub fn build(b: *std.Build) void {
     // `set -e`, and the grep asserts a N.N version was printed (catches a
     // hypothetical exits-0-but-empty case). Gates `check` so a broken
     // dump fails fast instead of launching the 314 ert tests.
+    //
+    // The smoke ALSO exercises the installed emacs wrapper
+    // (zig-out/bin/emacs), in addition to the direct-temacs load above:
+    // the wrapper resolves temacs+pdmp relative to its own location
+    // ($0), invokes temacs under `setarch "$(uname -m)" -R`, and
+    // forwards args, so `./zig-out/bin/emacs --version` printing a
+    // N.N version proves the end-to-end wrapper path.
     const run_smoke = b.addSystemCommand(&[_][]const u8{
         "sh",
         "-c",
@@ -712,9 +753,18 @@ pub fn build(b: *std.Build) void {
         \\echo "$OUT" | grep -qE '^[0-9]+\.[0-9]+'
         \\echo "$OUT"
         \\echo "smoke: dumped emacs version $OUT"
+        \\# Exercise the installed emacs wrapper end-to-end. The wrapper
+        \\# locates temacs+pdmp and forwards args, so --version printing
+        \\# GNU Emacs <ver> proves the wrapper path works.
+        \\WOUT=$(./zig-out/bin/emacs --version 2>&1)
+        \\echo "$WOUT" | grep -qE '^GNU Emacs [0-9]+\.[0-9]+'
+        \\echo "smoke: emacs wrapper version $(echo "$WOUT" | head -1)"
     });
     run_smoke.setCwd(b.path("."));
     run_smoke.step.dependOn(&run_dump.step);
+    // Depend on chmod_emacs_wrapper (which depends on install_emacs_wrapper)
+    // so the +x bit is set before smoke runs ./zig-out/bin/emacs.
+    run_smoke.step.dependOn(&chmod_emacs_wrapper.step);
     const smoke_step = b.step("smoke", "Verify the dumped emacs starts and evaluates Lisp");
     smoke_step.dependOn(&run_smoke.step);
 
@@ -766,7 +816,7 @@ pub fn build(b: *std.Build) void {
         \\======================
         \\
         \\Available steps:
-        \\  zig build                   - Build temacs
+        \\  zig build                   - Build temacs + emacs wrapper
         \\  zig build dump              - Dump a runnable bootstrap-emacs.pdmp
         \\  zig build smoke             - Verify dumped emacs runs
         \\  zig build check             - Run built-in ert test suites (437 tests across 22 suites)
@@ -776,8 +826,13 @@ pub fn build(b: *std.Build) void {
         \\  zig build generate-charsets - Generate charset maps
         \\  zig build help              - Show this message
         \\
+        \\Runnable commands (after `zig build dump`):
+        \\  zig-out/bin/temacs          - raw temacs (needs --dump-file=...)
+        \\  zig-out/bin/emacs           - wrapper that locates temacs+pdmp and
+        \\                               forwards args (e.g. `--version`)
+        \\
         \\Status: Linux TTY build works
-        \\  - zig build: temacs (non-PIE, -O0)
+        \\  - zig build: temacs (non-PIE, -O0) + emacs wrapper
         \\  - zig build dump: runnable emacs (32.0.50)
         \\  - zig build check: 437/437 built-in tests pass
     });
