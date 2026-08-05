@@ -281,62 +281,32 @@ pub fn build(b: *std.Build) void {
     // the macro processing autoconf's config.status does. Text-based, so every
     // value type (ints, strings, char literals, /**/) is handled uniformly.
     // Output lands in .zig-cache (gitignored). Standalone -- does NOT depend on exe.
-    const config_h_in_text = std.Io.Dir.cwd().readFileAlloc(
-        io, "src/config.h.in", b.allocator, .limited(4 * 1024 * 1024),
-    ) catch @panic("build.zig: failed to read src/config.h.in");
-    const config_values_text = std.Io.Dir.cwd().readFileAlloc(
-        io, "src/config_values.txt", b.allocator, .limited(4 * 1024 * 1024),
-    ) catch @panic("build.zig: failed to read src/config_values.txt");
-    var config_values = std.StringHashMap([]const u8).init(b.allocator);
-    defer config_values.deinit();
-    {
-        var vit = std.mem.splitScalar(u8, config_values_text, '\n');
-        while (vit.next()) |vline| {
-            if (vline.len == 0) continue;
-            if (std.mem.indexOfScalar(u8, vline, '=')) |eq| {
-                config_values.put(vline[0..eq], vline[eq + 1 ..]) catch
-                    @panic("build.zig: OOM building config values map");
-            } else {
-                config_values.put(vline, "") catch
-                    @panic("build.zig: OOM building config values map");
-            }
-        }
-    }
-    const config_h_body = blk: {
-        const a = b.allocator;
-        var buf: std.ArrayList(u8) = .empty;
-        var tit = std.mem.splitScalar(u8, config_h_in_text, '\n');
-        var first = true;
-        while (tit.next()) |tline| {
-            if (!first) buf.append(a, '\n') catch
-                @panic("build.zig: OOM building config.h");
-            first = false;
-            if (std.mem.startsWith(u8, tline, "#undef ")) {
-                const name = std.mem.trim(u8, tline["#undef ".len..], " \t\r");
-                const v = config_values.get(name);
-                const has_val = v != null and v.?.len > 0;
-                const rendered = if (has_val)
-                    std.fmt.allocPrint(a, "#define {s} {s}", .{ name, v.? }) catch
-                        @panic("build.zig: OOM building config.h")
-                else
-                    std.fmt.allocPrint(a, "/* #undef {s} */", .{name}) catch
-                        @panic("build.zig: OOM building config.h");
-                buf.appendSlice(a, rendered) catch
-                    @panic("build.zig: OOM building config.h");
-            } else {
-                buf.appendSlice(a, tline) catch
-                    @panic("build.zig: OOM building config.h");
-            }
-        }
-        break :blk buf.toOwnedSlice(a) catch @panic("build.zig: OOM building config.h");
-    };
-    const config_h_wf = b.addWriteFiles();
-    const config_h_file = config_h_wf.add("config.h", config_h_body);
+    //
+    // The config.h generator is an independent Zig package (dependency
+    // `gen_config` in build.zig.zon -> tools/gen-config), mirroring the
+    // gl_headers_gen extraction above. The tool reads src/config.h.in +
+    // src/config_values.txt (with cwd = repo root via setCwd) and writes the
+    // substituted config.h body to STDOUT; captureStdOut lands it in the
+    // zig-cache, the same LazyPath shape the inline addWriteFiles produced, so
+    // verify-config / config-diff below consume it unchanged.
+    const gen_config_dep = b.dependency("gen_config", .{});
+    const gen_config_tool = b.addExecutable(.{
+        .name = "gen-config",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .link_libc = true,
+            .root_source_file = gen_config_dep.path("src/main.zig"),
+        }),
+    });
+    const run_gen_config = b.addRunArtifact(gen_config_tool);
+    run_gen_config.setCwd(b.path("."));
+    const config_h_file = run_gen_config.captureStdOut(.{ .basename = "config.h" });
     const gen_config_step = b.step(
         "generate-config",
         "Generate src/config.h from the zig-authored template + values",
     );
-    gen_config_step.dependOn(&config_h_wf.step);
+    gen_config_step.dependOn(&run_gen_config.step);
 
     // Verify the generated config.h carries the load-bearing subset of knobs
     // the rest of the build will eventually rely on. The generated file path
@@ -420,7 +390,7 @@ pub fn build(b: *std.Build) void {
         "config-diff",
         "Report the config.h knob gap vs the gitignored reference",
     );
-    diff_config_step.dependOn(&config_h_wf.step);
+    diff_config_step.dependOn(&run_gen_config.step);
     diff_config_step.dependOn(&diff_config_cmd.step);
 
     // Create temacs executable

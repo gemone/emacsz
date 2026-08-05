@@ -10,6 +10,12 @@
         .gl_headers_gen = .{
             .path = "tools/gl-headers",
         },
+        // The src/config.h generator, extracted as an independent Zig
+        // package (mirrors gl_headers_gen above; reads the zig-authored
+        // template + values and substitutes each #undef).
+        .gen_config = .{
+            .path = "tools/gen-config",
+        },
     },
     .paths = .{
         "build.zig",
