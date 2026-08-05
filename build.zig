@@ -718,12 +718,13 @@ pub fn build(b: *std.Build) void {
     smoke_step.dependOn(&run_smoke.step);
 
     // `check` step: run a broad set of built-in ert test suites with the
-    // dumped emacs (478 tests across 31 suites today: alloc, version,
+    // dumped emacs (578 tests across 39 suites today: alloc, version,
     // byte-run, float-sup, cl-preloaded, button, delim-col, color, custom,
     // dom, data, marker, chartab, cmds, let-alist, cl-lib, map, seq,
     // character, charset, json, fns, backquote, parse-time, derived,
     // cond-star, cl-print, time-date, check-declare, copyright,
-    // easy-mmode).
+    // easy-mmode, nadvice, pcase, pp, ring, rx, warnings, regexp-opt,
+    // range).
     // `ulimit -s unlimited` because -O0 eval frames are large
     // (ert-deftest macro expansion otherwise overflows the C stack).
     // cl-macs/cl-seq/cl-extra are preloaded explicitly because the bootstrap
@@ -732,13 +733,14 @@ pub fn build(b: *std.Build) void {
     // tests pass. (Suites that abort, error, or hang at -O0 are excluded:
     // abbrev-tests, char-fold-tests, emacsclient-tests; eval-tests and
     // macroexp-tests hang in ert-deftest expansion; editfns-tests has one
-    // unexpected failure.)
+    // unexpected failure; subr-x-tests and map-ynp-tests abort with
+    // SIGABRT (rc=134); gv-tests hangs >=60s in ert-deftest expansion.)
     const run_check = b.addSystemCommand(&[_][]const u8{
         "sh",
         "-c",
         \\ulimit -s unlimited
         \\TEMACS="./zig-out/bin/temacs --batch -L test/src -L test/lisp -L test/lisp/emacs-lisp -L test/lisp/calendar --dump-file=./zig-out/bin/bootstrap-emacs.pdmp"
-        \\EVAL='(progn (load "cl-macs") (load "cl-seq") (load "cl-extra") (require (quote ert)) (load "alloc-tests") (load "version-tests") (load "byte-run-tests") (load "float-sup-tests") (load "cl-preloaded-tests") (load "button-tests") (load "delim-col-tests") (load "color-tests") (load "custom-tests") (load "dom-tests") (load "data-tests") (load "marker-tests") (load "chartab-tests") (load "cmds-tests") (load "let-alist-tests") (load "cl-lib-tests") (load "map-tests") (load "seq-tests") (load "character-tests") (load "charset-tests") (load "json-tests") (load "fns-tests") (load "backquote-tests") (load "parse-time-tests") (load "derived-tests") (load "cond-star-tests") (load "cl-print-tests") (load "time-date-tests") (load "check-declare-tests") (load "copyright-tests") (load "easy-mmode-tests") (let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit)))'
+        \\EVAL='(progn (load "cl-macs") (load "cl-seq") (load "cl-extra") (require (quote ert)) (load "alloc-tests") (load "version-tests") (load "byte-run-tests") (load "float-sup-tests") (load "cl-preloaded-tests") (load "button-tests") (load "delim-col-tests") (load "color-tests") (load "custom-tests") (load "dom-tests") (load "data-tests") (load "marker-tests") (load "chartab-tests") (load "cmds-tests") (load "let-alist-tests") (load "cl-lib-tests") (load "map-tests") (load "seq-tests") (load "character-tests") (load "charset-tests") (load "json-tests") (load "fns-tests") (load "backquote-tests") (load "parse-time-tests") (load "derived-tests") (load "cond-star-tests") (load "cl-print-tests") (load "time-date-tests") (load "check-declare-tests") (load "copyright-tests") (load "easy-mmode-tests") (load "nadvice-tests") (load "pcase-tests") (load "pp-tests") (load "ring-tests") (load "rx-tests") (load "warnings-tests") (load "regexp-opt-tests") (load "range-tests") (let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit)))'
         \\# Disable ASLR for the load too (see run_dump): the pdumper
         \\# relocation needs ASLR off on both dump and load.
         \\if command -v setarch >/dev/null 2>&1; then
@@ -770,7 +772,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build                   - Build temacs + emacs wrapper
         \\  zig build dump              - Dump a runnable bootstrap-emacs.pdmp
         \\  zig build smoke             - Verify dumped emacs runs
-        \\  zig build check             - Run built-in ert test suites (478 tests across 31 suites)
+        \\  zig build check             - Run built-in ert test suites (578 tests across 39 suites)
         \\  zig build test              - Alias of check
         \\  zig build generate-headers  - Generate Gnulib .gl.h headers
         \\  zig build generate-unidata  - Generate charscript/emoji-zwj.el
@@ -785,7 +787,7 @@ pub fn build(b: *std.Build) void {
         \\Status: Linux TTY build works
         \\  - zig build: temacs (non-PIE, -O0) + emacs wrapper
         \\  - zig build dump: runnable emacs (32.0.50)
-        \\  - zig build check: 478/478 built-in tests pass
+        \\  - zig build check: 578/578 built-in tests pass
     });
     help_step.dependOn(&help_cmd.step);
 }
