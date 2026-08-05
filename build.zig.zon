@@ -31,6 +31,13 @@
         .gnulib_str = .{
             .path = "tools/gnulib-str",
         },
+        // gnulib-ctype: gnulib's c-ctype character-classification
+        // functions (c_isalpha, c_isdigit, c_tolower, ...) provided by an
+        // independent Zig package instead of C (lib/c-ctype.c). Linked
+        // into temacs; ASCII-only, exact semantic match, no libc call.
+        .gnulib_ctype = .{
+            .path = "tools/gnulib-ctype",
+        },
     },
     .paths = .{
         "build.zig",

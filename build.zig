@@ -447,6 +447,21 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-str", .root_module = gnulib_str_mod });
     exe.root_module.linkLibrary(gnulib_str_lib);
 
+    // gnulib-ctype: an independent Zig package (tools/gnulib-ctype)
+    // providing gnulib's c-ctype character-classification functions
+    // (c_isalpha, c_isdigit, c_tolower, ...) that lib/c-ctype.c would
+    // otherwise emit. ASCII-only, locale-independent, exact semantic match
+    // with no libc call. Built ReleaseFast (leaf int checks) so it pulls in
+    // no Zig runtime the C executable must satisfy.
+    const gnulib_ctype_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_ctype", .{}).path("src/ctype.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const gnulib_ctype_lib =
+        b.addLibrary(.{ .name = "gnulib-ctype", .root_module = gnulib_ctype_mod });
+    exe.root_module.linkLibrary(gnulib_ctype_lib);
+
     // Determine if we're building for Unix-like systems
     const is_windows = target.result.os.tag == .windows;
 
@@ -1008,6 +1023,13 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // symbols are linked into temacs below.
         "memeq",
         "streq",
+        // lib/c-ctype.c is provided by an independent Zig package
+        // (tools/gnulib-ctype, dependency `gnulib_ctype`) instead of C --
+        // gnulib's ASCII character-classification functions replaced by
+        // Zig. Excluded here so the C source is not compiled; the package's
+        // exported symbols are linked into temacs below. (make-docfile, a
+        // host tool, still compiles its own copy of lib/c-ctype.c.)
+        "c-ctype",
     };
 
     var libdir = try std.Io.Dir.cwd().openDir(io, "lib", .{ .iterate = true });
