@@ -53,6 +53,15 @@
         .gnulib_hash = .{
             .path = "tools/gnulib-hash",
         },
+        // emacs-time: gnulib's realtime-clock read (gettime /
+        // current_timespec, lib/gettime.c) provided by an independent
+        // Zig package with per-platform NATIVE backends (Linux raw
+        // clock_gettime syscall; Windows kernel32 GetSystemTimeAsFileTime),
+        // no libc. The first OS-layer subsystem ported under the "replace
+        // the POSIX/sysdep layer with zig stdlib" strategy.
+        .emacs_time = .{
+            .path = "tools/emacs-time",
+        },
     },
     .paths = .{
         "build.zig",

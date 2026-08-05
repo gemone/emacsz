@@ -491,6 +491,21 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-hash", .root_module = gnulib_hash_mod });
     exe.root_module.linkLibrary(gnulib_hash_lib);
 
+    // emacs-time: an independent Zig package (tools/emacs-time) providing
+    // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
+    // would otherwise provide, via per-platform NATIVE backends with no libc:
+    // Linux std.os.linux.clock_gettime (raw syscall), Windows kernel32
+    // GetSystemTimeAsFileTime. First OS-layer subsystem under the
+    // "POSIX/sysdep -> zig stdlib" cross-platform strategy. Built ReleaseFast.
+    const emacs_time_mod = b.createModule(.{
+        .root_source_file = b.dependency("emacs_time", .{}).path("src/time.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const emacs_time_lib =
+        b.addLibrary(.{ .name = "emacs-time", .root_module = emacs_time_mod });
+    exe.root_module.linkLibrary(emacs_time_lib);
+
     // Determine if we're building for Unix-like systems
     const is_windows = target.result.os.tag == .windows;
 
@@ -1075,6 +1090,11 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // the C source is not compiled; the package's exported sha1_*
         // symbols are linked into temacs below.
         "sha1",
+        // lib/gettime.c is provided by an independent Zig package
+        // (tools/emacs-time, dependency `emacs_time`) -- the realtime
+        // clock read (gettime / current_timespec) via per-platform native
+        // backends, no libc. Excluded here so the C source is not compiled.
+        "gettime",
     };
 
     var libdir = try std.Io.Dir.cwd().openDir(io, "lib", .{ .iterate = true });
