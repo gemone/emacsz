@@ -506,6 +506,26 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "emacs-time", .root_module = emacs_time_mod });
     exe.root_module.linkLibrary(emacs_time_lib);
 
+    // emacs-nanosleep: an independent Zig package (tools/emacs-nanosleep)
+    // providing the POSIX nanosleep() that lib/nanosleep.c would otherwise
+    // provide, via per-platform NATIVE backends with no libc: Linux
+    // std.os.linux.nanosleep (raw syscall, EINTR-aware), Windows kernel32
+    // Sleep + QueryPerformanceCounter busy-wait. Second OS-layer subsystem
+    // under the "POSIX/sysdep -> zig stdlib" cross-platform strategy. Built
+    // ReleaseFast (leaf syscall + spin, no Zig runtime the C exe must
+    // satisfy).
+    const emacs_nanosleep_mod = b.createModule(.{
+        .root_source_file = b.dependency("emacs_nanosleep", .{})
+            .path("src/sleep.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const emacs_nanosleep_lib = b.addLibrary(.{
+        .name = "emacs-nanosleep",
+        .root_module = emacs_nanosleep_mod,
+    });
+    exe.root_module.linkLibrary(emacs_nanosleep_lib);
+
     // Determine if we're building for Unix-like systems
     const is_windows = target.result.os.tag == .windows;
 
@@ -1131,6 +1151,15 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // clock read (gettime / current_timespec) via per-platform native
         // backends, no libc. Excluded here so the C source is not compiled.
         "gettime",
+        // lib/nanosleep.c is provided by an independent Zig package
+        // (tools/emacs-nanosleep, dependency `emacs_nanosleep`) -- the
+        // POSIX nanosleep() via per-platform native backends, no libc
+        // (Linux std.os.linux.nanosleep raw syscall; Windows kernel32
+        // Sleep + QueryPerformanceCounter busy-wait). Excluded here so
+        // the C source is not compiled; the package's exported
+        // `rpl_nanosleep` symbol (gnulib renames nanosleep via lib/time.h)
+        // is linked into temacs below.
+        "nanosleep",
     };
 
     var libdir = try std.Io.Dir.cwd().openDir(io, "lib", .{ .iterate = true });

@@ -62,6 +62,15 @@
         .emacs_time = .{
             .path = "tools/emacs-time",
         },
+        // emacs-nanosleep: gnulib's nanosleep (lib/nanosleep.c) provided
+        // by an independent Zig package with per-platform NATIVE backends,
+        // no libc: Linux std.os.linux.nanosleep raw syscall; Windows
+        // kernel32 Sleep + QueryPerformanceCounter busy-wait. The second
+        // OS-layer subsystem ported under the "replace the POSIX/sysdep
+        // layer with zig stdlib" strategy.
+        .emacs_nanosleep = .{
+            .path = "tools/emacs-nanosleep",
+        },
     },
     .paths = .{
         "build.zig",

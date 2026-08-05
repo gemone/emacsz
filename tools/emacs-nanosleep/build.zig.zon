@@ -1,0 +1,12 @@
+.{
+    .name = .emacs_nanosleep,
+    .fingerprint = 0x5de1167c64e5635e,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/sleep.zig",
+    },
+}
