@@ -894,6 +894,21 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run a built-in ert test suite with the dumped emacs");
     test_step.dependOn(check_step);
 
+    // check-all step: run EVERY *-tests.el under test/ — no skip. Each
+    // suite runs in its own temacs process under a per-suite timeout so a
+    // hang/crash in one suite cannot hide the rest, and every outcome is
+    // classified (PASS/FAIL/HANG/CRASH/LOAD). Unlike `check` (a stable
+    // 40-suite baseline), this is the failure-discovery tool: its output
+    // is meant to drive the next migration phase, so nothing is excluded.
+    // Full per-suite logs land in zig-out/check-all/<suite>.out.
+    const run_check_all = b.addSystemCommand(&[_][]const u8{
+        "sh", "build-aux/check-all.sh",
+    });
+    run_check_all.setCwd(b.path("."));
+    run_check_all.step.dependOn(&run_smoke.step);
+    const check_all_step = b.step("check-all", "Run ALL ert suites (no skip; per-suite isolation + timeout) and classify failures");
+    check_all_step.dependOn(&run_check_all.step);
+
     // Help step
     const help_step = b.step("help", "Show build information");
     const help_cmd = b.addSystemCommand(&[_][]const u8{
@@ -907,6 +922,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build smoke             - Verify dumped emacs runs
         \\  zig build check             - Run built-in ert test suites (582 tests across 40 suites)
         \\  zig build test              - Alias of check
+        \\  zig build check-all         - Run ALL ert suites (no skip; classify failures for planning)
         \\  zig build generate-headers  - Generate Gnulib .gl.h headers
         \\  zig build generate-unidata  - Generate charscript/emoji-zwj.el
         \\  zig build generate-charsets - Generate charset maps
