@@ -705,18 +705,12 @@ pub fn build(b: *std.Build) void {
     const check_step = b.step("check", "Run a built-in ert test suite (alloc-tests) with the dumped emacs");
     check_step.dependOn(&run_check.step);
 
-    // Test step
-    const test_step = b.step("test", "Run all tests");
-    const run_tests = b.addSystemCommand(&[_][]const u8{
-        "sh",
-        "-c",
-        \\if [ -f run-zig-tests.sh ]; then
-        \\  sh run-zig-tests.sh
-        \\else
-        \\  echo "No test script found, skipping"
-        \\fi
-    });
-    test_step.dependOn(&run_tests.step);
+    // Test step: run the built-in ert suite (alias of `check`). The
+    // former body shelled out to a run-zig-tests.sh that no longer
+    // exists; `check` already runs test/src/alloc-tests.el (4/4 pass)
+    // with the dumped emacs, so `zig build test` delegates to it.
+    const test_step = b.step("test", "Run a built-in ert test suite with the dumped emacs");
+    test_step.dependOn(check_step);
 
     // Help step
     const help_step = b.step("help", "Show build information");
