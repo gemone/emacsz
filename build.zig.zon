@@ -16,6 +16,12 @@
         .gen_config = .{
             .path = "tools/gen-config",
         },
+        // The src/epaths.h generator, extracted as an independent Zig
+        // package (mirrors gen_config above; formats the 11 PATH_* macros
+        // from the absolute repo root passed as argv[1]).
+        .gen_epaths = .{
+            .path = "tools/gen-epaths",
+        },
     },
     .paths = .{
         "build.zig",

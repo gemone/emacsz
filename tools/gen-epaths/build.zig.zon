@@ -1,0 +1,12 @@
+.{
+    .name = .gen_epaths,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .fingerprint = 0xc31877a6476d7789,
+    .dependencies = .{},
+    .paths = .{
+        "build.zig.zon",
+        "build.zig",
+        "src/main.zig",
+    },
+}

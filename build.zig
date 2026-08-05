@@ -220,57 +220,36 @@ pub fn build(b: *std.Build) void {
     // under the source tree by default, instead of the nonexistent
     // /usr/local/share install dirs the bootstrap src/epaths.h carries. The
     // header lands in the zig cache (NOT src/) and is registered on the
-    // include path below so it overrides the bootstrap copy. Mirrors
-    // buildobj.h generation above. Emits ONLY the live non-Android branch
-    // (HAVE_ANDROID is undef in config.h, so the `#if !defined HAVE_ANDROID`
-    // arm is the active one) and defines all 11 PATH_* macros so the header
-    // is self-contained. <repo> is the project root (b.path(".")), the same
-    // directory the dump step (below) operates in.
-    const epaths_body = blk: {
-        const a = b.allocator;
-        const repo = b.path(".").getPath(b);
-        const path_load = std.fmt.allocPrint(a, "{s}/lisp", .{repo}) catch
-            @panic("build.zig: OOM building epaths.h");
-        const path_exec = std.fmt.allocPrint(a, "{s}/lib-src", .{repo}) catch
-            @panic("build.zig: OOM building epaths.h");
-        const path_etc = std.fmt.allocPrint(a, "{s}/etc", .{repo}) catch
-            @panic("build.zig: OOM building epaths.h");
-        const path_info = std.fmt.allocPrint(a, "{s}/info", .{repo}) catch
-            @panic("build.zig: OOM building epaths.h");
-        var buf: std.ArrayList(u8) = .empty;
-        appendEpathsStr(a, &buf, "PATH_LOADSEARCH", path_load) catch
-            @panic("build.zig: OOM building epaths.h");
-        appendEpathsStr(a, &buf, "PATH_REL_LOADSEARCH", "32.0.50/lisp") catch
-            @panic("build.zig: OOM building epaths.h");
-        // PATH_SITELOADSEARCH is intentionally empty: a non-empty value is
-        // prepended to load-path, which would make (car load-path) the
-        // site-lisp dir instead of PATH_LOADSEARCH (<repo>/lisp). The build
-        // tree has no site-lisp, so empty keeps load-path rooted at
-        // <repo>/lisp.
-        appendEpathsStr(a, &buf, "PATH_SITELOADSEARCH", "") catch
-            @panic("build.zig: OOM building epaths.h");
-        appendEpathsStr(a, &buf, "PATH_DUMPLOADSEARCH", path_load) catch
-            @panic("build.zig: OOM building epaths.h");
-        appendEpathsStr(a, &buf, "PATH_EXEC", path_exec) catch
-            @panic("build.zig: OOM building epaths.h");
-        appendEpathsStr(a, &buf, "PATH_DATA", path_etc) catch
-            @panic("build.zig: OOM building epaths.h");
-        appendEpathsStr(a, &buf, "PATH_BITMAPS", "") catch
-            @panic("build.zig: OOM building epaths.h");
-        appendEpathsStr(a, &buf, "PATH_DOC", path_etc) catch
-            @panic("build.zig: OOM building epaths.h");
-        appendEpathsStr(a, &buf, "PATH_INFO", path_info) catch
-            @panic("build.zig: OOM building epaths.h");
-        appendEpathsRaw(a, &buf, "PATH_GAME", "((char const *) 0)") catch
-            @panic("build.zig: OOM building epaths.h");
-        appendEpathsStr(a, &buf, "PATH_X_DEFAULTS", "") catch
-            @panic("build.zig: OOM building epaths.h");
-        break :blk buf.toOwnedSlice(a) catch @panic("build.zig: OOM building epaths.h");
-    };
-    const epaths_wf = b.addWriteFiles();
-    _ = epaths_wf.add("epaths.h", epaths_body);
+    // include path below so it overrides the bootstrap copy. Emits ONLY the
+    // live non-Android branch (HAVE_ANDROID is undef in config.h, so the
+    // `#if !defined HAVE_ANDROID` arm is the active one) and defines all 11
+    // PATH_* macros so the header is self-contained. <repo> is the project
+    // root (b.path(".").getPath(b)), the same directory the dump step
+    // (below) operates in.
+    //
+    // The epaths.h generator is an independent Zig package (dependency
+    // `gen_epaths` in build.zig.zon -> tools/gen-epaths), mirroring the
+    // gen_config extraction above. The tool is pure/deterministic: it takes
+    // the absolute repo root as argv[1] and writes the 11 PATH_* macros to
+    // STDOUT; captureStdOut lands it in the zig-cache, the same LazyPath
+    // shape the inline addWriteFiles produced, so the include-path
+    // registration below consumes it unchanged.
+    const gen_epaths_dep = b.dependency("gen_epaths", .{});
+    const gen_epaths_tool = b.addExecutable(.{
+        .name = "gen-epaths",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .link_libc = true,
+            .root_source_file = gen_epaths_dep.path("src/main.zig"),
+        }),
+    });
+    const run_gen_epaths = b.addRunArtifact(gen_epaths_tool);
+    run_gen_epaths.setCwd(b.path("."));
+    run_gen_epaths.addArg(b.path(".").getPath(b));
+    const epaths_h = run_gen_epaths.captureStdOut(.{ .basename = "epaths.h" });
     const gen_epaths_step = b.step("generate-epaths", "Generate epaths.h with build-tree paths");
-    gen_epaths_step.dependOn(&epaths_wf.step);
+    gen_epaths_step.dependOn(&run_gen_epaths.step);
 
     // Generate src/config.h via a CUSTOM generator (not addConfigHeader).
     // addConfigHeader needs a comptime values struct, unwieldy for the ~760
@@ -654,8 +633,8 @@ pub fn build(b: *std.Build) void {
     // locates its data without EMACSLOADPATH/EMACSDATA and without a
     // /usr/local/share install. addIncludePath is what lets the generated
     // copy take effect once the bootstrap src/epaths.h is moved aside.
-    exe.root_module.addIncludePath(epaths_wf.getDirectory());
-    exe.step.dependOn(&epaths_wf.step);
+    exe.root_module.addIncludePath(epaths_h.dirname());
+    exe.step.dependOn(&run_gen_epaths.step);
 
     // Dump step (`zig build dump`): produce a runnable bootstrap-emacs.pdmp by
     // running the built temacs over loadup in bootstrap mode. The dumped emacs
@@ -995,27 +974,6 @@ fn appendBuildobjEntry(a: std.mem.Allocator, buf: *std.ArrayList(u8), src: []con
     try buf.appendSlice(a, "\"");
     try buf.appendSlice(a, stem);
     try buf.appendSlice(a, ".o\",\n");
-}
-
-/// Append a `#define NAME "VALUE"\n` line to `buf`, for the string-valued
-/// epaths.h macros (PATH_LOADSEARCH, PATH_DATA, ...). Mirrors the quoting of
-/// the bootstrap src/epaths.h.
-fn appendEpathsStr(a: std.mem.Allocator, buf: *std.ArrayList(u8), name: []const u8, value: []const u8) !void {
-    try buf.appendSlice(a, "#define ");
-    try buf.appendSlice(a, name);
-    try buf.appendSlice(a, " \"");
-    try buf.appendSlice(a, value);
-    try buf.appendSlice(a, "\"\n");
-}
-
-/// Append a `#define NAME VALUE\n` line (unquoted), for macros whose value is
-/// not a string literal: PATH_GAME = ((char const *) 0).
-fn appendEpathsRaw(a: std.mem.Allocator, buf: *std.ArrayList(u8), name: []const u8, value: []const u8) !void {
-    try buf.appendSlice(a, "#define ");
-    try buf.appendSlice(a, name);
-    try buf.appendSlice(a, " ");
-    try buf.appendSlice(a, value);
-    try buf.appendSlice(a, "\n");
 }
 
 fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
