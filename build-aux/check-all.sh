@@ -90,7 +90,10 @@ for suite in $suites; do
         1)   status=FAIL;  fail=$((fail+1)) ;;
         124) status=HANG;  hang=$((hang+1)) ;;   # timeout, default signal
         137) status=HANG;  hang=$((hang+1)) ;;   # timeout -s KILL (used here)
-        *)   if [ "$rc" -ge 128 ]; then status=CRASH; crash=$((crash+1)); else status=LOAD; loaderr=$((loaderr+1)); fi ;;
+        # Signal death is rc = 128+signum; real-time signals top out at 64
+        # (rc 192). temacs batch errors exit with codes like 255, which are
+        # NOT signals -- classify those as LOAD, not CRASH.
+        *)   if [ "$rc" -ge 128 ] && [ "$rc" -le 192 ]; then status=CRASH; crash=$((crash+1)); else status=LOAD; loaderr=$((loaderr+1)); fi ;;
     esac
     detail=
     case "$status" in
