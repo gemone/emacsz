@@ -934,6 +934,24 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run a built-in ert test suite with the dumped emacs");
     test_step.dependOn(check_step);
 
+    // generate-charprop: produce lisp/international/{charprop,uni-*}.el
+    // from admin/unidata via the dumped emacs (mirrors admin/unidata/
+    // Makefile). Required at runtime by suites touching ucs-names /
+    // char-from-name (tramp, completion); without it they fail to load.
+    // The bootstrap dump does not bundle charprop (loaded on demand), so
+    // it is generated separately. Outputs are gitignored. Standalone
+    // (like generate-charsets); run before check-all if needed.
+    const gen_charprop = b.addSystemCommand(&[_][]const u8{
+        "sh", "build-aux/generate-charprop.sh",
+    });
+    gen_charprop.setCwd(b.path("."));
+    gen_charprop.step.dependOn(&run_smoke.step);
+    const gen_charprop_step = b.step(
+        "generate-charprop",
+        "Generate lisp/international/{charprop,uni-*}.el from admin/unidata",
+    );
+    gen_charprop_step.dependOn(&gen_charprop.step);
+
     // check-all step: run EVERY *-tests.el under test/ — no skip. Each
     // suite runs in its own temacs process under a per-suite timeout so a
     // hang/crash in one suite cannot hide the rest, and every outcome is
