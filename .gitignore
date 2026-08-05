@@ -405,3 +405,4 @@ zig-out/
 /test/*.log
 /test/lisp/**/bc-test-*
 
+/pdumper-crash-backtrace.*
