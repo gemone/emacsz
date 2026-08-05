@@ -709,10 +709,17 @@ pub fn build(b: *std.Build) void {
     const run_check = b.addSystemCommand(&[_][]const u8{
         "sh",
         "-c",
-        \\ulimit -s unlimited && ./zig-out/bin/temacs --batch \
-        \\  -L test/src -L test/lisp -L test/lisp/emacs-lisp \
-        \\  --dump-file=./zig-out/bin/bootstrap-emacs.pdmp \
-        \\  --eval '(progn (load "cl-macs") (load "cl-seq") (load "cl-extra") (require (quote ert)) (load "alloc-tests") (load "version-tests") (load "byte-run-tests") (load "float-sup-tests") (load "cl-preloaded-tests") (load "button-tests") (load "delim-col-tests") (load "color-tests") (load "custom-tests") (load "dom-tests") (load "data-tests") (load "marker-tests") (load "chartab-tests") (load "cmds-tests") (load "let-alist-tests") (load "cl-lib-tests") (load "map-tests") (load "seq-tests") (let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit)))'
+        \\ulimit -s unlimited
+        \\TEMACS="./zig-out/bin/temacs --batch -L test/src -L test/lisp -L test/lisp/emacs-lisp --dump-file=./zig-out/bin/bootstrap-emacs.pdmp"
+        \\EVAL='(progn (load "cl-macs") (load "cl-seq") (load "cl-extra") (require (quote ert)) (load "alloc-tests") (load "version-tests") (load "byte-run-tests") (load "float-sup-tests") (load "cl-preloaded-tests") (load "button-tests") (load "delim-col-tests") (load "color-tests") (load "custom-tests") (load "dom-tests") (load "data-tests") (load "marker-tests") (load "chartab-tests") (load "cmds-tests") (load "let-alist-tests") (load "cl-lib-tests") (load "map-tests") (load "seq-tests") (let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit)))'
+        \\# pdumper relocation needs ASLR OFF on BOTH the dump (run_dump)
+        \\# and this load -> zero delta -> reliably-good. Falls back to
+        \\# plain temacs (ASLR-flaky) where setarch is unavailable.
+        \\if command -v setarch >/dev/null 2>&1; then
+        \\  setarch "$(uname -m)" -R $TEMACS --eval "$EVAL"
+        \\else
+        \\  $TEMACS --eval "$EVAL"
+        \\fi
     });
     run_check.setCwd(b.path("."));
     run_check.step.dependOn(&run_dump.step);
