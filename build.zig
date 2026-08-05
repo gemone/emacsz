@@ -690,6 +690,34 @@ pub fn build(b: *std.Build) void {
     dump_step.dependOn(b.getInstallStep());
     dump_step.dependOn(&run_dump.step);
 
+    // Smoke step (`zig build smoke`): prove the dumped emacs actually starts
+    // and evaluates Lisp by printing emacs-version from the pdmp. Mirrors
+    // run_dump (ASLR-off load via setarch -R, same env exports) so a bad
+    // pdmp is caught here -- segfault/garbage load exits nonzero under
+    // `set -e`, and the grep asserts a N.N version was printed (catches a
+    // hypothetical exits-0-but-empty case). Gates `check` so a broken
+    // dump fails fast instead of launching the 314 ert tests.
+    const run_smoke = b.addSystemCommand(&[_][]const u8{
+        "sh",
+        "-c",
+        \\set -e
+        \\export EMACSLOADPATH="$PWD/lisp" EMACSDATA="$PWD/etc" LC_ALL=C
+        \\# Disable ASLR for the load too (see run_dump): the pdumper
+        \\# relocation needs ASLR off on both dump and load.
+        \\if command -v setarch >/dev/null 2>&1; then
+        \\  OUT=$(setarch "$(uname -m)" -R ./zig-out/bin/temacs --batch --dump-file=./zig-out/bin/bootstrap-emacs.pdmp --eval '(princ emacs-version)')
+        \\else
+        \\  OUT=$(./zig-out/bin/temacs --batch --dump-file=./zig-out/bin/bootstrap-emacs.pdmp --eval '(princ emacs-version)')
+        \\fi
+        \\echo "$OUT" | grep -qE '^[0-9]+\.[0-9]+'
+        \\echo "$OUT"
+        \\echo "smoke: dumped emacs version $OUT"
+    });
+    run_smoke.setCwd(b.path("."));
+    run_smoke.step.dependOn(&run_dump.step);
+    const smoke_step = b.step("smoke", "Verify the dumped emacs starts and evaluates Lisp");
+    smoke_step.dependOn(&run_smoke.step);
+
     // `check` step: run a broad set of built-in ert test suites with the
     // dumped emacs (314 tests across 18 suites today: alloc, version,
     // byte-run, float-sup, cl-preloaded, button, delim-col, color, custom,
@@ -718,7 +746,7 @@ pub fn build(b: *std.Build) void {
         \\fi
     });
     run_check.setCwd(b.path("."));
-    run_check.step.dependOn(&run_dump.step);
+    run_check.step.dependOn(&run_smoke.step);
     const check_step = b.step("check", "Run built-in ert test suites with the dumped emacs");
     check_step.dependOn(&run_check.step);
 
@@ -739,6 +767,7 @@ pub fn build(b: *std.Build) void {
         \\Available steps:
         \\  zig build                   - Build temacs
         \\  zig build dump              - Dump a runnable bootstrap-emacs.pdmp
+        \\  zig build smoke             - Verify dumped emacs runs
         \\  zig build check             - Run built-in ert test suites (314 tests)
         \\  zig build test              - Alias of check
         \\  zig build generate-headers  - Generate Gnulib .gl.h headers
