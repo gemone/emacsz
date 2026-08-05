@@ -22,13 +22,14 @@
         .gen_epaths = .{
             .path = "tools/gen-epaths",
         },
-        // memeq: the first RUNTIME gnulib function provided by an
-        // independent Zig package instead of C (lib/memeq.c). Linked into
-        // temacs to replace the gnulib `extern inline` external definition;
-        // uses a byte loop with no libc call. Follows the same path-dep
-        // pattern as the build-time tool packages above.
-        .memeq = .{
-            .path = "tools/memeq",
+        // gnulib-str: gnulib string-primitive functions (memeq, streq)
+        // provided by an independent Zig package instead of C
+        // (lib/memeq.c, lib/streq.c). Linked into temacs to replace the
+        // gnulib `extern inline` external definitions; direct byte/string
+        // loops with no libc call. Follows the same path-dep pattern as the
+        // build-time tool packages above.
+        .gnulib_str = .{
+            .path = "tools/gnulib-str",
         },
     },
     .paths = .{

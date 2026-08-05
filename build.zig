@@ -429,20 +429,23 @@ pub fn build(b: *std.Build) void {
     // src/config.h exists.
     exe.step.dependOn(&run_configure.step);
 
-    // memeq: link the independent Zig package (tools/memeq) that replaces
-    // lib/memeq.c -- the first runtime gnulib function provided by Zig
-    // instead of C. Built ReleaseFast (a leaf byte loop) so it pulls in no
-    // Zig runtime or panic handler that this C executable would have to
-    // satisfy. Its exported `memeq` symbol is the out-of-line external
-    // definition that gnulib's `extern inline` in lib/string.h references
-    // (at -O0 the compiler does not inline the header version).
-    const memeq_mod = b.createModule(.{
-        .root_source_file = b.dependency("memeq", .{}).path("src/memeq.zig"),
+    // gnulib-str: an independent Zig package (tools/gnulib-str) providing
+    // the gnulib string-primitive external definitions that lib/memeq.c +
+    // lib/streq.c would otherwise emit (their bodies are merely the
+    // out-of-line copy of an `extern inline` in lib/string.h). Each
+    // exported symbol (memeq, streq) is a direct implementation with no
+    // libc call. Built ReleaseFast (leaf byte/string loops) so it pulls in
+    // no Zig runtime or panic handler that this C executable would have to
+    // satisfy. At -O0 the C compiler does not inline the header versions,
+    // so callers resolve to these exported symbols.
+    const gnulib_str_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_str", .{}).path("src/str.zig"),
         .target = target,
         .optimize = .ReleaseFast,
     });
-    const memeq_lib = b.addLibrary(.{ .name = "memeq", .root_module = memeq_mod });
-    exe.root_module.linkLibrary(memeq_lib);
+    const gnulib_str_lib =
+        b.addLibrary(.{ .name = "gnulib-str", .root_module = gnulib_str_mod });
+    exe.root_module.linkLibrary(gnulib_str_lib);
 
     // Determine if we're building for Unix-like systems
     const is_windows = target.result.os.tag == .windows;
@@ -983,12 +986,13 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // byte-compilation (the byte-compiler fchmodat's its temp files).
         // Callers use the libc fchmodat (HAVE_FCHMODAT=1).
         "fchmodat",
-        // lib/memeq.c is provided by an independent Zig package
-        // (tools/memeq, dependency `memeq`) instead of C -- the first
-        // runtime gnulib function replaced by Zig. Excluded here so the C
-        // source is not compiled; the package's exported `memeq` symbol is
-        // linked into temacs below.
+        // lib/memeq.c + lib/streq.c are provided by an independent Zig
+        // package (tools/gnulib-str, dependency `gnulib_str`) instead of C
+        // -- runtime gnulib string primitives replaced by Zig. Excluded
+        // here so the C sources are not compiled; the package's exported
+        // symbols are linked into temacs below.
         "memeq",
+        "streq",
     };
 
     var libdir = try std.Io.Dir.cwd().openDir(io, "lib", .{ .iterate = true });

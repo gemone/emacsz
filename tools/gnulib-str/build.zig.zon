@@ -1,12 +1,12 @@
 .{
-    .name = .memeq,
-    .fingerprint = 0xd4ffc5eb16720098,
+    .name = .gnulib_str,
+    .fingerprint = 0x103e8b8c7d2cc91b,
     .version = "0.1.0",
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
     .paths = .{
         "build.zig",
         "build.zig.zon",
-        "src/memeq.zig",
+        "src/str.zig",
     },
 }
