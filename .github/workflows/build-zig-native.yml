@@ -70,10 +70,6 @@ jobs:
         run: |
           brew install pkg-config autoconf automake gnutls libxml2 little-cms2 sqlite3
 
-      - name: Setup build environment (unified)
-        run: ./build-aux/setup-build-environment.sh
-        shell: bash
-
       - name: Build (TUI mode)
         run: zig build -Doptimize=${{ matrix.mode }}
         shell: bash

@@ -136,8 +136,8 @@ pub fn build(b: *std.Build) void {
         \\  exit 0
         \\fi
         \\if [ ! -x ./configure ]; then
-        \\  echo "Error: ./configure not found or not executable" >&2
-        \\  exit 1
+        \\  echo "configure not present; running autogen.sh to build it..."
+        \\  ./autogen.sh
         \\fi
         \\echo "Running ./configure (autoconf feature probes -> src/config.h)..."
         \\./configure --without-x --without-ns --without-modules
