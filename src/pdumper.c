@@ -3291,13 +3291,17 @@ static void
 dump_metadata_for_pdumper (struct dump_context *ctx)
 {
   for (int i = 0; i < nr_dump_hooks; ++i)
-    dump_emacs_reloc_to_emacs_ptr_raw (ctx, &dump_hooks[i],
-				       (void const *) dump_hooks[i]);
+    /* Function pointers: non-PIE code addresses are fixed, so record
+	   them as immediate values (no relocation delta).  The default
+	   EMACS_PTR_RAW applies the heap mmap delta, corrupting code
+	   pointers under zig-cc non-PIE (dump hooks fire at garbage).  */
+    dump_emacs_reloc_immediate_intmax_t (ctx, (intmax_t *) &dump_hooks[i],
+				     (intmax_t) (uintptr_t) dump_hooks[i]);
   dump_emacs_reloc_immediate_int (ctx, &nr_dump_hooks, nr_dump_hooks);
 
   for (int i = 0; i < nr_dump_late_hooks; ++i)
-    dump_emacs_reloc_to_emacs_ptr_raw (ctx, &dump_late_hooks[i],
-				       (void const *) dump_late_hooks[i]);
+    dump_emacs_reloc_immediate_intmax_t (ctx, (intmax_t *) &dump_late_hooks[i],
+				     (intmax_t) (uintptr_t) dump_late_hooks[i]);
   dump_emacs_reloc_immediate_int (ctx, &nr_dump_late_hooks,
 				  nr_dump_late_hooks);
 
