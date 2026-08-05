@@ -40,13 +40,16 @@ pub fn build(b: *std.Build) void {
     // the cross target. The run step is wired into both the standalone
     // `generate-headers` step and the exe (line 638), preserving the prior
     // behavior -- the port is purely an implementation swap.
+    // The Gnulib .gl.h generator is now an independent Zig package
+    // (dependency `gl_headers_gen` in build.zig.zon -> tools/gl-headers).
+    const gl_dep = b.dependency("gl_headers_gen", .{});
     const gl_tool = b.addExecutable(.{
         .name = "generate-gl-headers",
         .root_module = b.createModule(.{
             .target = b.graph.host,
             .optimize = .Debug,
             .link_libc = true,
-            .root_source_file = b.path("build-aux/generate-gl-headers.zig"),
+            .root_source_file = gl_dep.path("src/main.zig"),
         }),
     });
     const generate_headers = b.addRunArtifact(gl_tool);

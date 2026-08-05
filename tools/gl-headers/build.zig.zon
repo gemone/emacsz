@@ -1,0 +1,12 @@
+.{
+    .name = .gl_headers_gen,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .fingerprint = 0x6d0d3d62e5fb8acb,
+    .dependencies = .{},
+    .paths = .{
+        "build.zig.zon",
+        "build.zig",
+        "src/main.zig",
+    },
+}

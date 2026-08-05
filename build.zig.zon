@@ -3,7 +3,14 @@
     .fingerprint = 0x9075990b2e14f4b3,
     .version = "31.0.50",
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        // The Gnulib .gl.h generator, extracted as an independent Zig
+        // package (the first zon dependency; runtime gnulib/platform
+        // packages will follow the same pattern).
+        .gl_headers_gen = .{
+            .path = "tools/gl-headers",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
