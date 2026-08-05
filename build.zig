@@ -685,24 +685,27 @@ pub fn build(b: *std.Build) void {
     dump_step.dependOn(b.getInstallStep());
     dump_step.dependOn(&run_dump.step);
 
-    // `check` step: run a built-in ert test suite with the dumped emacs
-    // to verify the build passes real emacs tests. `ulimit -s unlimited`
-    // because -O0 eval frames are large (ert-deftest macro expansion
-    // otherwise overflows the C stack). cl-macs/cl-seq/cl-extra are
-    // preloaded explicitly because the bootstrap dump carries only
-    // ldefs_boot.el, so cl-lib is not autoloaded. `-L test/src` lets
-    // (load "alloc-tests") find test/src/alloc-tests.el. Exits 0 iff
-    // all tests pass.
+    // `check` step: run a broad set of built-in ert test suites with the
+    // dumped emacs (90 tests across 10 suites today: alloc, version,
+    // byte-run, float-sup, cl-preloaded, button, delim-col, color, custom,
+    // dom). `ulimit -s unlimited` because -O0 eval frames are large
+    // (ert-deftest macro expansion otherwise overflows the C stack).
+    // cl-macs/cl-seq/cl-extra are preloaded explicitly because the bootstrap
+    // dump carries only ldefs_boot.el, so cl-lib is not autoloaded. The
+    // `-L test/...` dirs let each (load "NAME") resolve. Exits 0 iff all
+    // tests pass. (Suites that abort or hang at -O0 -- e.g. abbrev-tests,
+    // char-fold-tests, emacsclient-tests -- are excluded.)
     const run_check = b.addSystemCommand(&[_][]const u8{
         "sh",
         "-c",
-        \\ulimit -s unlimited && ./zig-out/bin/temacs --batch -L test/src \
+        \\ulimit -s unlimited && ./zig-out/bin/temacs --batch \
+        \\  -L test/src -L test/lisp -L test/lisp/emacs-lisp \
         \\  --dump-file=./zig-out/bin/bootstrap-emacs.pdmp \
-        \\  --eval '(progn (load "cl-macs") (load "cl-seq") (load "cl-extra") (require (quote ert)) (load "alloc-tests") (let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit)))'
+        \\  --eval '(progn (load "cl-macs") (load "cl-seq") (load "cl-extra") (require (quote ert)) (load "alloc-tests") (load "version-tests") (load "byte-run-tests") (load "float-sup-tests") (load "cl-preloaded-tests") (load "button-tests") (load "delim-col-tests") (load "color-tests") (load "custom-tests") (load "dom-tests") (let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit)))'
     });
     run_check.setCwd(b.path("."));
     run_check.step.dependOn(&run_dump.step);
-    const check_step = b.step("check", "Run a built-in ert test suite (alloc-tests) with the dumped emacs");
+    const check_step = b.step("check", "Run built-in ert test suites with the dumped emacs");
     check_step.dependOn(&run_check.step);
 
     // Test step: run the built-in ert suite (alias of `check`). The
