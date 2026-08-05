@@ -46,6 +46,13 @@
         .gnulib_stdbit = .{
             .path = "tools/gnulib-stdbit",
         },
+        // gnulib-hash: gnulib's cryptographic hashes (SHA1 first) provided
+        // by an independent Zig package instead of C (lib/sha1.c). A
+        // native Zig SHA1 operating on the gnulib struct sha1_ctx layout;
+        // no libc call. Linked into temacs (backs `secure-hash').
+        .gnulib_hash = .{
+            .path = "tools/gnulib-hash",
+        },
     },
     .paths = .{
         "build.zig",

@@ -477,6 +477,20 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-stdbit", .root_module = gnulib_stdbit_mod });
     exe.root_module.linkLibrary(gnulib_stdbit_lib);
 
+    // gnulib-hash: an independent Zig package (tools/gnulib-hash) providing
+    // gnulib's cryptographic hashes as native Zig. Currently SHA1
+    // (sha1_init_ctx / sha1_process_bytes / sha1_finish_ctx / sha1_buffer),
+    // operating on the gnulib struct sha1_ctx layout, with no libc call.
+    // Backs `secure-hash'. Built ReleaseFast (leaf crypto).
+    const gnulib_hash_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_hash", .{}).path("src/hash.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const gnulib_hash_lib =
+        b.addLibrary(.{ .name = "gnulib-hash", .root_module = gnulib_hash_mod });
+    exe.root_module.linkLibrary(gnulib_hash_lib);
+
     // Determine if we're building for Unix-like systems
     const is_windows = target.result.os.tag == .windows;
 
@@ -1055,6 +1069,12 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         "stdc_trailing_zeros",
         "stdc_count_ones",
         "stdc_bit_width",
+        // lib/sha1.c is provided by an independent Zig package
+        // (tools/gnulib-hash, dependency `gnulib_hash`) -- a native Zig
+        // SHA1 operating on the gnulib struct sha1_ctx. Excluded here so
+        // the C source is not compiled; the package's exported sha1_*
+        // symbols are linked into temacs below.
+        "sha1",
     };
 
     var libdir = try std.Io.Dir.cwd().openDir(io, "lib", .{ .iterate = true });
