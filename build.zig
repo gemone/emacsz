@@ -116,6 +116,39 @@ pub fn build(b: *std.Build) void {
     );
     gen_charsets_step.dependOn(&gen_charsets.step);
 
+    // Run ./configure as a BUILD STEP so `zig build` is self-sufficient:
+    // it produces src/config.h via autoconf's REAL feature probes (not a
+    // static snapshot). configure is TRACKED in the repo, so no autogen is
+    // needed in a clean clone. Guarded: skipped when src/config.h already
+    // exists, so repeat builds are fast. This is the pragmatic milestone
+    // path for goal #1 ("完全使用 zig build 构建, 不依赖任何 automake make"):
+    // configure is an autoconf shell PROBE (NOT make); zig performs all
+    // compile + link. The gen_config package stays STAGED for I4d, where a
+    // pure-Zig probe module will replace this step to gain cross-compilation
+    // (configure probes the host, not the target). Defined here (before
+    // make-docfile + temacs) because every C compile includes <config.h>.
+    const run_configure = b.addSystemCommand(&[_][]const u8{
+        "sh",
+        "-c",
+        \\set -e
+        \\if [ -f src/config.h ]; then
+        \\  echo "src/config.h present; skipping configure"
+        \\  exit 0
+        \\fi
+        \\if [ ! -x ./configure ]; then
+        \\  echo "Error: ./configure not found or not executable" >&2
+        \\  exit 1
+        \\fi
+        \\echo "Running ./configure (autoconf feature probes -> src/config.h)..."
+        \\./configure --without-x --without-ns --without-modules
+    });
+    run_configure.setCwd(b.path("."));
+    const configure_step = b.step(
+        "configure",
+        "Run ./configure to generate src/config.h (autoconf feature probes)",
+    );
+    configure_step.dependOn(&run_configure.step);
+
     // Build make-docfile as a HOST tool (it runs at build time, so it must
     // target the build host rather than the cross target). Reuses the same
     // config.h-aware flags as the libgnu compile; all gnulib headers that
@@ -166,6 +199,9 @@ pub fn build(b: *std.Build) void {
             .flags = mdf_flags,
         });
     }
+    // make-docfile's sources include <config.h> (via -Isrc), so its compile
+    // must wait for the configure step to have written src/config.h.
+    mdf.step.dependOn(&run_configure.step);
 
     // Run `make-docfile -d src -g <names>` and capture stdout as globals.h.
     // make-docfile only rewrites a trailing ".o" to ".c"/".m" (scan_c_file at
@@ -387,6 +423,11 @@ pub fn build(b: *std.Build) void {
     // runtime relocation is needed. (The target requires PIC code,
     // but PIC code in a non-PIE exe still gets fixed statics.)
     exe.pie = false;
+
+    // temacs includes <config.h> (found via -Isrc); ensure configure has
+    // generated src/config.h before compiling. The step self-skips once
+    // src/config.h exists.
+    exe.step.dependOn(&run_configure.step);
 
     // Determine if we're building for Unix-like systems
     const is_windows = target.result.os.tag == .windows;
