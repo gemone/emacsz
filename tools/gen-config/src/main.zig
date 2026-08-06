@@ -48,6 +48,28 @@ const musl_overrides: []const Override = &.{
     .{ .name = "HAVE_SIGDESCR_NP" },
 };
 
+// macOS lacks the *_unlocked stdio family (Apple's libc never exported
+// them), so the make-docfile HOST config must not carry the
+// HAVE_DECL_*_UNLOCKED values that the committed Linux config derived
+// from glibc.  Only the host tool needs this tag; the macOS temacs
+// target keeps the Linux-derived values (same as today).
+const macos_overrides: []const Override = &.{
+    .{ .name = "HAVE_DECL_GETC_UNLOCKED" },
+    .{ .name = "HAVE_DECL_CLEARERR_UNLOCKED" },
+    .{ .name = "HAVE_DECL_FEOF_UNLOCKED" },
+    .{ .name = "HAVE_DECL_FERROR_UNLOCKED" },
+    .{ .name = "HAVE_DECL_FFLUSH_UNLOCKED" },
+    .{ .name = "HAVE_DECL_FGETS_UNLOCKED" },
+    .{ .name = "HAVE_DECL_FILENO_UNLOCKED" },
+    .{ .name = "HAVE_DECL_FPUTC_UNLOCKED" },
+    .{ .name = "HAVE_DECL_FPUTS_UNLOCKED" },
+    .{ .name = "HAVE_DECL_FREAD_UNLOCKED" },
+    .{ .name = "HAVE_DECL_FWRITE_UNLOCKED" },
+    .{ .name = "HAVE_DECL_GETCHAR_UNLOCKED" },
+    .{ .name = "HAVE_DECL_PUTCHAR_UNLOCKED" },
+    .{ .name = "HAVE_DECL_PUTC_UNLOCKED" },
+};
+
 // Windows additionally drops the POSIX-only subsystems that need mingw
 // ports of the same libraries, and switches the config to the native
 // Windows system (WINDOWSNT pulls in src/ms-w32.h via conf_post.h). The
@@ -205,6 +227,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             musl_overrides
         else if (std.mem.eql(u8, tag, "windows"))
             windows_overrides
+        else if (std.mem.eql(u8, tag, "macos"))
+            macos_overrides
         else
             null;
         if (overrides) |list| {

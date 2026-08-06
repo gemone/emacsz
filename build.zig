@@ -185,14 +185,15 @@ pub fn build(b: *std.Build) void {
 
     // make-docfile is a HOST tool: it must compile against a config that
     // matches the OS it runs on.  The committed values are Linux-derived
-    // (HAVE_DECL_*_UNLOCKED=1 etc.); on a Windows host those would make
-    // lib/unlocked-io.h remap getc/fputs/putchar to *_unlocked symbols
-    // mingw does not have, so the host config carries the Windows tag
-    // whenever the host itself is Windows.  (Cross-compiling from a Linux
-    // host keeps the Linux host config, which is what make-docfile runs
-    // against there.)
+    // (HAVE_DECL_*_UNLOCKED=1 etc.); on Windows and macOS hosts those
+    // would make lib/unlocked-io.h remap getc/fputs/putchar to *_unlocked
+    // symbols the platform libc does not have, so the host config carries
+    // the platform tag whenever the host is Windows or macOS.
+    // (Cross-compiling from a Linux host keeps the Linux host config,
+    // which is what make-docfile runs against there.)
     const host_config_tag: ?[]const u8 = switch (b.graph.host.result.os.tag) {
         .windows => "windows",
+        .macos => "macos",
         else => null,
     };
     const mdf_config: TargetConfig = if (host_config_tag) |tag| blk: {
