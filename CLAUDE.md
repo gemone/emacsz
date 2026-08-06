@@ -39,9 +39,17 @@ This repository contains GNU Emacs with an ongoing effort to modernize the build
   `tools/gnulib-dtoastr` (`dtoastr`, accurate float printing), and
   `tools/gnulib-stat-time` (`get_stat_*`, backing `file-attributes` time
   elements), and `tools/gnulib-boot-time` (`get_boot_time`, backing
-  lock-file identification). The remaining lib/*.c files in the build
-  are either empty on glibc or unexercised by Emacs. Deeper libc
-  decoupling (file-I/O, time modules) is ongoing.
+  lock-file identification), and `tools/gnulib-acl` (`qcopy_acl` +
+  `acl_errno_valid`, backing preserve-permissions in `Fcopy_file` and
+  `file-acl`/`set-file-acl`; the libattr attr_copy_* xattr semantics and
+  the fdfile_has_aclinfo EOPNOTSUPP diagnostic are ported with raw
+  syscalls, and libattr is no longer linked). The remaining live gnulib
+  C objects are `time_rz` (`tzalloc`/`localtime_rz`/`mktime_z`, the
+  timezone machinery behind `src/timefns.c`) plus thin libc-delegating
+  wrappers (`close-stream`, `pipe2`, `md5-stream`, `save-cwd`,
+  `binary-io`, `fseterr`, `strnul`, `u64`); the rest of lib/*.c is empty
+  on glibc or unexercised by Emacs. Deeper libc decoupling (file-I/O,
+  time modules) is ongoing.
 - **Goal 3 — Runnable on Linux: ✅ Done.** The final image is
   byte-compiled: `zig build dump` (source bootstrap) →
   `zig build compile-lisp` → `zig build dump-compiled`; `zig build check`
