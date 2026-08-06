@@ -11,8 +11,8 @@
 // Implemented so far: mpz lifecycle, conversions, comparison, add/sub/mul,
 // two-power shifts, size queries, the full division family (truncated,
 // floored, ceiling, single-limb and exact), pow/gcd/addmul/submul,
-// and bitwise ops. The remaining surface (import/export, limbs API,
-// strings and doubles) lands in follow-up slices.
+// bitwise ops, the limbs API and byte import/export. The remaining
+// surface (strings and doubles) lands in follow-up slices.
 
 const std = @import("std");
 
@@ -1189,6 +1189,129 @@ pub export fn mpz_scan1(a: *const mpz_t, start: mp_bitcnt_t) c_ulong {
     return scanLimbBits(true, t._mp_d.?, limbCount(&t), start);
 }
 
+// ---------- limbs API ----------
+
+// Limb N of the magnitude (GMP ignores the sign); 0 when out of range.
+pub export fn mpz_getlimbn(a: *const mpz_t, n: mp_size_t) mp_limb_t {
+    if (n < 0) return 0;
+    const idx: usize = @intCast(n);
+    if (idx >= limbCount(a)) return 0;
+    return a._mp_d.?[idx];
+}
+
+pub export fn mpz_limbs_read(a: *const mpz_t) ?[*]mp_limb_t {
+    return a._mp_d;
+}
+
+// Grow ROP to hold at least N limbs and return a pointer to the array.
+pub export fn mpz_limbs_write(rop: *mpz_t, n: mp_size_t) ?[*]mp_limb_t {
+    if (n < 0) @panic("mpz_limbs_write: negative count");
+    const need: usize = @intCast(n);
+    ensureCapacity(rop, need);
+    return rop._mp_d;
+}
+
+// Commit a limb array written through mpz_limbs_write: SIZE is the signed
+// limb count (GMP trusts the caller, so no trimming happens here).
+pub export fn mpz_limbs_finish(rop: *mpz_t, size: mp_size_t) void {
+    rop._mp_size = @intCast(size);
+}
+
+// Point X at the read-only limb array XP without allocating; the returned
+// value is X itself. A later mpz_clear is safe (_mp_alloc is 0).
+pub export fn mpz_roinit_n(x: *mpz_t, xp: [*]const mp_limb_t, xs: mp_size_t) *const mpz_t {
+    x._mp_alloc = 0;
+    x._mp_size = @intCast(xs);
+    x._mp_d = @constCast(xp);
+    return x;
+}
+
+// ---------- byte import/export ----------
+
+const nativeLittle = @import("builtin").cpu.arch.endian() == .little;
+
+fn endianLittle(endian: c_int) bool {
+    return if (endian == 0) nativeLittle else endian < 0;
+}
+
+// Import COUNT words of SIZE bytes each, covering the |value|; ORDER is
+// 1 for most-significant-word-first, -1 for least-first, 0 acts as 1
+// (GMP's convention); ENDIAN is 1 big / -1 little / 0 native. Nails=0.
+pub export fn mpz_import(rop: *mpz_t, count: usize, order: c_int, size: usize, endian: c_int, nails: c_int, op: ?*const anyopaque) void {
+    if (nails != 0) @panic("mpz_import: nails not supported");
+    if (size > 8) @panic("mpz_import: word size over 8 bytes");
+    if (size == 0 or count == 0 or op == null) {
+        mpz_set_ui(rop, 0);
+        return;
+    }
+    const bytes: [*]const u8 = @ptrCast(op.?);
+    const little = endianLittle(endian);
+    const lsw_first = order < 0;
+    const total = count * size;
+    const nlimbs = (total + 7) / 8;
+    const res = allocLimbs(nlimbs) orelse oom();
+    @memset(res[0..nlimbs], 0);
+    var li: usize = 0;
+    var cur: u64 = 0;
+    var curbytes: u7 = 0;
+    var wi: usize = 0;
+    while (wi < count) : (wi += 1) {
+        const mem_idx = if (lsw_first) wi else count - 1 - wi;
+        const wptr = bytes + mem_idx * size;
+        var bi: usize = 0;
+        while (bi < size) : (bi += 1) {
+            const byte = wptr[if (little) bi else size - 1 - bi];
+            cur |= @as(u64, byte) << @intCast(8 * curbytes);
+            curbytes += 1;
+            if (curbytes == 8) {
+                res[li] = cur;
+                li += 1;
+                cur = 0;
+                curbytes = 0;
+            }
+        }
+    }
+    if (curbytes != 0) {
+        res[li] = cur;
+        li += 1;
+    }
+    var used = nlimbs;
+    while (used > 0 and res[used - 1] == 0) used -= 1;
+    commit(rop, res, nlimbs, used, 1);
+}
+
+// Export the |value| as whole words into ROP; *COUNTP receives the word
+// count (zero for zero), and ROP is returned. The caller must size ROP
+// for mpz_sizeinbase-based estimates.
+pub export fn mpz_export(rop: ?*anyopaque, countp: ?*usize, order: c_int, size: usize, endian: c_int, nails: c_int, op: *const mpz_t) ?*anyopaque {
+    if (nails != 0) @panic("mpz_export: nails not supported");
+    if (size == 0 or size > 8) @panic("mpz_export: unsupported word size");
+    const bits = bitLength(op);
+    const sigbytes = (bits + 7) / 8;
+    const count = (sigbytes + size - 1) / size;
+    if (countp) |cp| cp.* = count;
+    if (rop == null or count == 0) return rop;
+    const bytes: [*]u8 = @ptrCast(rop.?);
+    @memset(bytes[0 .. count * size], 0);
+    const little = endianLittle(endian);
+    const lsw_first = order < 0;
+    var wi: usize = 0;
+    while (wi < count) : (wi += 1) {
+        const mem_idx = if (lsw_first) wi else count - 1 - wi;
+        const wptr = bytes + mem_idx * size;
+        var bi: usize = 0;
+        while (bi < size) : (bi += 1) {
+            const bpos = wi * size + bi;
+            const byte: u8 = if (bpos < sigbytes)
+                @as(u8, @truncate(op._mp_d.?[bpos / 8] >> @intCast(8 * (bpos % 8))))
+            else
+                0;
+            wptr[if (little) bi else size - 1 - bi] = byte;
+        }
+    }
+    return rop;
+}
+
 // Test helper: build a magnitude from LIMBS pseudo-random limbs.
 fn rndMagTest(z: *mpz_t, limbs: usize, seed: *u64) void {
     mpz_set_ui(z, 0);
@@ -1823,4 +1946,95 @@ test "mpz popcount scan1 odd" {
     try std.testing.expectEqual(@as(c_ulong, 3), mpz_popcount(&a));
     try std.testing.expectEqual(@as(c_ulong, 2), mpz_scan1(&a, 0));
     try std.testing.expectEqual(@as(c_ulong, 5), mpz_scan1(&a, 3));
+}
+
+test "mpz limbs api getlimbn roinit" {
+    var z: mpz_t = undefined;
+    mpz_init(&z);
+    defer mpz_clear(&z);
+
+    // Build 3 + 2^64 via mpz_limbs_write / mpz_limbs_finish.
+    const limbs = mpz_limbs_write(&z, 2).?;
+    limbs[0] = 3;
+    limbs[1] = 1;
+    mpz_limbs_finish(&z, 2);
+    try std.testing.expectEqual(@as(u64, 3), mpz_getlimbn(&z, 0));
+    try std.testing.expectEqual(@as(u64, 1), mpz_getlimbn(&z, 1));
+    try std.testing.expectEqual(@as(u64, 0), mpz_getlimbn(&z, 2));
+    var chk: mpz_t = undefined;
+    mpz_init(&chk);
+    defer mpz_clear(&chk);
+    mpz_set_ui(&chk, 1);
+    mpz_mul_2exp(&chk, &chk, 64);
+    mpz_add_ui(&chk, &chk, 3);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&z, &chk));
+
+    // Negative sign through limbs_finish.
+    mpz_limbs_finish(&z, -2);
+    try std.testing.expectEqual(@as(c_int, -1), mpz_sgn(&z));
+    try std.testing.expectEqual(@as(u64, 3), mpz_getlimbn(&z, 0));
+    mpz_limbs_finish(&z, 2);
+
+    // mpz_roinit_n points at caller storage.
+    const static_limbs = [_]u64{ 0xDEADBEEF, 0x0123456789ABCDEF };
+    var ro: mpz_t = undefined;
+    _ = mpz_roinit_n(&ro, &static_limbs, 2);
+    try std.testing.expectEqual(@as(u64, 0xDEADBEEF), mpz_getlimbn(&ro, 0));
+    try std.testing.expectEqual(@as(u64, 0x0123456789ABCDEF), mpz_getlimbn(&ro, 1));
+    try std.testing.expectEqual(@as(isize, 2), mpz_size(&ro));
+    mpz_clear(&ro); // alloc == 0: must not free the static array
+    try std.testing.expectEqual(@as(u64, 0xDEADBEEF), static_limbs[0]);
+}
+
+test "mpz import export round trips" {
+    var z: mpz_t = undefined;
+    var r: mpz_t = undefined;
+    mpz_init(&z);
+    mpz_init(&r);
+    defer mpz_clear(&z);
+    defer mpz_clear(&r);
+
+    // 2^64 + 1 exported as native u64 words, least-significant first.
+    mpz_set_ui(&z, 1);
+    mpz_mul_2exp(&z, &z, 64);
+    mpz_add_ui(&z, &z, 1);
+    var buf: [16]u8 = undefined;
+    var n: usize = 0;
+    _ = mpz_export(&buf, &n, -1, 8, 0, 0, &z);
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqual(@as(u8, 1), buf[0]);
+    try std.testing.expectEqual(@as(u8, 0), buf[7]);
+    try std.testing.expectEqual(@as(u8, 1), buf[8]);
+    mpz_import(&r, n, -1, 8, 0, 0, &buf);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&r, &z));
+
+    // 32-bit words, most-significant first, big-endian bytes.
+    mpz_set_ui(&z, 0x0102030405060708);
+    _ = mpz_export(&buf, &n, 1, 4, 1, 0, &z);
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqual(@as(u8, 0x01), buf[0]);
+    try std.testing.expectEqual(@as(u8, 0x02), buf[1]);
+    try std.testing.expectEqual(@as(u8, 0x08), buf[7]);
+    mpz_import(&r, n, 1, 4, 1, 0, &buf);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&r, &z));
+
+    // Direct import of two 32-bit little-endian words: 1 + 2 * 2^32.
+    const bytes = [_]u8{ 1, 0, 0, 0, 2, 0, 0, 0 };
+    mpz_import(&r, 2, -1, 4, -1, 0, &bytes);
+    var chk2: mpz_t = undefined;
+    mpz_init(&chk2);
+    defer mpz_clear(&chk2);
+    mpz_set_ui(&chk2, 1);
+    mpz_mul_2exp(&chk2, &chk2, 32);
+    mpz_mul_ui(&chk2, &chk2, 2);
+    mpz_add_ui(&chk2, &chk2, 1);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&r, &chk2));
+
+    // Zero exports zero words and leaves the count at 0.
+    mpz_set_ui(&z, 0);
+    n = 99;
+    var scratch: [8]u8 = .{ 0xAA } ** 8;
+    _ = mpz_export(&scratch, &n, -1, 8, 0, 0, &z);
+    try std.testing.expectEqual(@as(usize, 0), n);
+    try std.testing.expectEqual(@as(u8, 0xAA), scratch[0]);
 }
