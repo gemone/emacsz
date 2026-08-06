@@ -116,38 +116,47 @@ pub fn build(b: *std.Build) void {
     );
     gen_charsets_step.dependOn(&gen_charsets.step);
 
-    // Run ./configure as a BUILD STEP so `zig build` is self-sufficient:
-    // it produces src/config.h via autoconf's REAL feature probes (not a
-    // static snapshot). configure is TRACKED in the repo, so no autogen is
-    // needed in a clean clone. Guarded: skipped when src/config.h already
-    // exists, so repeat builds are fast. This is the pragmatic milestone
-    // path for goal #1 ("完全使用 zig build 构建, 不依赖任何 automake make"):
-    // configure is an autoconf shell PROBE (NOT make); zig performs all
-    // compile + link. The gen_config package stays STAGED for I4d, where a
-    // pure-Zig probe module will replace this step to gain cross-compilation
-    // (configure probes the host, not the target). Defined here (before
+    // Generate src/config.h via a CUSTOM generator (not addConfigHeader).
+    // addConfigHeader needs a comptime values struct, unwieldy for the ~760
+    // config.h knobs; this reads the lean zig-authored template (src/config.h.in:
+    // guard + _GNU_SOURCE + every `#undef NAME` from config.in + conf_post) plus
+    // the zig-owned answer data (src/config_values.txt: `NAME=value`, or bare
+    // `NAME` for undef) and substitutes each `#undef NAME` -> the value --
+    // the macro processing autoconf's config.status does. Text-based, so every
+    // value type (ints, strings, char literals, /**/) is handled uniformly.
+    // This REPLACES the former ./configure shell step (autoconf probe): the
+    // template + answer file are committed, the tool is pure Zig, and every C
+    // compile (make-docfile + temacs) includes the generated <config.h> from
+    // the zig-cache via addIncludePath below. No shell is needed.
+    //
+    // The config.h generator is an independent Zig package (dependency
+    // `gen_config` in build.zig.zon -> tools/gen-config). The tool reads
+    // src/config.h.in + src/config_values.txt (with cwd = repo root via
+    // setCwd) and writes the substituted config.h body to STDOUT;
+    // captureStdOut lands it in the zig-cache. Defined here (before
     // make-docfile + temacs) because every C compile includes <config.h>.
-    const run_configure = b.addSystemCommand(&[_][]const u8{
-        "sh",
-        "-c",
-        \\set -e
-        \\if [ -f src/config.h ]; then
-        \\  echo "src/config.h present; skipping configure"
-        \\  exit 0
-        \\fi
-        \\if [ ! -x ./configure ]; then
-        \\  echo "configure not present; running autogen.sh to build it..."
-        \\  ./autogen.sh
-        \\fi
-        \\echo "Running ./configure (autoconf feature probes -> src/config.h)..."
-        \\./configure --without-x --without-ns --without-modules
+    const gen_config_dep = b.dependency("gen_config", .{});
+    const gen_config_tool = b.addExecutable(.{
+        .name = "gen-config",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .link_libc = true,
+            .root_source_file = gen_config_dep.path("src/main.zig"),
+        }),
     });
-    run_configure.setCwd(b.path("."));
-    const configure_step = b.step(
-        "configure",
-        "Run ./configure to generate src/config.h (autoconf feature probes)",
+    const run_gen_config = b.addRunArtifact(gen_config_tool);
+    run_gen_config.setCwd(b.path("."));
+    // Pass the template + answer files as args so the step's cache tracks
+    // their content (the tool reads them relative to the cwd).
+    run_gen_config.addFileArg(b.path("src/config.h.in"));
+    run_gen_config.addFileArg(b.path("src/config_values.txt"));
+    const config_h_file = run_gen_config.captureStdOut(.{ .basename = "config.h" });
+    const gen_config_step = b.step(
+        "generate-config",
+        "Generate src/config.h from the zig-authored template + values",
     );
-    configure_step.dependOn(&run_configure.step);
+    gen_config_step.dependOn(&run_gen_config.step);
 
     // Build make-docfile as a HOST tool (it runs at build time, so it must
     // target the build host rather than the cross target). Reuses the same
@@ -199,9 +208,11 @@ pub fn build(b: *std.Build) void {
             .flags = mdf_flags,
         });
     }
-    // make-docfile's sources include <config.h> (via -Isrc), so its compile
-    // must wait for the configure step to have written src/config.h.
-    mdf.step.dependOn(&run_configure.step);
+    // make-docfile's sources include <config.h>; the generated file (from
+    // src/config.h.in + src/config_values.txt) is provided via the module
+    // include path, so the compile must wait for the generator.
+    mdf.root_module.addIncludePath(config_h_file.dirname());
+    mdf.step.dependOn(&run_gen_config.step);
 
     // Run `make-docfile -d src -g <names>` and capture stdout as globals.h.
     // make-docfile only rewrites a trailing ".o" to ".c"/".m" (scan_c_file at
@@ -288,17 +299,14 @@ pub fn build(b: *std.Build) void {
         }
     }
     const doc_capture = run_doc.captureStdOut(.{ .basename = "DOC" });
-    const install_doc = b.addSystemCommand(&[_][]const u8{
-        "sh", "-c",
-        \\set -e
-        \\mkdir -p etc
-        \\cp "$1" etc/DOC
-    });
-    install_doc.addArg("doc-file");
-    install_doc.addFileArg(doc_capture);
-    install_doc.step.dependOn(&run_doc.step);
+    // Install etc/DOC into the source tree with the native
+    // UpdateSourceFiles step (no shell; etc/DOC is a gitignored
+    // generated artifact, like loaddefs).
+    const doc_install = b.addUpdateSourceFiles();
+    doc_install.addCopyFileToSource(doc_capture, "etc/DOC");
+    doc_install.step.dependOn(&run_doc.step);
     const gen_doc_step = b.step("generate-doc", "Generate etc/DOC via make-docfile");
-    gen_doc_step.dependOn(&install_doc.step);
+    gen_doc_step.dependOn(&doc_install.step);
 
     // Generate buildobj.h: a flat comma-list of object file names consumed by
     // src/doc.c:547's `static char const *const buildobj[] = { #include "buildobj.h" };`.
@@ -351,42 +359,6 @@ pub fn build(b: *std.Build) void {
     const epaths_h = run_gen_epaths.captureStdOut(.{ .basename = "epaths.h" });
     const gen_epaths_step = b.step("generate-epaths", "Generate epaths.h with build-tree paths");
     gen_epaths_step.dependOn(&run_gen_epaths.step);
-
-    // Generate src/config.h via a CUSTOM generator (not addConfigHeader).
-    // addConfigHeader needs a comptime values struct, unwieldy for the ~760
-    // config.h knobs; this reads the lean zig-authored template (src/config.h.in:
-    // guard + _GNU_SOURCE + every `#undef NAME` from config.in + conf_post) plus
-    // the zig-owned answer data (src/config_values.txt: `NAME=value`, or bare
-    // `NAME` for undef) and substitutes each `#undef NAME` -> the value --
-    // the macro processing autoconf's config.status does. Text-based, so every
-    // value type (ints, strings, char literals, /**/) is handled uniformly.
-    // Output lands in .zig-cache (gitignored). Standalone -- does NOT depend on exe.
-    //
-    // The config.h generator is an independent Zig package (dependency
-    // `gen_config` in build.zig.zon -> tools/gen-config), mirroring the
-    // gl_headers_gen extraction above. The tool reads src/config.h.in +
-    // src/config_values.txt (with cwd = repo root via setCwd) and writes the
-    // substituted config.h body to STDOUT; captureStdOut lands it in the
-    // zig-cache, the same LazyPath shape the inline addWriteFiles produced, so
-    // verify-config / config-diff below consume it unchanged.
-    const gen_config_dep = b.dependency("gen_config", .{});
-    const gen_config_tool = b.addExecutable(.{
-        .name = "gen-config",
-        .root_module = b.createModule(.{
-            .target = b.graph.host,
-            .optimize = .Debug,
-            .link_libc = true,
-            .root_source_file = gen_config_dep.path("src/main.zig"),
-        }),
-    });
-    const run_gen_config = b.addRunArtifact(gen_config_tool);
-    run_gen_config.setCwd(b.path("."));
-    const config_h_file = run_gen_config.captureStdOut(.{ .basename = "config.h" });
-    const gen_config_step = b.step(
-        "generate-config",
-        "Generate src/config.h from the zig-authored template + values",
-    );
-    gen_config_step.dependOn(&run_gen_config.step);
 
     // Verify the generated config.h carries the load-bearing subset of knobs
     // the rest of the build will eventually rely on. The generated file path
@@ -489,10 +461,11 @@ pub fn build(b: *std.Build) void {
     // but PIC code in a non-PIE exe still gets fixed statics.)
     exe.pie = false;
 
-    // temacs includes <config.h> (found via -Isrc); ensure configure has
-    // generated src/config.h before compiling. The step self-skips once
-    // src/config.h exists.
-    exe.step.dependOn(&run_configure.step);
+    // temacs includes <config.h>; the generated file (from src/config.h.in +
+    // src/config_values.txt) is provided via the module include path, so the
+    // compile must wait for the generator.
+    exe.root_module.addIncludePath(config_h_file.dirname());
+    exe.step.dependOn(&run_gen_config.step);
 
     // gnulib-str: an independent Zig package (tools/gnulib-str) providing
     // the gnulib string-primitive external definitions that lib/memeq.c +
@@ -1147,38 +1120,20 @@ pub fn build(b: *std.Build) void {
     // unless the binary's sibling etc/ holds DOC the pbootstrap
     // (Snarf-documentation "DOC") silently fails and the dumped image
     // carries no C doc strings. EMACSLOADPATH/EMACSDATA use the absolute
-    // repo paths because the CWD changes.
-    const dump_script =
-        \\set -e
-        \\ROOT=$PWD
-        \\# Bootstrap dump must NOT see loaddefs: loadup uses
-        \\# ldefs-boot.el, and a stale loaddefs.el in lisp/ makes loadup
-        \\# abort (e.g. void frameset-filter-alist at tab-bar). loaddefs
-        \\# is regenerated AFTER the dump (generate-loaddefs), so scrub
-        \\# both .el and the .elc produced by compile-lisp here.
-        \\rm -f lisp/loaddefs.el lisp/loaddefs.elc
-        \\find lisp -mindepth 2 -name '*-loaddefs.el' -delete 2>/dev/null || true
-        \\find lisp -mindepth 2 -name '*-loaddefs.elc' -delete 2>/dev/null || true
-        \\mkdir -p zig-out
-        \\ln -sfn ../etc zig-out/etc
-        \\export EMACSLOADPATH="$ROOT/lisp" EMACSDATA="$ROOT/etc" LC_ALL=C
-        \\cd "$ROOT/zig-out/bin" || exit 1
-        \\# Disable ASLR for a deterministic dump + load (setarch -R).
-        \\# The pdumper heap relocation is ASLR-sensitive: the pdmp's
-        \\# mmap address differs between dump and load processes.
-        \\if command -v setarch >/dev/null 2>&1; then
-        \\  setarch "$(uname -m)" -R ./temacs -batch -l loadup --temacs=pbootstrap
-        \\else
-        \\  ./temacs -batch -l loadup --temacs=pbootstrap
-        \\fi
-        \\# Make the binary self-contained like upstream's dumped emacs:
-        \\# load_pdump auto-loads "<argv0>.pdmp" from the executable's
-        \\# directory, so subprocess re-invocations (e.g. gv-tests running
-        \\# (concat invocation-directory invocation-name)) start the dumped
-        \\# emacs instead of re-loading loadup from source.
-        \\ln -sfn bootstrap-emacs.pdmp "$ROOT/zig-out/bin/temacs.pdmp"
-    ;
-    const run_dump = b.addSystemCommand(&[_][]const u8{ "sh", "-c", dump_script });
+    // repo paths because the CWD changes. The work is done by a native
+    // Zig tool (build-aux/bootstrap-dump.zig) with no shell: it scrubs
+    // stale loaddefs, links zig-out/etc -> ../etc, runs loadup in
+    // pbootstrap mode with the source-tree env (retrying on the
+    // ASLR-sensitive pdumper signal flake), and links temacs.pdmp.
+    const bootstrap_dump_tool = b.addExecutable(.{
+        .name = "bootstrap-dump",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/bootstrap-dump.zig"),
+        }),
+    });
+    const run_dump = b.addRunArtifact(bootstrap_dump_tool);
     run_dump.setCwd(b.path("."));
     // The dump must run with etc/DOC present: loadup calls
     // (Snarf-documentation "DOC"), and in pbootstrap mode it swallows
@@ -1199,9 +1154,15 @@ pub fn build(b: *std.Build) void {
     // 'foo-loaddefs) at compile time); the final dump-compiled scrubs
     // them again, so check and check-all additionally run a final
     // generation (run_loaddefs_final) before launching suites.
-    const gen_loaddefs = b.addSystemCommand(&[_][]const u8{
-        "sh", "build-aux/generate-loaddefs.sh",
+    const gen_loaddefs_tool = b.addExecutable(.{
+        .name = "generate-loaddefs",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/generate-loaddefs.zig"),
+        }),
     });
+    const gen_loaddefs = b.addRunArtifact(gen_loaddefs_tool);
     gen_loaddefs.setCwd(b.path("."));
     gen_loaddefs.step.dependOn(&run_dump.step);
     const gen_loaddefs_step = b.step(
@@ -1221,22 +1182,15 @@ pub fn build(b: *std.Build) void {
     // in the dump). Incremental: arg 0 recompiles only missing/older
     // .elc. Requires loaddefs (generated after the source dump) for
     // files that (require 'foo-loaddefs) at compile time.
-    const run_compile_lisp = b.addSystemCommand(&[_][]const u8{
-        "sh",
-        "-c",
-        \\set -e
-        \\ROOT=$PWD
-        \\export EMACSLOADPATH="$ROOT/lisp" EMACSDATA="$ROOT/etc" LC_ALL=C
-        \\if command -v setarch >/dev/null 2>&1; then
-        \\  setarch "$(uname -m)" -R ./zig-out/bin/temacs --batch \
-        \\    -L "$ROOT/lisp" --dump-file="$ROOT/zig-out/bin/bootstrap-emacs.pdmp" \
-        \\    --eval '(progn (load "cl-macs") (load "cl-seq") (load "cl-extra") (byte-recompile-directory "'"$ROOT"'/lisp" 0))'
-        \\else
-        \\  ./zig-out/bin/temacs --batch \
-        \\    -L "$ROOT/lisp" --dump-file="$ROOT/zig-out/bin/bootstrap-emacs.pdmp" \
-        \\    --eval '(progn (load "cl-macs") (load "cl-seq") (load "cl-extra") (byte-recompile-directory "'"$ROOT"'/lisp" 0))'
-        \\fi
+    const compile_lisp_tool = b.addExecutable(.{
+        .name = "compile-lisp",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/compile-lisp.zig"),
+        }),
     });
+    const run_compile_lisp = b.addRunArtifact(compile_lisp_tool);
     run_compile_lisp.setCwd(b.path("."));
     run_compile_lisp.step.dependOn(&run_dump.step);
     run_compile_lisp.step.dependOn(&gen_loaddefs.step);
@@ -1247,7 +1201,15 @@ pub fn build(b: *std.Build) void {
     // carries byte-compiled preloaded code (the pdmp that check/check-all
     // and interactive use actually load). Same loadup invocation as the
     // source dump (same scrub, same zig-out/etc, same cwd).
-    const run_dump_compiled = b.addSystemCommand(&[_][]const u8{ "sh", "-c", dump_script });
+    const dump_compiled_tool = b.addExecutable(.{
+        .name = "bootstrap-dump-compiled",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/bootstrap-dump.zig"),
+        }),
+    });
+    const run_dump_compiled = b.addRunArtifact(dump_compiled_tool);
     run_dump_compiled.setCwd(b.path("."));
     run_dump_compiled.step.dependOn(&run_compile_lisp.step);
     const dump_compiled_step = b.step("dump-compiled", "Re-dump bootstrap-emacs.pdmp with compiled lisp");
@@ -1255,10 +1217,16 @@ pub fn build(b: *std.Build) void {
 
     // Final loaddefs generation for check/check-all: dump-compiled
     // scrubbed the loaddefs, and suites (require 'foo-loaddefs) at
-    // runtime. Same script as gen_loaddefs, gated on the final dump.
-    const run_loaddefs_final = b.addSystemCommand(&[_][]const u8{
-        "sh", "build-aux/generate-loaddefs.sh",
+    // runtime. Same tool as gen_loaddefs, gated on the final dump.
+    const run_loaddefs_final_tool = b.addExecutable(.{
+        .name = "generate-loaddefs-final",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/generate-loaddefs.zig"),
+        }),
     });
+    const run_loaddefs_final = b.addRunArtifact(run_loaddefs_final_tool);
     run_loaddefs_final.setCwd(b.path("."));
     run_loaddefs_final.step.dependOn(&run_dump_compiled.step);
 
@@ -1276,28 +1244,15 @@ pub fn build(b: *std.Build) void {
     // ($0), invokes temacs under `setarch "$(uname -m)" -R`, and
     // forwards args, so `./zig-out/bin/emacs --version` printing a
     // N.N version proves the end-to-end wrapper path.
-    const run_smoke = b.addSystemCommand(&[_][]const u8{
-        "sh",
-        "-c",
-        \\set -e
-        \\export EMACSLOADPATH="$PWD/lisp" EMACSDATA="$PWD/etc" LC_ALL=C
-        \\# Disable ASLR for the load too (see run_dump): the pdumper
-        \\# relocation needs ASLR off on both dump and load.
-        \\if command -v setarch >/dev/null 2>&1; then
-        \\  OUT=$(setarch "$(uname -m)" -R ./zig-out/bin/temacs --batch --dump-file=./zig-out/bin/bootstrap-emacs.pdmp --eval '(princ emacs-version)')
-        \\else
-        \\  OUT=$(./zig-out/bin/temacs --batch --dump-file=./zig-out/bin/bootstrap-emacs.pdmp --eval '(princ emacs-version)')
-        \\fi
-        \\echo "$OUT" | grep -qE '^[0-9]+\.[0-9]+'
-        \\echo "$OUT"
-        \\echo "smoke: dumped emacs version $OUT"
-        \\# Exercise the installed emacs wrapper end-to-end. The wrapper
-        \\# locates temacs+pdmp and forwards args, so --version printing
-        \\# GNU Emacs <ver> proves the wrapper path works.
-        \\WOUT=$(./zig-out/bin/emacs --version 2>&1)
-        \\echo "$WOUT" | grep -qE '^GNU Emacs [0-9]+\.[0-9]+'
-        \\echo "smoke: emacs wrapper version $(echo "$WOUT" | head -1)"
+    const smoke_tool = b.addExecutable(.{
+        .name = "smoke",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/smoke.zig"),
+        }),
     });
+    const run_smoke = b.addRunArtifact(smoke_tool);
     run_smoke.setCwd(b.path("."));
     run_smoke.step.dependOn(&run_dump_compiled.step);
     // Depend on chmod_emacs_wrapper (which depends on install_emacs_wrapper)
@@ -1324,35 +1279,15 @@ pub fn build(b: *std.Build) void {
     // macroexp-tests hang in ert-deftest expansion; editfns-tests has one
     // unexpected failure; subr-x-tests and map-ynp-tests abort with
     // SIGABRT (rc=134); gv-tests hangs >=60s in ert-deftest expansion.)
-    const run_check = b.addSystemCommand(&[_][]const u8{
-        "sh",
-        "-c",
-        \\ulimit -s unlimited
-        \\TEMACS="./zig-out/bin/temacs --batch -L test/src -L test/lisp -L test/lisp/emacs-lisp -L test/lisp/calendar --dump-file=./zig-out/bin/bootstrap-emacs.pdmp"
-        \\EVAL='(progn (load "cl-macs") (load "cl-seq") (load "cl-extra") (require (quote ert)) (load "alloc-tests") (load "version-tests") (load "byte-run-tests") (load "float-sup-tests") (load "cl-preloaded-tests") (load "button-tests") (load "delim-col-tests") (load "color-tests") (load "custom-tests") (load "dom-tests") (load "data-tests") (load "marker-tests") (load "chartab-tests") (load "cmds-tests") (load "let-alist-tests") (load "cl-lib-tests") (load "map-tests") (load "seq-tests") (load "character-tests") (load "charset-tests") (load "json-tests") (load "fns-tests") (load "backquote-tests") (load "parse-time-tests") (load "derived-tests") (load "cond-star-tests") (load "cl-print-tests") (load "time-date-tests") (load "check-declare-tests") (load "copyright-tests") (load "easy-mmode-tests") (load "nadvice-tests") (load "pcase-tests") (load "pp-tests") (load "ring-tests") (load "rx-tests") (load "warnings-tests") (load "regexp-opt-tests") (load "range-tests") (load "crypto-hash-tests") (let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit (quote (not (or (tag :expensive-test) (tag :unstable) (tag :nativecomp)))))))'
-        \\# Run the dumped emacs with ASLR off (see run_dump). Retry on
-        \\# signal death (exit > 128) only: the pdumper's single-delta heap
-        \\# relocation is occasionally mis-applied under this workload (a
-        \\# known limitation of non-PIE + setarch -R), causing an
-        \\# intermittent SIGBUS/SIGSEGV during load that is NOT a test
-        \\# failure. A genuine ert failure exits < 128 and is NOT retried,
-        \\# so real regressions are never masked. Deep fix = pdumper
-        \\# multi-delta relocation.
-        \\run_ert () {
-        \\  if command -v setarch >/dev/null 2>&1; then
-        \\    setarch "$(uname -m)" -R $TEMACS --eval "$EVAL"
-        \\  else
-        \\    $TEMACS --eval "$EVAL"
-        \\  fi
-        \\}
-        \\for attempt in 1 2 3; do
-        \\  run_ert
-        \\  rc=$?
-        \\  if [ "$rc" -eq 0 ] || [ "$rc" -lt 128 ]; then exit "$rc"; fi
-        \\  echo "check: temacs died with signal (rc=$rc) on attempt $attempt/3; retrying (pdumper relocation flakiness)"
-        \\done
-        \\exit "$rc"
+    const run_check_tool = b.addExecutable(.{
+        .name = "run-check",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/run-check.zig"),
+        }),
     });
+    const run_check = b.addRunArtifact(run_check_tool);
     run_check.setCwd(b.path("."));
     run_check.step.dependOn(&run_smoke.step);
     run_check.step.dependOn(&run_loaddefs_final.step);

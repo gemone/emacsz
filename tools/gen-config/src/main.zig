@@ -9,25 +9,33 @@
 // processing autoconf's config.status does. Text-based, so every value type
 // (ints, strings, char literals, /**/) is handled uniformly.
 //
-// Run with cwd = repo root. The generated config.h body is written to STDOUT;
-// the consumer captures it via captureStdOut and lands it in the zig-cache.
+// Run with cwd = repo root; the template and answer files are passed as
+// argv[1] and argv[2] (relative to cwd) so the build tracks their content.
+// The generated config.h body is written to STDOUT; the consumer captures it
+// via captureStdOut and lands it in the zig-cache.
 const std = @import("std");
 
-pub fn main() !void {
+pub fn main(minimal: std.process.Init.Minimal) !void {
     var io_threaded: std.Io.Threaded = .init_single_threaded;
     const io = io_threaded.io();
     const a = std.heap.smp_allocator;
     const cwd = std.Io.Dir.cwd();
 
+    var it = try std.process.Args.Iterator.initAllocator(minimal.args, a);
+    defer it.deinit();
+    _ = it.next(); // program name
+    const template_path = it.next() orelse return error.MissingTemplateArg;
+    const values_path = it.next() orelse return error.MissingValuesArg;
+
     const config_h_in_text = try cwd.readFileAlloc(
         io,
-        "src/config.h.in",
+        template_path,
         a,
         .limited(4 * 1024 * 1024),
     );
     const config_values_text = try cwd.readFileAlloc(
         io,
-        "src/config_values.txt",
+        values_path,
         a,
         .limited(4 * 1024 * 1024),
     );
