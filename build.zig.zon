@@ -53,6 +53,14 @@
         .gnulib_hash = .{
             .path = "tools/gnulib-hash",
         },
+        // gnulib-sig2str: gnulib's signal name<->number conversion
+        // (sig2str / str2sig, lib/sig2str.c) provided by an independent
+        // Zig package instead of C. Pure table + string handling with
+        // per-platform signal tables; no libc call. Linked into temacs
+        // (backs signal-names and process signal parsing).
+        .gnulib_sig2str = .{
+            .path = "tools/gnulib-sig2str",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw

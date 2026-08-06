@@ -1,0 +1,12 @@
+.{
+    .name = .gnulib_sig2str,
+    .fingerprint = 0xd95c6a91057a5be3,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/sig2str.zig",
+    },
+}

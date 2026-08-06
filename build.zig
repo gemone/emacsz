@@ -557,6 +557,22 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-hash", .root_module = gnulib_hash_mod });
     exe.root_module.linkLibrary(gnulib_hash_lib);
 
+    // gnulib-sig2str: an independent Zig package (tools/gnulib-sig2str)
+    // providing gnulib's signal name<->number conversion (sig2str /
+    // str2sig) that lib/sig2str.c would otherwise emit. Pure table and
+    // string handling over per-platform signal tables (Linux glibc/musl,
+    // Windows, Darwin); no libc call. Backs `signal-names' and signal
+    // parsing in src/process.c. Built ReleaseFast (leaf lookups) so it
+    // pulls in no Zig runtime the C executable must satisfy.
+    const gnulib_sig2str_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_sig2str", .{}).path("src/sig2str.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const gnulib_sig2str_lib =
+        b.addLibrary(.{ .name = "gnulib-sig2str", .root_module = gnulib_sig2str_mod });
+    exe.root_module.linkLibrary(gnulib_sig2str_lib);
+
     // emacs-time: an independent Zig package (tools/emacs-time) providing
     // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
     // would otherwise provide, via per-platform NATIVE backends with no libc:
@@ -1375,6 +1391,12 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // FILE*-reading md5_stream wrapper, still C) keeps compiling and
         // calls the package's exported md5_* symbols.
         "md5.c",
+        // lib/sig2str.c is provided by an independent Zig package
+        // (tools/gnulib-sig2str, dependency `gnulib_sig2str`) -- the
+        // signal name<->number conversion (sig2str / str2sig) replaced
+        // by native Zig. Excluded here so the C source is not compiled;
+        // the package's exported symbols are linked into temacs below.
+        "sig2str",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native
