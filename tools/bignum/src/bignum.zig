@@ -22,6 +22,10 @@ pub const mp_size_t = isize;
 pub const mp_bitcnt_t = u64;
 pub const GMP_NUMB_BITS: usize = 64;
 
+// GMP exposes the limb width as an extern const int; Emacs reads it in
+// src/bignum.c to double-check the layout assumptions.
+pub export const mp_bits_per_limb: c_int = 64;
+
 // GMP's mpz_t is `typedef __mpz_struct mpz_t[1]`; C passes a pointer,
 // so every export takes `*mpz_t`.
 pub const mpz_t = extern struct {
@@ -314,7 +318,7 @@ fn bitLength(z: *const mpz_t) u64 {
 
 // Number of digits in the given base (2..62). Never underestimates
 // (Emacs sizes print buffers from this plus slack).
-pub export fn mpz_sizeinbase(z: *const mpz_t, base: c_int) c_ulong {
+pub export fn mpz_sizeinbase(z: *const mpz_t, base: c_int) usize {
     const bits = bitLength(z);
     if (bits == 0) return 1;
     const b: u64 = @intCast(base);
@@ -1238,7 +1242,7 @@ fn endianLittle(endian: c_int) bool {
 // Import COUNT words of SIZE bytes each, covering the |value|; ORDER is
 // 1 for most-significant-word-first, -1 for least-first, 0 acts as 1
 // (GMP's convention); ENDIAN is 1 big / -1 little / 0 native. Nails=0.
-pub export fn mpz_import(rop: *mpz_t, count: usize, order: c_int, size: usize, endian: c_int, nails: c_int, op: ?*const anyopaque) void {
+pub export fn mpz_import(rop: *mpz_t, count: usize, order: c_int, size: usize, endian: c_int, nails: usize, op: ?*const anyopaque) void {
     if (nails != 0) @panic("mpz_import: nails not supported");
     if (size > 8) @panic("mpz_import: word size over 8 bytes");
     if (size == 0 or count == 0 or op == null) {
@@ -1284,7 +1288,7 @@ pub export fn mpz_import(rop: *mpz_t, count: usize, order: c_int, size: usize, e
 // Export the |value| as whole words into ROP; *COUNTP receives the word
 // count (zero for zero), and ROP is returned. The caller must size ROP
 // for mpz_sizeinbase-based estimates.
-pub export fn mpz_export(rop: ?*anyopaque, countp: ?*usize, order: c_int, size: usize, endian: c_int, nails: c_int, op: *const mpz_t) ?*anyopaque {
+pub export fn mpz_export(rop: ?*anyopaque, countp: ?*usize, order: c_int, size: usize, endian: c_int, nails: usize, op: *const mpz_t) ?*anyopaque {
     if (nails != 0) @panic("mpz_export: nails not supported");
     if (size == 0 or size > 8) @panic("mpz_export: unsupported word size");
     const bits = bitLength(op);
@@ -1694,15 +1698,15 @@ test "mpz sizeinbase" {
     mpz_init(&z);
     defer mpz_clear(&z);
     mpz_set_ui(&z, 0);
-    try std.testing.expectEqual(@as(c_ulong, 1), mpz_sizeinbase(&z, 10));
+    try std.testing.expectEqual(@as(usize, 1), mpz_sizeinbase(&z, 10));
     mpz_set_ui(&z, 255);
-    try std.testing.expectEqual(@as(c_ulong, 8), mpz_sizeinbase(&z, 2));
-    try std.testing.expectEqual(@as(c_ulong, 2), mpz_sizeinbase(&z, 16));
-    try std.testing.expectEqual(@as(c_ulong, 3), mpz_sizeinbase(&z, 10));
+    try std.testing.expectEqual(@as(usize, 8), mpz_sizeinbase(&z, 2));
+    try std.testing.expectEqual(@as(usize, 2), mpz_sizeinbase(&z, 16));
+    try std.testing.expectEqual(@as(usize, 3), mpz_sizeinbase(&z, 10));
     mpz_set_ui(&z, 1);
     mpz_mul_2exp(&z, &z, 100); // 2^100
-    try std.testing.expectEqual(@as(c_ulong, 101), mpz_sizeinbase(&z, 2));
-    try std.testing.expectEqual(@as(c_ulong, 31), mpz_sizeinbase(&z, 10));
+    try std.testing.expectEqual(@as(usize, 101), mpz_sizeinbase(&z, 2));
+    try std.testing.expectEqual(@as(usize, 31), mpz_sizeinbase(&z, 10));
 }
 
 test "mpz fdiv_q_2exp floor semantics" {
