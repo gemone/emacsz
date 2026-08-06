@@ -1020,6 +1020,7 @@
 # define _TANDEM_SOURCE 1
 #endif
 /* Enable X/Open extensions.  Define to 500 only if necessary
+   to make mbstate_t available.  */
 
 /* Define WORDS_BIGENDIAN to 1 if your processor stores words with the most
    significant byte first (like Motorola and SPARC, unlike Intel). */
@@ -1154,7 +1155,8 @@
 
 # if defined _GL_STDALIGN_NEEDS_STDDEF
 #  include <stddef.h>
-
+# endif
+#endif
 
 /* Gnulib boilerplate ported from the autoconf-generated config.h
    (the _GL_ATTRIBUTE_* infrastructure; see m4/gnulib-common.m4). */
@@ -1386,8 +1388,6 @@
 #  define _GL_BRACKET_BEFORE_ATTRIBUTE 1
 # endif
 #endif
-/*
-
 
 /* Gnulib boilerplate ported from the autoconf-generated config.h
    (the _GL_ATTRIBUTE_* family, part 1; see m4/gnulib-common.m4). */
@@ -1702,5 +1702,320 @@
 # if !defined _GL_ATTRIBUTE_NODISCARD && _GL_HAS_ATTRIBUTE (warn_unused_result)
 #  define _GL_ATTRIBUTE_NODISCARD __attribute__ ((__warn_unused_result__))
 
+
+/* Gnulib boilerplate ported from the autoconf-generated config.h
+   (the _GL_ATTRIBUTE_* family, part 2; see m4/gnulib-common.m4). */
+# endif
+# ifndef _GL_ATTRIBUTE_NODISCARD
+#  define _GL_ATTRIBUTE_NODISCARD
+# endif
+#endif
+
+/* _GL_ATTRIBUTE_NOINLINE tells that the compiler should not inline the
+   function.  */
+/* Applies to: functions.  */
+#ifndef _GL_ATTRIBUTE_NOINLINE
+# if _GL_HAS_ATTRIBUTE (noinline)
+#  define _GL_ATTRIBUTE_NOINLINE __attribute__ ((__noinline__))
+# else
+#  define _GL_ATTRIBUTE_NOINLINE
+# endif
+#endif
+
+/* _GL_ATTRIBUTE_NONNULL ((N1, N2,...)) declares that the arguments N1, N2,...
+   must not be NULL.
+   _GL_ATTRIBUTE_NONNULL () declares that all pointer arguments must not be
+   null.  */
+/* Applies to: functions.  */
+#ifndef _GL_ATTRIBUTE_NONNULL
+# if _GL_HAS_ATTRIBUTE (nonnull)
+#  define _GL_ATTRIBUTE_NONNULL(args) __attribute__ ((__nonnull__ args))
+# else
+#  define _GL_ATTRIBUTE_NONNULL(args)
+# endif
+#endif
+
+/* _GL_ATTRIBUTE_NONNULL_IF_NONZERO (NP, NI) declares that the argument NP
+   (a pointer) must not be NULL if the argument NI (an integer) is != 0.  */
+/* Applies to: functions.  */
+#ifndef _GL_ATTRIBUTE_NONNULL_IF_NONZERO
+# if _GL_HAS_ATTRIBUTE (nonnull_if_nonzero)
+#  define _GL_ATTRIBUTE_NONNULL_IF_NONZERO(np, ni) __attribute__ ((__nonnull_if_nonzero__ (np, ni)))
+# else
+#  define _GL_ATTRIBUTE_NONNULL_IF_NONZERO(np, ni)
+# endif
+#endif
+
+/* _GL_ATTRIBUTE_NONSTRING declares that the contents of a character array is
+   not meant to be NUL-terminated.  */
+/* Applies to: struct/union members and variables that are arrays of element
+   type '[[un]signed] char'.  */
+#ifndef _GL_ATTRIBUTE_NONSTRING
+# if _GL_HAS_ATTRIBUTE (nonstring)
+#  define _GL_ATTRIBUTE_NONSTRING __attribute__ ((__nonstring__))
+# else
+#  define _GL_ATTRIBUTE_NONSTRING
+# endif
+#endif
+
+/* There is no _GL_ATTRIBUTE_NORETURN; use _Noreturn instead.  */
+
+/* _GL_ATTRIBUTE_NOTHROW declares that the function does not throw exceptions.
+ */
+/* Applies to: functions.  */
+/* After a function's parameter list, this attribute must come first, before
+   other attributes.  */
+#ifndef _GL_ATTRIBUTE_NOTHROW
+# if defined __cplusplus
+#  if _GL_GNUC_PREREQ (2, 8) || __clang_major__ >= 4
+#   if __cplusplus >= 201103L
+#    define _GL_ATTRIBUTE_NOTHROW noexcept (true)
+#   else
+#    define _GL_ATTRIBUTE_NOTHROW throw ()
+#   endif
+#  else
+#   define _GL_ATTRIBUTE_NOTHROW
+#  endif
+# else
+#  if _GL_HAS_ATTRIBUTE (nothrow)
+#   define _GL_ATTRIBUTE_NOTHROW __attribute__ ((__nothrow__))
+#  else
+#   define _GL_ATTRIBUTE_NOTHROW
+#  endif
+# endif
+#endif
+
+/* _GL_ATTRIBUTE_PACKED declares:
+   For struct members: The member has the smallest possible alignment.
+   For struct, union, class: All members have the smallest possible alignment,
+   minimizing the memory required.  */
+/* Applies to: struct members, struct, union,
+   in C++ also: class.  */
+#ifndef _GL_ATTRIBUTE_PACKED
+/* Oracle Studio 12.6 miscompiles code with __attribute__ ((__packed__)) despite
+   __has_attribute OK.  */
+# if _GL_HAS_ATTRIBUTE (packed) && !defined __SUNPRO_C
+#  define _GL_ATTRIBUTE_PACKED __attribute__ ((__packed__))
+# else
+#  define _GL_ATTRIBUTE_PACKED
+# endif
+#endif
+
+/* _GL_ATTRIBUTE_PURE declares:
+   It is OK for a compiler to move a call, or omit a duplicate call
+   and reuse a cached return value, if observable state is the same.
+   It is also OK to omit a call if the return value is not used.
+   This attribute is safe if the function does not change observable state,
+   returns a value determined solely by its arguments's values
+   together with observable state, and always returns exactly once.
+   (This attribute is looser than _GL_ATTRIBUTE_CONST because the function
+   can depend on observable state.
+   Unlike _GL_ATTRIBUTE_REPRODUCIBLE the function must return exactly
+   once and cannot change state addressed by its arguments, but the
+   function can return a pointer to storage whose contents change later.)  */
+/* Applies to: functions.  */
+#ifndef _GL_ATTRIBUTE_PURE
+# if _GL_HAS_ATTRIBUTE (pure)
+#  define _GL_ATTRIBUTE_PURE __attribute__ ((__pure__))
+# else
+#  define _GL_ATTRIBUTE_PURE
+# endif
+#endif
+
+/* _GL_ATTRIBUTE_REPRODUCIBLE declares:
+   It is OK for a compiler to move a call, or omit a duplicate call
+   and reuse a cached value returned either directly or indirectly via
+   a pointer, if other observable state is the same;
+   however, pointer arguments cannot alias.
+   This attribute is safe for a function that is effectless and idempotent;
+   see ISO C 23 § 6.7.13.8 for a definition of these terms.
+   (This attribute is looser than _GL_ATTRIBUTE_UNSEQUENCED because
+   the function need not be stateless or independent.
+   Unlike _GL_ATTRIBUTE_PURE the function need not return exactly once
+   and can change state addressed by its pointer arguments, but the
+   function cannot return a pointer to storage whose contents change later.)
+   See also <https://www.open-std.org/jtc1/sc22/wg14/www/docs/n2956.htm> and
+   <https://stackoverflow.com/questions/76847905/>.  */
+/* Applies to: functions, pointer to functions, function types.  */
+#ifndef _GL_ATTRIBUTE_REPRODUCIBLE
+/* This may be revisited when gcc and clang support [[reproducible]] or possibly
+   __attribute__ ((__reproducible__)).  */
+# ifndef _GL_BRACKET_BEFORE_ATTRIBUTE
+#  if _GL_HAS_ATTRIBUTE (reproducible)
+#   define _GL_ATTRIBUTE_REPRODUCIBLE [[reproducible]]
+#  endif
+# endif
+# ifndef _GL_ATTRIBUTE_REPRODUCIBLE
+#  define _GL_ATTRIBUTE_REPRODUCIBLE
+# endif
+#endif
+
+/* _GL_ATTRIBUTE_RETURNS_NONNULL declares that the function's return value is
+   a non-NULL pointer.  */
+/* Applies to: functions.  */
+#ifndef _GL_ATTRIBUTE_RETURNS_NONNULL
+# if _GL_HAS_ATTRIBUTE (returns_nonnull)
+#  define _GL_ATTRIBUTE_RETURNS_NONNULL __attribute__ ((__returns_nonnull__))
+# else
+#  define _GL_ATTRIBUTE_RETURNS_NONNULL
+# endif
+#endif
+
+/* _GL_ATTRIBUTE_SENTINEL(pos) declares that the variadic function expects a
+   trailing NULL argument.
+   _GL_ATTRIBUTE_SENTINEL () - The last argument is NULL (requires C99).
+   _GL_ATTRIBUTE_SENTINEL ((N)) - The (N+1)st argument from the end is NULL.  */
+/* Applies to: functions.  */
+#ifndef _GL_ATTRIBUTE_SENTINEL
+# if _GL_HAS_ATTRIBUTE (sentinel)
+#  define _GL_ATTRIBUTE_SENTINEL(pos) __attribute__ ((__sentinel__ pos))
+# else
+#  define _GL_ATTRIBUTE_SENTINEL(pos)
+# endif
+#endif
+
+/* _GL_ATTRIBUTE_UNSEQUENCED declares:
+   It is OK for a compiler to move a call, or omit a duplicate call
+   and reuse a cached value returned either directly or indirectly via
+   a pointer, if the state addressed by its pointer arguments is the same;
+   however, pointer arguments cannot alias.
+   This attribute is safe for a function that is effectless, idempotent,
+   stateless, and independent; see ISO C 23 § 6.7.13.8 for a definition of
+   these terms.
+   (This attribute is stricter than _GL_ATTRIBUTE_REPRODUCIBLE because
+   the function must be stateless and independent.  Unlike
+   _GL_ATTRIBUTE_CONST the function need not return exactly once, and
+   can depend on state accessed via its pointer arguments or that
+   happens to have the same value for all calls to the function, but
+   the function cannot return a pointer to storage whose contents
+   change later.)
+   See also <https://www.open-std.org/jtc1/sc22/wg14/www/docs/n2956.htm> and
+   <https://stackoverflow.com/questions/76847905/>.  */
+/* Applies to: functions, pointer to functions, function types.  */
+#ifndef _GL_ATTRIBUTE_UNSEQUENCED
+/* This may be revisited when gcc and clang support [[unsequenced]] or possibly
+   __attribute__ ((__unsequenced__)).  */
+# ifndef _GL_BRACKET_BEFORE_ATTRIBUTE
+#  if _GL_HAS_ATTRIBUTE (unsequenced)
+#   define _GL_ATTRIBUTE_UNSEQUENCED [[unsequenced]]
+#  endif
+# endif
+# ifndef _GL_ATTRIBUTE_UNSEQUENCED
+#  define _GL_ATTRIBUTE_UNSEQUENCED
+# endif
+#endif
+
+/* A helper macro.  Don't use it directly.  */
+#ifndef _GL_ATTRIBUTE_UNUSED
+# if _GL_HAS_ATTRIBUTE (unused)
+#  define _GL_ATTRIBUTE_UNUSED __attribute__ ((__unused__))
+# else
+#  define _GL_ATTRIBUTE_UNUSED
+# endif
+#endif
+
+
+/* _GL_UNUSED_LABEL; declares that it is not a programming mistake if the
+   immediately preceding label is not used.  The compiler should not warn
+   if the label is not used.  */
+/* Applies to: label (both in C and C++).  */
+/* Note that g++ < 4.5 does not support the '__attribute__ ((__unused__)) ;'
+   syntax.  But clang does.  */
+#ifndef _GL_UNUSED_LABEL
+# if !(defined __cplusplus && !_GL_GNUC_PREREQ (4, 5)) || defined __clang__
+#  define _GL_UNUSED_LABEL _GL_ATTRIBUTE_UNUSED
+# else
+#  define _GL_UNUSED_LABEL
+# endif
+#endif
+
+/* _GL_UNNAMED (ID) is the "name" of an unnamed function parameter.
+   Each of the function's unnamed parameters should have a unique "name".
+   The "name" cannot be used.  This ports both to C17 and earlier, which
+   lack unnamed parameters, and to C++ and later C, which have them.  */
+/* Applies to:
+     - function parameters.  */
+#ifndef _GL_UNNAMED
+# if ((defined __STDC_VERSION__ ? __STDC_VERSION__ : 0) < 202311 \
+      && !defined __cplusplus)
+#  define _GL_UNNAMED(id) unnamed_##id _GL_ATTRIBUTE_UNUSED
+# else
+#  define _GL_UNNAMED(id)
+# endif
+#endif
+
+/* The following attributes enable detection of thread safety problems
+   and resource leaks at compile-time, by clang ≥ 15, when the warning option
+   -Wthread-safety is enabled.  For usage, see
+   <https://clang.llvm.org/docs/ThreadSafetyAnalysis.html>.  */
+#ifndef _GL_ATTRIBUTE_CAPABILITY_TYPE
+# if __clang_major__ >= 15
+#  define _GL_ATTRIBUTE_CAPABILITY_TYPE(concept) \
+     __attribute__ ((__capability__ (concept)))
+# else
+#  define _GL_ATTRIBUTE_CAPABILITY_TYPE(concept)
+# endif
+#endif
+#ifndef _GL_ATTRIBUTE_ACQUIRE_CAPABILITY
+# if __clang_major__ >= 15
+#  define _GL_ATTRIBUTE_ACQUIRE_CAPABILITY(resource) \
+     __attribute__ ((__acquire_capability__ (resource)))
+# else
+#  define _GL_ATTRIBUTE_ACQUIRE_CAPABILITY(resource)
+# endif
+#endif
+#ifndef _GL_ATTRIBUTE_RELEASE_CAPABILITY
+# if __clang_major__ >= 15
+#  define _GL_ATTRIBUTE_RELEASE_CAPABILITY(resource) \
+     __attribute__ ((__release_capability__ (resource)))
+# else
+#  define _GL_ATTRIBUTE_RELEASE_CAPABILITY(resource)
+# endif
+#endif
+
+
+/* In C++, there is the concept of "language linkage", that encompasses
+    name mangling and function calling conventions.
+    The following macros start and end a block of "C" linkage.  */
+#ifdef __cplusplus
+# define _GL_BEGIN_C_LINKAGE extern "C" {
+# define _GL_END_C_LINKAGE }
+#else
+# define _GL_BEGIN_C_LINKAGE
+# define _GL_END_C_LINKAGE
+#endif
+
+
+/* Define to '__inline__' or '__inline' if that's what the C compiler
+   calls it, or to nothing if 'inline' is not supported under any name.  */
+#ifndef __cplusplus
+/* #undef inline */
+#endif
+
+
+/* Gnulib boilerplate ported from the autoconf-generated config.h
+   (DIR_TO_FD helper and the Apple __GNUC_STDC_INLINE__ workaround). */
+/* #undef DIR_FD_MEMBER_NAME */
+
+#ifdef DIR_FD_MEMBER_NAME
+# define DIR_TO_FD(Dir_p) ((Dir_p)->DIR_FD_MEMBER_NAME)
+#else
+# define DIR_TO_FD(Dir_p) -1
+#endif
+
+/* Work around a bug in Apple GCC 4.0.1 build 5465: In C99 mode, it supports
+   the ISO C 99 semantics of 'extern inline' (unlike the GNU C semantics of
+   earlier versions), but does not display it by setting __GNUC_STDC_INLINE__.
+   __APPLE__ && __MACH__ test for Mac OS X.
+   __APPLE_CC__ tests for the Apple compiler and its version.
+   __STDC_VERSION__ tests for the C99 mode.  */
+#if defined __APPLE__ && defined __MACH__ && __APPLE_CC__ >= 5465 && !defined __cplusplus && __STDC_VERSION__ >= 199901L && !defined __GNUC_STDC_INLINE__
+# define __GNUC_STDC_INLINE__ 1
+#endif
+
+
+
+/* Define to a type if <wchar.h> does not define. */
+/* #undef mbstate_t */
 #include <conf_post.h>
 #endif /* EMACS_CONFIG_H */
