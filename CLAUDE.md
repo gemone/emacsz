@@ -17,9 +17,12 @@ This repository contains GNU Emacs with an ongoing effort to modernize the build
   provided by independent Zig packages (`tools/gnulib-str` provides
   `memeq`/`streq`, replacing `lib/memeq.c`/`lib/streq.c` with no libc
   call). Deeper libc decoupling (file-I/O, time modules) is ongoing.
-- **Goal 3 — Runnable on Linux: ✅ Done.** `zig build dump` produces a
-  runnable `bootstrap-emacs.pdmp`; `zig build check` runs 578 built-in
-  `ert` tests across 39 suites (all passing).
+- **Goal 3 — Runnable on Linux: ✅ Done.** The final image is
+  byte-compiled: `zig build dump` (source bootstrap) →
+  `zig build compile-lisp` → `zig build dump-compiled`; `zig build check`
+  runs 582 built-in `ert` tests across 40 suites (all passing), and
+  `zig build check-all` runs all 484 upstream-discovered suites and
+  classifies every outcome (PASS/FAIL/HANG/CRASH/LOAD).
 
 Zig version: **0.16.0** (strict).
 
@@ -28,11 +31,19 @@ Zig version: **0.16.0** (strict).
 ### Primary Build Workflow
 ```bash
 zig build              # Build temacs + emacs wrapper (self-sufficient)
-zig build dump         # Dump a runnable bootstrap-emacs.pdmp
+zig build dump         # Source (bootstrap) dump
+zig build compile-lisp # Byte-compile lisp/ (incremental)
+zig build dump-compiled # Final dump with compiled lisp
 zig build smoke        # Verify the dumped emacs starts + evals Lisp
-zig build check        # Run 578 built-in ert tests (alias: zig build test)
+zig build check        # Run 582 built-in ert tests (alias: zig build test)
+zig build check-all    # Run all 484 suites; classify PASS/FAIL/HANG/CRASH/LOAD
 zig build help         # Show available steps + current status
 ```
+
+Generated data (gitignored, required by dump/check): run
+`generate-charsets`, `generate-unidata`, `generate-charprop`,
+`generate-cedet-grammars` once, and `generate-loaddefs` after every
+`dump`/`dump-compiled` (check steps regenerate loaddefs themselves).
 
 `zig build` is the single entry point — there is **no `make` and no
 manual `./configure` step**. The first `zig build` in a fresh checkout
@@ -49,7 +60,7 @@ zig build generate-unidata    # lisp/international/{charscript,emoji-zwj}.el
 
 ### Testing
 ```bash
-zig build check                            # 578 ert tests across 39 suites
+zig build check                            # 582 ert tests across 40 suites
 file zig-out/bin/temacs                    # Verify the produced binary
 ```
 
@@ -247,6 +258,4 @@ zig targets | grep -E "arch|abi"
 - `CONTRIBUTE` - Contribution guidelines
 - `.github/workflows/build-zig-native.yml` - CI build (pure `zig build`)
 - [Zig 0.16.0 Documentation](https://ziglang.org/documentation/0.16.0/)
-
-
 

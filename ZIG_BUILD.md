@@ -9,14 +9,33 @@
 # 然后编译链接 temacs。无需手动 configure，也无需 make。
 zig build
 
-# 转储一个可运行的 bootstrap emacs（先生成 charset/unidata 数据）
+# 生成 bootstrap 数据（一次）
 zig build generate-charsets
 zig build generate-unidata
+zig build generate-charprop    # uni-*.el / charprop / idna-mapping ...
+zig build generate-cedet-grammars
+
+# 转储可运行的 bootstrap emacs（从源码）
 zig build dump
+
+# 字节编译全部 lisp 并二次转储（最终镜像，check/check-all 使用）
+zig build compile-lisp
+zig build dump-compiled
+
+# 生成 autoloads（dump 会清掉它们；check 步骤会自动重新生成）
+zig build generate-loaddefs
 
 # 运行
 ./zig-out/bin/emacs --batch --eval '(progn (message "Hello, World!") (kill-emacs))'
+
+# 测试
+zig build check        # 582 个内置 ert 测试（40 个套件）
+zig build check-all    # 全部 484 个套件（上游 make check 的发现规则）
 ```
+
+`zig build smoke` 会按顺序自动执行 dump → generate-loaddefs →
+compile-lisp → dump-compiled → 最终 loaddefs 生成 → smoke，因此
+一条命令即可得到最终可用的（字节编译的）转储镜像。
 
 ## 构建选项
 
@@ -36,14 +55,23 @@ build-aux/                     # 构建辅助脚本
 
 zig-out/                       # 构建输出（运行 zig build 后生成）
 ├── bin/
-│   ├── temacs                # Emacs可执行文件 (2.7MB)
-│   ├── temacs.pdmp           # 便携式dump文件 (12MB)
-│   ├── etc -> ../../etc      # 符号链接
-│   └── lib-src -> ../../lib-src
+│   ├── temacs                # Emacs可执行文件
+│   ├── bootstrap-emacs.pdmp  # 便携式dump文件（字节编译镜像）
+│   └── emacs                 # wrapper
+├── etc -> ../etc             # dump 期 doc 解析所需的 sibling etc
 └── libexec/emacs/31.0.50/aarch64-apple-darwin25.2.0/
     ├── emacs.pdmp
     └── emacs-31.0.50.pdmp
 ```
+
+## 两阶段转储（为什么）
+
+上游在最终转储前会字节编译 lisp；纯源码镜像会破坏依赖“已编译函数”的
+行为（help-function-arglist 的 docstring 路径、cl-lib derived-type 方法
+注册、cconv/loadhist 等）。因此 `compile-lisp` 用 bootstrap 转储把
+`lisp/**/*.el` 编译为 `.elc`（增量，`byte-recompile-directory 0`），
+`dump-compiled` 再跑一次 loadup 让最终镜像携带编译后的 preloaded 代码。
+`check`/`check-all` 都依赖 `dump-compiled`。
 
 ## 清理缓存
 
@@ -174,4 +202,3 @@ test/
 ```
 Ran 22 tests, 22 results as expected, 0 unexpected
 ```
-
