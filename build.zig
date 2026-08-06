@@ -738,6 +738,22 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-stat-time", .root_module = gnulib_stat_time_mod });
     exe.root_module.linkLibrary(gnulib_stat_time_lib);
 
+    // gnulib-boot-time: an independent Zig package (tools/gnulib-boot-time)
+    // providing gnulib's boot-time query (get_boot_time, lib/boot-time.c),
+    // backing lock-file identification in src/filelock.c. Replicates the
+    // C chain with no libc call: utmp scan (BOOT_TIME + runlevel
+    // workaround), boot-touched-file mtime fallback, then CLOCK_BOOTTIME
+    // subtracted from the realtime clock; result cached in static state.
+    // Built ReleaseFast (leaf query).
+    const gnulib_boot_time_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_boot_time", .{}).path("src/boot_time.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const gnulib_boot_time_lib =
+        b.addLibrary(.{ .name = "gnulib-boot-time", .root_module = gnulib_boot_time_mod });
+    exe.root_module.linkLibrary(gnulib_boot_time_lib);
+
     // emacs-time: an independent Zig package (tools/emacs-time) providing
     // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
     // would otherwise provide, via per-platform NATIVE backends with no libc:
@@ -1643,6 +1659,12 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // exported symbols are linked into temacs below
         // (`file-attributes' time elements).
         "stat-time",
+        // lib/boot-time.c is provided by an independent Zig package
+        // (tools/gnulib-boot-time, dependency `gnulib_boot_time`) --
+        // native Zig boot-time query (get_boot_time). Excluded here so
+        // the C source is not compiled; the package's exported symbol is
+        // linked into temacs below (lock-file identification).
+        "boot-time",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native

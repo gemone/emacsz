@@ -144,6 +144,14 @@
         .gnulib_stat_time = .{
             .path = "tools/gnulib-stat-time",
         },
+        // gnulib-boot-time: gnulib's boot-time query (get_boot_time,
+        // lib/boot-time.c) provided by an independent Zig package instead
+        // of C. utmp scan + boot-touched-file + CLOCK_BOOTTIME chain via
+        // raw syscalls and file reads; no libc call. Linked into temacs
+        // (backs lock-file identification).
+        .gnulib_boot_time = .{
+            .path = "tools/gnulib-boot-time",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw
