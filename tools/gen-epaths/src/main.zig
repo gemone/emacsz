@@ -64,7 +64,16 @@ fn appendStr(a: std.mem.Allocator, buf: *std.ArrayList(u8), name: []const u8, va
     try buf.appendSlice(a, "#define ");
     try buf.appendSlice(a, name);
     try buf.appendSlice(a, " \"");
-    try buf.appendSlice(a, value);
+    // On Windows the joined paths contain backslashes; emit them as '/'
+    // so the C string literal is not corrupted by escape-sequence
+    // interpretation (\a, \e, ...).  Windows file APIs accept '/'.
+    var it = std.mem.splitScalar(u8, value, '\\');
+    var first = true;
+    while (it.next()) |part| {
+        if (!first) try buf.append(a, '/');
+        first = false;
+        try buf.appendSlice(a, part);
+    }
     try buf.appendSlice(a, "\"\n");
 }
 
