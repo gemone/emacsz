@@ -17,9 +17,12 @@ This repository contains GNU Emacs with an ongoing effort to modernize the build
   provided by independent Zig packages: `tools/gnulib-str` (`memeq`/`streq`),
   `tools/gnulib-ctype` (`c_isalpha` & co), `tools/gnulib-stdbit` (the C23
   bit-count helpers), `tools/gnulib-hash` (SHA1, SHA-224/256/384/512 and MD5,
-  backing `secure-hash`), and `tools/emacs-time` + `tools/emacs-nanosleep`
-  (realtime clock / nanosleep with no libc call). Deeper libc decoupling
-  (file-I/O, time modules) is ongoing.
+  backing `secure-hash`), `tools/gnulib-sig2str` (`sig2str`/`str2sig`,
+  backing `signal-names`), `tools/gnulib-filemode` (`strmode`/
+  `filemodestring`, backing `file-attributes` string modes), and
+  `tools/emacs-time` + `tools/emacs-nanosleep` (realtime clock / nanosleep
+  with no libc call). Deeper libc decoupling (file-I/O, time modules) is
+  ongoing.
 - **Goal 3 — Runnable on Linux: ✅ Done.** The final image is
   byte-compiled: `zig build dump` (source bootstrap) →
   `zig build compile-lisp` → `zig build dump-compiled`; `zig build check`
