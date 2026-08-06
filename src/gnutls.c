@@ -919,7 +919,11 @@ gnutls_make_error (int err)
     }
 
   check_memory_full (err);
-  return make_fixnum (err);
+  /* Cast to EMACS_INT so the fixnum range assertion in make_fixnum is
+     meaningful: comparing a 32-bit int/enum (or unsigned length) against
+     the 61-bit fixnum bounds is provably constant and some clang builds
+     flag it.  The value itself is unchanged.  */
+  return make_fixnum ((EMACS_INT) err);
 }
 
 static void
@@ -996,7 +1000,7 @@ See also `gnutls-boot'.  */)
 {
   CHECK_PROCESS (proc);
 
-  return make_fixnum (GNUTLS_INITSTAGE (proc));
+  return make_fixnum ((EMACS_INT) GNUTLS_INITSTAGE (proc));
 }
 
 DEFUN ("gnutls-errorp", Fgnutls_errorp, Sgnutls_errorp, 1, 1, 0,
@@ -1140,9 +1144,9 @@ emacs_gnutls_certificate_details (gnutls_x509_crt_t cert)
   {
     int version = gnutls_x509_crt_get_version (cert);
     check_memory_full (version);
-    if (version >= GNUTLS_E_SUCCESS)
-      res = nconc2 (res, list2 (QCversion,
-				make_fixnum (version)));
+	    if (version >= GNUTLS_E_SUCCESS)
+	      res = nconc2 (res, list2 (QCversion,
+					make_fixnum ((EMACS_INT) version)));
   }
 
   /* Serial. */
@@ -1522,9 +1526,9 @@ keys:
   {
     int bits = gnutls_dh_get_prime_bits (state);
     check_memory_full (bits);
-    if (bits > 0)
-      result = nconc2 (result, list2 (QCdiffie_hellman_prime_bits,
-				      make_fixnum (bits)));
+	    if (bits > 0)
+	      result = nconc2 (result, list2 (QCdiffie_hellman_prime_bits,
+					      make_fixnum ((EMACS_INT) bits)));
   }
 
   /* Key exchange. */
@@ -2379,19 +2383,19 @@ The alist key is the cipher name. */)
 
       Lisp_Object cp
 	 = list (cipher_symbol,
-		 QCcipher_id, make_fixnum (gca),
+		 QCcipher_id, make_fixnum ((EMACS_INT) gca),
 		 QCtype, Qgnutls_type_cipher,
 		 QCcipher_aead_capable, cipher_tag_size == 0 ? Qnil : Qt,
 		 QCcipher_tagsize, make_fixnum (cipher_tag_size),
 
 		 QCcipher_blocksize,
-		 make_fixnum (gnutls_cipher_get_block_size (gca)),
+		 make_fixnum ((EMACS_INT) gnutls_cipher_get_block_size (gca)),
 
 		 QCcipher_keysize,
-		 make_fixnum (gnutls_cipher_get_key_size (gca)),
+		 make_fixnum ((EMACS_INT) gnutls_cipher_get_key_size (gca)),
 
 		 QCcipher_ivsize,
-		 make_fixnum (gnutls_cipher_get_iv_size (gca)));
+		 make_fixnum ((EMACS_INT) gnutls_cipher_get_iv_size (gca)));
 
       ciphers = Fcons (cp, ciphers);
     }
@@ -2716,17 +2720,17 @@ name. */)
       nonce_size = gnutls_mac_get_nonce_size (gma);
 # endif
       Lisp_Object mp =  list (gma_symbol,
-			      QCmac_algorithm_id, make_fixnum (gma),
+			      QCmac_algorithm_id, make_fixnum ((EMACS_INT) gma),
 			      QCtype, Qgnutls_type_mac_algorithm,
 
                               QCmac_algorithm_length,
-                              make_fixnum (gnutls_hmac_get_len (gma)),
+                              make_fixnum ((EMACS_INT) gnutls_hmac_get_len (gma)),
 
                               QCmac_algorithm_keysize,
-                              make_fixnum (gnutls_mac_get_key_size (gma)),
+                              make_fixnum ((EMACS_INT) gnutls_mac_get_key_size (gma)),
 
                               QCmac_algorithm_noncesize,
-			      make_fixnum (nonce_size));
+			      make_fixnum ((EMACS_INT) nonce_size));
       mac_algorithms = Fcons (mp, mac_algorithms);
     }
 
@@ -2751,11 +2755,11 @@ method name. */)
       Lisp_Object gda_symbol = intern (gnutls_digest_get_name (gda));
 
       Lisp_Object mp  = list (gda_symbol,
-			      QCdigest_algorithm_id, make_fixnum (gda),
+			      QCdigest_algorithm_id, make_fixnum ((EMACS_INT) gda),
 			      QCtype, Qgnutls_type_digest_algorithm,
 
                               QCdigest_algorithm_length,
-                              make_fixnum (gnutls_hash_get_len (gda)));
+                              make_fixnum ((EMACS_INT) gnutls_hash_get_len (gda)));
 
       digest_algorithms = Fcons (mp, digest_algorithms);
     }
@@ -3025,9 +3029,9 @@ the ten thousands place, minor version in the hundreds, and patch
 level in the ones.  For builds without libgnutls, the value is -1.  */);
   Vlibgnutls_version = make_fixnum
 #ifdef HAVE_GNUTLS
-    (GNUTLS_VERSION_MAJOR * 10000
-     + GNUTLS_VERSION_MINOR * 100
-     + GNUTLS_VERSION_PATCH)
+    ((EMACS_INT) (GNUTLS_VERSION_MAJOR * 10000
+		  + GNUTLS_VERSION_MINOR * 100
+		  + GNUTLS_VERSION_PATCH))
 #else
     (-1)
 #endif
@@ -3093,19 +3097,19 @@ level in the ones.  For builds without libgnutls, the value is -1.  */);
 
   DEFSYM (Qgnutls_e_interrupted, "gnutls-e-interrupted");
   Fput (Qgnutls_e_interrupted, Qgnutls_code,
-	make_fixnum (GNUTLS_E_INTERRUPTED));
+	make_fixnum ((EMACS_INT) GNUTLS_E_INTERRUPTED));
 
   DEFSYM (Qgnutls_e_again, "gnutls-e-again");
   Fput (Qgnutls_e_again, Qgnutls_code,
-	make_fixnum (GNUTLS_E_AGAIN));
+	make_fixnum ((EMACS_INT) GNUTLS_E_AGAIN));
 
   DEFSYM (Qgnutls_e_invalid_session, "gnutls-e-invalid-session");
   Fput (Qgnutls_e_invalid_session, Qgnutls_code,
-	make_fixnum (GNUTLS_E_INVALID_SESSION));
+	make_fixnum ((EMACS_INT) GNUTLS_E_INVALID_SESSION));
 
   DEFSYM (Qgnutls_e_not_ready_for_handshake, "gnutls-e-not-ready-for-handshake");
   Fput (Qgnutls_e_not_ready_for_handshake, Qgnutls_code,
-	make_fixnum (GNUTLS_E_APPLICATION_ERROR_MIN));
+	make_fixnum ((EMACS_INT) GNUTLS_E_APPLICATION_ERROR_MIN));
 
   defsubr (&Sgnutls_get_initstage);
   defsubr (&Sgnutls_asynchronous_parameters);
