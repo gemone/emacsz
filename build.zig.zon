@@ -98,6 +98,15 @@
         .gnulib_nproc = .{
             .path = "tools/gnulib-nproc",
         },
+        // gnulib-tempname: gnulib's temporary-name generation
+        // (gen_tempname / gen_tempname_len / mkostemp, lib/tempname.c +
+        // lib/mkostemp.c) provided by an independent Zig package instead
+        // of C. getrandom with clock fallback, raw openat/mkdir/lstat
+        // syscalls; no libc call. Linked into temacs (backs
+        // `make-temp-file' and filelock).
+        .gnulib_tempname = .{
+            .path = "tools/gnulib-tempname",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw
