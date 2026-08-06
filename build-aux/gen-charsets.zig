@@ -62,6 +62,33 @@ pub fn main() !void {
     try genJisc6226(gpa, io, cwd);
     try genJisx2131(gpa, io, cwd);
 
+    // Makefile.in copy rules: a handful of maps ship verbatim from
+    // admin/charsets/mapfiles (CP720/CP858 and the MULE-* set).
+    const copied_maps = [_][]const u8{
+        "CP720.map",
+        "CP858.map",
+        "MULE-ethiopic.map",
+        "MULE-ipa.map",
+        "MULE-is13194.map",
+        "MULE-lviscii.map",
+        "MULE-sisheng.map",
+        "MULE-tibetan.map",
+        "MULE-uviscii.map",
+    };
+    for (copied_maps) |name| {
+        const src_path = try std.fmt.allocPrint(gpa, "admin/charsets/mapfiles/{s}", .{name});
+        defer gpa.free(src_path);
+        const src = try cwd.readFileAlloc(io, src_path, gpa, .unlimited);
+        defer gpa.free(src);
+        var lines: std.ArrayList([]const u8) = .empty;
+        defer lines.deinit(gpa);
+        var lit = std.mem.splitScalar(u8, src, '\n');
+        while (lit.next()) |l| try lines.append(gpa, l);
+        const out_path = try std.fmt.allocPrint(gpa, "etc/charsets/{s}", .{name});
+        defer gpa.free(out_path);
+        try writeOut(gpa, io, cwd, out_path, lines.items);
+    }
+
     var generated: usize = 0;
     for (compact_rules) |rule| {
         if (try genMap(gpa, io, cwd, rule)) generated += 1;
