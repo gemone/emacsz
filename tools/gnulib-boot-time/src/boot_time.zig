@@ -4,6 +4,8 @@
 //             fall back to boot-touched file mtimes, then to
 //             CLOCK_BOOTTIME subtracted from the realtime clock.
 //   Darwin -> libc sysctl(KERN_BOOTTIME).
+//   Windows -> pagefile.sys mtime, then now - GetTickCount64 (the
+//             same chain as gnulib's get_windows_boot_time[_fallback]).
 // The result is cached in static state like the C code.
 
 const std = @import("std");
@@ -15,6 +17,10 @@ fn isDarwin(tag: std.Target.Os.Tag) bool {
         .macos, .ios, .tvos, .watchos, .visionos, .driverkit, .maccatalyst => true,
         else => false,
     };
+}
+
+fn isWindows(tag: std.Target.Os.Tag) bool {
+    return tag == .windows;
 }
 
 const BOOT_TIME: i16 = 2;
@@ -187,6 +193,8 @@ var cached_boot_time: Timespec = undefined;
 pub export fn get_boot_time(p_boot_time: *Timespec) c_int {
     if (comptime isDarwin(builtin.os.tag))
         return getBootTimeDarwin(p_boot_time);
+    if (comptime isWindows(builtin.os.tag))
+        return getBootTimeWindows(p_boot_time);
     if (builtin.os.tag != .linux)
         @compileError("gnulib-boot-time: no implementation for this OS");
 
@@ -243,4 +251,64 @@ fn getBootTimeDarwin(p_boot_time: *Timespec) c_int {
         return 0;
     }
     return -1;
+}
+
+// Windows: FILETIME (100 ns ticks since 1601-01-01) -> Unix seconds.
+const FileTime = extern struct {
+    dwLowDateTime: u32,
+    dwHighDateTime: u32,
+};
+
+extern "c" fn GetFileAttributesExA(
+    name: [*:0]const u8,
+    level: c_int,
+    buf: *anyopaque,
+) c_int;
+extern "c" fn GetSystemTimeAsFileTime(ft: *FileTime) void;
+extern "c" fn GetTickCount64() u64;
+
+const WINDOWS_TICK: u64 = 10_000_000;
+const SEC_TO_UNIX_EPOCH: u64 = 11_644_473_600;
+
+const Win32FileAttributeData = extern struct {
+    dwFileAttributes: u32,
+    ftCreationTime: FileTime,
+    ftLastAccessTime: FileTime,
+    ftLastWriteTime: FileTime,
+    nFileSizeHigh: u32,
+    nFileSizeLow: u32,
+};
+
+fn fileTimeToUnix(f: FileTime) i64 {
+    const ticks: u64 = (@as(u64, f.dwHighDateTime) << 32) | f.dwLowDateTime;
+    return @intCast(@divTrunc(ticks, WINDOWS_TICK) -% SEC_TO_UNIX_EPOCH);
+}
+
+fn windowsNow() i64 {
+    var ft: FileTime = undefined;
+    GetSystemTimeAsFileTime(&ft);
+    return fileTimeToUnix(ft);
+}
+
+// get_windows_boot_time: the mtime of C:\pagefile.sys (touched only
+// during boot). Returns true on success.
+fn windowsBootTimePagefile(p: *Timespec) bool {
+    var data: Win32FileAttributeData = undefined;
+    if (GetFileAttributesExA("C:\\pagefile.sys", 0, &data) == 0)
+        return false;
+    p.* = .{ .tv_sec = fileTimeToUnix(data.ftLastWriteTime), .tv_nsec = 0 };
+    return p.tv_sec != 0;
+}
+
+fn getBootTimeWindows(p_boot_time: *Timespec) c_int {
+    if (windowsBootTimePagefile(p_boot_time))
+        return 0;
+    // Fallback: boot time = current time - uptime.
+    const uptime_ms = GetTickCount64();
+    if (uptime_ms == 0) return -1;
+    p_boot_time.* = .{
+        .tv_sec = windowsNow() - @as(i64, @intCast(@divTrunc(uptime_ms, 1000))),
+        .tv_nsec = 0,
+    };
+    return 0;
 }
