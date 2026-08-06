@@ -769,6 +769,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.dependency("emacs_time", .{}).path("src/time.zig"),
         .target = target,
         .optimize = .ReleaseFast,
+        .link_libc = true, // Darwin backend uses libc clock_gettime
     });
     const emacs_time_lib =
         b.addLibrary(.{ .name = "emacs-time", .root_module = emacs_time_mod });
@@ -787,6 +788,7 @@ pub fn build(b: *std.Build) void {
             .path("src/sleep.zig"),
         .target = target,
         .optimize = .ReleaseFast,
+        .link_libc = true, // Darwin backend uses libc nanosleep
     });
     const emacs_nanosleep_lib = b.addLibrary(.{
         .name = "emacs-nanosleep",

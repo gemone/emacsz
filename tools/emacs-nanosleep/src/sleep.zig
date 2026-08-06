@@ -6,6 +6,7 @@
 //   Windows -> kernel32 Sleep for the ms part + a QueryPerformanceCounter
 //              busy-wait for the sub-ms remainder (Sleep is not
 //              interruptible, so rmtp is zeroed -- same as gnulib).
+//   Darwin  -> libc nanosleep (macOS's stable ABI).
 // Signature/semantics match the C `int nanosleep (const struct timespec
 // *rqtp, struct timespec *rmtp)`: returns 0 on success, -1 on
 // interrupt/error. The kernel writes *rmtp on EINTR directly via the
@@ -44,10 +45,28 @@ export fn rpl_nanosleep(rqtp: *const timespec, rmtp: ?*timespec) c_int {
     switch (builtin.os.tag) {
         .linux => return nanosleepLinux(rqtp, rmtp),
         .windows => return nanosleepWindows(rqtp, rmtp),
+        .macos, .ios, .tvos, .watchos, .visionos, .driverkit, .maccatalyst =>
+            return nanosleepDarwin(rqtp, rmtp),
         else => @compileError(
             "emacs-nanosleep: nanosleep not implemented for this OS",
         ),
     }
+}
+
+fn nanosleepDarwin(rqtp: *const timespec, rmtp: ?*timespec) c_int {
+    const c = std.c;
+    var rqtp_c: c.timespec = .{ .sec = @intCast(rqtp.tv_sec), .nsec = @intCast(rqtp.tv_nsec) };
+    var rmtp_c: ?c.timespec = null;
+    if (rmtp) |r| rmtp_c = .{ .sec = @intCast(r.tv_sec), .nsec = @intCast(r.tv_nsec) };
+    const rc = c.nanosleep(&rqtp_c, if (rmtp_c) |*x| x else null);
+    // libc nanosleep writes the remaining time to *rmtp on EINTR.
+    if (rmtp) |r| {
+        if (rmtp_c) |x| {
+            r.tv_sec = @intCast(x.sec);
+            r.tv_nsec = @intCast(x.nsec);
+        }
+    }
+    return rc;
 }
 
 fn nanosleepLinux(rqtp: *const timespec, rmtp: ?*timespec) c_int {

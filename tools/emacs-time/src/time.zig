@@ -1,8 +1,10 @@
 // Native Zig replacements for gnulib's lib/gettime.c (gettime +
 // current_timespec), the realtime-clock read used throughout temacs.
-// Per-platform NATIVE backends, NO libc on either side:
+// Per-platform NATIVE backends, NO libc on Linux/Windows:
 //   Linux   -> std.os.linux.clock_gettime (raw syscall)
 //   Windows -> ntdll RtlGetSystemTimePrecise (no msvcrt/CRT)
+//   Darwin  -> libc clock_gettime (macOS's stable ABI; darwin has no
+//              raw-syscall interface)
 // Returns C `struct timespec` (extern struct, layout-compatible).
 
 const std = @import("std");
@@ -39,6 +41,15 @@ export fn gettime(ts: *timespec) void {
             ts.tv_sec = @divTrunc(unix_100ns, 10000000);
             ts.tv_nsec = @rem(unix_100ns, 10000000) * 100;
         },
+        .macos, .ios, .tvos, .watchos, .visionos, .driverkit, .maccatalyst => {
+            var ts_c: std.c.timespec = undefined;
+            if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts_c) != 0)
+                ts.* = .{ .tv_sec = 0, .tv_nsec = 0 }
+            else {
+                ts.tv_sec = @intCast(ts_c.sec);
+                ts.tv_nsec = @intCast(ts_c.nsec);
+            }
+        },
         else => @compileError("emacs-time: gettime not implemented for this OS"),
     }
 }
@@ -59,15 +70,9 @@ export fn current_timespec() timespec {
 // Replaces src/timefns.c:monotonic_coarse_timespec. Per-platform NATIVE
 // backends, NO libc:
 //   Linux   -> std.os.linux.clock_gettime(.MONOTONIC_COARSE), falling
-//              back to .MONOTONIC, then to current_timespec() (the
-//              realtime read above). MONOTONIC_COARSE is a vsyscall-free
-//              fast path with coarse (~ms) resolution.
-//   Windows -> kernel32/ntdll QueryPerformanceCounter (the monotonic
-//              high-resolution clock; epoch fixed at boot, unaffected by
-//              system-time changes) converted to sec/nsec via
-//              QueryPerformanceFrequency. QPC is Windows' only monotonic
-//              source (no CLOCK_MONOTONIC). Falls back to realtime if QPC
-//              is unavailable (it never fails on XP+).
+//              back to .MONOTONIC, then to current_timespec().
+//   Windows -> kernel32/ntdll QueryPerformanceCounter.
+//   Darwin  -> libc clock_gettime(.MONOTONIC), realtime fallback.
 export fn monotonic_coarse_timespec() timespec {
     var ts: timespec = undefined;
     switch (builtin.os.tag) {
@@ -107,6 +112,12 @@ export fn monotonic_coarse_timespec() timespec {
             const rem: i64 = @rem(counter_i, freq_i);
             ts.tv_nsec = @divTrunc(rem * 1_000_000_000, freq_i);
             return ts;
+        },
+        .macos, .ios, .tvos, .watchos, .visionos, .driverkit, .maccatalyst => {
+            var ts_c: std.c.timespec = undefined;
+            if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts_c) == 0)
+                return .{ .tv_sec = @intCast(ts_c.sec), .tv_nsec = @intCast(ts_c.nsec) };
+            return current_timespec();
         },
         else => @compileError(
             "emacs-time: monotonic_coarse_timespec not implemented for this OS",
