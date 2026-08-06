@@ -16,6 +16,10 @@ fn isDarwin(tag: std.Target.Os.Tag) bool {
     };
 }
 
+fn isWindows(tag: std.Target.Os.Tag) bool {
+    return tag == .windows;
+}
+
 extern fn __errno_location() *c_int;
 
 // glibc x86_64 struct sysinfo (112 bytes; loads at offset 8).
@@ -48,9 +52,20 @@ comptime {
 pub export fn getloadavg(loadavg: [*]f64, nelem: c_int) c_int {
     if (comptime isDarwin(builtin.os.tag))
         return c_getloadavg(loadavg, nelem);
+    if (comptime isWindows(builtin.os.tag))
+        return getloadavgWindows(loadavg, nelem);
     if (builtin.os.tag != .linux)
         @compileError("gnulib-getloadavg: no implementation for this OS");
     return getloadavgLinux(loadavg, nelem);
+}
+
+// gnulib's WINDOWS32 path: there is no load-average source on native
+// Windows, so the entries are reported as zero ("a faithful emulation
+// is going to have to be saved for a rainy day").
+fn getloadavgWindows(loadavg: [*]f64, nelem: c_int) c_int {
+    for (0..@intCast(nelem)) |i|
+        loadavg[i] = 0.0;
+    return nelem;
 }
 
 fn getloadavgLinux(loadavg: [*]f64, nelem: c_int) c_int {

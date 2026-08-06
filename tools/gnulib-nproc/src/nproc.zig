@@ -26,6 +26,10 @@ fn isDigit(c: u8) bool {
     return c >= '0' and c <= '9';
 }
 
+fn isWindows(tag: std.Target.Os.Tag) bool {
+    return tag == .windows;
+}
+
 // Read PATH into BUF via raw syscalls; return the bytes read (empty on
 // read failure).
 fn readFileNul(path: [*:0]const u8, buf: []u8) ?[]const u8 {
@@ -65,7 +69,9 @@ fn countCpuList(data: []const u8) c_ulong {
             const a = parseDec(tok[0..dash]) orelse return 0;
             const b = parseDec(tok[dash + 1 ..]) orelse return 0;
             if (b < a) return 0;
-            total += b - a + 1;
+            // The C code accumulates in 'unsigned long', which wraps on
+            // 32-bit targets; truncate to the same width.
+            total +%= @as(c_ulong, @truncate(b - a + 1));
         } else {
             _ = parseDec(tok) orelse return 0;
             total += 1;
@@ -102,7 +108,76 @@ fn numProcessorsViaAffinityMask() c_ulong {
     return if (count > 0) count else 0;
 }
 
+// Windows: the Win32 APIs gnulib's nproc.c uses. kernel32 is linked
+// automatically for Windows targets, so this module stays libc-free
+// (the winapi convention keeps Zig from requiring a libc module).
+extern "winapi" fn GetSystemInfo(si: *SystemInfo) void;
+extern "winapi" fn GetProcessAffinityMask(
+    proc: ?*anyopaque,
+    process_mask: *usize,
+    system_mask: *usize,
+) c_int;
+extern "winapi" fn GetEnvironmentVariableA(name: [*:0]const u8, buffer: [*]u8, size: u32) u32;
+
+const SystemInfo = extern struct {
+    u: extern union {
+        dwOemId: u32,
+        proc_arch: extern struct { wProcessorArchitecture: u16, wReserved: u16 },
+    },
+    dwPageSize: u32,
+    lpMinimumApplicationAddress: usize,
+    lpMaximumApplicationAddress: usize,
+    dwActiveProcessorMask: usize,
+    dwNumberOfProcessors: u32,
+    dwProcessorType: u32,
+    dwAllocationGranularity: u32,
+    wProcessorLevel: u16,
+    wProcessorRevision: u16,
+};
+
+comptime {
+    // SYSTEM_INFO on x86_64: 4 + 4 + 8 + 8 + 8 + 4 + 4 + 4 + 2 + 2 = 48.
+    if (@sizeOf(SystemInfo) != 48)
+        @compileError("struct SYSTEM_INFO layout mismatch: expected 48 bytes");
+    if (@offsetOf(SystemInfo, "dwNumberOfProcessors") != 32)
+        @compileError("struct SYSTEM_INFO layout mismatch: dwNumberOfProcessors expected at 32");
+}
+
+// gnulib num_processors_via_affinity_mask on native Windows: the bit
+// count of the process affinity mask.
+fn numProcessorsViaAffinityMaskWindows() c_ulong {
+    // GetCurrentProcess returns the pseudo-handle (HANDLE)-1.
+    const current: ?*anyopaque = @ptrFromInt(~@as(usize, 0));
+    var process_mask: usize = 0;
+    var system_mask: usize = 0;
+    if (GetProcessAffinityMask(current, &process_mask, &system_mask) != 0) {
+        var mask = process_mask;
+        var count: c_ulong = 0;
+        while (mask != 0) : (mask >>= 1) {
+            if ((mask & 1) != 0) count += 1;
+        }
+        if (count > 0) return count;
+    }
+    return 0;
+}
+
+// gnulib num_processors_available on native Windows: the affinity count
+// for NPROC_CURRENT, GetSystemInfo's count otherwise.
+fn numProcessorsAvailableWindows(query: c_int) c_ulong {
+    if (query == NPROC_CURRENT) {
+        const n = numProcessorsViaAffinityMaskWindows();
+        if (n > 0) return n;
+    }
+    var si: SystemInfo = undefined;
+    GetSystemInfo(&si);
+    if (si.dwNumberOfProcessors > 0)
+        return si.dwNumberOfProcessors;
+    return NPROC_MINIMUM;
+}
+
 fn numProcessorsAvailable(query: c_int) c_ulong {
+    if (comptime isWindows(builtin.os.tag))
+        return numProcessorsAvailableWindows(query);
     if (query == NPROC_CURRENT) {
         const n = numProcessorsViaAffinityMask();
         if (n > 0) return n;
@@ -249,6 +324,19 @@ fn getenvProc(name: []const u8, buf: []u8) ?[]const u8 {
     return null;
 }
 
+// OMP environment lookup: /proc/self/environ on Linux, the Win32
+// environment block on Windows (keeping the module libc-free).
+fn getenvProcAny(name: []const u8, buf: []u8) ?[]const u8 {
+    if (comptime isWindows(builtin.os.tag)) {
+        var nbuf: [64]u8 = undefined;
+        const z = std.fmt.bufPrintZ(&nbuf, "{s}", .{name}) catch return null;
+        const len = GetEnvironmentVariableA(z.ptr, buf.ptr, @intCast(buf.len));
+        if (len == 0 or len >= buf.len) return null;
+        return buf[0..len];
+    }
+    return getenvProc(name, buf);
+}
+
 // Parse an OpenMP environment value: leading/trailing whitespace
 // allowed, positive decimal, or the first value of a nesting level.
 fn parseOmpThreads(threads: ?[]const u8) c_ulong {
@@ -284,8 +372,8 @@ pub export fn num_processors(query_in: c_int) c_ulong {
     // Honor the OpenMP environment variables.
     if (query == NPROC_CURRENT_OVERRIDABLE) {
         var ebuf: [32768]u8 = undefined;
-        const omp_threads = parseOmpThreads(getenvProc("OMP_NUM_THREADS", &ebuf));
-        const omp_limit_raw = parseOmpThreads(getenvProc("OMP_THREAD_LIMIT", &ebuf));
+        const omp_threads = parseOmpThreads(getenvProcAny("OMP_NUM_THREADS", &ebuf));
+        const omp_limit_raw = parseOmpThreads(getenvProcAny("OMP_THREAD_LIMIT", &ebuf));
         const omp_env_limit: c_ulong = if (omp_limit_raw == 0) ULONG_MAX else omp_limit_raw;
 
         if (omp_threads != 0)

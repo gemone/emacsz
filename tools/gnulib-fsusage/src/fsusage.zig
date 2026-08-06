@@ -3,6 +3,8 @@
 // statfs(2) and maps the kernel fields into the gnulib struct fs_usage.
 //   Linux  -> raw statfs syscall (no libc call).
 //   Darwin -> libc statfs (macOS's stable ABI).
+//   Windows -> GetDiskFreeSpaceExA (kernel32; fileio.c never queries
+//             fs usage under DOS_NT, so this keeps the API available).
 // errno is set on failure exactly as the C code leaves it.
 
 const std = @import("std");
@@ -14,6 +16,10 @@ fn isDarwin(tag: std.Target.Os.Tag) bool {
         .macos, .ios, .tvos, .watchos, .visionos, .driverkit, .maccatalyst => true,
         else => false,
     };
+}
+
+fn isWindows(tag: std.Target.Os.Tag) bool {
+    return tag == .windows;
 }
 
 extern fn __errno_location() *c_int;
@@ -55,6 +61,8 @@ pub export fn get_fs_usage(
 ) c_int {
     if (comptime isDarwin(builtin.os.tag))
         return getFsUsageDarwin(file, fsp);
+    if (comptime isWindows(builtin.os.tag))
+        return getFsUsageWindows(file, fsp);
     if (builtin.os.tag != .linux)
         @compileError("gnulib-fsusage: no implementation for this OS");
     _ = disk;
@@ -118,5 +126,32 @@ fn getFsUsageDarwin(file: [*:0]const u8, fsp: *FsUsage) c_int {
     fsp.fsu_bavail_top_bit_set = (fsd.f_bavail >> 63) != 0;
     fsp.fsu_files = fsd.f_files;
     fsp.fsu_ffree = fsd.f_ffree;
+    return 0;
+}
+
+// Windows: GetDiskFreeSpaceExA reports bytes; map them into 1024-byte
+// blocks.  File counts are unknown (the all-ones sentinel that
+// PROPAGATE_ALL_ONES would produce).
+extern "c" fn GetDiskFreeSpaceExA(
+    dir: [*:0]const u8,
+    free: ?*u64,
+    total: ?*u64,
+    avail: ?*u64,
+) c_int;
+
+fn getFsUsageWindows(file: [*:0]const u8, fsp: *FsUsage) c_int {
+    var total: u64 = 0;
+    var free: u64 = 0;
+    var avail: u64 = 0;
+    if (GetDiskFreeSpaceExA(file, &free, &total, &avail) == 0)
+        return -1;
+    const blocksize: u64 = 1024;
+    fsp.fsu_blocksize = blocksize;
+    fsp.fsu_blocks = @divTrunc(total, blocksize);
+    fsp.fsu_bfree = @divTrunc(free, blocksize);
+    fsp.fsu_bavail = @divTrunc(avail, blocksize);
+    fsp.fsu_bavail_top_bit_set = false;
+    fsp.fsu_files = std.math.maxInt(u64);
+    fsp.fsu_ffree = std.math.maxInt(u64);
     return 0;
 }
