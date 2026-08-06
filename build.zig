@@ -1308,9 +1308,15 @@ pub fn build(b: *std.Build) void {
     // The bootstrap dump does not bundle charprop (loaded on demand), so
     // it is generated separately. Outputs are gitignored. Standalone
     // (like generate-charsets); run before check-all if needed.
-    const gen_charprop = b.addSystemCommand(&[_][]const u8{
-        "sh", "build-aux/generate-charprop.sh",
+    const gen_charprop_tool = b.addExecutable(.{
+        .name = "generate-charprop",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/generate-charprop.zig"),
+        }),
     });
+    const gen_charprop = b.addRunArtifact(gen_charprop_tool);
     gen_charprop.setCwd(b.path("."));
     gen_charprop.step.dependOn(&run_smoke.step);
     const gen_charprop_step = b.step(
@@ -1326,9 +1332,15 @@ pub fn build(b: *std.Build) void {
     // track these; without them the cedet suites fail to load
     // ("Cannot open load file srecode/srt-wy"). Standalone; run before
     // check-all if the suite set needs cedet.
-    const gen_cedet = b.addSystemCommand(&[_][]const u8{
-        "sh", "build-aux/generate-cedet-grammars.sh",
+    const gen_cedet_tool = b.addExecutable(.{
+        .name = "generate-cedet-grammars",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/generate-cedet-grammars.zig"),
+        }),
     });
+    const gen_cedet = b.addRunArtifact(gen_cedet_tool);
     gen_cedet.setCwd(b.path("."));
     gen_cedet.step.dependOn(&run_smoke.step);
     const gen_cedet_step = b.step(
