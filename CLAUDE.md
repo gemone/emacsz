@@ -16,8 +16,9 @@ This repository contains GNU Emacs with an ongoing effort to modernize the build
   Zig drives all compile/link. Runtime gnulib functions are progressively
   provided by independent Zig packages: `tools/gnulib-str` (`memeq`/`streq`),
   `tools/gnulib-ctype` (`c_isalpha` & co), `tools/gnulib-stdbit` (the C23
-  bit-count helpers), `tools/gnulib-hash` (SHA1, SHA-224/256/384/512 and MD5,
-  backing `secure-hash`), `tools/gnulib-sig2str` (`sig2str`/`str2sig`,
+  bit-count helpers), `tools/gnulib-hash` (SHA1, SHA-224/256/384/512,
+  SHA3-224/256/384/512 and MD5, backing `secure-hash`),
+  `tools/gnulib-sig2str` (`sig2str`/`str2sig`,
   backing `signal-names`), `tools/gnulib-filemode` (`strmode`/
   `filemodestring`, backing `file-attributes` string modes),
   `tools/gnulib-timespec` (`dtotimespec`/`timespec_add`/`timespec_sub`,
