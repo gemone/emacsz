@@ -100,12 +100,12 @@ pub export fn qcopy_acl(
     // non-XATTR path reduces to chmod_or_fchmod when the source has no
     // ACLs).  Uses libc chmod/fchmod; errno is set by libc.
     if (dest_desc != -1)
-        return c_fchmod(dest_desc, mode);
-    return c_chmod(dst_name, mode);
+        return fchmod(dest_desc, mode);
+    return chmod(dst_name, mode);
 }
 
-extern "c" fn c_chmod(path: [*:0]const u8, mode: mode_t) c_int;
-extern "c" fn c_fchmod(fd: c_int, mode: mode_t) c_int;
+extern "c" fn chmod(path: [*:0]const u8, mode: mode_t) c_int;
+extern "c" fn fchmod(fd: c_int, mode: mode_t) c_int;
 
 fn qcopyAclLinux(
     src_name: [*:0]const u8,

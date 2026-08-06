@@ -181,6 +181,17 @@
         .gnulib_time_rz = .{
             .path = "tools/gnulib-time-rz",
         },
+        // gnulib-io: the remaining live gnulib I/O wrappers
+        // (close_stream, set_binary_mode, rpl_pipe2 from
+        // lib/close-stream.c, lib/binary-io.c and lib/pipe2.c) provided
+        // by an independent Zig package instead of C. Backs
+        // src/sysdep.c (exit-time flush, emacs_pipe) and
+        // `set-binary-mode'; the FILE* calls delegate to libc like the
+        // C code, while the pipe/fcntl work uses raw Linux syscalls.
+        // Linked into temacs.
+        .gnulib_io = .{
+            .path = "tools/gnulib-io",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw

@@ -814,6 +814,25 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-time-rz", .root_module = gnulib_time_rz_mod });
     exe.root_module.linkLibrary(gnulib_time_rz_lib);
 
+    // gnulib-io: an independent Zig package (tools/gnulib-io) providing
+    // the remaining live gnulib I/O wrappers -- close_stream
+    // (lib/close-stream.c), set_binary_mode (lib/binary-io.c) and
+    // rpl_pipe2 (lib/pipe2.c). Backs src/sysdep.c's exit-time
+    // stdout/stderr flush and emacs_pipe, and `set-binary-mode'. The
+    // FILE* functions delegate to libc (ferror/fclose/__fpending on
+    // glibc) exactly like the C code; the pipe and fcntl work uses raw
+    // Linux syscalls with a libc fallback for other systems. Built
+    // ReleaseFast (leaf wrappers).
+    const gnulib_io_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_io", .{}).path("src/io.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .link_libc = true, // libc fclose/ferror/__fpending + portable pipe fallback
+    });
+    const gnulib_io_lib =
+        b.addLibrary(.{ .name = "gnulib-io", .root_module = gnulib_io_mod });
+    exe.root_module.linkLibrary(gnulib_io_lib);
+
     // emacs-time: an independent Zig package (tools/emacs-time) providing
     // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
     // would otherwise provide, via per-platform NATIVE backends with no libc:
@@ -1763,6 +1782,28 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // temacs below (time-zone conversions in timefns.c, %Z in
         // nstrftime.c).
         "time_rz",
+        // lib/close-stream.c, lib/binary-io.c, lib/pipe2.c are provided
+        // by an independent Zig package (tools/gnulib-io, dependency
+        // `gnulib_io`) -- native Zig close_stream / set_binary_mode /
+        // rpl_pipe2 with libc FILE* delegation and raw Linux pipe/fcntl
+        // syscalls. Excluded here so the C sources are not compiled;
+        // the package's exported symbols are linked into temacs below
+        // (exit-time flush, emacs_pipe, `set-binary-mode').
+        "close-stream",
+        "binary-io",
+        "pipe2",
+        // lib/fpending.c, lib/save-cwd.c, lib/md5-stream.c,
+        // lib/strnul.c and lib/u64.c are dead in this build: nothing
+        // references their symbols any more (their former callers are
+        // Zig packages: close_stream now uses glibc's __fpending, and
+        // save-cwd/md5-stream/strnul/u64 had no callers at all once
+        // at-func, fdopendir, native-comp and the hash/string packages
+        // were replaced). Excluded so the C sources are not compiled.
+        "fpending",
+        "save-cwd",
+        "md5-stream",
+        "strnul",
+        "u64",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native
