@@ -75,33 +75,26 @@ java/cf-stamp
 # Built by `config.status'.
 java/AndroidManifest.xml
 
-# C-level sources built by 'make'.
-lib/alloca.h
-lib/assert.h
+# C-level artifacts built by 'make' that the zig build does not use.
+lib/libgnu.a
+lib/malloc/*.gl.h
+# The gnulib replacement headers are committed sources now: the pure-zig
+# build has no configure step to regenerate them, so a clean clone needs
+# them present (lib/*.h and lib/sys/*.h listed above are tracked). The
+# entries below are only for headers that are never generated on this
+# target (the system headers suffice, e.g. glibc's byteswap.h/errno.h).
 lib/byteswap.h
-lib/dirent.h
 lib/endian.h
 lib/errno.h
 lib/execinfo.h
-lib/fcntl.h
 lib/getopt.h
 lib/getopt-cdefs.h
 lib/gmp.h
 lib/ieee754.h
-lib/inttypes.h
-lib/libgnu.a
-lib/limits.h
-lib/malloc/*.gl.h
-lib/signal.h
-lib/std*.h
 lib/math.h
 !lib/std*.in.h
 !lib/stdio-impl.h
 !lib/_Noreturn.h
-lib/string.h
-lib/sys/
-lib/time.h
-lib/unistd.h
 src/buildobj.h
 src/globals.h
 src/lisp.mk
