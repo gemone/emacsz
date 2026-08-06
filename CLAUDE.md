@@ -43,13 +43,17 @@ This repository contains GNU Emacs with an ongoing effort to modernize the build
   `acl_errno_valid`, backing preserve-permissions in `Fcopy_file` and
   `file-acl`/`set-file-acl`; the libattr attr_copy_* xattr semantics and
   the fdfile_has_aclinfo EOPNOTSUPP diagnostic are ported with raw
-  syscalls, and libattr is no longer linked). The remaining live gnulib
-  C objects are `time_rz` (`tzalloc`/`localtime_rz`/`mktime_z`, the
-  timezone machinery behind `src/timefns.c`) plus thin libc-delegating
-  wrappers (`close-stream`, `pipe2`, `md5-stream`, `save-cwd`,
-  `binary-io`, `fseterr`, `strnul`, `u64`); the rest of lib/*.c is empty
-  on glibc or unexercised by Emacs. Deeper libc decoupling (file-I/O,
-  time modules) is ongoing.
+  syscalls, and libattr is no longer linked), and
+  `tools/gnulib-time-rz` (`tzalloc`/`tzfree`/`set_tz`/`revert_tz`/
+  `localtime_rz`/`mktime_z`, the timezone machinery behind
+  `src/timefns.c` and `%Z` in nstrftime, with the struct-tm_zone
+  abbreviation cache over Emacs's own TZ getter/setter). The remaining
+  live gnulib C objects are thin libc-delegating wrappers
+  (`close-stream`, `pipe2`, `md5-stream`, `save-cwd`, `binary-io`,
+  `fseterr`, `strnul`, `u64`, plus `time_r`/`timegm`/`mktime` backing
+  the time conversions); the rest of lib/*.c is empty on glibc or
+  unexercised by Emacs. Deeper libc decoupling (file-I/O, time modules)
+  is ongoing.
 - **Goal 3 — Runnable on Linux: ✅ Done.** The final image is
   byte-compiled: `zig build dump` (source bootstrap) →
   `zig build compile-lisp` → `zig build dump-compiled`; `zig build check`
