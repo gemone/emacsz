@@ -90,6 +90,14 @@
         .gnulib_sigdescr_np = .{
             .path = "tools/gnulib-sigdescr-np",
         },
+        // gnulib-nproc: gnulib's processor-count query (num_processors,
+        // lib/nproc.c) provided by an independent Zig package instead of
+        // C. Affinity/scheduler via raw syscalls, sysfs/proc reads and
+        // cgroup-v2 quota parsing; no libc call. Linked into temacs
+        // (backs `num-processors').
+        .gnulib_nproc = .{
+            .path = "tools/gnulib-nproc",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw

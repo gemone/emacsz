@@ -629,6 +629,22 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-sigdescr-np", .root_module = gnulib_sigdescr_np_mod });
     exe.root_module.linkLibrary(gnulib_sigdescr_np_lib);
 
+    // gnulib-nproc: an independent Zig package (tools/gnulib-nproc)
+    // providing gnulib's processor-count query (num_processors,
+    // lib/nproc.c), backing `num-processors'. Replicates the C logic:
+    // affinity mask via sched_getaffinity, configured/online counts from
+    // sysfs (the data glibc's sysconf consults), cgroup-v2 CPU quota and
+    // OMP environment variables. No libc call: raw syscalls + /proc//sys
+    // reads. Built ReleaseFast (leaf query).
+    const gnulib_nproc_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_nproc", .{}).path("src/nproc.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const gnulib_nproc_lib =
+        b.addLibrary(.{ .name = "gnulib-nproc", .root_module = gnulib_nproc_mod });
+    exe.root_module.linkLibrary(gnulib_nproc_lib);
+
     // emacs-time: an independent Zig package (tools/emacs-time) providing
     // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
     // would otherwise provide, via per-platform NATIVE backends with no libc:
@@ -1483,6 +1499,12 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // here so the C source is not compiled; the package's exported
         // symbol is linked into temacs below (safe_strsignal).
         "sigdescr_np",
+        // lib/nproc.c is provided by an independent Zig package
+        // (tools/gnulib-nproc, dependency `gnulib_nproc`) -- native Zig
+        // processor-count query (num_processors). Excluded here so the
+        // C source is not compiled; the package's exported symbol is
+        // linked into temacs below (`num-processors').
+        "nproc",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native

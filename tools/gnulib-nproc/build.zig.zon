@@ -1,0 +1,12 @@
+.{
+    .name = .gnulib_nproc,
+    .fingerprint = 0x8d490cc04e991de9,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/nproc.zig",
+    },
+}
