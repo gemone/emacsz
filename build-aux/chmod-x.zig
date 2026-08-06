@@ -1,0 +1,22 @@
+//! Native Zig replacement for the `chmod +x` install step: make the
+//! installed emacs launcher executable (defense against filesystems or
+//! checkouts that drop the committed +x bit). argv[1] is the target.
+
+const std = @import("std");
+
+pub fn main(minimal: std.process.Init.Minimal) !void {
+    const gpa = std.heap.smp_allocator;
+    var io_threaded: std.Io.Threaded = .init(gpa, .{});
+    const io = io_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    var it = try std.process.Args.Iterator.initAllocator(minimal.args, gpa);
+    defer it.deinit();
+    _ = it.next();
+    const path = it.next() orelse return error.MissingPath;
+
+    const z = try std.fmt.allocPrintSentinel(gpa, "{s}", .{path}, 0);
+    defer gpa.free(z);
+    const rc = std.os.linux.fchmodat(std.os.linux.AT.FDCWD, z, 0o755, 0);
+    if (@as(isize, @bitCast(rc)) < 0) return error.ChmodFailed;
+}

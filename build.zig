@@ -367,41 +367,18 @@ pub fn build(b: *std.Build) void {
     const gen_epaths_step = b.step("generate-epaths", "Generate epaths.h with build-tree paths");
     gen_epaths_step.dependOn(&run_gen_epaths.step);
 
-    // Verify the generated config.h carries the load-bearing subset of knobs
-    // the rest of the build will eventually rely on. The generated file path
-    // is passed in as $1 via the standard addFileArg idiom; any failed grep
-    // exits non-zero and fails the step. Standalone -- does NOT depend on exe.
-    const verify_config_cmd = b.addSystemCommand(&[_][]const u8{
-        "sh",
-        "-c",
-        \\set -e
-        \\f="$1"
-        \\grep -qE '^#ifndef EMACS_CONFIG_H$' "$f"
-        \\grep -qE '^#define EMACS_CONFIG_H$' "$f"
-        \\grep -qE '^#include <conf_post\.h>$' "$f"
-        \\grep -qE '^#define SYSTEM_TYPE "gnu/linux"$' "$f"
-        \\grep -qE '^#define EMACS_CONFIGURATION "x86_64-pc-linux-gnu"$' "$f"
-        \\grep -qE '^#define HAVE_PDUMPER 1$' "$f"
-        \\grep -qE '^#define SYSTEM_MALLOC 1$' "$f"
-        \\grep -qE '^#define HAVE_ALSA 1$' "$f"
-        \\grep -qE '^#define HAVE_DBUS 1$' "$f"
-        \\grep -qE '^#define HAVE_GPM 1$' "$f"
-        \\grep -qE '^#define HAVE_INOTIFY 1$' "$f"
-        \\grep -qE '^#define HAVE_LIBXML2 1$' "$f"
-        \\grep -qE '^#define HAVE_SQLITE3 1$' "$f"
-        \\grep -qE '^#define HAVE_LCMS2 1$' "$f"
-        \\grep -qE '^#define HAVE_GNUTLS 1$' "$f"
-        \\grep -qE '^#define HAVE_TREE_SITTER 1$' "$f"
-        \\grep -qE '^#define HAVE_GETRANDOM 1$' "$f"
-        \\grep -qE '^#define GNU_LINUX\b' "$f"
-        \\grep -qE "^#define DIRECTORY_SEP '/'$" "$f"
-        \\grep -qE "^#define SEPCHAR ':'$" "$f"
-        \\grep -qE '^/\* #undef HAVE_MODULES \*/$' "$f"
-        \\grep -qE '^/\* #undef HAVE_NS \*/$' "$f"
-        \\grep -qE '^/\* #undef HAVE_ANDROID \*/$' "$f"
-        \\echo "config.h OK"
+    // Verify the generated config.h carries the load-bearing subset of
+    // knobs the rest of the build relies on, via a native Zig tool
+    // (build-aux/verify-config.zig). Standalone -- does NOT depend on exe.
+    const verify_config_tool = b.addExecutable(.{
+        .name = "verify-config",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/verify-config.zig"),
+        }),
     });
-    verify_config_cmd.addArg("config-h");
+    const verify_config_cmd = b.addRunArtifact(verify_config_tool);
     verify_config_cmd.addFileArg(config_h_file);
     const verify_config_step = b.step(
         "verify-config",
@@ -415,34 +392,15 @@ pub fn build(b: *std.Build) void {
     // step is what makes subsequent I4b chunks verifiable: run it after each
     // chunk and watch `missing:` shrink toward 0. Standalone -- depends only
     // on config_h, not on exe.
-    const diff_config_cmd = b.addSystemCommand(&[_][]const u8{
-        "sh",
-        "-c",
-        \\set -u
-        \\gen="$1"; ref="$2"
-        \\if [ ! -f "$ref" ]; then
-        \\  echo "reference src/config.h not present; skipping diff"
-        \\  exit 0
-        \\fi
-        \\extract() {
-        \\  grep -hoE '^#define [A-Z_][A-Z_0-9]*' "$1" | awk '{print $2}'
-        \\  grep -hoE '^/\* #undef [A-Z_][A-Z_0-9]* \*/' "$1" | awk '{print $3}'
-        \\}
-        \\extract "$gen" | sort -u | grep -vxE 'EMACS_CONFIG_H|_GL_CONFIG_H_INCLUDED' > "$gen.knobs"
-        \\extract "$ref" | sort -u | grep -vxE 'EMACS_CONFIG_H|_GL_CONFIG_H_INCLUDED' > "$ref.knobs"
-        \\g=$(wc -l < "$gen.knobs"); r=$(wc -l < "$ref.knobs")
-        \\miss=$(comm -23 "$ref.knobs" "$gen.knobs" | wc -l)
-        \\extra=$(comm -13 "$ref.knobs" "$gen.knobs" | wc -l)
-        \\echo "generated: $g knobs"
-        \\echo "reference: $r knobs"
-        \\echo "missing: $miss"
-        \\echo "extra: $extra"
-        \\echo "--- first missing ---"
-        \\comm -23 "$ref.knobs" "$gen.knobs" | head -10
-        \\rm -f "$gen.knobs" "$ref.knobs"
-        \\exit 0
+    const diff_config_tool = b.addExecutable(.{
+        .name = "config-diff",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/config-diff.zig"),
+        }),
     });
-    diff_config_cmd.addArg("config-diff");
+    const diff_config_cmd = b.addRunArtifact(diff_config_tool);
     diff_config_cmd.addFileArg(config_h_file);
     diff_config_cmd.addFileArg(b.path("src/config.h"));
     const diff_config_step = b.step(
@@ -1073,11 +1031,16 @@ pub fn build(b: *std.Build) void {
         "emacs",
     );
     b.getInstallStep().dependOn(&install_emacs_wrapper.step);
-    const chmod_emacs_wrapper = b.addSystemCommand(&[_][]const u8{
-        "chmod",
-        "+x",
-        b.pathJoin(&.{ b.install_path, "bin", "emacs" }),
+    const chmod_tool = b.addExecutable(.{
+        .name = "chmod-x",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/chmod-x.zig"),
+        }),
     });
+    const chmod_emacs_wrapper = b.addRunArtifact(chmod_tool);
+    chmod_emacs_wrapper.addArg(b.pathJoin(&.{ b.install_path, "bin", "emacs" }));
     chmod_emacs_wrapper.step.dependOn(&install_emacs_wrapper.step);
     b.getInstallStep().dependOn(&chmod_emacs_wrapper.step);
 
