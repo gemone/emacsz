@@ -32,11 +32,17 @@ fi
 # itself, so run from lisp/.
 cd "$ROOT/lisp" || exit 1
 
-# SUBDIRS_ALMOST (lisp/Makefile.in): all lisp/ subdirs except obsolete,
-# term, leim. The batch function reads these from command-line-args-left
-# and scrapes autoload cookies into per-dir *-loaddefs.el + loaddefs.el.
-SUBDIRS=$(find . -mindepth 1 -maxdepth 1 -type d \
-    ! -name obsolete ! -name term ! -name leim -printf '%f\n' | sort | tr '\n' ' ')
+# SUBDIRS_ALMOST (lisp/Makefile.in) is every lisp/ directory recursively,
+# INCLUDING the root: `find ${srcdir} -type d` minus the exact obsolete/
+# and term/ dirs. The root scan is what creates the top-level
+# *-loaddefs.el files declared via generated-autoload-file file-locals
+# (ibuffer-loaddefs.el, ps-print-loaddefs.el) and nested-dir scans create
+# e.g. cedet/srecode/srecode-loaddefs.el; without them the suites that
+# (require 'foo-loaddefs) fail to load. The batch function reads these
+# paths from command-line-args-left and scrapes autoload cookies into
+# per-dir *-loaddefs.el + lisp/loaddefs.el.
+SUBDIRS=$(find . -type d ! -path './obsolete' ! -path './term' \
+    -printf '%p ' | sort | tr '\n' ' ')
 
 $SETARCH "$TEMACS" --batch -L . \
     -l emacs-lisp/loaddefs-gen.el \
