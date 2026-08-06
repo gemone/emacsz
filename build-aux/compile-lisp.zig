@@ -29,7 +29,13 @@ pub fn main() !void {
     try env_map.put("EMACSDATA", etc_path);
     try env_map.put("LC_ALL", "C");
 
-    const eval = try std.fmt.allocPrint(gpa, "(progn (load \"cl-macs\") (load \"cl-seq\") (load \"cl-extra\") (byte-recompile-directory \"{s}\" 0))", .{lisp_path});
+    const charprop = try std.fs.path.join(gpa, &.{ lisp_path, "international", "charprop" });
+    defer gpa.free(charprop);
+    // char-fold.el builds its tables from the Unicode property data at
+    // compile time, so charprop must be loaded in the compile session
+    // (the source dump does not bundle it; loadup only tolerates its
+    // absence). A clean checkout has no stale .elc to hide the need.
+    const eval = try std.fmt.allocPrint(gpa, "(progn (load \"cl-macs\") (load \"cl-seq\") (load \"cl-extra\") (load \"{s}\") (byte-recompile-directory \"{s}\" 0))", .{ charprop, lisp_path });
     defer gpa.free(eval);
     const dump_arg = try std.fmt.allocPrint(gpa, "--dump-file={s}", .{dump});
     defer gpa.free(dump_arg);

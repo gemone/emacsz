@@ -40,7 +40,15 @@ pub fn main() !void {
     defer gpa.free(loaddefs);
     std.Io.Dir.deleteFileAbsolute(io, loaddefs) catch {};
 
+    const charprop = try std.fs.path.join(gpa, &.{ lisp_path, "international", "charprop" });
+    defer gpa.free(charprop);
+    // The autoload scrape loads files (e.g. tramp-adb) that require the
+    // Unicode property data; the source dump does not bundle charprop,
+    // so load it explicitly (a clean checkout has no stale tables).
+    const charprop_eval = try std.fmt.allocPrint(gpa, "(load \"{s}\")", .{charprop});
+    defer gpa.free(charprop_eval);
     try runEmacs(io, gpa, temacs, dump, lisp_path, &.{
+        "--eval", charprop_eval,
         "-l", "emacs-lisp/loaddefs-gen.el",
         "-f", "loaddefs-generate--emacs-batch",
     }, subdirs);

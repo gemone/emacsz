@@ -1421,6 +1421,31 @@ pub fn build(b: *std.Build) void {
     dump_step.dependOn(b.getInstallStep());
     dump_step.dependOn(&run_dump.step);
 
+    // generate-charprop: produce lisp/international/{charprop,uni-*}.el
+    // from admin/unidata via the dumped emacs (mirrors admin/unidata/
+    // Makefile). Some lisp files (char-fold.el, shadowfile.el, and the
+    // autoload scrape) need the Unicode property tables, so charprop
+    // must exist before generate-loaddefs and compile-lisp; it runs
+    // from the source (pbootstrap) dump, which avoids a cycle. Outputs
+    // are gitignored; on a clean checkout nothing masks a missing
+    // generation.
+    const gen_charprop_tool = b.addExecutable(.{
+        .name = "generate-charprop",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/generate-charprop.zig"),
+        }),
+    });
+    const gen_charprop = b.addRunArtifact(gen_charprop_tool);
+    gen_charprop.setCwd(b.path("."));
+    gen_charprop.step.dependOn(&run_dump.step);
+    const gen_charprop_step = b.step(
+        "generate-charprop",
+        "Generate lisp/international/{charprop,uni-*}.el from admin/unidata",
+    );
+    gen_charprop_step.dependOn(&gen_charprop.step);
+
     // generate-loaddefs: produce lisp/loaddefs.el + per-subdir
     // *-loaddefs.el (autoload cookies) via the dumped emacs. Mirrors
     // lisp/Makefile.in's `autoloads` target. Required at runtime by
@@ -1447,30 +1472,7 @@ pub fn build(b: *std.Build) void {
         "Generate lisp/loaddefs.el + *-loaddefs.el autoload files",
     );
     gen_loaddefs_step.dependOn(&gen_loaddefs.step);
-
-    // generate-charprop: produce lisp/international/{charprop,uni-*}.el
-    // from admin/unidata via the dumped emacs (mirrors admin/unidata/
-    // Makefile). Some lisp files (char-fold.el, shadowfile.el) load
-    // charprop at compile time, so it must exist before compile-lisp;
-    // it runs from the source (pbootstrap) dump, which avoids a cycle.
-    // Outputs are gitignored; on a clean checkout nothing masks a
-    // missing generation.
-    const gen_charprop_tool = b.addExecutable(.{
-        .name = "generate-charprop",
-        .root_module = b.createModule(.{
-            .target = b.graph.host,
-            .optimize = .Debug,
-            .root_source_file = b.path("build-aux/generate-charprop.zig"),
-        }),
-    });
-    const gen_charprop = b.addRunArtifact(gen_charprop_tool);
-    gen_charprop.setCwd(b.path("."));
-    gen_charprop.step.dependOn(&run_dump.step);
-    const gen_charprop_step = b.step(
-        "generate-charprop",
-        "Generate lisp/international/{charprop,uni-*}.el from admin/unidata",
-    );
-    gen_charprop_step.dependOn(&gen_charprop.step);
+    gen_loaddefs.step.dependOn(&gen_charprop.step);
 
     // compile-lisp: byte-compile the whole lisp tree with the bootstrap
     // dump. Upstream byte-compiles before its final dump; running from
