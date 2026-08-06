@@ -60,8 +60,34 @@ This repository contains GNU Emacs with an ongoing effort to modernize the build
   that Emacs uses is either provided by a Zig package or binds
   directly to libc (the time conversions use glibc's localtime_r /
   gmtime_r / timegm / mktime). The rest of lib/*.c is empty on glibc
-  or unexercised by Emacs. Deeper libc decoupling (file-I/O, time
-  modules) is ongoing.
+  or unexercised by Emacs. The GMP integer dependency is also gone:
+  `tools/bignum` reimplements the mpz_* surface Emacs uses (C-ABI
+  compatible, allocator callbacks honored) and `-lgmp` is replaced by
+  the `emacs-bignum` library with a bundled gmp.h shim, so no target
+  needs a system GMP.
+
+### Cross-target status
+- Linux (glibc): full build + all tests green (`zig build check`
+  582/582; `check-all` 483/484, the single failure is eglot's
+  live-server test).
+- musl (static): `zig build -Dtarget=x86_64-linux-musl` and
+  `aarch64-linux-musl` link fully static binaries with zero system
+  libraries (the feature libs are undef'd by the target config;
+  `src/termcap.c` supplies the terminal capabilities), verified to run
+  `--batch` + bignum arithmetic.
+- Windows: `zig build -Dtarget=x86_64-windows-gnu` compiles every
+  shared C source and the w32 console modules and links temacs.exe
+  (console/keyboard/registry implemented, GUI out of scope); runtime
+  verified via CI's windows-latest smoke job.
+- macOS: all Zig packages and C sources compile; the final link needs
+  macOS system libraries and is verified on the macos-latest runner.
+- Clean clones build: the gnulib replacement headers under lib/*.h are
+  committed (no configure step exists), so `git clone && zig build`
+  works from scratch.
+- CI (`.github/workflows/zig-verify.yml` + `build-zig-native.yml`):
+  Linux 582-test gate, hard cross-compile gates for Windows and both
+  musl targets, compile gate for macOS (link-only classified), and a
+  native matrix with a Windows `temacs.exe --batch` smoke test.
 - **Goal 3 — Runnable on Linux: ✅ Done.** The final image is
   byte-compiled: `zig build dump` (source bootstrap) →
   `zig build compile-lisp` → `zig build dump-compiled`; `zig build check`
