@@ -44,6 +44,13 @@ cd "$ROOT/lisp" || exit 1
 SUBDIRS=$(find . -type d ! -path './obsolete' ! -path './term' \
     -printf '%p ' | sort | tr '\n' ' ')
 
+# Force a FULL regeneration: with an existing loaddefs.el, the generator
+# runs in "updating" mode and silently skips every source file older than
+# it (so a fresh checkout would never create the missing *-loaddefs.el
+# files). Mirroring lisp/Makefile.in's autoloads-force, delete the main
+# output first so updating=nil and every file is rescanned.
+rm -f loaddefs.el
+
 $SETARCH "$TEMACS" --batch -L . \
     -l emacs-lisp/loaddefs-gen.el \
     --dump-file="$DUMP" \
