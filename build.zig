@@ -235,6 +235,63 @@ pub fn build(b: *std.Build) void {
     const gen_globals_step = b.step("generate-globals", "Generate src/globals.h via make-docfile");
     gen_globals_step.dependOn(&run_mdf.step);
 
+    // Generate etc/DOC: the doc strings for C primitives and variables,
+    // consumed at runtime from doc-directory (etc/) by doc.c. Mirrors
+    // src/Makefile.in's DOC rule: SOME_MACHINE_OBJECTS first (so every
+    // platform's entries are present once), then doc_obj (= base_obj on
+    // this TTY build, plus the Linux DEFSYM files re-added for globals.h
+    // parity). Without it `(documentation 'subr)` returns nil and
+    // doc-tests-documentation/c-primitive fails. Output lands in etc/
+    // (gitignored) where the dumped emacs looks for it.
+    const run_doc = b.addRunArtifact(mdf);
+    run_doc.addArg("-d");
+    run_doc.addArg("src");
+    // SOME_MACHINE_OBJECTS as in Makefile.in:477-488 (.o names; make-docfile
+    // rewrites the extension to .c after the -d chdir).
+    const some_machine_objects = [_][]const u8{
+        "dosfns.o",          "msdos.o",          "xterm.o",
+        "xfns.o",            "xmenu.o",          "xselect.o",
+        "xrdb.o",            "xsmfns.o",         "fringe.o",
+        "image.o",           "fontset.o",        "dbusbind.o",
+        "cygw32.o",          "nsterm.o",         "nsfns.o",
+        "nsmenu.o",          "nsselect.o",       "nsimage.o",
+        "nsfont.o",          "macfont.o",        "nsxwidget.o",
+        "w32.o",             "w32console.o",     "w32cygwinx.o",
+        "w32fns.o",          "w32heap.o",        "w32inevt.o",
+        "w32notify.o",       "w32menu.o",        "w32proc.o",
+        "w32reg.o",          "w32select.o",      "w32term.o",
+        "w32xfns.o",         "w16select.o",      "widget.o",
+        "xfont.o",           "ftfont.o",         "xftfont.o",
+        "gtkutil.o",         "xsettings.o",      "xgselect.o",
+        "termcap.o",         "hbfont.o",         "haikuterm.o",
+        "haikufns.o",        "haikumenu.o",      "haikufont.o",
+        "androidterm.o",     "androidfns.o",     "androidfont.o",
+        "androidselect.c",   "androidvfs.c",     "sfntfont-android.c",
+        "sfntfont.c",
+    };
+    for (some_machine_objects) |name| run_doc.addArg(name);
+    for (base_sources) |s| {
+        var name: []const u8 = s;
+        if (std.mem.startsWith(u8, name, "src/")) name = name["src/".len..];
+        run_doc.addArg(name);
+    }
+    if (target.result.os.tag == .linux) {
+        const linux_doc_sources = [_][]const u8{ "dbusbind.c", "dynlib.c", "inotify.c" };
+        for (linux_doc_sources) |name| run_doc.addArg(name);
+    }
+    const doc_capture = run_doc.captureStdOut(.{ .basename = "DOC" });
+    const install_doc = b.addSystemCommand(&[_][]const u8{
+        "sh", "-c",
+        \\set -e
+        \\mkdir -p etc
+        \\cp "$1" etc/DOC
+    });
+    install_doc.addArg("doc-file");
+    install_doc.addFileArg(doc_capture);
+    install_doc.step.dependOn(&run_doc.step);
+    const gen_doc_step = b.step("generate-doc", "Generate etc/DOC via make-docfile");
+    gen_doc_step.dependOn(&install_doc.step);
+
     // Generate buildobj.h: a flat comma-list of object file names consumed by
     // src/doc.c:547's `static char const *const buildobj[] = { #include "buildobj.h" };`.
     // Mirrors Makefile.in:673-679's sed (strip dir, .c -> .o, wrap as "<name>.o",),
@@ -834,6 +891,11 @@ pub fn build(b: *std.Build) void {
         \\fi
     });
     run_dump.setCwd(b.path("."));
+    // The dump must run with etc/DOC present: loadup calls
+    // (Snarf-documentation "DOC"), and in pbootstrap mode it swallows
+    // the error if DOC is missing, leaving every C primitive without a
+    // doc string in the dumped image (doc-tests-documentation/c-primitive).
+    run_dump.step.dependOn(&gen_doc_step.step);
     const dump_step = b.step("dump", "Dump a runnable bootstrap-emacs.pdmp via temacs loadup");
     dump_step.dependOn(b.getInstallStep());
     dump_step.dependOn(&run_dump.step);
