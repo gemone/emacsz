@@ -57,7 +57,17 @@ fi
 # macros at load time.
 PRE='(progn (load "cl-macs") (load "cl-seq") (load "cl-extra") (require (quote ert)))'
 
-suites=$(find test -name '*-tests.el' 2>/dev/null | sort)
+# Mirror test/Makefile.in's ELFILES discovery: prune manual, data, infra
+# and *resources dirs (not part of `make check`), and prune
+# emacs-module-tests.el when modules are disabled (HAVE_MODULES undef in
+# this build, so the module test binary can't be built).
+suites=$(find test \
+    -name manual -prune -o \
+    -name data -prune -o \
+    -name infra -prune -o \
+    -name '*resources' -prune -o \
+    -name emacs-module-tests.el -prune -o \
+    -name '*-tests.el' -print 2>/dev/null | sort)
 if [ -n "$FILTER" ]; then
     suites=$(printf '%s\n' "$suites" | grep -E "$FILTER" || true)
 fi
