@@ -47,13 +47,15 @@ This repository contains GNU Emacs with an ongoing effort to modernize the build
   `tools/gnulib-time-rz` (`tzalloc`/`tzfree`/`set_tz`/`revert_tz`/
   `localtime_rz`/`mktime_z`, the timezone machinery behind
   `src/timefns.c` and `%Z` in nstrftime, with the struct-tm_zone
-  abbreviation cache over Emacs's own TZ getter/setter). The remaining
-  live gnulib C objects are thin libc-delegating wrappers
-  (`close-stream`, `pipe2`, `md5-stream`, `save-cwd`, `binary-io`,
-  `fseterr`, `strnul`, `u64`, plus `time_r`/`timegm`/`mktime` backing
-  the time conversions); the rest of lib/*.c is empty on glibc or
-  unexercised by Emacs. Deeper libc decoupling (file-I/O, time modules)
-  is ongoing.
+  abbreviation cache over Emacs's own TZ getter/setter), and
+  `tools/gnulib-io` (`close_stream`, `set_binary_mode`, `rpl_pipe2`,
+  the remaining live I/O wrappers backing exit-time flush,
+  `emacs_pipe` and `set-binary-mode`, with raw Linux pipe/fcntl
+  syscalls). The remaining live gnulib C objects are the
+  `time_r`/`timegm`/`mktime` internals backing the time conversions
+  (libc-local); the rest of lib/*.c is empty on glibc or unexercised
+  by Emacs. Deeper libc decoupling (file-I/O, time modules) is
+  ongoing.
 - **Goal 3 — Runnable on Linux: ✅ Done.** The final image is
   byte-compiled: `zig build dump` (source bootstrap) →
   `zig build compile-lisp` → `zig build dump-compiled`; `zig build check`
