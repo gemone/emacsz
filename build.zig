@@ -273,11 +273,19 @@ pub fn build(b: *std.Build) void {
     for (base_sources) |s| {
         var name: []const u8 = s;
         if (std.mem.startsWith(u8, name, "src/")) name = name["src/".len..];
-        run_doc.addArg(name);
+        // Pass .o names like upstream's doc_obj: make-docfile scans the
+        // .c but writes the ^_S record with the name as given, and
+        // help-C-file-name matches that record against build-files
+        // (buildobj.h), which holds .o names.
+        const o_name = std.fmt.allocPrint(b.allocator, "{s}.o", .{name[0 .. name.len - 2]}) catch @panic("OOM");
+        run_doc.addArg(o_name);
     }
     if (target.result.os.tag == .linux) {
         const linux_doc_sources = [_][]const u8{ "dbusbind.c", "dynlib.c", "inotify.c" };
-        for (linux_doc_sources) |name| run_doc.addArg(name);
+        for (linux_doc_sources) |name| {
+            const o_name = std.fmt.allocPrint(b.allocator, "{s}o", .{name[0 .. name.len - 1]}) catch @panic("OOM");
+            run_doc.addArg(o_name);
+        }
     }
     const doc_capture = run_doc.captureStdOut(.{ .basename = "DOC" });
     const install_doc = b.addSystemCommand(&[_][]const u8{
@@ -869,36 +877,120 @@ pub fn build(b: *std.Build) void {
     // EMACSDATA point loadup and the charset loader at the source tree, since
     // the epaths.h install paths don't exist yet (I7). loadup writes the dump
     // next to the running temacs (zig-out/bin/), where the install put it.
-    const run_dump = b.addSystemCommand(&[_][]const u8{
-        "sh",
-        "-c",
+    // loadup must run from zig-out/bin with zig-out/etc -> ../etc in
+    // place: Fsnarf-documentation and get_doc_string resolve "../etc/"
+    // relative to the process CWD (doc.c sibling_etc) at dump time, so
+    // unless the binary's sibling etc/ holds DOC the pbootstrap
+    // (Snarf-documentation "DOC") silently fails and the dumped image
+    // carries no C doc strings. EMACSLOADPATH/EMACSDATA use the absolute
+    // repo paths because the CWD changes.
+    const dump_script =
         \\set -e
-        \\# Bootstrap dump must NOT see loaddefs.el: loadup uses
+        \\ROOT=$PWD
+        \\# Bootstrap dump must NOT see loaddefs: loadup uses
         \\# ldefs-boot.el, and a stale loaddefs.el in lisp/ makes loadup
         \\# abort (e.g. void frameset-filter-alist at tab-bar). loaddefs
-        \\# is regenerated AFTER the dump (zig build generate-loaddefs),
-        \\# so scrub it here to keep the bootstrap environment clean.
-        \\rm -f lisp/loaddefs.el
+        \\# is regenerated AFTER the dump (generate-loaddefs), so scrub
+        \\# both .el and the .elc produced by compile-lisp here.
+        \\rm -f lisp/loaddefs.el lisp/loaddefs.elc
         \\find lisp -mindepth 2 -name '*-loaddefs.el' -delete 2>/dev/null || true
-        \\export EMACSLOADPATH="$PWD/lisp" EMACSDATA="$PWD/etc" LC_ALL=C
+        \\find lisp -mindepth 2 -name '*-loaddefs.elc' -delete 2>/dev/null || true
+        \\mkdir -p zig-out
+        \\ln -sfn ../etc zig-out/etc
+        \\export EMACSLOADPATH="$ROOT/lisp" EMACSDATA="$ROOT/etc" LC_ALL=C
+        \\cd "$ROOT/zig-out/bin" || exit 1
         \\# Disable ASLR for a deterministic dump + load (setarch -R).
         \\# The pdumper heap relocation is ASLR-sensitive: the pdmp's
         \\# mmap address differs between dump and load processes.
         \\if command -v setarch >/dev/null 2>&1; then
-        \\  setarch "$(uname -m)" -R ./zig-out/bin/temacs -batch -l loadup --temacs=pbootstrap
+        \\  setarch "$(uname -m)" -R ./temacs -batch -l loadup --temacs=pbootstrap
         \\else
-        \\  ./zig-out/bin/temacs -batch -l loadup --temacs=pbootstrap
+        \\  ./temacs -batch -l loadup --temacs=pbootstrap
         \\fi
-    });
+    ;
+    const run_dump = b.addSystemCommand(&[_][]const u8{ "sh", "-c", dump_script });
     run_dump.setCwd(b.path("."));
     // The dump must run with etc/DOC present: loadup calls
     // (Snarf-documentation "DOC"), and in pbootstrap mode it swallows
     // the error if DOC is missing, leaving every C primitive without a
     // doc string in the dumped image (doc-tests-documentation/c-primitive).
-    run_dump.step.dependOn(&gen_doc_step.step);
-    const dump_step = b.step("dump", "Dump a runnable bootstrap-emacs.pdmp via temacs loadup");
+    run_dump.step.dependOn(gen_doc_step);
+    const dump_step = b.step("dump", "Bootstrap (from-source) dump of bootstrap-emacs.pdmp");
     dump_step.dependOn(b.getInstallStep());
     dump_step.dependOn(&run_dump.step);
+
+    // generate-loaddefs: produce lisp/loaddefs.el + per-subdir
+    // *-loaddefs.el (autoload cookies) via the dumped emacs. Mirrors
+    // lisp/Makefile.in's `autoloads` target. Required at runtime by
+    // suites that (require 'foo-loaddefs) (calendar, calc, org, ...);
+    // without it they fail to load ("Cannot open load file: X-loaddefs").
+    // Outputs gitignored. Runs right after the source dump because
+    // compile-lisp needs the loaddefs (some files (require
+    // 'foo-loaddefs) at compile time); the final dump-compiled scrubs
+    // them again, so check and check-all additionally run a final
+    // generation (run_loaddefs_final) before launching suites.
+    const gen_loaddefs = b.addSystemCommand(&[_][]const u8{
+        "sh", "build-aux/generate-loaddefs.sh",
+    });
+    gen_loaddefs.setCwd(b.path("."));
+    gen_loaddefs.step.dependOn(&run_dump.step);
+    const gen_loaddefs_step = b.step(
+        "generate-loaddefs",
+        "Generate lisp/loaddefs.el + *-loaddefs.el autoload files",
+    );
+    gen_loaddefs_step.dependOn(&gen_loaddefs.step);
+
+    // compile-lisp: byte-compile the whole lisp tree with the bootstrap
+    // dump. Upstream byte-compiles before its final dump; running from
+    // source only breaks behaviors that assume compiled functions (e.g.
+    // help-function-arglist's docstring route, and cl-lib's derived-type
+    // method registration, which is skipped when cl-lib loads before
+    // cl-generic -- an eval-when-compile artifact that only happens when
+    // cl-preloaded.el is loaded from source). cl-macs/cl-seq/cl-extra are
+    // preloaded for the compiler (cl-find-class/cl-every live there, not
+    // in the dump). Incremental: arg 0 recompiles only missing/older
+    // .elc. Requires loaddefs (generated after the source dump) for
+    // files that (require 'foo-loaddefs) at compile time.
+    const run_compile_lisp = b.addSystemCommand(&[_][]const u8{
+        "sh",
+        "-c",
+        \\set -e
+        \\ROOT=$PWD
+        \\export EMACSLOADPATH="$ROOT/lisp" EMACSDATA="$ROOT/etc" LC_ALL=C
+        \\if command -v setarch >/dev/null 2>&1; then
+        \\  setarch "$(uname -m)" -R ./zig-out/bin/temacs --batch \
+        \\    -L "$ROOT/lisp" --dump-file="$ROOT/zig-out/bin/bootstrap-emacs.pdmp" \
+        \\    --eval '(progn (load "cl-macs") (load "cl-seq") (load "cl-extra") (byte-recompile-directory "'"$ROOT"'/lisp" 0))'
+        \\else
+        \\  ./zig-out/bin/temacs --batch \
+        \\    -L "$ROOT/lisp" --dump-file="$ROOT/zig-out/bin/bootstrap-emacs.pdmp" \
+        \\    --eval '(progn (load "cl-macs") (load "cl-seq") (load "cl-extra") (byte-recompile-directory "'"$ROOT"'/lisp" 0))'
+        \\fi
+    });
+    run_compile_lisp.setCwd(b.path("."));
+    run_compile_lisp.step.dependOn(&run_dump.step);
+    run_compile_lisp.step.dependOn(&gen_loaddefs.step);
+    const compile_lisp_step = b.step("compile-lisp", "Byte-compile lisp/ with the bootstrap emacs");
+    compile_lisp_step.dependOn(&run_compile_lisp.step);
+
+    // dump-compiled: re-run loadup after compile-lisp so the dumped image
+    // carries byte-compiled preloaded code (the pdmp that check/check-all
+    // and interactive use actually load). Same loadup invocation as the
+    // source dump (same scrub, same zig-out/etc, same cwd).
+    const run_dump_compiled = b.addSystemCommand(&[_][]const u8{ "sh", "-c", dump_script });
+    run_dump_compiled.setCwd(b.path("."));
+    run_dump_compiled.step.dependOn(&run_compile_lisp.step);
+    const dump_compiled_step = b.step("dump-compiled", "Re-dump bootstrap-emacs.pdmp with compiled lisp");
+    dump_compiled_step.dependOn(&run_dump_compiled.step);
+
+    // Final loaddefs generation for check/check-all: dump-compiled
+    // scrubbed the loaddefs, and suites (require 'foo-loaddefs) at
+    // runtime. Same script as gen_loaddefs, gated on the final dump.
+    const run_loaddefs_final = b.addSystemCommand(&[_][]const u8{
+        "sh", "build-aux/generate-loaddefs.sh",
+    });
+    run_loaddefs_final.setCwd(b.path("."));
+    run_loaddefs_final.step.dependOn(&run_dump_compiled.step);
 
     // Smoke step (`zig build smoke`): prove the dumped emacs actually starts
     // and evaluates Lisp by printing emacs-version from the pdmp. Mirrors
@@ -937,7 +1029,7 @@ pub fn build(b: *std.Build) void {
         \\echo "smoke: emacs wrapper version $(echo "$WOUT" | head -1)"
     });
     run_smoke.setCwd(b.path("."));
-    run_smoke.step.dependOn(&run_dump.step);
+    run_smoke.step.dependOn(&run_dump_compiled.step);
     // Depend on chmod_emacs_wrapper (which depends on install_emacs_wrapper)
     // so the +x bit is set before smoke runs ./zig-out/bin/emacs.
     run_smoke.step.dependOn(&chmod_emacs_wrapper.step);
@@ -993,6 +1085,7 @@ pub fn build(b: *std.Build) void {
     });
     run_check.setCwd(b.path("."));
     run_check.step.dependOn(&run_smoke.step);
+    run_check.step.dependOn(&run_loaddefs_final.step);
     const check_step = b.step("check", "Run built-in ert test suites with the dumped emacs");
     check_step.dependOn(&run_check.step);
 
@@ -1020,24 +1113,6 @@ pub fn build(b: *std.Build) void {
         "Generate lisp/international/{charprop,uni-*}.el from admin/unidata",
     );
     gen_charprop_step.dependOn(&gen_charprop.step);
-
-    // generate-loaddefs: produce lisp/loaddefs.el + per-subdir
-    // *-loaddefs.el (autoload cookies) via the dumped emacs. Mirrors
-    // lisp/Makefile.in's `autoloads` target. Required at runtime by
-    // suites that (require 'foo-loaddefs) (calendar, calc, org, ...);
-    // without it they fail to load ("Cannot open load file: X-loaddefs")
-    // -- the single biggest check-all failure bucket. Outputs gitignored.
-    // Standalone (like generate-charprop); run before check-all.
-    const gen_loaddefs = b.addSystemCommand(&[_][]const u8{
-        "sh", "build-aux/generate-loaddefs.sh",
-    });
-    gen_loaddefs.setCwd(b.path("."));
-    gen_loaddefs.step.dependOn(&run_smoke.step);
-    const gen_loaddefs_step = b.step(
-        "generate-loaddefs",
-        "Generate lisp/loaddefs.el + *-loaddefs.el autoload files",
-    );
-    gen_loaddefs_step.dependOn(&gen_loaddefs.step);
 
     // generate-cedet-grammars: produce the cedet parser files
     // (semantic/*-wy.el, semantic/wisent/*-wy.el, semantic/bovine/*-by.el,
@@ -1069,6 +1144,7 @@ pub fn build(b: *std.Build) void {
     });
     run_check_all.setCwd(b.path("."));
     run_check_all.step.dependOn(&run_smoke.step);
+    run_check_all.step.dependOn(&run_loaddefs_final.step);
     const check_all_step = b.step("check-all", "Run ALL ert suites (no skip; per-suite isolation + timeout) and classify failures");
     check_all_step.dependOn(&run_check_all.step);
 
@@ -1082,6 +1158,8 @@ pub fn build(b: *std.Build) void {
         \\Available steps:
         \\  zig build                   - Build temacs + emacs wrapper
         \\  zig build dump              - Dump a runnable bootstrap-emacs.pdmp
+        \\  zig build compile-lisp      - Byte-compile lisp/ (incremental)
+        \\  zig build dump-compiled     - Re-dump with compiled lisp loaded
         \\  zig build smoke             - Verify dumped emacs runs
         \\  zig build check             - Run built-in ert test suites (582 tests across 40 suites)
         \\  zig build test              - Alias of check
