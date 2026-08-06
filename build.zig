@@ -977,6 +977,24 @@ pub fn build(b: *std.Build) void {
     );
     gen_loaddefs_step.dependOn(&gen_loaddefs.step);
 
+    // generate-cedet-grammars: produce the cedet parser files
+    // (semantic/*-wy.el, semantic/wisent/*-wy.el, semantic/bovine/*-by.el,
+    // srecode/srt-wy.el) from admin/grammars via the bovine/wisent batch
+    // generators (mirrors admin/grammars/Makefile.in). Upstream does not
+    // track these; without them the cedet suites fail to load
+    // ("Cannot open load file srecode/srt-wy"). Standalone; run before
+    // check-all if the suite set needs cedet.
+    const gen_cedet = b.addSystemCommand(&[_][]const u8{
+        "sh", "build-aux/generate-cedet-grammars.sh",
+    });
+    gen_cedet.setCwd(b.path("."));
+    gen_cedet.step.dependOn(&run_smoke.step);
+    const gen_cedet_step = b.step(
+        "generate-cedet-grammars",
+        "Generate cedet parser files from admin/grammars",
+    );
+    gen_cedet_step.dependOn(&gen_cedet.step);
+
     // check-all step: run EVERY *-tests.el under test/ — no skip. Each
     // suite runs in its own temacs process under a per-suite timeout so a
     // hang/crash in one suite cannot hide the rest, and every outcome is
@@ -1009,6 +1027,9 @@ pub fn build(b: *std.Build) void {
         \\  zig build generate-headers  - Generate Gnulib .gl.h headers
         \\  zig build generate-unidata  - Generate charscript/emoji-zwj.el
         \\  zig build generate-charsets - Generate charset maps
+        \\  zig build generate-charprop - Generate unicode charprop/uni-*.el
+        \\  zig build generate-loaddefs - Generate autoload files
+        \\  zig build generate-cedet-grammars - Generate cedet parser files
         \\  zig build help              - Show this message
         \\
         \\Runnable commands (after `zig build dump`):
