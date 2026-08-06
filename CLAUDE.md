@@ -109,11 +109,11 @@ zig build generate-unidata    # lisp/international/{charscript,emoji-zwj}.el
 zig build generate-charprop   # lisp/international/{charprop,uni-*}.el
 zig build generate-cedet-grammars  # cedet parser files
 ```
-`generate-unidata`, `generate-charprop` and `generate-cedet-grammars`
-run through native Zig tools; `generate-charsets` still uses the
-autotools make+gawk pipeline for the special charsets (cp932/eucjp-ms/
-gb18030/big5/kuten/cp51932), while the 113 compact-based maps are
-covered by the Zig `build-aux/gen-charsets.zig` tool (byte-identical).
+All four data generators run through native Zig tools
+(`build-aux/gen-{unidata,charprop,cedet-grammars,charsets}.zig`), with
+the charset maps, cp51932.el and eucjp-ms.el byte-identical to the
+former make+gawk pipeline. No shell, make, gawk, gunzip or sed step
+remains anywhere in `build.zig`.
 
 ### Testing
 ```bash
