@@ -22,7 +22,9 @@ This repository contains GNU Emacs with an ongoing effort to modernize the build
   backing `signal-names`), `tools/gnulib-filemode` (`strmode`/
   `filemodestring`, backing `file-attributes` string modes),
   `tools/gnulib-timespec` (`dtotimespec`/`timespec_add`/`timespec_sub`,
-  backing sit-for timeouts and gc timing), `tools/gnulib-filevercmp`
+  plus the make_timespec/timespec_cmp extern-inlines, backing sit-for
+  timeouts and gc timing), `tools/gnulib-c-strcase` (`c_strcasecmp`/
+  `c_strncasecmp`), `tools/gnulib-filevercmp`
   (`filevercmp`/`filenvercmp`, backing `string-version-lessp`),
   `tools/gnulib-sigdescr-np` (`sigdescr_np`, backing safe_strsignal),
   `tools/gnulib-nproc` (`num_processors`, backing `num-processors`, via
