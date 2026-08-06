@@ -8,10 +8,11 @@
 // mp_set_memory_functions callbacks (Emacs installs xmalloc-based
 // callbacks), defaulting to zig's allocator when not overridden.
 //
-// This is the foundation slice: mpz lifecycle, conversions, comparison,
-// add/sub/mul and two-power shifts, plus size queries. The remaining
-// surface (division, pow/gcd, import/export, limbs API, strings) lands
-// in follow-up slices.
+// Implemented so far: mpz lifecycle, conversions, comparison, add/sub/mul,
+// two-power shifts, size queries, and the full division family (truncated,
+// floored, ceiling, single-limb and exact). The remaining surface
+// (pow/gcd, import/export, limbs API, bitwise ops, strings) lands in
+// follow-up slices.
 
 const std = @import("std");
 
@@ -585,6 +586,349 @@ pub export fn mpz_fdiv_q_2exp(z: *mpz_t, a: *const mpz_t, k: mp_bitcnt_t) void {
     commit(z, res, cap, used, if (neg and used != 0) -1 else 1);
 }
 
+// ---------- division ----------
+
+// Fill QBUF (limbCount(n) limbs; pass null to skip) with trunc(|n| / d) and
+// return |n| mod d. d must be nonzero.
+fn singleLimbDivMod(n: *const mpz_t, d: u64, qbuf: ?[*]mp_limb_t) u64 {
+    const an = limbCount(n);
+    var rem: u64 = 0;
+    var i = an;
+    while (i > 0) {
+        i -= 1;
+        const wide = (@as(u128, rem) << 64) | n._mp_d.?[i];
+        if (qbuf) |q| q[i] = @truncate(wide / d);
+        rem = @truncate(wide % d);
+    }
+    return rem;
+}
+
+// Magnitude division: Q = |n| / |d|, R = |n| mod |d|, both committed with
+// positive signs. |d| must be nonzero; q and r must be distinct variables
+// but either may alias n or d (the inputs are copied into work buffers
+// before any output commit). Handles |n| < |d| (q = 0, r = |n|).
+fn magDivmod(q: *mpz_t, r: *mpz_t, n: *const mpz_t, d: *const mpz_t) void {
+    const an = limbCount(n);
+    const bn = limbCount(d);
+    std.debug.assert(bn > 0);
+    std.debug.assert(q != r);
+
+    if (an < bn) {
+        const rlimbs = allocLimbs(if (an == 0) 1 else an) orelse oom();
+        if (an != 0) @memcpy(rlimbs[0..an], n._mp_d.?[0..an]);
+        ensureCapacity(q, 1);
+        q._mp_size = 0;
+        commit(r, rlimbs, if (an == 0) 1 else an, an, 1);
+        return;
+    }
+
+    // Normalize so the divisor's top limb has its high bit set; the
+    // dividend is shifted the same amount into an+1 limbs.
+    const s: u6 = @intCast(@clz(d._mp_d.?[bn - 1]));
+    const u = allocLimbs(an + 1) orelse oom();
+    const v = allocLimbs(bn) orelse oom();
+    if (s == 0) {
+        @memcpy(u[0..an], n._mp_d.?[0..an]);
+        u[an] = 0;
+        @memcpy(v[0..bn], d._mp_d.?[0..bn]);
+    } else {
+        const sh: u6 = @intCast(64 - @as(u7, s));
+        var carry: u64 = 0;
+        var i: usize = 0;
+        while (i < an) : (i += 1) {
+            const x = n._mp_d.?[i];
+            u[i] = (x << s) | carry;
+            carry = x >> sh;
+        }
+        u[an] = carry;
+        carry = 0;
+        i = 0;
+        while (i < bn) : (i += 1) {
+            const x = d._mp_d.?[i];
+            v[i] = (x << s) | carry;
+            carry = x >> sh;
+        }
+    }
+
+    if (bn == 1) {
+        // Single-limb divisor: straight long division over the shifted
+        // limbs, starting at the extra top limb u[an] (the shift carry).
+        const qbuf = allocLimbs(an) orelse oom();
+        var rem: u64 = 0;
+        var i = an;
+        while (true) {
+            const wide = (@as(u128, rem) << 64) | u[i];
+            if (i < an) qbuf[i] = @truncate(wide / v[0]);
+            rem = @truncate(wide % v[0]);
+            if (i == 0) break;
+            i -= 1;
+        }
+        const true_rem = rem >> s;
+        var qused = an;
+        while (qused > 0 and qbuf[qused - 1] == 0) qused -= 1;
+        commit(q, qbuf, an, qused, 1);
+        const rbuf = allocLimbs(1) orelse oom();
+        if (true_rem != 0) rbuf[0] = true_rem;
+        commit(r, rbuf, 1, if (true_rem != 0) 1 else 0, 1);
+        freeLimbs(u, an + 1);
+        freeLimbs(v, bn);
+        return;
+    }
+
+    // Knuth algorithm D over 64-bit limbs (TAOCP 4.3.1).
+    const vtop = v[bn - 1];
+    const vsub = v[bn - 2];
+    const m = an - bn;
+    const qbuf = allocLimbs(m + 1) orelse oom();
+
+    var j: usize = m + 1;
+    while (j > 0) {
+        j -= 1;
+        const ujn = u[j + bn];
+        var qhat: u64 = undefined;
+        if (ujn == vtop) {
+            // qhat = b - 1, rhat = u[j+n-1] + vtop >= vtop, so the test
+            // b*rhat + u[j+n-2] > qhat*v[n-2] can never pass.
+            qhat = std.math.maxInt(u64);
+        } else {
+            const num = (@as(u128, ujn) << 64) | u[j + bn - 1];
+            qhat = @truncate(num / vtop);
+            var rhat: u64 = @truncate(num % vtop);
+            while (true) {
+                const big = @as(u128, qhat) * vsub;
+                const right = (@as(u128, rhat) << 64) | u[j + bn - 2];
+                if (big <= right) break;
+                qhat -%= 1;
+                rhat +%= vtop;
+                if (rhat < vtop) break; // wrapped past 2^64: test must fail
+            }
+        }
+        // Multiply and subtract: u[j..j+bn] -= qhat * v.
+        var carry: u64 = 0;
+        var borrow: u1 = 0;
+        var i: usize = 0;
+        while (i < bn) : (i += 1) {
+            const p = @as(u128, qhat) * v[i] + carry;
+            carry = @truncate(p >> 64);
+            const low: u64 = @truncate(p);
+            const t: u128 = @as(u128, u[j + i]) -% (@as(u128, low) + borrow);
+            u[j + i] = @truncate(t);
+            borrow = @intFromBool(t >> 64 != 0);
+        }
+        const t2: u128 = @as(u128, u[j + bn]) -% (@as(u128, carry) + borrow);
+        u[j + bn] = @truncate(t2);
+        if (t2 >> 64 != 0) {
+            // qhat was one too large: decrement and add the divisor back.
+            qhat -%= 1;
+            var carry2: u1 = 0;
+            i = 0;
+            while (i < bn) : (i += 1) {
+                const sum = @as(u128, u[j + i]) + v[i] + carry2;
+                u[j + i] = @truncate(sum);
+                carry2 = @intFromBool(sum >> 64 != 0);
+            }
+            const sum2 = @as(u128, u[j + bn]) + carry2;
+            u[j + bn] = @truncate(sum2);
+        }
+        qbuf[j] = qhat;
+    }
+
+    // Unnormalize the remainder (u[0..bn) holds |n| mod |d| shifted left).
+    const rbuf = allocLimbs(bn) orelse oom();
+    var rused: usize = bn;
+    if (s == 0) {
+        @memcpy(rbuf[0..bn], u[0..bn]);
+    } else {
+        const sh: u6 = @intCast(64 - @as(u7, s));
+        var i: usize = 0;
+        while (i < bn) : (i += 1) {
+            const hi = u[i];
+            const lo: u64 = if (i + 1 < bn) u[i + 1] else 0;
+            rbuf[i] = (hi >> s) | (lo << sh);
+        }
+    }
+    while (rused > 0 and rbuf[rused - 1] == 0) rused -= 1;
+    var qused = m + 1;
+    while (qused > 0 and qbuf[qused - 1] == 0) qused -= 1;
+    commit(q, qbuf, m + 1, qused, 1);
+    commit(r, rbuf, bn, rused, 1);
+    freeLimbs(u, an + 1);
+    freeLimbs(v, bn);
+}
+
+pub export fn mpz_tdiv_qr(q: *mpz_t, r: *mpz_t, n: *const mpz_t, d: *const mpz_t) void {
+    const sn = signOf(n);
+    const sd = signOf(d);
+    if (sd == 0) @panic("mpz division by zero");
+    if (sn == 0) {
+        ensureCapacity(q, 1);
+        q._mp_size = 0;
+        ensureCapacity(r, 1);
+        r._mp_size = 0;
+        return;
+    }
+    magDivmod(q, r, n, d);
+    if ((sn < 0) != (sd < 0)) q._mp_size = -q._mp_size;
+    if (sn < 0) r._mp_size = -r._mp_size;
+}
+
+pub export fn mpz_tdiv_q(q: *mpz_t, n: *const mpz_t, d: *const mpz_t) void {
+    var r: mpz_t = undefined;
+    mpz_init(&r);
+    defer mpz_clear(&r);
+    mpz_tdiv_qr(q, &r, n, d);
+}
+
+pub export fn mpz_tdiv_r(r: *mpz_t, n: *const mpz_t, d: *const mpz_t) void {
+    var q: mpz_t = undefined;
+    mpz_init(&q);
+    defer mpz_clear(&q);
+    mpz_tdiv_qr(&q, r, n, d);
+}
+
+// GMP returns the nonnegative remainder |n| mod d here (truncated
+// division by a positive single-limb divisor).
+pub export fn mpz_tdiv_ui(n: *const mpz_t, d: u64) u64 {
+    if (d == 0) @panic("mpz division by zero");
+    return singleLimbDivMod(n, d, null);
+}
+
+pub export fn mpz_fdiv_q(q: *mpz_t, n: *const mpz_t, d: *const mpz_t) void {
+    const sn = signOf(n);
+    const sd = signOf(d);
+    if (sd == 0) @panic("mpz division by zero");
+    if (sn == 0) {
+        ensureCapacity(q, 1);
+        q._mp_size = 0;
+        return;
+    }
+    var r: mpz_t = undefined;
+    mpz_init(&r);
+    defer mpz_clear(&r);
+    mpz_tdiv_qr(q, &r, n, d);
+    if (signOf(&r) != 0 and (sn < 0) != (sd < 0))
+        mpz_sub_ui(q, q, 1);
+}
+
+pub export fn mpz_fdiv_r(r: *mpz_t, n: *const mpz_t, d: *const mpz_t) void {
+    if (r == d) {
+        var dc: mpz_t = undefined;
+        mpz_init(&dc);
+        defer mpz_clear(&dc);
+        mpz_set(&dc, d);
+        mpz_fdiv_r(r, n, &dc);
+        return;
+    }
+    const sn = signOf(n);
+    const sd = signOf(d);
+    if (sd == 0) @panic("mpz division by zero");
+    if (sn == 0) {
+        ensureCapacity(r, 1);
+        r._mp_size = 0;
+        return;
+    }
+    var q: mpz_t = undefined;
+    mpz_init(&q);
+    defer mpz_clear(&q);
+    mpz_tdiv_qr(&q, r, n, d);
+    if (signOf(r) != 0 and (sn < 0) != (sd < 0))
+        mpz_add(r, r, d);
+}
+
+pub export fn mpz_fdiv_qr(q: *mpz_t, r: *mpz_t, n: *const mpz_t, d: *const mpz_t) void {
+    if (q == d or r == d) {
+        var dc: mpz_t = undefined;
+        mpz_init(&dc);
+        defer mpz_clear(&dc);
+        mpz_set(&dc, d);
+        mpz_fdiv_qr(q, r, n, &dc);
+        return;
+    }
+    const sn = signOf(n);
+    const sd = signOf(d);
+    if (sd == 0) @panic("mpz division by zero");
+    if (sn == 0) {
+        ensureCapacity(q, 1);
+        q._mp_size = 0;
+        ensureCapacity(r, 1);
+        r._mp_size = 0;
+        return;
+    }
+    mpz_tdiv_qr(q, r, n, d);
+    if (signOf(r) != 0 and (sn < 0) != (sd < 0)) {
+        mpz_sub_ui(q, q, 1);
+        mpz_add(r, r, d);
+    }
+}
+
+pub export fn mpz_cdiv_q(q: *mpz_t, n: *const mpz_t, d: *const mpz_t) void {
+    const sn = signOf(n);
+    const sd = signOf(d);
+    if (sd == 0) @panic("mpz division by zero");
+    if (sn == 0) {
+        ensureCapacity(q, 1);
+        q._mp_size = 0;
+        return;
+    }
+    var r: mpz_t = undefined;
+    mpz_init(&r);
+    defer mpz_clear(&r);
+    mpz_tdiv_qr(q, &r, n, d);
+    if (signOf(&r) != 0 and sn == sd)
+        mpz_add_ui(q, q, 1);
+}
+
+// Floor division by a positive single-limb divisor; returns the
+// nonnegative remainder (as GMP does).
+pub export fn mpz_fdiv_q_ui(q: *mpz_t, n: *const mpz_t, d: u64) u64 {
+    if (d == 0) @panic("mpz division by zero");
+    const an = limbCount(n);
+    if (an == 0) {
+        ensureCapacity(q, 1);
+        q._mp_size = 0;
+        return 0;
+    }
+    const qbuf = allocLimbs(an + 1) orelse oom();
+    const rem = singleLimbDivMod(n, d, qbuf);
+    var used = an;
+    while (used > 0 and qbuf[used - 1] == 0) used -= 1;
+    const neg = signOf(n) < 0;
+    if (neg and rem != 0) {
+        commit(q, qbuf, an + 1, used, -1);
+        mpz_sub_ui(q, q, 1); // floor rounds the negative quotient down
+        return d - rem;
+    }
+    commit(q, qbuf, an + 1, used, if (neg) -1 else 1);
+    return rem;
+}
+
+pub export fn mpz_divexact(q: *mpz_t, n: *const mpz_t, d: *const mpz_t) void {
+    const sd = signOf(d);
+    if (sd == 0) @panic("mpz division by zero");
+    if (signOf(n) == 0) {
+        ensureCapacity(q, 1);
+        q._mp_size = 0;
+        return;
+    }
+    var r: mpz_t = undefined;
+    mpz_init(&r);
+    defer mpz_clear(&r);
+    mpz_tdiv_qr(q, &r, n, d);
+    if (signOf(&r) != 0) @panic("mpz_divexact: non-exact division");
+}
+
+// Test helper: build a magnitude from LIMBS pseudo-random limbs.
+fn rndMagTest(z: *mpz_t, limbs: usize, seed: *u64) void {
+    mpz_set_ui(z, 0);
+    var i: usize = 0;
+    while (i < limbs) : (i += 1) {
+        seed.* = seed.* *% 6364136223846793005 +% 1442695040888963407;
+        const limb = seed.* ^ (seed.* >> 33);
+        mpz_mul_2exp(z, z, 64);
+        mpz_add_ui(z, z, limb);
+    }
+}
+
 test "mpz set get swap neg abs sgn" {
     var z: mpz_t = undefined;
     mpz_init(&z);
@@ -747,4 +1091,253 @@ test "mpz fdiv_q_2exp floor semantics" {
     mpz_set_si(&a, -8);
     mpz_fdiv_q_2exp(&r, &a, 1);
     try std.testing.expectEqual(@as(i64, -4), mpz_get_si(&r));
+}
+
+test "mpz tdiv fdiv cdiv signed small cases" {
+    const Cases = struct { n: i64, d: i64, tq: i64, tr: i64, fq: i64, fr: i64, cq: i64 };
+    const cases = [_]Cases{
+        .{ .n = 7, .d = 3, .tq = 2, .tr = 1, .fq = 2, .fr = 1, .cq = 3 },
+        .{ .n = -7, .d = 3, .tq = -2, .tr = -1, .fq = -3, .fr = 2, .cq = -2 },
+        .{ .n = 7, .d = -3, .tq = -2, .tr = 1, .fq = -3, .fr = -2, .cq = -2 },
+        .{ .n = -7, .d = -3, .tq = 2, .tr = -1, .fq = 2, .fr = -1, .cq = 3 },
+    };
+    var n: mpz_t = undefined;
+    var d: mpz_t = undefined;
+    var q: mpz_t = undefined;
+    var r: mpz_t = undefined;
+    mpz_init(&n);
+    mpz_init(&d);
+    mpz_init(&q);
+    mpz_init(&r);
+    defer mpz_clear(&n);
+    defer mpz_clear(&d);
+    defer mpz_clear(&q);
+    defer mpz_clear(&r);
+    for (cases) |c| {
+        mpz_set_si(&n, c.n);
+        mpz_set_si(&d, c.d);
+        mpz_tdiv_qr(&q, &r, &n, &d);
+        try std.testing.expectEqual(@as(i64, c.tq), mpz_get_si(&q));
+        try std.testing.expectEqual(@as(i64, c.tr), mpz_get_si(&r));
+        mpz_tdiv_q(&q, &n, &d);
+        try std.testing.expectEqual(@as(i64, c.tq), mpz_get_si(&q));
+        mpz_tdiv_r(&r, &n, &d);
+        try std.testing.expectEqual(@as(i64, c.tr), mpz_get_si(&r));
+        mpz_fdiv_qr(&q, &r, &n, &d);
+        try std.testing.expectEqual(@as(i64, c.fq), mpz_get_si(&q));
+        try std.testing.expectEqual(@as(i64, c.fr), mpz_get_si(&r));
+        mpz_fdiv_q(&q, &n, &d);
+        try std.testing.expectEqual(@as(i64, c.fq), mpz_get_si(&q));
+        mpz_fdiv_r(&r, &n, &d);
+        try std.testing.expectEqual(@as(i64, c.fr), mpz_get_si(&r));
+        mpz_cdiv_q(&q, &n, &d);
+        try std.testing.expectEqual(@as(i64, c.cq), mpz_get_si(&q));
+    }
+}
+
+test "mpz tdiv_ui and fdiv_q_ui" {
+    var n: mpz_t = undefined;
+    var q: mpz_t = undefined;
+    mpz_init(&n);
+    mpz_init(&q);
+    defer mpz_clear(&n);
+    defer mpz_clear(&q);
+
+    mpz_set_si(&n, -7);
+    try std.testing.expectEqual(@as(u64, 1), mpz_tdiv_ui(&n, 3));
+    try std.testing.expectEqual(@as(u64, 2), mpz_fdiv_q_ui(&q, &n, 3));
+    try std.testing.expectEqual(@as(i64, -3), mpz_get_si(&q));
+
+    mpz_set_si(&n, 7);
+    try std.testing.expectEqual(@as(u64, 1), mpz_tdiv_ui(&n, 3));
+    try std.testing.expectEqual(@as(u64, 1), mpz_fdiv_q_ui(&q, &n, 3));
+    try std.testing.expectEqual(@as(i64, 2), mpz_get_si(&q));
+
+    // Exact division: no floor adjustment for negatives.
+    mpz_set_si(&n, -6);
+    try std.testing.expectEqual(@as(u64, 0), mpz_tdiv_ui(&n, 3));
+    try std.testing.expectEqual(@as(u64, 0), mpz_fdiv_q_ui(&q, &n, 3));
+    try std.testing.expectEqual(@as(i64, -2), mpz_get_si(&q));
+
+    // Multi-limb floor adjustment: -(2^64 - 2) / 3 = -6148914691236517205,
+    // remainder 1 (values verified against libgmp).
+    mpz_set_ui(&n, 0xFFFFFFFFFFFFFFFE);
+    try std.testing.expectEqual(@as(u64, 2), mpz_tdiv_ui(&n, 3));
+    try std.testing.expectEqual(@as(u64, 2), mpz_fdiv_q_ui(&q, &n, 3));
+    try std.testing.expectEqual(@as(u64, 6148914691236517204), mpz_get_ui(&q));
+    mpz_neg(&n, &n);
+    try std.testing.expectEqual(@as(u64, 2), mpz_tdiv_ui(&n, 3));
+    try std.testing.expectEqual(@as(u64, 1), mpz_fdiv_q_ui(&q, &n, 3));
+    try std.testing.expectEqual(@as(i64, -6148914691236517205), mpz_get_si(&q));
+}
+
+test "mpz multi-limb division exact and known quotients" {
+    var n: mpz_t = undefined;
+    var d: mpz_t = undefined;
+    var q: mpz_t = undefined;
+    var r: mpz_t = undefined;
+    var chk: mpz_t = undefined;
+    mpz_init(&n);
+    mpz_init(&d);
+    mpz_init(&q);
+    mpz_init(&r);
+    mpz_init(&chk);
+    defer mpz_clear(&n);
+    defer mpz_clear(&d);
+    defer mpz_clear(&q);
+    defer mpz_clear(&r);
+    defer mpz_clear(&chk);
+
+    // (2^128 - 1) * (2^64 + 1) divided by (2^64 + 1) is exact, quotient 2^128-1.
+    mpz_set_ui(&n, 1);
+    mpz_mul_2exp(&n, &n, 128);
+    mpz_sub_ui(&n, &n, 1);
+    mpz_set_ui(&d, 1);
+    mpz_mul_2exp(&d, &d, 64);
+    mpz_add_ui(&d, &d, 1);
+    mpz_mul(&n, &n, &d);
+    mpz_tdiv_qr(&q, &r, &n, &d);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_sgn(&r));
+    mpz_set_ui(&chk, 1);
+    mpz_mul_2exp(&chk, &chk, 128);
+    mpz_sub_ui(&chk, &chk, 1);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&q, &chk));
+
+    // 2^192 - 1 over 2^96 - 1: quotient 2^96 + 1, remainder 0.
+    mpz_set_ui(&n, 1);
+    mpz_mul_2exp(&n, &n, 192);
+    mpz_sub_ui(&n, &n, 1);
+    mpz_set_ui(&d, 1);
+    mpz_mul_2exp(&d, &d, 96);
+    mpz_sub_ui(&d, &d, 1);
+    mpz_tdiv_qr(&q, &r, &n, &d);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_sgn(&r));
+    mpz_set_ui(&chk, 1);
+    mpz_mul_2exp(&chk, &chk, 96);
+    mpz_add_ui(&chk, &chk, 1);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&q, &chk));
+
+    // (2^64 - 1)^2 over 2^64 - 2: quotient 2^64, remainder 1
+    // (exercises the qhat-overestimation correction).
+    mpz_set_ui(&n, 0xFFFFFFFFFFFFFFFF);
+    mpz_mul(&n, &n, &n);
+    mpz_set_ui(&d, 0xFFFFFFFFFFFFFFFE);
+    mpz_tdiv_qr(&q, &r, &n, &d);
+    mpz_set_ui(&chk, 1);
+    mpz_mul_2exp(&chk, &chk, 64);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&q, &chk));
+    try std.testing.expectEqual(@as(u64, 1), mpz_get_ui(&r));
+}
+
+test "mpz division invariants on pseudo-random values" {
+    var n: mpz_t = undefined;
+    var d: mpz_t = undefined;
+    var q: mpz_t = undefined;
+    var r: mpz_t = undefined;
+    var chk: mpz_t = undefined;
+    var mag: mpz_t = undefined;
+    mpz_init(&n);
+    mpz_init(&d);
+    mpz_init(&q);
+    mpz_init(&r);
+    mpz_init(&chk);
+    mpz_init(&mag);
+    defer mpz_clear(&n);
+    defer mpz_clear(&d);
+    defer mpz_clear(&q);
+    defer mpz_clear(&r);
+    defer mpz_clear(&chk);
+    defer mpz_clear(&mag);
+
+    var seed: u64 = 0x123456789ABCDEF0;
+    var iter: usize = 0;
+    while (iter < 100) : (iter += 1) {
+        rndMagTest(&n, 2 + seed % 10, &seed);
+        rndMagTest(&d, 1 + seed % 5, &seed);
+        if (mpz_sgn(&d) == 0) mpz_set_ui(&d, 7);
+        const nneg = (seed & 1) == 1;
+        const dneg = ((seed >> 1) & 1) == 1;
+        if (nneg) mpz_neg(&n, &n);
+        if (dneg) mpz_neg(&d, &d);
+
+        mpz_tdiv_qr(&q, &r, &n, &d);
+        mpz_mul(&chk, &q, &d);
+        mpz_add(&chk, &chk, &r);
+        try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&chk, &n));
+        if (mpz_sgn(&r) != 0) {
+            try std.testing.expectEqual(@as(c_int, if (nneg) -1 else 1), mpz_sgn(&r));
+            if (mpz_sgn(&q) != 0)
+                try std.testing.expectEqual(@as(c_int, if (nneg != dneg) -1 else 1), mpz_sgn(&q));
+        }
+        mpz_abs(&mag, &r);
+        mpz_abs(&chk, &d);
+        try std.testing.expectEqual(@as(c_int, -1), mpz_cmp(&mag, &chk));
+
+        mpz_fdiv_qr(&q, &r, &n, &d);
+        mpz_mul(&chk, &q, &d);
+        mpz_add(&chk, &chk, &r);
+        try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&chk, &n));
+        if (mpz_sgn(&r) != 0)
+            try std.testing.expectEqual(@as(c_int, if (dneg) -1 else 1), mpz_sgn(&r));
+        mpz_abs(&mag, &r);
+        mpz_abs(&chk, &d);
+        try std.testing.expectEqual(@as(c_int, -1), mpz_cmp(&mag, &chk));
+    }
+}
+
+test "mpz division aliasing and divexact" {
+    var n: mpz_t = undefined;
+    var d: mpz_t = undefined;
+    var r: mpz_t = undefined;
+    var q: mpz_t = undefined;
+    var a: mpz_t = undefined;
+    var b: mpz_t = undefined;
+    mpz_init(&n);
+    mpz_init(&d);
+    mpz_init(&r);
+    mpz_init(&q);
+    mpz_init(&a);
+    mpz_init(&b);
+    defer mpz_clear(&n);
+    defer mpz_clear(&d);
+    defer mpz_clear(&r);
+    defer mpz_clear(&q);
+    defer mpz_clear(&a);
+    defer mpz_clear(&b);
+
+    // q aliases n (timefns.c does mpz_fdiv_qr (mpz[0], mpz[1], mpz[0], d)).
+    mpz_set_ui(&n, 1);
+    mpz_mul_2exp(&n, &n, 192);
+    mpz_sub_ui(&n, &n, 1); // 2^192 - 1
+    mpz_set_ui(&d, 1);
+    mpz_mul_2exp(&d, &d, 96);
+    mpz_add_ui(&d, &d, 1); // 2^96 + 1
+    mpz_tdiv_qr(&n, &r, &n, &d);
+    mpz_set_ui(&q, 1);
+    mpz_mul_2exp(&q, &q, 96);
+    mpz_sub_ui(&q, &q, 1); // 2^96 - 1
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&n, &q));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_sgn(&r));
+
+    // r aliases n (data.c pattern: tdiv_r into the dividend cell).
+    mpz_set_ui(&n, 1);
+    mpz_mul_2exp(&n, &n, 192);
+    mpz_sub_ui(&n, &n, 1);
+    mpz_tdiv_r(&n, &n, &d);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_sgn(&n));
+
+    // divexact, both signs.
+    mpz_set_ui(&a, 12345678901234567890);
+    mpz_set_ui(&b, 987654321);
+    mpz_mul(&n, &a, &b);
+    mpz_divexact(&q, &n, &b);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&q, &a));
+    mpz_neg(&n, &n);
+    mpz_divexact(&q, &n, &b);
+    mpz_neg(&a, &a);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&q, &a));
+    mpz_neg(&b, &b);
+    mpz_divexact(&q, &n, &b);
+    mpz_neg(&a, &a); // a was -A; the quotient of two negatives is +A
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&q, &a));
 }
