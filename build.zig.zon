@@ -152,6 +152,14 @@
         .gnulib_boot_time = .{
             .path = "tools/gnulib-boot-time",
         },
+        // gnulib-c-strcase: gnulib's ASCII case-insensitive string
+        // comparison (c_strcasecmp / c_strncasecmp, lib/c-strcasecmp.c +
+        // lib/c-strncasecmp.c) provided by an independent Zig package
+        // instead of C. Pure byte logic; no libc call. Linked into
+        // temacs (backs `-exe' detection and font matching).
+        .gnulib_c_strcase = .{
+            .path = "tools/gnulib-c-strcase",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw
