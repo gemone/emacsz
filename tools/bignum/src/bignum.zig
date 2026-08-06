@@ -9,10 +9,10 @@
 // callbacks), defaulting to zig's allocator when not overridden.
 //
 // Implemented so far: mpz lifecycle, conversions, comparison, add/sub/mul,
-// two-power shifts, size queries, and the full division family (truncated,
-// floored, ceiling, single-limb and exact). The remaining surface
-// (pow/gcd, import/export, limbs API, bitwise ops, strings) lands in
-// follow-up slices.
+// two-power shifts, size queries, the full division family (truncated,
+// floored, ceiling, single-limb and exact), and pow/gcd/addmul/submul.
+// The remaining surface (import/export, limbs API, bitwise ops, strings)
+// lands in follow-up slices.
 
 const std = @import("std");
 
@@ -917,6 +917,100 @@ pub export fn mpz_divexact(q: *mpz_t, n: *const mpz_t, d: *const mpz_t) void {
     if (signOf(&r) != 0) @panic("mpz_divexact: non-exact division");
 }
 
+// ---------- powers and gcd ----------
+
+pub export fn mpz_init_set_ui(z: *mpz_t, u: u64) void {
+    mpz_init(z);
+    mpz_set_ui(z, u);
+}
+
+// ROP += |A| * |B| with full sign arithmetic. Any operand may alias ROP.
+pub export fn mpz_addmul(rop: *mpz_t, a: *const mpz_t, b: *const mpz_t) void {
+    var t: mpz_t = undefined;
+    mpz_init(&t);
+    defer mpz_clear(&t);
+    mpz_mul(&t, a, b);
+    mpz_add(rop, rop, &t);
+}
+
+pub export fn mpz_addmul_ui(rop: *mpz_t, a: *const mpz_t, u: u64) void {
+    var t: mpz_t = undefined;
+    mpz_init(&t);
+    defer mpz_clear(&t);
+    mpz_mul_ui(&t, a, u);
+    mpz_add(rop, rop, &t);
+}
+
+pub export fn mpz_submul(rop: *mpz_t, a: *const mpz_t, b: *const mpz_t) void {
+    var t: mpz_t = undefined;
+    mpz_init(&t);
+    defer mpz_clear(&t);
+    mpz_mul(&t, a, b);
+    mpz_sub(rop, rop, &t);
+}
+
+// ROP = BASE^EXP by square-and-multiply; 0^0 = 1 (GMP convention) and
+// ROP may alias BASE (data.c exponentiates mpz[0] in place).
+pub export fn mpz_pow_ui(rop: *mpz_t, base: *const mpz_t, exp: c_ulong) void {
+    if (exp == 0) {
+        mpz_set_ui(rop, 1);
+        return;
+    }
+    var b: mpz_t = undefined;
+    mpz_init(&b);
+    defer mpz_clear(&b);
+    mpz_set(&b, base);
+    if (signOf(&b) == 0) {
+        mpz_set_ui(rop, 0);
+        return;
+    }
+    var result: mpz_t = undefined;
+    var factor: mpz_t = undefined;
+    mpz_init(&result);
+    mpz_init(&factor);
+    defer mpz_clear(&result);
+    defer mpz_clear(&factor);
+    mpz_set_ui(&result, 1);
+    mpz_set(&factor, &b);
+    var e = exp;
+    while (e != 0) {
+        if (e & 1 == 1) mpz_mul(&result, &result, &factor);
+        e >>= 1;
+        if (e != 0) mpz_mul(&factor, &factor, &factor);
+    }
+    mpz_set(rop, &result);
+}
+
+pub export fn mpz_ui_pow_ui(rop: *mpz_t, base: c_ulong, exp: c_ulong) void {
+    var b: mpz_t = undefined;
+    mpz_init(&b);
+    defer mpz_clear(&b);
+    mpz_set_ui(&b, base);
+    mpz_pow_ui(rop, &b, exp);
+}
+
+// ROP = gcd(|A|, |B|), always nonnegative; gcd(0, 0) = 0. ROP may alias
+// A or B (timefns.c reduces tick/hz pairs in place).
+pub export fn mpz_gcd(rop: *mpz_t, a: *const mpz_t, b: *const mpz_t) void {
+    var x: mpz_t = undefined;
+    var y: mpz_t = undefined;
+    var r: mpz_t = undefined;
+    mpz_init(&x);
+    mpz_init(&y);
+    mpz_init(&r);
+    defer mpz_clear(&x);
+    defer mpz_clear(&y);
+    defer mpz_clear(&r);
+    mpz_abs(&x, a);
+    mpz_abs(&y, b);
+    while (signOf(&y) != 0) {
+        mpz_tdiv_r(&r, &x, &y);
+        mpz_set(&x, &y);
+        mpz_set(&y, &r);
+    }
+    mpz_set(rop, &x);
+}
+
 // Test helper: build a magnitude from LIMBS pseudo-random limbs.
 fn rndMagTest(z: *mpz_t, limbs: usize, seed: *u64) void {
     mpz_set_ui(z, 0);
@@ -1340,4 +1434,124 @@ test "mpz division aliasing and divexact" {
     mpz_divexact(&q, &n, &b);
     mpz_neg(&a, &a); // a was -A; the quotient of two negatives is +A
     try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&q, &a));
+}
+
+test "mpz pow_ui and ui_pow_ui" {
+    var b: mpz_t = undefined;
+    var r: mpz_t = undefined;
+    var chk: mpz_t = undefined;
+    mpz_init(&b);
+    mpz_init(&r);
+    mpz_init(&chk);
+    defer mpz_clear(&b);
+    defer mpz_clear(&r);
+    defer mpz_clear(&chk);
+
+    mpz_set_ui(&b, 2);
+    mpz_pow_ui(&r, &b, 10);
+    try std.testing.expectEqual(@as(u64, 1024), mpz_get_ui(&r));
+    mpz_set_si(&b, -3);
+    mpz_pow_ui(&r, &b, 3);
+    try std.testing.expectEqual(@as(i64, -27), mpz_get_si(&r));
+    mpz_pow_ui(&r, &b, 0);
+    try std.testing.expectEqual(@as(u64, 1), mpz_get_ui(&r));
+    mpz_set_ui(&b, 0);
+    mpz_pow_ui(&r, &b, 0);
+    try std.testing.expectEqual(@as(u64, 1), mpz_get_ui(&r));
+    mpz_pow_ui(&r, &b, 5);
+    try std.testing.expectEqual(@as(u64, 0), mpz_get_ui(&r));
+
+    // ROP aliasing BASE (data.c pattern).
+    mpz_set_ui(&b, 3);
+    mpz_pow_ui(&b, &b, 200);
+    mpz_set_ui(&chk, 3);
+    var i: usize = 1;
+    while (i < 200) : (i += 1) mpz_mul_ui(&chk, &chk, 3);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&b, &chk));
+
+    mpz_ui_pow_ui(&r, 10, 20);
+    mpz_ui_pow_ui(&chk, 10, 10);
+    mpz_mul(&chk, &chk, &chk); // 10^20
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&r, &chk));
+}
+
+test "mpz gcd" {
+    var a: mpz_t = undefined;
+    var b: mpz_t = undefined;
+    var r: mpz_t = undefined;
+    var chk: mpz_t = undefined;
+    mpz_init(&a);
+    mpz_init(&b);
+    mpz_init(&r);
+    mpz_init(&chk);
+    defer mpz_clear(&a);
+    defer mpz_clear(&b);
+    defer mpz_clear(&r);
+    defer mpz_clear(&chk);
+
+    mpz_set_ui(&a, 123456789);
+    mpz_set_ui(&b, 987654321);
+    mpz_gcd(&r, &a, &b);
+    try std.testing.expectEqual(@as(u64, 9), mpz_get_ui(&r));
+    mpz_neg(&a, &a);
+    mpz_gcd(&r, &a, &b);
+    try std.testing.expectEqual(@as(u64, 9), mpz_get_ui(&r));
+    mpz_set_ui(&a, 0);
+    mpz_gcd(&r, &a, &b);
+    try std.testing.expectEqual(@as(u64, 987654321), mpz_get_ui(&r));
+    mpz_set_ui(&b, 0);
+    mpz_gcd(&r, &a, &b);
+    try std.testing.expectEqual(@as(u64, 0), mpz_get_ui(&r));
+
+    // gcd(2^100, 2^50) = 2^50; gcd of two powers of two is the smaller.
+    mpz_set_ui(&a, 1);
+    mpz_mul_2exp(&a, &a, 100);
+    mpz_set_ui(&b, 1);
+    mpz_mul_2exp(&b, &b, 50);
+    mpz_gcd(&r, &a, &b);
+    mpz_set_ui(&chk, 1);
+    mpz_mul_2exp(&chk, &chk, 50);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&r, &chk));
+
+    // ROP aliases A (timefns.c gcd in place).
+    mpz_set_ui(&a, 123456789);
+    mpz_set_ui(&b, 987654321);
+    mpz_gcd(&a, &a, &b);
+    try std.testing.expectEqual(@as(u64, 9), mpz_get_ui(&a));
+}
+
+test "mpz addmul submul" {
+    var a: mpz_t = undefined;
+    var b: mpz_t = undefined;
+    var r: mpz_t = undefined;
+    var chk: mpz_t = undefined;
+    mpz_init(&a);
+    mpz_init(&b);
+    mpz_init(&r);
+    mpz_init(&chk);
+    defer mpz_clear(&a);
+    defer mpz_clear(&b);
+    defer mpz_clear(&r);
+    defer mpz_clear(&chk);
+
+    mpz_set_si(&a, -100);
+    mpz_set_si(&b, 7);
+    mpz_set_ui(&r, 3);
+    mpz_addmul(&r, &a, &b);
+    try std.testing.expectEqual(@as(i64, -697), mpz_get_si(&r));
+    mpz_submul(&r, &a, &b);
+    try std.testing.expectEqual(@as(i64, 3), mpz_get_si(&r));
+
+    mpz_set_ui(&a, 5);
+    mpz_set_ui(&r, 1);
+    mpz_addmul_ui(&r, &a, 7);
+    try std.testing.expectEqual(@as(u64, 36), mpz_get_ui(&r));
+
+    // Multi-limb with ROP aliasing A: r = 2^128; r += r * 3 = 4 * 2^128.
+    mpz_set_ui(&r, 1);
+    mpz_mul_2exp(&r, &r, 128);
+    mpz_addmul_ui(&r, &r, 3);
+    mpz_set_ui(&chk, 4);
+    mpz_mul_2exp(&chk, &chk, 128);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&r, &chk));
 }
