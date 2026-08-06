@@ -1055,7 +1055,11 @@ fn genJisx2131(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir) !void {
     // Makefile.in copies mapfiles/JISX213A.map straight into
     // etc/charsets/ (${charsetdir}/JISX213A.map: ${mapfiledir}/...).
     const jisxa_src = try cwd.readFileAlloc(io, "admin/charsets/mapfiles/JISX213A.map", gpa, .unlimited);
-    try writeOut(gpa, io, cwd, "etc/charsets/JISX213A.map", jisxa_src);
+    var jisxa_lines: std.ArrayList([]const u8) = .empty;
+    defer jisxa_lines.deinit(gpa);
+    var jisxa_it = std.mem.splitScalar(u8, jisxa_src, '\n');
+    while (jisxa_it.next()) |l| try jisxa_lines.append(gpa, l);
+    try writeOut(gpa, io, cwd, "etc/charsets/JISX213A.map", jisxa_lines.items);
     gpa.free(jisxa_src);
 
     // Build the filter: for each non-# line of JISX213A.map, drop lines
