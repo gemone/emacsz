@@ -1,0 +1,184 @@
+name: Zig Verify (Build, Tests, Cross-Compile)
+
+# CI verification for the pure-zig build: native Linux gate (full build +
+# all built-in ert tests) and cross-compile checks for every target the
+# build claims to support. Cross targets are verified at compile level
+# (all Zig packages and C sources); the final link is only expected to
+# succeed where the target's system libraries exist on the runner.
+
+on:
+  push:
+    branches: [ master, main, zig-build-* ]
+    paths:
+      - 'build.zig'
+      - 'build.zig.zon'
+      - 'tools/**'
+      - 'src/**'
+      - 'lib/**'
+      - 'build-aux/**'
+      - 'etc/**'
+      - 'test/**'
+      - 'lisp/**'
+      - '.github/workflows/zig-verify.yml'
+  pull_request:
+    branches: [ master, main ]
+    paths:
+      - 'build.zig'
+      - 'build.zig.zon'
+      - 'tools/**'
+      - 'src/**'
+      - 'lib/**'
+      - 'build-aux/**'
+      - 'etc/**'
+      - 'test/**'
+      - 'lisp/**'
+      - '.github/workflows/zig-verify.yml'
+  workflow_dispatch:
+
+jobs:
+  # Native gate: the authoritative Linux verification. `zig build check`
+  # builds temacs and runs all 582 built-in ert tests; it is a hard gate
+  # (unlike the artifact matrix workflow, which keeps tests informational).
+  linux-check:
+    name: Linux build + 582 ert tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libgnutls28-dev \
+            libncurses-dev \
+            libxml2-dev \
+            zlib1g-dev \
+            liblcms2-dev \
+            libsqlite3-dev \
+            libgmp-dev \
+            libacl1-dev \
+            libselinux1-dev \
+            libtree-sitter-dev \
+            libasound2-dev \
+            libgpm-dev \
+            libdbus-1-dev
+
+      - name: Build
+        run: zig build
+
+      - name: Built-in ert tests
+        run: zig build check
+
+  # Cross-compile verification: every Zig package and C source must
+  # compile for each target. On a Linux host the final link cannot find
+  # non-Linux system libraries (gmp/gnutls/ncurses/...), so a link-only
+  # failure of that shape is reported as a notice; any other error line
+  # (a real compile failure) fails the job.
+  cross-compile:
+    name: Compile ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-macos
+          - aarch64-linux-musl
+          - x86_64-windows-gnu
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install host headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxml2-dev \
+            libgnutls28-dev \
+            liblcms2-dev \
+            libsqlite3-dev \
+            libgmp-dev
+
+      - name: Cross-compile check
+        shell: bash
+        run: |
+          set +e
+          out="$(zig build -Dtarget="${{ matrix.target }}" 2>&1)"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "::notice::zig build -Dtarget=${{ matrix.target }} linked successfully"
+            exit 0
+          fi
+          # Expected failure shape: the final exe link needs the target's
+          # system libraries, which are not installed on a Linux host.
+          if printf '%s\n' "$out" | grep -q "unable to find dynamic system library"; then
+            real="$(printf '%s\n' "$out" | grep -E "error:" | \
+              grep -vE "unable to find dynamic system library|process exited with error code|the following build command failed" || true)"
+            if [ -n "$real" ]; then
+              printf '%s\n' "$real"
+              echo "::error::compile errors for ${{ matrix.target }}"
+              exit 1
+            fi
+            echo "::notice::all Zig packages and C sources compiled for ${{ matrix.target }}; final link needs target system libraries unavailable on this host"
+            exit 0
+          fi
+          printf '%s\n' "$out"
+          echo "::error::zig build -Dtarget=${{ matrix.target }} failed"
+          exit 1
+
+  # Full suite sweep (all 484 discovered suites, per-suite timeout) is
+  # long; run it on demand or nightly rather than on every push.
+  check-all:
+    name: Full suite sweep (484 suites)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libgnutls28-dev \
+            libncurses-dev \
+            libxml2-dev \
+            zlib1g-dev \
+            liblcms2-dev \
+            libsqlite3-dev \
+            libgmp-dev \
+            libacl1-dev \
+            libselinux1-dev \
+            libtree-sitter-dev \
+            libasound2-dev \
+            libgpm-dev \
+            libdbus-1-dev
+
+      - name: Full suite sweep
+        env:
+          CHECK_ALL_TIMEOUT: 600
+        run: zig build check-all

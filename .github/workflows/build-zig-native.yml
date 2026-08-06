@@ -5,16 +5,28 @@ on:
     branches: [ master, main, zig-build-* ]
     paths:
       - 'build.zig'
+      - 'build.zig.zon'
+      - 'tools/**'
       - 'src/**'
       - 'lib/**'
+      - 'build-aux/**'
+      - 'etc/**'
+      - 'test/**'
+      - 'lisp/**'
       - 'lisp/loadup.el'
       - '.github/workflows/build-zig-native.yml'
   pull_request:
     branches: [ master, main ]
     paths:
       - 'build.zig'
+      - 'build.zig.zon'
+      - 'tools/**'
       - 'src/**'
       - 'lib/**'
+      - 'build-aux/**'
+      - 'etc/**'
+      - 'test/**'
+      - 'lisp/**'
       - 'lisp/loadup.el'
       - '.github/workflows/build-zig-native.yml'
   workflow_dispatch:
@@ -63,7 +75,11 @@ jobs:
             libsqlite3-dev \
             libgmp-dev \
             libacl1-dev \
-            libselinux1-dev
+            libselinux1-dev \
+            libtree-sitter-dev \
+            libasound2-dev \
+            libgpm-dev \
+            libdbus-1-dev
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
