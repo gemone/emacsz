@@ -1052,6 +1052,12 @@ fn parseDec(s: []const u8) u64 {
 // JISX2131.map: GLIBC-2-7 + the sed script filter from JISX213A.map
 // ---------------------------------------------------------------------
 fn genJisx2131(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir) !void {
+    // Makefile.in copies mapfiles/JISX213A.map straight into
+    // etc/charsets/ (${charsetdir}/JISX213A.map: ${mapfiledir}/...).
+    const jisxa_src = try cwd.readFileAlloc(io, "admin/charsets/mapfiles/JISX213A.map", gpa, .unlimited);
+    try writeOut(gpa, io, cwd, "etc/charsets/JISX213A.map", jisxa_src);
+    gpa.free(jisxa_src);
+
     // Build the filter: for each non-# line of JISX213A.map, drop lines
     // whose Unicode (leading zeros stripped) matches.
     const jisxa = try cwd.readFileAlloc(io, "admin/charsets/mapfiles/JISX213A.map", gpa, .unlimited);
