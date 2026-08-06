@@ -791,6 +791,29 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-acl", .root_module = gnulib_acl_mod });
     exe.root_module.linkLibrary(gnulib_acl_lib);
 
+    // gnulib-time-rz: an independent Zig package (tools/gnulib-time-rz)
+    // providing gnulib's time zone management (tzalloc / tzfree /
+    // set_tz / revert_tz / localtime_rz / mktime_z, lib/time_rz.c),
+    // backing `format-time-string' / `decode-time' with an explicit
+    // time zone in src/timefns.c and lib/strftime.c's %Z handling.
+    // Replicates the C module exactly: the struct-tm_zone abbreviation
+    // cache that keeps tm_zone pointers alive across the TZ swap, and
+    // the environment swap via Emacs's own TZ getter/setter
+    // (emacs_getenv_TZ / emacs_setenv_TZ from src/timefns.c, wired by
+    // conf_post.h) followed by libc tzset; the actual conversions use
+    // libc localtime_r/gmtime_r/mktime/timegm, matching gnulib's own
+    // design (the TZ database parsing lives in libc's tzset). Built
+    // ReleaseFast (leaf conversion).
+    const gnulib_time_rz_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_time_rz", .{}).path("src/time_rz.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .link_libc = true, // libc tzset/localtime_r/mktime + Emacs's TZ getter/setter
+    });
+    const gnulib_time_rz_lib =
+        b.addLibrary(.{ .name = "gnulib-time-rz", .root_module = gnulib_time_rz_mod });
+    exe.root_module.linkLibrary(gnulib_time_rz_lib);
+
     // emacs-time: an independent Zig package (tools/emacs-time) providing
     // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
     // would otherwise provide, via per-platform NATIVE backends with no libc:
@@ -1730,6 +1753,16 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         "acl_entries",
         "set-permissions",
         "get-permissions",
+        // lib/time_rz.c is provided by an independent Zig package
+        // (tools/gnulib-time-rz, dependency `gnulib_time_rz`) -- native
+        // Zig TZ management (tzalloc / tzfree / set_tz / revert_tz /
+        // localtime_rz / mktime_z) with the struct-tm_zone abbreviation
+        // cache, over Emacs's own TZ getter/setter and libc's tzset/
+        // localtime_r/mktime. Excluded here so the C source is not
+        // compiled; the package's exported symbols are linked into
+        // temacs below (time-zone conversions in timefns.c, %Z in
+        // nstrftime.c).
+        "time_rz",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native

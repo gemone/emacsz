@@ -170,6 +170,17 @@
         .gnulib_acl = .{
             .path = "tools/gnulib-acl",
         },
+        // gnulib-time-rz: gnulib's time zone management (tzalloc /
+        // tzfree / set_tz / revert_tz / localtime_rz / mktime_z,
+        // lib/time_rz.c) provided by an independent Zig package
+        // instead of C. Replicates the struct-tm_zone abbreviation
+        // cache and the TZ environment swap on top of Emacs's own
+        // TZ getter/setter (emacs_getenv_TZ / emacs_setenv_TZ) and
+        // libc's tzset/localtime_r/mktime. Linked into temacs (backs
+        // `format-time-string' / `decode-time' with time zones).
+        .gnulib_time_rz = .{
+            .path = "tools/gnulib-time-rz",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw

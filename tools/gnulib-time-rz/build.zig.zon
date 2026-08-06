@@ -1,0 +1,12 @@
+.{
+    .name = .gnulib_time_rz,
+    .fingerprint = 0x6947eb95052b91da,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/time_rz.zig",
+    },
+}
