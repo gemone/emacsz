@@ -18,7 +18,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 /* Added by Kevin Gallo */
 
-#ifdef HAVE_NTGUI
+#if defined HAVE_NTGUI || defined WINDOWSNT
 #include "w32gui.h"
 #endif
 #include "frame.h"

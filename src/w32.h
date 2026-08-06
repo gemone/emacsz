@@ -267,9 +267,15 @@ extern int w32_reexec_emacs (char *, const char *);
 extern void free_wait_pool (void);
 
 /* From w32.c.  */
+#ifndef w32_unicode_filenames
 extern bool w32_unicode_filenames;
+#endif
+#ifndef Vw32_get_true_file_attributes
 extern Lisp_Object Vw32_get_true_file_attributes;
+#endif
+#ifndef Vw32_downcase_file_names
 extern Lisp_Object Vw32_downcase_file_names;
+#endif
 extern void w32_init_main_thread (void);
 extern void sync (void);
 extern const char *sigdescr_np (int);
@@ -277,6 +283,16 @@ struct terminal;
 extern void initialize_w32_display (struct terminal *, int *, int *);
 extern void w32con_hide_cursor (void);
 extern void w32con_show_cursor (void);
+
+/* GUI-module symbols stubbed by w32-stubs.c in the console build
+   (w32fns.c/w32image.c own them in the GUI build).  */
+#ifndef w32_ansi_code_page
+extern int w32_ansi_code_page;
+#endif
+#ifndef w32_num_mouse_buttons
+extern int w32_num_mouse_buttons;
+#endif
+extern void w32_gdiplus_shutdown (void);
 
 #ifdef HAVE_GNUTLS
 #include <gnutls/gnutls.h>

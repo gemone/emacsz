@@ -31,7 +31,14 @@ typedef HBITMAP Emacs_Pixmap;
 
 typedef HWND Window;
 typedef HDC Display;  /* HDC so it doesn't conflict with xpm lib.  */
+#ifdef HAVE_NTGUI
 typedef HCURSOR Emacs_Cursor;
+#else
+/* Console (non-GUI) builds get the plain-pointer fallback from
+   dispextern.h; keep the same type here so both orders of inclusion
+   are valid (C11 permits redefinition to the same type).  */
+typedef void *Emacs_Cursor;
+#endif
 
 #define WINDOW_HANDLE_UINTPTR(h) ((uintptr_t) (h))
 
@@ -91,7 +98,9 @@ extern HINSTANCE hinst;
 #define PBaseSize	(1L << 8) /* program specified base for incrementing */
 #define PWinGravity	(1L << 9) /* program specified window gravity */
 
-#define NativeRectangle RECT
+#ifndef NativeRectangle
+# define NativeRectangle RECT
+#endif
 
 #define CONVERT_TO_EMACS_RECT(xr,nr)            \
   ((xr).x = (nr).left,				\

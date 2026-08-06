@@ -164,6 +164,10 @@ extern void _DebPrint (const char *fmt, ...);
 # else
 #  define DebPrint(stuff) ((void) 0)
 # endif
+#elif defined WINDOWSNT && !defined DebPrint
+/* The console (non-GUI) build still uses DebPrint in the w32 modules;
+   without EMACSDEBUG it is a debug-only facility, so make it a no-op.  */
+# define DebPrint(stuff) ((void) 0)
 #endif
 
 #if defined CYGWIN && defined HAVE_NTGUI

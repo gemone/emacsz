@@ -76,7 +76,7 @@ char *sys_ctime (const time_t *);
 int sys_chdir (const char *);
 int sys_creat (const char *, int);
 FILE *sys_fopen (const char *, const char *);
-int sys_open (const char *, int, int);
+int sys_open (const char *, int, ...);
 int sys_rename (char const *, char const *);
 int sys_rmdir (const char *);
 int sys_close (int);
