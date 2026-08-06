@@ -80,11 +80,26 @@ for suite in $suites; do
     # this suite's dir. Keeps every require searching ~3 dirs, not 500.
     LP="-L $ROOT/test -L $suitedir"
     form="(progn ${PRE} (load \"${loadtarget}\") (let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit)))"
-    out=$(LANG=C HOME=/nonexistent EMACS_TEST_DIRECTORY="$ROOT/test" \
-        timeout -s KILL "$TIMEOUT" \
-        sh -c 'ulimit -s unlimited 2>/dev/null; '"$SETARCH"' "$1" --batch '"$LP"' --dump-file="$2" --eval "$3"' \
-        _ "$TEMACS" "$DUMP" "$form" 2>&1)
-    rc=$?
+    # Retry on signal death only (the pdumper's single-delta heap
+    # relocation is intermittently mis-applied under load, killing temacs
+    # with SIGBUS/SIGSEGV/SIGABRT during lisp load -- the same flakiness
+    # the `check` step retries). A real suite result exits 0/1/255, and a
+    # timeout-KILL is SIGKILL (137), so neither is retried: transient
+    # signal deaths must not inflate the CRASH bucket.
+    attempt=0; rc=0; out=
+    while :; do
+        attempt=$((attempt+1))
+        out=$(LANG=C HOME=/nonexistent EMACS_TEST_DIRECTORY="$ROOT/test" \
+            timeout -s KILL "$TIMEOUT" \
+            sh -c 'ulimit -s unlimited 2>/dev/null; '"$SETARCH"' "$1" --batch '"$LP"' --dump-file="$2" --eval "$3"' \
+            _ "$TEMACS" "$DUMP" "$form" 2>&1)
+        rc=$?
+        if [ "$rc" -lt 128 ] || [ "$rc" -gt 192 ] || [ "$rc" -eq 137 ]; then
+            break
+        fi
+        [ "$attempt" -ge "${CHECK_ALL_RETRIES:-3}" ] && break
+        echo "check-all: $rel died with signal (rc=$rc) on attempt $attempt/${CHECK_ALL_RETRIES:-3}; retrying (pdumper relocation flakiness)" >&2
+    done
     case "$rc" in
         0)   status=PASS;  pass=$((pass+1)) ;;
         1)   status=FAIL;  fail=$((fail+1)) ;;
