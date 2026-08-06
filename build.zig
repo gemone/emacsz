@@ -676,6 +676,21 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-fsusage", .root_module = gnulib_fsusage_mod });
     exe.root_module.linkLibrary(gnulib_fsusage_lib);
 
+    // gnulib-getloadavg: an independent Zig package
+    // (tools/gnulib-getloadavg) providing gnulib's load-average query
+    // (getloadavg, lib/getloadavg.c), backing `load-average'. Reads the
+    // 1/5/15-minute loads via the sysinfo(2) raw syscall and converts
+    // the fixed-point values; errno set on failure. No libc call. Built
+    // ReleaseFast (leaf query).
+    const gnulib_getloadavg_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_getloadavg", .{}).path("src/getloadavg.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const gnulib_getloadavg_lib =
+        b.addLibrary(.{ .name = "gnulib-getloadavg", .root_module = gnulib_getloadavg_mod });
+    exe.root_module.linkLibrary(gnulib_getloadavg_lib);
+
     // emacs-time: an independent Zig package (tools/emacs-time) providing
     // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
     // would otherwise provide, via per-platform NATIVE backends with no libc:
@@ -1550,6 +1565,12 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // the C source is not compiled; the package's exported symbol is
         // linked into temacs below (`file-system-info').
         "fsusage",
+        // lib/getloadavg.c is provided by an independent Zig package
+        // (tools/gnulib-getloadavg, dependency `gnulib_getloadavg`) --
+        // native Zig load-average query (getloadavg). Excluded here so
+        // the C source is not compiled; the package's exported symbol is
+        // linked into temacs below (`load-average').
+        "getloadavg",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native

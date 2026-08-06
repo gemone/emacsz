@@ -1,0 +1,12 @@
+.{
+    .name = .gnulib_getloadavg,
+    .fingerprint = 0xfd30ba97de41c12b,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/getloadavg.zig",
+    },
+}

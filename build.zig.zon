@@ -114,6 +114,13 @@
         .gnulib_fsusage = .{
             .path = "tools/gnulib-fsusage",
         },
+        // gnulib-getloadavg: gnulib's load-average query (getloadavg,
+        // lib/getloadavg.c) provided by an independent Zig package
+        // instead of C. Raw sysinfo syscall; no libc call. Linked into
+        // temacs (backs `load-average').
+        .gnulib_getloadavg = .{
+            .path = "tools/gnulib-getloadavg",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw
