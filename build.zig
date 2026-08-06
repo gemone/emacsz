@@ -1320,6 +1320,15 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // byte-compilation (the byte-compiler fchmodat's its temp files).
         // Callers use the libc fchmodat (HAVE_FCHMODAT=1).
         "fchmodat",
+        // lib/futimens.c + lib/utimens.c: with working system futimens and
+        // utimensat (HAVE_FUTIMENS=1, HAVE_UTIMENSAT=1) and no rpl rename,
+        // linking gnulib's futimens makes fdutimens's internal futimens call
+        // resolve to the gnulib copy -> infinite mutual recursion (copy-file
+        // with keep-time t busy-loops; dired-copy-preserve-time defaults to
+        // t, so dired copies and copy-directory hang too). Callers use the
+        // libc functions (fileio.c set-file-times/copy-file keep-time).
+        "futimens",
+        "utimens",
         // lib/memeq.c + lib/streq.c are provided by an independent Zig
         // package (tools/gnulib-str, dependency `gnulib_str`) instead of C
         // -- runtime gnulib string primitives replaced by Zig. Excluded
