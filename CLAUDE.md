@@ -36,9 +36,10 @@ This repository contains GNU Emacs with an ongoing effort to modernize the build
   (`careadlinkat`, backing `file-symlink-p`/`file-truename`), and
   `tools/gnulib-dtoastr` (`dtoastr`, accurate float printing), and
   `tools/gnulib-stat-time` (`get_stat_*`, backing `file-attributes` time
-  elements). The remaining lib/*.c files in the build are either empty
-  on glibc or unexercised by Emacs. Deeper libc decoupling (file-I/O,
-  time modules) is ongoing.
+  elements), and `tools/gnulib-boot-time` (`get_boot_time`, backing
+  lock-file identification). The remaining lib/*.c files in the build
+  are either empty on glibc or unexercised by Emacs. Deeper libc
+  decoupling (file-I/O, time modules) is ongoing.
 - **Goal 3 — Runnable on Linux: ✅ Done.** The final image is
   byte-compiled: `zig build dump` (source bootstrap) →
   `zig build compile-lisp` → `zig build dump-compiled`; `zig build check`
