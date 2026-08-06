@@ -11,9 +11,41 @@
 //
 // Run with cwd = repo root; the template and answer files are passed as
 // argv[1] and argv[2] (relative to cwd) so the build tracks their content.
-// The generated config.h body is written to STDOUT; the consumer captures it
+// An optional argv[3] target tag ("linux", "musl", "windows") applies
+// per-target overrides on top of the committed Linux values, so cross
+// builds get a config matching what they can actually link. The
+// generated config.h body is written to STDOUT; the consumer captures it
 // via captureStdOut and lands it in the zig-cache.
 const std = @import("std");
+
+// Optional system-library features disabled for targets where the
+// library is unavailable or not part of the milestone build. The
+// bignum rewrite already removed the gmp dependency on every target.
+const musl_overrides = [_][]const u8{
+    "HAVE_GNUTLS",
+    "HAVE_LIBXML2",
+    "HAVE_LCMS2",
+    "HAVE_SQLITE3",
+    "HAVE_TREE_SITTER",
+    "HAVE_ALSA",
+    "HAVE_GPM",
+    "HAVE_DBUS",
+    "HAVE_ZLIB",
+};
+
+// Windows additionally drops the POSIX-only subsystems that need mingw
+// ports of the same libraries.
+const windows_overrides = [_][]const u8{
+    "HAVE_GNUTLS",
+    "HAVE_LIBXML2",
+    "HAVE_LCMS2",
+    "HAVE_SQLITE3",
+    "HAVE_TREE_SITTER",
+    "HAVE_ALSA",
+    "HAVE_GPM",
+    "HAVE_DBUS",
+    "HAVE_ZLIB",
+};
 
 pub fn main(minimal: std.process.Init.Minimal) !void {
     var io_threaded: std.Io.Threaded = .init_single_threaded;
@@ -26,6 +58,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     _ = it.next(); // program name
     const template_path = it.next() orelse return error.MissingTemplateArg;
     const values_path = it.next() orelse return error.MissingValuesArg;
+    const target_tag = it.next();
 
     const config_h_in_text = try cwd.readFileAlloc(
         io,
@@ -50,6 +83,20 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                 try config_values.put(vline[0..eq], vline[eq + 1 ..]);
             } else {
                 try config_values.put(vline, "");
+            }
+        }
+    }
+
+    if (target_tag) |tag| {
+        const overrides = if (std.mem.eql(u8, tag, "musl"))
+            &musl_overrides
+        else if (std.mem.eql(u8, tag, "windows"))
+            &windows_overrides
+        else
+            null;
+        if (overrides) |list| {
+            for (list) |name| {
+                try config_values.put(name, "");
             }
         }
     }

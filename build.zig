@@ -153,6 +153,36 @@ pub fn build(b: *std.Build) void {
     );
     gen_config_step.dependOn(&run_gen_config.step);
 
+    // Cross targets get a target-tagged config: the committed values are
+    // the native Linux configure results, so for musl and Windows the
+    // generator additionally undefs the optional system-library features
+    // those targets cannot link yet. The HOST config above stays
+    // untouched for make-docfile and the config verifiers; only the
+    // temacs C compile switches to the target config.
+    const target_config_tag: ?[]const u8 = switch (target.result.os.tag) {
+        .windows => "windows",
+        .linux => if (target.result.abi == .musl) "musl" else null,
+        else => null, // macOS keeps the Linux-derived values for now
+    };
+    const TargetConfig = struct {
+        file: std.Build.LazyPath,
+        step: *std.Build.Step,
+    };
+    const target_config_h_file: TargetConfig = if (target_config_tag) |tag| blk: {
+        const run = b.addRunArtifact(gen_config_tool);
+        run.setCwd(b.path("."));
+        run.addFileArg(b.path("src/config.h.in"));
+        run.addFileArg(b.path("src/config_values.txt"));
+        run.addArg(tag);
+        break :blk TargetConfig{
+            .file = run.captureStdOut(.{ .basename = "config.h" }),
+            .step = &run.step,
+        };
+    } else TargetConfig{
+        .file = config_h_file,
+        .step = &run_gen_config.step,
+    };
+
     // Build make-docfile as a HOST tool (it runs at build time, so it must
     // target the build host rather than the cross target). Reuses the same
     // config.h-aware flags as the libgnu compile; all gnulib headers that
@@ -416,9 +446,10 @@ pub fn build(b: *std.Build) void {
 
     // temacs includes <config.h>; the generated file (from src/config.h.in +
     // src/config_values.txt) is provided via the module include path, so the
-    // compile must wait for the generator.
-    exe.root_module.addIncludePath(config_h_file.dirname());
-    exe.step.dependOn(&run_gen_config.step);
+    // compile must wait for the generator. Cross targets use the
+    // target-tagged config above.
+    exe.root_module.addIncludePath(target_config_h_file.file.dirname());
+    exe.step.dependOn(target_config_h_file.step);
 
     // gnulib-str: an independent Zig package (tools/gnulib-str) providing
     // the gnulib string-primitive external definitions that lib/memeq.c +
@@ -869,6 +900,10 @@ pub fn build(b: *std.Build) void {
 
     // Determine if we're building for Unix-like systems
     const is_windows = target.result.os.tag == .windows;
+    // musl targets get a minimal config (gen-config "musl" tag undefs the
+    // optional system-lib features), so skip the corresponding -l flags
+    // here as well; only libm and ncurses (terminal support) remain.
+    const is_musl = target.result.os.tag == .linux and target.result.abi == .musl;
 
     // Add base C sources with proper flags
     if (!is_windows) {
@@ -1025,7 +1060,7 @@ pub fn build(b: *std.Build) void {
     // Link system libraries (phase 2: based on src/Makefile)
     exe.root_module.linkSystemLibrary("m", .{});
 
-    if (!is_windows) {
+    if (!is_windows and !is_musl) {
         // Core libraries
         exe.root_module.linkSystemLibrary("gnutls", .{});
 
@@ -1043,7 +1078,6 @@ pub fn build(b: *std.Build) void {
 
         // SQLite database
         exe.root_module.linkSystemLibrary("sqlite3", .{});
-
         // ACL support (Linux only). Link libacl: config.h defines HAVE_ACL_*
         // and the library is installed. Do NOT link libselinux: config.h has
         // HAVE_LIBSELINUX undefined and the library is absent on the host, so
@@ -1060,6 +1094,10 @@ pub fn build(b: *std.Build) void {
             // D-Bus (HAVE_DBUS): dbus_* symbols from src/dbusbind.c.
             exe.root_module.linkSystemLibrary("dbus-1", .{});
         }
+    } else if (is_musl) {
+        // Terminal support only; the feature libs are undef'd in the musl
+        // config and are not available as musl builds on this host yet.
+        exe.root_module.linkSystemLibrary("ncurses", .{});
     }
 
     // Install the executable
