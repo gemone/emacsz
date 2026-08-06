@@ -24,9 +24,10 @@ This repository contains GNU Emacs with an ongoing effort to modernize the build
   backing sit-for timeouts and gc timing), `tools/gnulib-filevercmp`
   (`filevercmp`/`filenvercmp`, backing `string-version-lessp`),
   `tools/gnulib-sigdescr-np` (`sigdescr_np`, backing safe_strsignal),
-  and `tools/emacs-time` + `tools/emacs-nanosleep` (realtime clock /
-  nanosleep with no libc call). Deeper libc decoupling (file-I/O, time
-  modules) is ongoing.
+  `tools/gnulib-nproc` (`num_processors`, backing `num-processors`, via
+  raw syscalls + sysfs/proc reads), and `tools/emacs-time` +
+  `tools/emacs-nanosleep` (realtime clock / nanosleep with no libc call).
+  Deeper libc decoupling (file-I/O, time modules) is ongoing.
 - **Goal 3 — Runnable on Linux: ✅ Done.** The final image is
   byte-compiled: `zig build dump` (source bootstrap) →
   `zig build compile-lisp` → `zig build dump-compiled`; `zig build check`
