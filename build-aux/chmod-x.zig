@@ -6,9 +6,6 @@ const std = @import("std");
 
 pub fn main(minimal: std.process.Init.Minimal) !void {
     const gpa = std.heap.smp_allocator;
-    var io_threaded: std.Io.Threaded = .init(gpa, .{});
-    const io = io_threaded.io();
-    const cwd = std.Io.Dir.cwd();
 
     var it = try std.process.Args.Iterator.initAllocator(minimal.args, gpa);
     defer it.deinit();
@@ -17,6 +14,6 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     const z = try std.fmt.allocPrintSentinel(gpa, "{s}", .{path}, 0);
     defer gpa.free(z);
-    const rc = std.os.linux.fchmodat(std.os.linux.AT.FDCWD, z, 0o755, 0);
+    const rc = std.os.linux.fchmodat(std.os.linux.AT.FDCWD, z, 0o755);
     if (@as(isize, @bitCast(rc)) < 0) return error.ChmodFailed;
 }
