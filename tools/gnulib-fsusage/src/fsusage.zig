@@ -1,18 +1,19 @@
 // Native Zig implementation of gnulib's lib/fsusage.c (get_fs_usage),
 // backing `file-system-info' in src/fileio.c. Reads the mount's
-// statfs(2) via a raw syscall and maps the kernel fields into the
-// gnulib struct fs_usage, matching what glibc's statvfs-based path
-// returns on modern Linux (the pre-2.6.36 statvfs hang workaround is
-// irrelevant here). errno is set on failure exactly as the C code
-// leaves it (fileio.c tests for ENOSYS). No libc call.
+// statfs(2) and maps the kernel fields into the gnulib struct fs_usage.
+//   Linux  -> raw statfs syscall (no libc call).
+//   Darwin -> libc statfs (macOS's stable ABI).
+// errno is set on failure exactly as the C code leaves it.
 
 const std = @import("std");
 const linux = std.os.linux;
 const builtin = @import("builtin");
 
-comptime {
-    if (builtin.os.tag != .linux)
-        @compileError("gnulib-fsusage: raw-statfs implementation is Linux-only for now");
+fn isDarwin(tag: std.Target.Os.Tag) bool {
+    return switch (tag) {
+        .macos, .ios, .tvos, .watchos, .visionos, .driverkit, .maccatalyst => true,
+        else => false,
+    };
 }
 
 extern fn __errno_location() *c_int;
@@ -52,6 +53,10 @@ pub export fn get_fs_usage(
     disk: ?[*:0]const u8,
     fsp: *FsUsage,
 ) c_int {
+    if (comptime isDarwin(builtin.os.tag))
+        return getFsUsageDarwin(file, fsp);
+    if (builtin.os.tag != .linux)
+        @compileError("gnulib-fsusage: no implementation for this OS");
     _ = disk;
 
     var fsd: StatFs = undefined;
@@ -68,6 +73,45 @@ pub export fn get_fs_usage(
         @bitCast(fsd.f_frsize)
     else
         @bitCast(fsd.f_bsize);
+    fsp.fsu_blocks = fsd.f_blocks;
+    fsp.fsu_bfree = fsd.f_bfree;
+    fsp.fsu_bavail = fsd.f_bavail;
+    fsp.fsu_bavail_top_bit_set = (fsd.f_bavail >> 63) != 0;
+    fsp.fsu_files = fsd.f_files;
+    fsp.fsu_ffree = fsd.f_ffree;
+    return 0;
+}
+
+// Darwin x86_64 struct statfs (the fields get_fs_usage reads; the
+// trailing name arrays are omitted since the layout is not needed).
+const StatFsDarwin = extern struct {
+    f_bsize: u32,
+    f_iosize: i32,
+    f_blocks: u64,
+    f_bfree: u64,
+    f_bavail: u64,
+    f_files: u64,
+    f_ffree: u64,
+    f_fsid: [2]i32,
+    f_owner: u32,
+    f_type: u32,
+    f_flags: u32,
+    f_fssubtype: u32,
+    f_fsize: u32,
+    f_reserved: [2]u32,
+};
+
+extern "c" fn statfs(path: [*:0]const u8, buf: *anyopaque) c_int;
+
+fn getFsUsageDarwin(file: [*:0]const u8, fsp: *FsUsage) c_int {
+    // statfs fills the entire macOS struct (the trailing mount-name
+    // arrays add ~2 KiB), so back the leading-field layout with a
+    // padded buffer instead of an undersized stack struct.
+    var raw: [4096]u8 align(16) = undefined;
+    if (statfs(file, &raw) != 0)
+        return -1;
+    const fsd: *const StatFsDarwin = @ptrCast(&raw);
+    fsp.fsu_blocksize = fsd.f_bsize;
     fsp.fsu_blocks = fsd.f_blocks;
     fsp.fsu_bfree = fsd.f_bfree;
     fsp.fsu_bavail = fsd.f_bavail;
