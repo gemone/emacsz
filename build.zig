@@ -1020,6 +1020,12 @@ pub fn build(b: *std.Build) void {
             "-std=gnu2x",
             "-fno-common",
         "-fno-strict-aliasing",
+            // The fixnum range macros compare int/long values against the
+            // 61-bit fixnum bounds; on the LLP64 ABI those comparisons are
+            // provably true and clang flags them.  They are intentional
+            // (EMACS_INT is 64-bit long long on Windows) and harmless.
+            "-Wno-tautological-constant-out-of-range-compare",
+            "-Wno-initializer-overrides",
             "-D_GNU_SOURCE",
             "-DHAVE_CONFIG_H",
             "-I.",
@@ -1051,6 +1057,8 @@ pub fn build(b: *std.Build) void {
             "-std=gnu2x",
             "-fno-common",
         "-fno-strict-aliasing",
+            "-Wno-tautological-constant-out-of-range-compare",
+            "-Wno-initializer-overrides",
             "-D_GNU_SOURCE",
             "-DHAVE_CONFIG_H",
             "-I.",
@@ -1061,6 +1069,20 @@ pub fn build(b: *std.Build) void {
         };
 
         for (libgnu_sources) |src| {
+            // Modules omitted on Windows (nt/gnulib-cfg.mk): w32.c or the
+            // Zig packages already provide these, and the gnulib versions
+            // clash with nt/inc or duplicate symbols at link time.
+            if (std.mem.eql(u8, src, "lib/fcntl.c") or
+                std.mem.eql(u8, src, "lib/allocator.c") or
+                std.mem.eql(u8, src, "lib/canonicalize-lgpl.c") or
+                std.mem.eql(u8, src, "lib/copy-file-range.c") or
+                std.mem.eql(u8, src, "lib/dirfd.c") or
+                std.mem.eql(u8, src, "lib/free.c") or
+                std.mem.eql(u8, src, "lib/issymlink.c") or
+                std.mem.eql(u8, src, "lib/issymlinkat.c") or
+                std.mem.eql(u8, src, "lib/malloc.c") or
+                std.mem.eql(u8, src, "lib/realloc.c"))
+                continue;
             exe.root_module.addCSourceFile(.{
                 .file = b.path(src),
                 .flags = libgnu_flags,

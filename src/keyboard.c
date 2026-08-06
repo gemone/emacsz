@@ -12129,7 +12129,7 @@ Only 'input_event' slots KIND and ARG are set.  */)
      : EQ (XCAR (event), Qfile_notify) ? FILE_NOTIFY_EVENT
 #endif /* USE_FILE_NOTIFY */
      : EQ (XCAR (event), Qconfig_changed_event) ? CONFIG_CHANGED_EVENT
-#if defined (WINDOWSNT)
+#if defined (WINDOWSNT) && defined (HAVE_NTGUI)
      : EQ (XCAR (event), Qlanguage_change) ? LANGUAGE_CHANGE_EVENT
 #endif
      : EQ (XCAR (event), Qfocus_in) ? FOCUS_IN_EVENT

@@ -4735,8 +4735,10 @@ use the Bourne shell command 'TERM=...; export TERM' (C-shell:\n\
     FrameCols (tty) = width;
     tty->specified_window = height;
 
+#ifdef HAVE_WINDOW_SYSTEM
     FRAME_VERTICAL_SCROLL_BAR_TYPE (f) = vertical_scroll_bar_none;
     FRAME_HAS_HORIZONTAL_SCROLL_BARS (f) = 0;
+#endif
     tty->char_ins_del_ok = 1;
     baud_rate = 19200;
   }
