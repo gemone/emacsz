@@ -2,22 +2,37 @@
 // (lib/tempname.c + lib/mkostemp.c): gen_tempname / gen_tempname_len /
 // mkostemp, backing `make-temp-file', filelock and call-process
 // temporary files. Randomness comes from getrandom(GRND_NONBLOCK) with
-// the same low-quality clock-mix fallback; name probes use raw syscalls
-// (openat O_CREAT|O_EXCL, mkdir, newfstatat); errno is set on failure
-// exactly as the C code does (callers such as filelock read it).
+// the same low-quality clock-mix fallback (arc4random_buf on Darwin);
+// name probes use raw syscalls on Linux (openat O_CREAT|O_EXCL, mkdir,
+// newfstatat) and libc open/mkdir/lstat on Darwin; errno is set on
+// failure exactly as the C code does (callers such as filelock read it).
 
 const std = @import("std");
 const linux = std.os.linux;
 const builtin = @import("builtin");
 
-comptime {
-    if (builtin.os.tag != .linux)
-        @compileError("gnulib-tempname: raw-syscall tempname is Linux-only for now");
+fn isDarwin(tag: std.Target.Os.Tag) bool {
+    return switch (tag) {
+        .macos, .ios, .tvos, .watchos, .visionos, .driverkit, .maccatalyst => true,
+        else => false,
+    };
 }
 
 // glibc/musl errno location; temacs links libc, so the symbol resolves
 // at final link even though this module itself does not link libc.
 extern fn __errno_location() *c_int;
+// macOS exposes the same thread-local via __error.
+extern "c" fn __error() *c_int;
+extern "c" fn open(path: [*:0]const u8, flags: c_int, mode: c_int) c_int;
+extern "c" fn mkdir(path: [*:0]const u8, mode: c_int) c_int;
+extern "c" fn lstat(path: [*:0]const u8, buf: *anyopaque) c_int;
+extern "c" fn arc4random_buf(buf: [*]u8, len: usize) void;
+
+fn errnoLocation() *c_int {
+    if (comptime isDarwin(builtin.os.tag))
+        return __error();
+    return __errno_location();
+}
 
 const GT_FILE: c_int = 0;
 const GT_DIR: c_int = 1;
@@ -37,13 +52,13 @@ const ENOENT: c_int = 2;
 const EOVERFLOW: c_int = 75;
 const GRND_NONBLOCK: u32 = 1;
 
-const O_ACCMODE: u32 = 3;
-const O_RDWR: u32 = 2;
-const O_CREAT: u32 = 0x40;
-const O_EXCL: u32 = 0x80;
+const O_ACCMODE: c_int = 3;
+const O_RDWR: c_int = 2;
+const O_CREAT: c_int = if (isDarwin(builtin.os.tag)) 0x200 else 0x40;
+const O_EXCL: c_int = if (isDarwin(builtin.os.tag)) 0x800 else 0x80;
 
 fn setErrno(e: c_int) void {
-    __errno_location().* = e;
+    errnoLocation().* = e;
 }
 
 inline fn mixRandomValues(r: u64, s: u64) u64 {
@@ -53,6 +68,14 @@ inline fn mixRandomValues(r: u64, s: u64) u64 {
 // Set *R to a random value; return true when it came from getrandom
 // (high quality), false for the clock-based ersatz fallback.
 fn randomBits(r: *u64, s: u64) bool {
+    if (comptime isDarwin(builtin.os.tag)) {
+        var buf: [8]u8 = undefined;
+        arc4random_buf(&buf, buf.len);
+        r.* = std.mem.readInt(u64, &buf, .little);
+        return true; // arc4random never fails: always high quality
+    }
+    if (builtin.os.tag != .linux)
+        @compileError("gnulib-tempname: no implementation for this OS");
     var buf: [8]u8 = undefined;
     if (linux.getrandom(&buf, 8, GRND_NONBLOCK) == 8) {
         r.* = std.mem.readInt(u64, &buf, .little);
@@ -71,7 +94,14 @@ fn randomBits(r: *u64, s: u64) bool {
 const TryResult = struct { rc: c_int, err: c_int };
 
 fn tryFile(tmpl: [*:0]const u8, flags: c_int) TryResult {
-    const f: u32 = (@as(u32, @bitCast(flags)) & ~O_ACCMODE) | O_RDWR | O_CREAT | O_EXCL;
+    if (comptime isDarwin(builtin.os.tag)) {
+        const f: c_int = (flags & ~O_ACCMODE) | O_RDWR | O_CREAT | O_EXCL;
+        const r = open(tmpl, f, 0o600);
+        if (r >= 0) return .{ .rc = r, .err = 0 };
+        return .{ .rc = -1, .err = errnoLocation().* };
+    }
+    // Same int arithmetic as the C try_file, then bitcast for the raw syscall.
+    const f: u32 = @bitCast((flags & ~O_ACCMODE) | O_RDWR | O_CREAT | O_EXCL);
     const raw = linux.openat(linux.AT.FDCWD, tmpl, @bitCast(f), 0o600);
     const r = @as(isize, @bitCast(raw));
     if (r >= 0) return .{ .rc = @intCast(r), .err = 0 };
@@ -79,12 +109,28 @@ fn tryFile(tmpl: [*:0]const u8, flags: c_int) TryResult {
 }
 
 fn tryDir(tmpl: [*:0]const u8, _: c_int) TryResult {
+    if (comptime isDarwin(builtin.os.tag)) {
+        if (mkdir(tmpl, 0o700) == 0) return .{ .rc = 0, .err = 0 };
+        return .{ .rc = -1, .err = errnoLocation().* };
+    }
     const raw = linux.mkdir(tmpl, 0o700);
     if (raw == 0) return .{ .rc = 0, .err = 0 };
     return .{ .rc = -1, .err = @intCast(-@as(isize, @bitCast(raw))) };
 }
 
 fn tryNocreate(tmpl: [*:0]const u8, _: c_int) TryResult {
+    if (comptime isDarwin(builtin.os.tag)) {
+        // lstat only to test existence; EOVERFLOW still means "exists".
+        var st: [512]u8 = undefined;
+        const r = lstat(tmpl, &st);
+        if (r == 0 or errnoLocation().* == EOVERFLOW) {
+            errnoLocation().* = EEXIST;
+            return .{ .rc = -1, .err = EEXIST };
+        }
+        const e = errnoLocation().*;
+        if (e == ENOENT) return .{ .rc = 0, .err = 0 };
+        return .{ .rc = -1, .err = e };
+    }
     // lstat via newfstatat + AT_SYMLINK_NOFOLLOW; only the result matters.
     var st: [512]u8 = undefined;
     const raw = linux.syscall4(
@@ -107,7 +153,7 @@ fn tryTempnameLen(
     kind: c_int,
     x_suffix_len: usize,
 ) c_int {
-    const saved_errno = __errno_location().*;
+    const saved_errno = errnoLocation().*;
 
     const len = std.mem.len(tmpl);
     if (suffixlen < 0) {

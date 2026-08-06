@@ -577,13 +577,15 @@ pub fn build(b: *std.Build) void {
     // providing gnulib's temporary-name generation (gen_tempname /
     // gen_tempname_len / mkostemp, lib/tempname.c + lib/mkostemp.c),
     // backing `make-temp-file', filelock and call-process temp files.
-    // getrandom with the clock-mix fallback, raw openat/mkdir/newfstatat
-    // syscalls, errno set on failure as the C code does. No libc call.
-    // Built ReleaseFast (leaf generation).
+    // getrandom with the clock-mix fallback (arc4random_buf on Darwin),
+    // raw openat/mkdir/newfstatat syscalls on Linux and libc
+    // open/mkdir/lstat on Darwin, errno set on failure as the C code
+    // does. Built ReleaseFast (leaf generation).
     const gnulib_tempname_mod = b.createModule(.{
         .root_source_file = b.dependency("gnulib_tempname", .{}).path("src/tempname.zig"),
         .target = target,
         .optimize = .ReleaseFast,
+        .link_libc = true, // Darwin backend uses libc open/mkdir/lstat
     });
     const gnulib_tempname_lib =
         b.addLibrary(.{ .name = "gnulib-tempname", .root_module = gnulib_tempname_mod });
@@ -592,13 +594,14 @@ pub fn build(b: *std.Build) void {
     // gnulib-fsusage: an independent Zig package (tools/gnulib-fsusage)
     // providing gnulib's file-system space query (get_fs_usage,
     // lib/fsusage.c), backing `file-system-info'. Reads statfs(2) via a
-    // raw syscall and maps the fields into the gnulib struct fs_usage,
-    // with errno set on failure (fileio.c tests ENOSYS). No libc call.
-    // Built ReleaseFast (leaf query).
+    // raw syscall on Linux and maps the fields into the gnulib struct
+    // fs_usage, with errno set on failure (fileio.c tests ENOSYS); the
+    // Darwin backend uses libc statfs. Built ReleaseFast (leaf query).
     const gnulib_fsusage_mod = b.createModule(.{
         .root_source_file = b.dependency("gnulib_fsusage", .{}).path("src/fsusage.zig"),
         .target = target,
         .optimize = .ReleaseFast,
+        .link_libc = true, // Darwin backend uses libc statfs
     });
     const gnulib_fsusage_lib =
         b.addLibrary(.{ .name = "gnulib-fsusage", .root_module = gnulib_fsusage_mod });
