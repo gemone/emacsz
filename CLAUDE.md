@@ -51,11 +51,12 @@ This repository contains GNU Emacs with an ongoing effort to modernize the build
   `tools/gnulib-io` (`close_stream`, `set_binary_mode`, `rpl_pipe2`,
   the remaining live I/O wrappers backing exit-time flush,
   `emacs_pipe` and `set-binary-mode`, with raw Linux pipe/fcntl
-  syscalls). The remaining live gnulib C objects are the
-  `time_r`/`timegm`/`mktime` internals backing the time conversions
-  (libc-local); the rest of lib/*.c is empty on glibc or unexercised
-  by Emacs. Deeper libc decoupling (file-I/O, time modules) is
-  ongoing.
+  syscalls). No live gnulib C objects remain: every lib/*.c symbol
+  that Emacs uses is either provided by a Zig package or binds
+  directly to libc (the time conversions use glibc's localtime_r /
+  gmtime_r / timegm / mktime). The rest of lib/*.c is empty on glibc
+  or unexercised by Emacs. Deeper libc decoupling (file-I/O, time
+  modules) is ongoing.
 - **Goal 3 — Runnable on Linux: ✅ Done.** The final image is
   byte-compiled: `zig build dump` (source bootstrap) →
   `zig build compile-lisp` → `zig build dump-compiled`; `zig build check`
