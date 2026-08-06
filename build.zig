@@ -967,21 +967,10 @@ pub fn build(b: *std.Build) void {
             "-I/usr/include/libxml2",
         };
 
-        // lib/mktime.c is compiled in the 92-file libgnu set, but its body is
-        // #if'd out unless -DNEED_MKTIME_INTERNAL=1 is set per-file (Autotools
-        // passes this on the mktime.o compile line, NOT via config.h). lib/
-        // mktime-internal.h:72 renames __mktime_internal -> mktime_internal
-        // when !_LIBC, so timegm.o references mktime_internal; without the
-        // flag the symbol is left undefined. DO NOT add -DNEED_MKTIME_WORKING
-        // (it would rename mktime -> rpl_mktime and break other callers).
-        const libgnu_mktime_flags = libgnu_flags ++ [_][]const u8{ "-DNEED_MKTIME_INTERNAL=1" };
-
         for (libgnu_sources) |src| {
-            const flags: []const []const u8 =
-                if (std.mem.eql(u8, src, "lib/mktime.c")) libgnu_mktime_flags else libgnu_flags;
             exe.root_module.addCSourceFile(.{
                 .file = b.path(src),
-                .flags = flags,
+                .flags = libgnu_flags,
             });
         }
     } else {
@@ -1782,6 +1771,16 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // temacs below (time-zone conversions in timefns.c, %Z in
         // nstrftime.c).
         "time_rz",
+        // lib/time_r.c, lib/timegm.c and lib/mktime.c are the last live
+        // gnulib C objects; the gnulib-time-rz package's localtime_r /
+        // gmtime_r / timegm externs now bind directly to libc (glibc
+        // exports all three), and nothing else references
+        // mktime_internal. Excluded here so the C sources are not
+        // compiled; the time conversions in src and the Zig package use
+        // libc's versions.
+        "time_r",
+        "timegm",
+        "mktime",
         // lib/close-stream.c, lib/binary-io.c, lib/pipe2.c are provided
         // by an independent Zig package (tools/gnulib-io, dependency
         // `gnulib_io`) -- native Zig close_stream / set_binary_mode /
