@@ -587,6 +587,20 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-filemode", .root_module = gnulib_filemode_mod });
     exe.root_module.linkLibrary(gnulib_filemode_lib);
 
+    // gnulib-timespec: an independent Zig package (tools/gnulib-timespec)
+    // providing gnulib's timespec arithmetic (dtotimespec / timespec_add /
+    // timespec_sub, lib/dtotimespec.c + lib/timespec-add.c +
+    // lib/timespec-sub.c), with saturated clamping on time_t overflow.
+    // Pure arithmetic with no libc call. Built ReleaseFast (leaf math).
+    const gnulib_timespec_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_timespec", .{}).path("src/timespec.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const gnulib_timespec_lib =
+        b.addLibrary(.{ .name = "gnulib-timespec", .root_module = gnulib_timespec_mod });
+    exe.root_module.linkLibrary(gnulib_timespec_lib);
+
     // emacs-time: an independent Zig package (tools/emacs-time) providing
     // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
     // would otherwise provide, via per-platform NATIVE backends with no libc:
@@ -1418,6 +1432,16 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // symbols are linked into temacs below (file-attributes string
         // mode element, dired).
         "filemode",
+        // lib/dtotimespec.c, lib/timespec-add.c and lib/timespec-sub.c are
+        // provided by an independent Zig package (tools/gnulib-timespec,
+        // dependency `gnulib_timespec`) -- native Zig double->timespec
+        // conversion and saturating timespec add/sub. Excluded by exact
+        // name so lib/timespec.c (the make_timespec/timespec_cmp extern
+        // inline definitions) still compiles; the package's exported
+        // symbols are linked into temacs below.
+        "dtotimespec",
+        "timespec-add",
+        "timespec-sub",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native

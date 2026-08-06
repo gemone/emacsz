@@ -68,6 +68,14 @@
         .gnulib_filemode = .{
             .path = "tools/gnulib-filemode",
         },
+        // gnulib-timespec: gnulib's timespec arithmetic (dtotimespec,
+        // timespec_add, timespec_sub; lib/dtotimespec.c, lib/timespec-add.c,
+        // lib/timespec-sub.c) provided by an independent Zig package
+        // instead of C. Pure arithmetic; no libc call. Linked into temacs
+        // (backs sit-for/sleep timeouts and gc timing).
+        .gnulib_timespec = .{
+            .path = "tools/gnulib-timespec",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw
