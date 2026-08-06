@@ -713,12 +713,14 @@ pub fn build(b: *std.Build) void {
     // variants) filtered by is_attr_permissions (hardcoded ACL names +
     // /etc/xattr.conf `permissions' actions), and the fdfile_has_aclinfo
     // EOPNOTSUPP diagnostic (Bug#78328) via listxattr probes. Non-Linux
-    // targets fall back to mode-bit preservation via libc. Built
-    // ReleaseFast (leaf copy operation).
+    // targets fall back to mode-bit preservation via libc (Windows
+    // emulates fchmod through the CRT handle + SetFileInformationByHandle).
+    // Built ReleaseFast (leaf copy operation).
     const gnulib_acl_mod = b.createModule(.{
         .root_source_file = b.dependency("gnulib_acl", .{}).path("src/acl.zig"),
         .target = target,
         .optimize = .ReleaseFast,
+        .link_libc = true, // non-Linux chmod/fchmod fallback
     });
     const gnulib_acl_lib =
         b.addLibrary(.{ .name = "gnulib-acl", .root_module = gnulib_acl_mod });

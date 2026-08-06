@@ -18,7 +18,9 @@
 //! the chmod_or_fchmod above suffices and no error is reported.
 //!
 //! Non-Linux targets fall back to mode-bit preservation via libc
-//! chmod/fchmod; xattr ACL copying is Linux-only for now.
+//! chmod/fchmod (on Windows fchmod is emulated through the CRT handle
+//! and SetFileInformationByHandle, since mingw has no fchmod); xattr
+//! ACL copying is Linux-only for now.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -98,14 +100,63 @@ pub export fn qcopy_acl(
 
     // Non-Linux: no xattr ACL support; set the mode bits only (gnulib's
     // non-XATTR path reduces to chmod_or_fchmod when the source has no
-    // ACLs).  Uses libc chmod/fchmod; errno is set by libc.
+    // ACLs).  Uses libc chmod/fchmod; errno is set by libc.  On Windows
+    // the fd variant goes through the CRT (mingw lacks fchmod).
     if (dest_desc != -1)
-        return fchmod(dest_desc, mode);
+        return if (comptime builtin.os.tag == .windows)
+            fchmodWindows(dest_desc, mode)
+        else
+            fchmod(dest_desc, mode);
     return chmod(dst_name, mode);
 }
 
 extern "c" fn chmod(path: [*:0]const u8, mode: mode_t) c_int;
 extern "c" fn fchmod(fd: c_int, mode: mode_t) c_int;
+
+// Windows fchmod emulation: the CRT _get_osfhandle plus
+// SetFileInformationByHandle(FILE_BASIC_INFO), toggling the read-only
+// attribute exactly as _chmod does for a path.
+extern "c" fn _get_osfhandle(fd: c_int) ?*anyopaque;
+extern "c" fn SetFileInformationByHandle(
+    h: ?*anyopaque,
+    class: u32,
+    info: *anyopaque,
+    len: u32,
+) c_int;
+extern "c" fn _errno() *c_int;
+
+const FileBasicInfo = extern struct {
+    creation_time: i64,
+    last_access_time: i64,
+    last_write_time: i64,
+    change_time: i64,
+    file_attributes: u32,
+    pad: u32,
+};
+
+const FileBasicInfoClass: u32 = 0; // FileBasicInfo
+const FILE_ATTRIBUTE_READONLY: u32 = 0x1;
+
+fn fchmodWindows(fd: c_int, mode: mode_t) c_int {
+    const h = _get_osfhandle(fd);
+    const invalid: ?*anyopaque = @ptrFromInt(~@as(usize, 0));
+    if (h == invalid)
+        return -1; // CRT set errno
+    var info: FileBasicInfo = undefined;
+    if (SetFileInformationByHandle(h, FileBasicInfoClass, &info, @sizeOf(FileBasicInfo)) == 0) {
+        _errno().* = EINVAL;
+        return -1;
+    }
+    if (mode & 0o222 != 0)
+        info.file_attributes &= ~FILE_ATTRIBUTE_READONLY
+    else
+        info.file_attributes |= FILE_ATTRIBUTE_READONLY;
+    if (SetFileInformationByHandle(h, FileBasicInfoClass, &info, @sizeOf(FileBasicInfo)) == 0) {
+        _errno().* = EINVAL;
+        return -1;
+    }
+    return 0;
+}
 
 fn qcopyAclLinux(
     src_name: [*:0]const u8,
