@@ -94,10 +94,11 @@ Generated data (gitignored, required by dump/check): run
 `generate-cedet-grammars` once, and `generate-loaddefs` after every
 `dump`/`dump-compiled` (check steps regenerate loaddefs themselves).
 
-`zig build` is the single entry point — there is **no `make` and no
-manual `./configure` step**. The first `zig build` in a fresh checkout
-runs `./configure` (slow, one-time) to produce `src/config.h`; later
-builds skip it (guarded on `src/config.h` existence).
+`zig build` is the single entry point — there is **no `make`, no
+`./configure`, and no shell step**: `src/config.h` comes from the
+committed template + values through the `gen-config` Zig tool, and the
+dump/loaddefs/compile/smoke/check/check-all pipeline runs through native
+Zig tools.
 
 ### Bootstrap data for `dump`/`check`
 `zig build dump` and `zig build check` need generated charset + unicode
@@ -210,9 +211,10 @@ High-value targets for Zig stdlib migration:
 4. Time functions (`lib/time*.c`) → `std.time`
 
 ### Build System Migration Strategy
-1. `zig build` is the single source of truth — it self-configures (runs
-   `./configure` as a build step for `src/config.h`) and performs all
-   compile/link. There is no `make` and no separate `./configure` step.
+1. `zig build` is the single source of truth — it self-configures
+   (`src/config.h` from `src/config.h.in` + `src/config_values.txt` via
+   the pure-Zig `gen-config` tool) and performs all compile/link. There
+   is no `make`, no `./configure`, and no shell step.
 2. Generated headers (`config.h`, `globals.h`, `epaths.h`, the `.gl.h`)
    are produced at build time by zig-owned generators; never commit
    autoconf-generated artifacts (`config.h`, `config.in`, Makefiles).
