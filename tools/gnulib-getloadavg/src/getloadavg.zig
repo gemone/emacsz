@@ -1,16 +1,19 @@
-// Native Zig implementation of gnulib's lib/getloadavg.c on Linux:
-// getloadavg reads the 1/5/15-minute load averages via the sysinfo(2)
-// raw syscall and converts the fixed-point loads (1/65536 scale) to
-// doubles. Backs `load-average' in src/fns.c. No libc call; errno is
-// set on failure as the C code leaves it.
+// Native Zig implementation of gnulib's lib/getloadavg.c: getloadavg
+// reads the 1/5/15-minute load averages. Backs `load-average' in
+// src/fns.c.
+//   Linux  -> sysinfo(2) raw syscall (fixed-point 1/65536 loads).
+//   Darwin -> libc getloadavg(3) (macOS's stable ABI).
+// No libc call on Linux; errno is set on failure as the C code leaves it.
 
 const std = @import("std");
 const linux = std.os.linux;
 const builtin = @import("builtin");
 
-comptime {
-    if (builtin.os.tag != .linux)
-        @compileError("gnulib-getloadavg: sysinfo-based implementation is Linux-only for now");
+fn isDarwin(tag: std.Target.Os.Tag) bool {
+    return switch (tag) {
+        .macos, .ios, .tvos, .watchos, .visionos, .driverkit, .maccatalyst => true,
+        else => false,
+    };
 }
 
 extern fn __errno_location() *c_int;
@@ -43,6 +46,14 @@ comptime {
 // Put the 1-, 5- and 15-minute load averages into LOADAVG[0..2].
 // Return the number written (3), or -1 with errno set on failure.
 pub export fn getloadavg(loadavg: [*]f64, nelem: c_int) c_int {
+    if (comptime isDarwin(builtin.os.tag))
+        return c_getloadavg(loadavg, nelem);
+    if (builtin.os.tag != .linux)
+        @compileError("gnulib-getloadavg: no implementation for this OS");
+    return getloadavgLinux(loadavg, nelem);
+}
+
+fn getloadavgLinux(loadavg: [*]f64, nelem: c_int) c_int {
     _ = nelem;
 
     var info: Sysinfo = undefined;
@@ -59,3 +70,5 @@ pub export fn getloadavg(loadavg: [*]f64, nelem: c_int) c_int {
     loadavg[2] = @as(f64, @floatFromInt(info.loads[2])) / 65536.0;
     return 3;
 }
+
+extern "c" fn c_getloadavg(loadavg: [*]f64, nelem: c_int) c_int;

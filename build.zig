@@ -614,6 +614,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.dependency("gnulib_getloadavg", .{}).path("src/getloadavg.zig"),
         .target = target,
         .optimize = .ReleaseFast,
+        .link_libc = true, // Darwin backend uses libc getloadavg
     });
     const gnulib_getloadavg_lib =
         b.addLibrary(.{ .name = "gnulib-getloadavg", .root_module = gnulib_getloadavg_mod });
