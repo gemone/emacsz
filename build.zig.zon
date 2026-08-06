@@ -137,6 +137,13 @@
         .gnulib_dtoastr = .{
             .path = "tools/gnulib-dtoastr",
         },
+        // gnulib-stat-time: gnulib's struct stat timestamp accessors
+        // (get_stat_atime/mtime/ctime[/ns], lib/stat-time.c) provided by
+        // an independent Zig package instead of C. Pure struct reads; no
+        // libc call. Linked into temacs (backs `file-attributes' times).
+        .gnulib_stat_time = .{
+            .path = "tools/gnulib-stat-time",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw

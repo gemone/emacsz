@@ -1,0 +1,12 @@
+.{
+    .name = .gnulib_stat_time,
+    .fingerprint = 0x20420ea66c7f9114,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/stat_time.zig",
+    },
+}

@@ -724,6 +724,20 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-dtoastr", .root_module = gnulib_dtoastr_mod });
     exe.root_module.linkLibrary(gnulib_dtoastr_lib);
 
+    // gnulib-stat-time: an independent Zig package (tools/gnulib-stat-time)
+    // providing gnulib's struct stat timestamp accessors (get_stat_atime /
+    // mtime / ctime and ns variants, lib/stat-time.c), backing
+    // `file-attributes' time elements. Pure struct reads with no libc
+    // call. Built ReleaseFast (leaf accessor).
+    const gnulib_stat_time_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_stat_time", .{}).path("src/stat_time.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const gnulib_stat_time_lib =
+        b.addLibrary(.{ .name = "gnulib-stat-time", .root_module = gnulib_stat_time_mod });
+    exe.root_module.linkLibrary(gnulib_stat_time_lib);
+
     // emacs-time: an independent Zig package (tools/emacs-time) providing
     // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
     // would otherwise provide, via per-platform NATIVE backends with no libc:
@@ -1622,6 +1636,13 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // here so the C source is not compiled; the package's exported
         // symbol is linked into temacs below (float printing).
         "dtoastr",
+        // lib/stat-time.c is provided by an independent Zig package
+        // (tools/gnulib-stat-time, dependency `gnulib_stat_time`) --
+        // native Zig struct stat timestamp accessors (get_stat_*).
+        // Excluded here so the C source is not compiled; the package's
+        // exported symbols are linked into temacs below
+        // (`file-attributes' time elements).
+        "stat-time",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native
