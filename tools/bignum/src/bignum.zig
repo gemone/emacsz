@@ -192,8 +192,12 @@ fn magSub(z: *mpz_t, a: *const mpz_t, b: *const mpz_t) void {
 
 // Compare |a| and |b|: negative when |a| < |b|, etc.
 fn magCmp(a: *const mpz_t, b: *const mpz_t) c_int {
-    const an = limbCount(a);
-    const bn = limbCount(b);
+    // Skip leading zero limbs so an unnormalized operand (e.g. one built
+    // via mpz_limbs_finish with a zero top limb) compares by value.
+    var an = limbCount(a);
+    var bn = limbCount(b);
+    while (an > 0 and a._mp_d.?[an - 1] == 0) an -= 1;
+    while (bn > 0 and b._mp_d.?[bn - 1] == 0) bn -= 1;
     if (an != bn) return if (an < bn) -1 else 1;
     var i = an;
     while (i > 0) {
@@ -1219,7 +1223,19 @@ pub export fn mpz_limbs_write(rop: *mpz_t, n: mp_size_t) ?[*]mp_limb_t {
 // Commit a limb array written through mpz_limbs_write: SIZE is the signed
 // limb count (GMP trusts the caller, so no trimming happens here).
 pub export fn mpz_limbs_finish(rop: *mpz_t, size: mp_size_t) void {
-    rop._mp_size = @intCast(size);
+    // GMP's mpz_limbs_finish trusts the caller's size; Emacs's random
+    // bignum path can pass a count whose top limb is zero. Normalize so
+    // every subsequent operation sees a canonical representation.
+    const neg = size < 0;
+    var n: usize = if (neg) @intCast(-size) else @intCast(size);
+    if (rop._mp_d) |d| {
+        while (n > 0 and d[n - 1] == 0) n -= 1;
+    }
+    if (n == 0) {
+        rop._mp_size = 0;
+        return;
+    }
+    rop._mp_size = if (neg) -@as(c_int, @intCast(n)) else @as(c_int, @intCast(n));
 }
 
 // Point X at the read-only limb array XP without allocating; the returned
@@ -1730,6 +1746,32 @@ test "mpz fdiv_q_2exp floor semantics" {
     mpz_set_si(&a, -8);
     mpz_fdiv_q_2exp(&r, &a, 1);
     try std.testing.expectEqual(@as(i64, -4), mpz_get_si(&r));
+}
+
+test "mpz sub with an unnormalized leading-zero-limb operand" {
+    // Emacs's get_random_bignum finishes a 2-limb buffer whose top limb
+    // can be zero; the value must still compare and subtract by value.
+    var z: mpz_t = undefined;
+    var n: mpz_t = undefined;
+    var half: mpz_t = undefined;
+    mpz_init(&z);
+    mpz_init(&n);
+    mpz_init(&half);
+    defer mpz_clear(&z);
+    defer mpz_clear(&n);
+    defer mpz_clear(&half);
+
+    const limbs = mpz_limbs_write(&n, 2).?;
+    limbs[0] = 8554759657629807981;
+    limbs[1] = 0; // phantom leading zero limb, as the random path can leave
+    mpz_limbs_finish(&n, 2);
+    try std.testing.expectEqual(@as(isize, 1), mpz_size(&n));
+
+    mpz_set_ui(&half, 9223372036854775808); // 2^63
+    mpz_sub(&z, &n, &half);
+    try std.testing.expectEqual(@as(i64, -668612379224967827), mpz_get_si(&z));
+    mpz_sub(&z, &half, &n);
+    try std.testing.expectEqual(@as(i64, 668612379224967827), mpz_get_si(&z));
 }
 
 test "mpz tdiv fdiv cdiv signed small cases" {
