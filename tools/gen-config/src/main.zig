@@ -21,30 +21,52 @@ const std = @import("std");
 // Optional system-library features disabled for targets where the
 // library is unavailable or not part of the milestone build. The
 // bignum rewrite already removed the gmp dependency on every target.
-const musl_overrides = [_][]const u8{
-    "HAVE_GNUTLS",
-    "HAVE_LIBXML2",
-    "HAVE_LCMS2",
-    "HAVE_SQLITE3",
-    "HAVE_TREE_SITTER",
-    "HAVE_ALSA",
-    "HAVE_GPM",
-    "HAVE_DBUS",
-    "HAVE_ZLIB",
+const Override = struct { name: []const u8, value: []const u8 = "" };
+
+const musl_overrides: []const Override = &.{
+    .{ .name = "HAVE_GNUTLS" },
+    .{ .name = "HAVE_LIBXML2" },
+    .{ .name = "HAVE_LCMS2" },
+    .{ .name = "HAVE_SQLITE3" },
+    .{ .name = "HAVE_TREE_SITTER" },
+    .{ .name = "HAVE_ALSA" },
+    .{ .name = "HAVE_GPM" },
+    .{ .name = "HAVE_DBUS" },
+    .{ .name = "HAVE_ZLIB" },
 };
 
 // Windows additionally drops the POSIX-only subsystems that need mingw
-// ports of the same libraries.
-const windows_overrides = [_][]const u8{
-    "HAVE_GNUTLS",
-    "HAVE_LIBXML2",
-    "HAVE_LCMS2",
-    "HAVE_SQLITE3",
-    "HAVE_TREE_SITTER",
-    "HAVE_ALSA",
-    "HAVE_GPM",
-    "HAVE_DBUS",
-    "HAVE_ZLIB",
+// ports of the same libraries, and switches the config to the native
+// Windows system (WINDOWSNT pulls in src/ms-w32.h via conf_post.h). The
+// HAVE_* values below mirror what a --with-w32 configure run yields:
+// w32.c provides fstatat/lstat/getuid/etc., lib/getrandom.c provides
+// getrandom over BCryptGenRandom, and the mingw toolchain supplies
+// UINTPTR_WIDTH/UCHAR_WIDTH from the C23 <stdint.h>/<limits.h> only on
+// glibc, so they are pinned here. The HAVE_DECL_* undefs let
+// src/conf_post.h declare getdelim/getline and keep lib/getdelim.c on
+// the plain getc path (mingw has no getc_unlocked).
+const windows_overrides: []const Override = &.{
+    .{ .name = "HAVE_GNUTLS" },
+    .{ .name = "HAVE_LIBXML2" },
+    .{ .name = "HAVE_LCMS2" },
+    .{ .name = "HAVE_SQLITE3" },
+    .{ .name = "HAVE_TREE_SITTER" },
+    .{ .name = "HAVE_ALSA" },
+    .{ .name = "HAVE_GPM" },
+    .{ .name = "HAVE_DBUS" },
+    .{ .name = "HAVE_ZLIB" },
+    .{ .name = "WINDOWSNT", .value = "1" },
+    .{ .name = "HAVE_BCRYPT_H", .value = "1" },
+    .{ .name = "HAVE_LIB_BCRYPT", .value = "1" },
+    .{ .name = "UINTPTR_WIDTH", .value = "64" },
+    .{ .name = "UCHAR_WIDTH", .value = "8" },
+    .{ .name = "USE_UNLOCKED_IO" },
+    .{ .name = "HAVE_DECL_GETC_UNLOCKED" },
+    .{ .name = "HAVE_DECL_GETDELIM" },
+    .{ .name = "HAVE_DECL_GETLINE" },
+    .{ .name = "HAVE_STDBIT_H" },
+    .{ .name = "HAVE_SYS_RANDOM_H" },
+    .{ .name = "HAVE_EXECINFO_H" },
 };
 
 pub fn main(minimal: std.process.Init.Minimal) !void {
@@ -89,14 +111,14 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     if (target_tag) |tag| {
         const overrides = if (std.mem.eql(u8, tag, "musl"))
-            &musl_overrides
+            musl_overrides
         else if (std.mem.eql(u8, tag, "windows"))
-            &windows_overrides
+            windows_overrides
         else
             null;
         if (overrides) |list| {
-            for (list) |name| {
-                try config_values.put(name, "");
+            for (list) |ov| {
+                try config_values.put(ov.name, ov.value);
             }
         }
     }

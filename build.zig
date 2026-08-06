@@ -1009,6 +1009,13 @@ pub fn build(b: *std.Build) void {
         }
     } else {
         // Windows - without libxml2 include path
+        // Include order matters: lib/ holds the committed gnulib
+        // replacement headers (generated against glibc), lib/w32 holds
+        // shims for headers mingw lacks (alloca/stdbit/sys-random/
+        // byteswap/execinfo) so their include_next resolves, and nt/inc
+        // is upstream's native Windows header set (ms-w32.h pulls it in
+        // via conf_post.h once config.h defines WINDOWSNT).  The search
+        // order mirrors the autotools Windows build (-I../lib -I../nt/inc).
         const base_flags = &[_][]const u8{
             "-std=gnu2x",
             "-fno-common",
@@ -1018,6 +1025,8 @@ pub fn build(b: *std.Build) void {
             "-I.",
             "-Isrc",
             "-Ilib",
+            "-Ilib/w32",
+            "-Int/inc",
         };
 
         // src/timefns.c:monotonic_coarse_timespec is provided by the
@@ -1047,6 +1056,8 @@ pub fn build(b: *std.Build) void {
             "-I.",
             "-Isrc",
             "-Ilib",
+            "-Ilib/w32",
+            "-Int/inc",
         };
 
         for (libgnu_sources) |src| {
@@ -1055,6 +1066,13 @@ pub fn build(b: *std.Build) void {
                 .flags = libgnu_flags,
             });
         }
+
+        // Windows-only shim implementations (mingw lacks glibc's
+        // execinfo backtrace family).
+        exe.root_module.addCSourceFile(.{
+            .file = b.path("lib/w32/execinfo.c"),
+            .flags = libgnu_flags,
+        });
     }
 
     // Link system libraries (phase 2: based on src/Makefile)
@@ -1098,6 +1116,14 @@ pub fn build(b: *std.Build) void {
         // Terminal support only; the feature libs are undef'd in the musl
         // config and are not available as musl builds on this host yet.
         exe.root_module.linkSystemLibrary("ncurses", .{});
+    } else {
+        // Windows: getrandom (lib/getrandom.c) uses BCryptGenRandom;
+        // sockets and the console UI need ws2_32/kernel32/user32/gdi32.
+        exe.root_module.linkSystemLibrary("bcrypt", .{});
+        exe.root_module.linkSystemLibrary("ws2_32", .{});
+        exe.root_module.linkSystemLibrary("kernel32", .{});
+        exe.root_module.linkSystemLibrary("user32", .{});
+        exe.root_module.linkSystemLibrary("gdi32", .{});
     }
 
     // Install the executable
