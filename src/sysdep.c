@@ -2898,6 +2898,11 @@ emacs_perror (char const *message)
 char const *
 safe_strsignal (int code)
 {
+#ifndef HAVE_SIGDESCR_NP
+  /* glibc declares sigdescr_np in <string.h>; musl does not, and the
+     gnulib-sigdescr-np Zig package supplies the implementation.  */
+  extern const char *sigdescr_np (int);
+#endif
   char const *signame = sigdescr_np (code);
 
   if (! signame)

@@ -33,6 +33,19 @@ const musl_overrides: []const Override = &.{
     .{ .name = "HAVE_GPM" },
     .{ .name = "HAVE_DBUS" },
     .{ .name = "HAVE_ZLIB" },
+    // glibc-only features absent from musl; TERMINFO is dropped so
+    // src/termcap.c (compiled via TERMCAP_OBJ) supplies the terminal
+    // capabilities instead of ncurses; ACLs stay with the Zig package.
+    .{ .name = "TERMINFO" },
+    .{ .name = "TERMINFO_DEFINES_BC" },
+    .{ .name = "USE_ACL" },
+    .{ .name = "HAVE_ACL_GET_FILE" },
+    .{ .name = "HAVE_EXECINFO_H" },
+    .{ .name = "HAVE_GETADDRINFO_A" },
+    .{ .name = "HAVE_MALLOC_TRIM" },
+    .{ .name = "HAVE_RENAMEAT2" },
+    .{ .name = "HAVE_LANGINFO__NL_PAPER_WIDTH" },
+    .{ .name = "HAVE_SIGDESCR_NP" },
 };
 
 // Windows additionally drops the POSIX-only subsystems that need mingw
