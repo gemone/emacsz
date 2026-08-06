@@ -805,6 +805,29 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.linkLibrary(emacs_nanosleep_lib);
 
+    // emacs-bignum: the native Zig reimplementation of the GMP integer
+    // API subset Emacs's bignum support uses (src/bignum.c and the mpz_*
+    // call sites in data.c/print.c/lread.c/emacs-module.c/timefns.c/
+    // pdumper.c). Linked in place of -lgmp; tools/bignum/include/gmp.h
+    // shadows the system header so no GMP headers are needed on any
+    // target. Exports are C-ABI compatible with libgmp (64-bit limbs,
+    // same mpz_t layout, memory callbacks via mp_set_memory_functions).
+    const bignum_mod = b.createModule(.{
+        .root_source_file = b.dependency("bignum", .{})
+            .path("src/bignum.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .link_libc = true, // C ABI exports (size_t, callbacks)
+    });
+    const bignum_lib = b.addLibrary(.{
+        .name = "emacs-bignum",
+        .root_module = bignum_mod,
+    });
+    exe.root_module.linkLibrary(bignum_lib);
+    exe.root_module.addIncludePath(
+        b.dependency("bignum", .{}).path("include"),
+    );
+
     // Cross-platform gate: compile every independent Zig package for the
     // current target without the C-based temacs exe. The gnulib and
     // os-layer packages are the parts claimed to build on every target;
@@ -839,6 +862,7 @@ pub fn build(b: *std.Build) void {
         gnulib_io_lib,
         emacs_time_lib,
         emacs_nanosleep_lib,
+        bignum_lib,
     }) |lib| {
         zig_packages_step.dependOn(&lib.step);
     }
@@ -1003,7 +1027,6 @@ pub fn build(b: *std.Build) void {
 
     if (!is_windows) {
         // Core libraries
-        exe.root_module.linkSystemLibrary("gmp", .{});
         exe.root_module.linkSystemLibrary("gnutls", .{});
 
         // Terminal support
