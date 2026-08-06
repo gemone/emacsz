@@ -86,40 +86,39 @@ jobs:
         run: |
           brew install pkg-config autoconf automake gnutls libxml2 little-cms2 sqlite3
 
-      # The C-source Windows port is not done yet, so the native Windows
-      # job compiles the cross-platform Zig package layer (the
-      # authoritative gate); Linux/macOS build the full executable.
+      # Windows now builds the full executable (w32 console modules are
+      # wired in); the cross platform zig package layer is still covered
+      # by the zig-verify workflow.
       - name: Build (TUI mode)
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            zig build zig-packages -Doptimize=${{ matrix.mode }}
-          else
-            zig build -Doptimize=${{ matrix.mode }}
-          fi
+        run: zig build -Doptimize=${{ matrix.mode }}
         shell: bash
 
       - name: Verify temacs executable
-        if: runner.os != 'Windows'
         run: |
           if [ -f zig-out/bin/temacs ]; then
             echo "✓ temacs built successfully"
             file zig-out/bin/temacs || true
+          elif [ -f zig-out/bin/temacs.exe ]; then
+            echo "✓ temacs.exe built successfully"
+            file zig-out/bin/temacs.exe || true
           else
-            echo "✗ temacs not found"
+            echo "✗ temacs/temacs.exe not found"
             exit 1
           fi
         shell: bash
 
       - name: Run tests
-        if: runner.os != 'Windows'
         run: zig build test
         shell: bash
         continue-on-error: true
 
       - name: Basic functional test
-        if: runner.os != 'Windows'
         run: |
-          ./zig-out/bin/temacs --batch --eval "(progn (message \"Zig build working!\") (kill-emacs 0))" || echo "Test failed (expected during development)"
+          if [ -f ./zig-out/bin/temacs.exe ]; then
+            ./zig-out/bin/temacs.exe --batch --eval "(progn (message \"Zig build working!\") (kill-emacs 0))" || echo "Windows smoke test failed (expected during development)"
+          else
+            ./zig-out/bin/temacs --batch --eval "(progn (message \"Zig build working!\") (kill-emacs 0))" || echo "Test failed (expected during development)"
+          fi
         shell: bash
         continue-on-error: true
 

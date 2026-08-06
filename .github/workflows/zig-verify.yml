@@ -117,16 +117,7 @@ jobs:
             libsqlite3-dev \
             libgmp-dev
 
-      # Windows: hard gate on the Zig package layer (all gnulib and
-      # os-layer packages compile for the target).  The C-source Windows
-      # port (mingw headers, Windows gmp/gnutls/zlib/...) is not done
-      # yet, so the full build below is informational only.
-      - name: Zig package layer compile check (Windows)
-        if: matrix.target == 'x86_64-windows-gnu'
-        run: zig build zig-packages -Dtarget=${{ matrix.target }}
-
       - name: Cross-compile check
-        if: matrix.target != 'x86_64-windows-gnu'
         shell: bash
         run: |
           set +e
@@ -136,6 +127,12 @@ jobs:
           if [ "$rc" -eq 0 ]; then
             echo "::notice::zig build -Dtarget=${{ matrix.target }} linked successfully"
             exit 0
+          fi
+          # Windows now links fully; any failure there is a real error.
+          if [ "${{ matrix.target }}" = "x86_64-windows-gnu" ]; then
+            printf '%s\n' "$out"
+            echo "::error::zig build -Dtarget=${{ matrix.target }} failed"
+            exit 1
           fi
           # Expected failure shape: the final exe link needs the target's
           # system libraries, which are not installed on a Linux host.
@@ -153,25 +150,6 @@ jobs:
           printf '%s\n' "$out"
           echo "::error::zig build -Dtarget=${{ matrix.target }} failed"
           exit 1
-
-      # Windows full build status: report the C-layer blockers without
-      # failing the gate (the package layer above is authoritative).
-      - name: Full build status (Windows, informational)
-        if: matrix.target == 'x86_64-windows-gnu'
-        shell: bash
-        run: |
-          set +e
-          out="$(zig build -Dtarget="${{ matrix.target }}" 2>&1)"
-          rc=$?
-          set -e
-          if [ "$rc" -eq 0 ]; then
-            echo "::notice::full zig build linked for x86_64-windows-gnu"
-            exit 0
-          fi
-          printf '%s\n' "$out" | \
-            grep -E "^[^ ]+\.(c|h|zig):[0-9]+:[0-9]+: error" | \
-            sort -u | head -15 || true
-          echo "::notice::full Windows build is blocked by the C-source port (mingw/gnutls/gmp headers); the Zig package layer gate above is authoritative"
 
   # Full suite sweep (all 484 discovered suites, per-suite timeout) is
   # long; run it on demand or nightly rather than on every push.
