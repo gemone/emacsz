@@ -77,3 +77,36 @@ pub export fn timespec_sub(a: Timespec, b: Timespec) Timespec {
         return .{ .tv_sec = TIME_MIN, .tv_nsec = 0 };
     return .{ .tv_sec = TIME_MAX, .tv_nsec = TIMESPEC_HZ - 1 };
 }
+
+// ---------------------------------------------------------------------------
+// The extern-inline helpers from lib/timespec.c (the inline bodies live in
+// lib/timespec.h): make_timespec, timespec_cmp, timespec_sign and
+// timespectod. Callers mostly inline these, but the external definitions
+// keep the symbols available for calls the compiler chooses not to inline.
+
+// Return a timespec with seconds S and nanoseconds NS.
+pub export fn make_timespec(s: i64, ns: c_long) Timespec {
+    return .{ .tv_sec = s, .tv_nsec = ns };
+}
+
+// Return negative, zero or positive if A < B, A == B, A > B.
+pub export fn timespec_cmp(a: Timespec, b: Timespec) c_int {
+    return 2 * cmpSec(a.tv_sec, b.tv_sec) + cmpSec(a.tv_nsec, b.tv_nsec);
+}
+
+// Return -1, 0 or 1 depending on the sign of A (tv_nsec nonnegative).
+pub export fn timespec_sign(a: Timespec) c_int {
+    return cmpSec(a.tv_sec | a.tv_nsec, 0);
+}
+
+// Return an approximation to A, of type double.
+pub export fn timespectod(a: Timespec) f64 {
+    return @as(f64, @floatFromInt(a.tv_sec)) +
+        @as(f64, @floatFromInt(a.tv_nsec)) / 1e9;
+}
+
+fn cmpSec(x: i64, y: i64) c_int {
+    if (x < y) return -1;
+    if (x > y) return 1;
+    return 0;
+}

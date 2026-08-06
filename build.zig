@@ -590,8 +590,10 @@ pub fn build(b: *std.Build) void {
     // gnulib-timespec: an independent Zig package (tools/gnulib-timespec)
     // providing gnulib's timespec arithmetic (dtotimespec / timespec_add /
     // timespec_sub, lib/dtotimespec.c + lib/timespec-add.c +
-    // lib/timespec-sub.c), with saturated clamping on time_t overflow.
-    // Pure arithmetic with no libc call. Built ReleaseFast (leaf math).
+    // lib/timespec-sub.c) with saturated clamping on time_t overflow,
+    // plus the extern-inline helpers from lib/timespec.c (make_timespec /
+    // timespec_cmp / timespec_sign / timespectod). Pure arithmetic with
+    // no libc call. Built ReleaseFast (leaf math).
     const gnulib_timespec_mod = b.createModule(.{
         .root_source_file = b.dependency("gnulib_timespec", .{}).path("src/timespec.zig"),
         .target = target,
@@ -1601,6 +1603,13 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         "dtotimespec",
         "timespec-add",
         "timespec-sub",
+        // lib/timespec.c (the extern-inline definitions of make_timespec,
+        // timespec_cmp, timespec_sign and timespectod) is provided by the
+        // same Zig package (tools/gnulib-timespec, dependency
+        // `gnulib_timespec`). Excluded here so the C source is not
+        // compiled; the package's exported symbols are linked into temacs
+        // below (callers mostly inline the lib/timespec.h bodies).
+        "timespec",
         // lib/filevercmp.c is provided by an independent Zig package
         // (tools/gnulib-filevercmp, dependency `gnulib_filevercmp`) --
         // native Zig Debian-policy version sort (filevercmp /
