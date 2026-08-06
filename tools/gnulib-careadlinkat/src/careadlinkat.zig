@@ -8,12 +8,6 @@
 // fallback is kept for full API compatibility.
 
 const std = @import("std");
-const builtin = @import("builtin");
-
-comptime {
-    if (builtin.os.tag != .linux)
-        @compileError("gnulib-careadlinkat: current port targets Linux-like POSIX readlinkat");
-}
 
 extern fn __errno_location() *c_int;
 extern fn malloc(size: usize) ?*anyopaque;

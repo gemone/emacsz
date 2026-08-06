@@ -678,6 +678,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.dependency("gnulib_boot_time", .{}).path("src/boot_time.zig"),
         .target = target,
         .optimize = .ReleaseFast,
+        .link_libc = true, // Darwin backend uses libc sysctl
     });
     const gnulib_boot_time_lib =
         b.addLibrary(.{ .name = "gnulib-boot-time", .root_module = gnulib_boot_time_mod });

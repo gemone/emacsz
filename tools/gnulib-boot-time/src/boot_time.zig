@@ -1,18 +1,20 @@
-// Native Zig implementation of gnulib's lib/boot-time.c (get_boot_time)
-// on Linux, backing lock-file identification in src/filelock.c.
-// Replicates the C chain with no libc call: scan /var/run/utmp for a
-// BOOT_TIME entry (with the runlevel workaround), fall back to the
-// mtime of boot-touched files (>= 1122334455), then to
-// CLOCK_BOOTTIME-uptime subtracted from the realtime clock; the result
-// is cached in static state like the C code.
+// Native Zig implementation of gnulib's lib/boot-time.c (get_boot_time),
+// backing lock-file identification in src/filelock.c.
+//   Linux  -> no libc call: scan /var/run/utmp for a BOOT_TIME entry,
+//             fall back to boot-touched file mtimes, then to
+//             CLOCK_BOOTTIME subtracted from the realtime clock.
+//   Darwin -> libc sysctl(KERN_BOOTTIME).
+// The result is cached in static state like the C code.
 
 const std = @import("std");
 const linux = std.os.linux;
 const builtin = @import("builtin");
 
-comptime {
-    if (builtin.os.tag != .linux)
-        @compileError("gnulib-boot-time: Linux implementation only for now");
+fn isDarwin(tag: std.Target.Os.Tag) bool {
+    return switch (tag) {
+        .macos, .ios, .tvos, .watchos, .visionos, .driverkit, .maccatalyst => true,
+        else => false,
+    };
 }
 
 const BOOT_TIME: i16 = 2;
@@ -183,6 +185,11 @@ var cached_boot_time: Timespec = undefined;
 // Return the last boot time in *P_BOOT_TIME: 0 on success, -1 if the
 // information is unavailable.  The result is cached.
 pub export fn get_boot_time(p_boot_time: *Timespec) c_int {
+    if (comptime isDarwin(builtin.os.tag))
+        return getBootTimeDarwin(p_boot_time);
+    if (builtin.os.tag != .linux)
+        @compileError("gnulib-boot-time: no implementation for this OS");
+
     if (cached_result < 0) {
         var boot: Timespec = undefined;
         var result: c_int = -1;
@@ -204,6 +211,35 @@ pub export fn get_boot_time(p_boot_time: *Timespec) c_int {
 
     if (cached_result == 0) {
         p_boot_time.* = cached_boot_time;
+        return 0;
+    }
+    return -1;
+}
+
+// Darwin: sysctl(KERN_BOOTTIME) returns a struct timeval (boot time).
+extern "c" fn sysctl(
+    name: [*]const c_int,
+    namelen: c_uint,
+    oldp: ?*anyopaque,
+    oldlenp: ?*usize,
+    newp: ?*const anyopaque,
+    newlen: usize,
+) c_int;
+
+const CTL_KERN: c_int = 1;
+const KERN_BOOTTIME: c_int = 21;
+
+const Timeval = extern struct {
+    tv_sec: i64,
+    tv_usec: i32,
+};
+
+fn getBootTimeDarwin(p_boot_time: *Timespec) c_int {
+    const name = [4]c_int{ CTL_KERN, KERN_BOOTTIME, 0, 0 };
+    var tv: Timeval = undefined;
+    var size: usize = @sizeOf(Timeval);
+    if (sysctl(&name, 4, @ptrCast(&tv), &size, null, 0) == 0) {
+        p_boot_time.* = .{ .tv_sec = tv.tv_sec, .tv_nsec = @as(i64, tv.tv_usec) * 1000 };
         return 0;
     }
     return -1;
