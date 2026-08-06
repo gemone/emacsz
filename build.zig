@@ -615,6 +615,20 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-filevercmp", .root_module = gnulib_filevercmp_mod });
     exe.root_module.linkLibrary(gnulib_filevercmp_lib);
 
+    // gnulib-sigdescr-np: an independent Zig package
+    // (tools/gnulib-sigdescr-np) providing gnulib's signal description
+    // strings (sigdescr_np, lib/sigdescr_np.c), used by safe_strsignal
+    // in src/sysdep.c for error output. Static per-platform tables with
+    // no libc call. Built ReleaseFast (leaf lookup).
+    const gnulib_sigdescr_np_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_sigdescr_np", .{}).path("src/sigdescr_np.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const gnulib_sigdescr_np_lib =
+        b.addLibrary(.{ .name = "gnulib-sigdescr-np", .root_module = gnulib_sigdescr_np_mod });
+    exe.root_module.linkLibrary(gnulib_sigdescr_np_lib);
+
     // emacs-time: an independent Zig package (tools/emacs-time) providing
     // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
     // would otherwise provide, via per-platform NATIVE backends with no libc:
@@ -1463,6 +1477,12 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // the package's exported symbols are linked into temacs below
         // (`string-version-lessp').
         "filevercmp",
+        // lib/sigdescr_np.c is provided by an independent Zig package
+        // (tools/gnulib-sigdescr-np, dependency `gnulib_sigdescr_np`) --
+        // native Zig signal description strings (sigdescr_np). Excluded
+        // here so the C source is not compiled; the package's exported
+        // symbol is linked into temacs below (safe_strsignal).
+        "sigdescr_np",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native

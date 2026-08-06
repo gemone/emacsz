@@ -83,6 +83,13 @@
         .gnulib_filevercmp = .{
             .path = "tools/gnulib-filevercmp",
         },
+        // gnulib-sigdescr-np: gnulib's signal description strings
+        // (sigdescr_np, lib/sigdescr_np.c) provided by an independent
+        // Zig package instead of C. Static per-platform tables; no libc
+        // call. Linked into temacs (backs safe_strsignal error output).
+        .gnulib_sigdescr_np = .{
+            .path = "tools/gnulib-sigdescr-np",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw
