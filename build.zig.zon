@@ -210,6 +210,17 @@
         .emacs_nanosleep = .{
             .path = "tools/emacs-nanosleep",
         },
+        // bignum: GMP-compatible integer arithmetic (the mpz_* surface
+        // Emacs's src/bignum.c uses) provided by an independent Zig
+        // package instead of -lgmp, so the link no longer needs a
+        // system GMP and Windows has no gmp.h dependency. C-ABI
+        // compatible (mpz_t layout + mp_set_memory_functions); the
+        // foundation slice (lifecycle/conversions/compare/add/sub/mul/
+        // shifts) is in place, the rest of the surface lands in
+        // follow-up slices before temacs links it.
+        .bignum = .{
+            .path = "tools/bignum",
+        },
     },
     .paths = .{
         "build.zig",
