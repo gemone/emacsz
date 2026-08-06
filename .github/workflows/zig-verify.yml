@@ -78,13 +78,14 @@ jobs:
       - name: Built-in ert tests
         run: zig build check
 
-  # Cross-compile verification.  Windows is fully ported (w32 console
-  # modules are wired in and the exe links), so `zig build -Dtarget=
-  # x86_64-windows-gnu` is a hard gate.  For macOS and musl a Linux host
-  # cannot find the target's system libraries (gnutls/ncurses/...), so a
-  # link-only failure of that shape is reported as a notice while every
-  # Zig package and C source must compile.  The native Windows runner
-  # (full build + temacs.exe smoke test) lives in build-zig-native.yml.
+  # Cross-compile verification.  Windows and musl now link fully (w32
+  # console modules; static musl with no system libraries), so their
+  # `zig build -Dtarget=...` runs are hard gates.  Only macOS keeps the
+  # link-only classification: a Linux host cannot find the macOS system
+  # libraries (gnutls/ncurses/...), so a link failure of that shape is
+  # reported as a notice while every Zig package and C source must
+  # compile.  The native Windows runner (full build + temacs.exe smoke
+  # test) lives in build-zig-native.yml.
   cross-compile:
     name: Compile ${{ matrix.target }}
     runs-on: ubuntu-latest
@@ -127,8 +128,10 @@ jobs:
             echo "::notice::zig build -Dtarget=${{ matrix.target }} linked successfully"
             exit 0
           fi
-          # Windows now links fully; any failure there is a real error.
-          if [ "${{ matrix.target }}" = "x86_64-windows-gnu" ]; then
+          # Windows and musl link fully; any failure there is real.
+          if [ "${{ matrix.target }}" = "x86_64-windows-gnu" ] || \
+             [ "${{ matrix.target }}" = "x86_64-linux-musl" ] || \
+             [ "${{ matrix.target }}" = "aarch64-linux-musl" ]; then
             printf '%s\n' "$out"
             echo "::error::zig build -Dtarget=${{ matrix.target }} failed"
             exit 1
