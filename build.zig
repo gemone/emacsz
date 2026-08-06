@@ -573,6 +573,20 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-sig2str", .root_module = gnulib_sig2str_mod });
     exe.root_module.linkLibrary(gnulib_sig2str_lib);
 
+    // gnulib-filemode: an independent Zig package (tools/gnulib-filemode)
+    // providing gnulib's file-mode string helpers (strmode /
+    // filemodestring, lib/filemode.c), turning st_mode into the ls-style
+    // "drwxr-xr-x" string used by file-attributes and dired. Pure string
+    // logic with no libc call. Built ReleaseFast (leaf computation).
+    const gnulib_filemode_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_filemode", .{}).path("src/filemode.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const gnulib_filemode_lib =
+        b.addLibrary(.{ .name = "gnulib-filemode", .root_module = gnulib_filemode_mod });
+    exe.root_module.linkLibrary(gnulib_filemode_lib);
+
     // emacs-time: an independent Zig package (tools/emacs-time) providing
     // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
     // would otherwise provide, via per-platform NATIVE backends with no libc:
@@ -1397,6 +1411,13 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // by native Zig. Excluded here so the C source is not compiled;
         // the package's exported symbols are linked into temacs below.
         "sig2str",
+        // lib/filemode.c is provided by an independent Zig package
+        // (tools/gnulib-filemode, dependency `gnulib_filemode`) -- native
+        // Zig strmode/filemodestring (ls-style mode strings). Excluded
+        // here so the C source is not compiled; the package's exported
+        // symbols are linked into temacs below (file-attributes string
+        // mode element, dired).
+        "filemode",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native

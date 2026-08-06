@@ -61,6 +61,13 @@
         .gnulib_sig2str = .{
             .path = "tools/gnulib-sig2str",
         },
+        // gnulib-filemode: gnulib's file-mode string helpers (strmode,
+        // filemodestring, lib/filemode.c) provided by an independent
+        // Zig package instead of C. Pure string logic; no libc call.
+        // Linked into temacs (backs file-attributes string mode element).
+        .gnulib_filemode = .{
+            .path = "tools/gnulib-filemode",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw
