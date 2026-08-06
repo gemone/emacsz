@@ -59,10 +59,8 @@ pub fn main() !void {
     try genEucjpMs(gpa, io, cwd);
     try genGb180302(gpa, io, cwd);
     try genGb180304(gpa, io, cwd);
-    try genBig5(gpa, io, cwd);
     try genJisc6226(gpa, io, cwd);
     try genJisx2131(gpa, io, cwd);
-    try genAlternativnyj(gpa, io, cwd);
 
     var generated: usize = 0;
     for (compact_rules) |rule| {
@@ -114,6 +112,13 @@ pub fn main() !void {
         };
         if (try genMap(gpa, io, cwd, rule)) generated += 1;
     }
+
+    // These read maps produced above (BIG5.map from the compact rules,
+    // IBM866.map from the glibc walk), so they must run after the
+    // generators. The original order worked only where stale outputs
+    // already existed in etc/charsets/.
+    try genBig5(gpa, io, cwd);
+    try genAlternativnyj(gpa, io, cwd);
 
     std.debug.print("gen-charsets: generated/updated {d} compact maps\n", .{generated});
 }
