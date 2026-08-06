@@ -1403,6 +1403,14 @@ pub fn build(b: *std.Build) void {
     // which worked locally where a stale temacs existed but failed on
     // a clean checkout with FileNotFound.)
     run_dump.step.dependOn(b.getInstallStep());
+    // The dumped image loads the charset maps and the unicode script
+    // tables from the source tree; both are gitignored generated data,
+    // so a clean checkout must generate them before the dump runs.
+    // (Only the named "dump" step carried these dependencies before,
+    // which worked locally where stale outputs existed but failed on a
+    // clean checkout with "Loading charset map".)
+    run_dump.step.dependOn(gen_charsets_step);
+    run_dump.step.dependOn(gen_unidata_step);
     // The dump must run with etc/DOC present: loadup calls
     // (Snarf-documentation "DOC"), and in pbootstrap mode it swallows
     // the error if DOC is missing, leaving every C primitive without a
@@ -1411,13 +1419,6 @@ pub fn build(b: *std.Build) void {
     const dump_step = b.step("dump", "Bootstrap (from-source) dump of bootstrap-emacs.pdmp");
     dump_step.dependOn(b.getInstallStep());
     dump_step.dependOn(&run_dump.step);
-    // The dumped image loads the charset maps and the unicode script
-    // tables from the source tree; both are gitignored generated data,
-    // so a clean checkout must generate them before the dump runs.
-    // (Locally the outputs existed from earlier runs, which masked the
-    // missing dependency until CI failed with "Loading charset map".)
-    dump_step.dependOn(gen_charsets_step);
-    dump_step.dependOn(gen_unidata_step);
 
     // generate-loaddefs: produce lisp/loaddefs.el + per-subdir
     // *-loaddefs.el (autoload cookies) via the dumped emacs. Mirrors
