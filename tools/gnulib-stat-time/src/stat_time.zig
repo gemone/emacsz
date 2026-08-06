@@ -3,7 +3,10 @@
 // the access/status-change/modification (and birth) timestamps from a
 // struct stat. On glibc x86_64 st_atim/st_mtim/st_ctim are struct
 // timespec members and there is no birth-time field, so get_stat_* read
-// the timespecs directly and get_stat_birthtime returns (-1, -1);
+// the timespecs directly; on Darwin the members are st_*timespec (with
+// birth time); on Windows (mingw) the members are plain time_t seconds
+// with no sub-second precision, so the ns accessors return 0;
+// get_stat_birthtime returns (-1, -1) where no birth field exists.
 // stat_time_normalize is a passthrough (the macOS/Solaris negative-ns
 // workaround does not apply). Backs `file-attributes' time elements in
 // src/dired.c and src/fileio.c. No libc call.
@@ -16,6 +19,10 @@ fn isDarwin(tag: std.Target.Os.Tag) bool {
         .macos, .ios, .tvos, .watchos, .visionos, .driverkit, .maccatalyst => true,
         else => false,
     };
+}
+
+fn isWindows(tag: std.Target.Os.Tag) bool {
+    return tag == .windows;
 }
 
 // glibc x86_64 struct stat (144 bytes; timespec members at 72/88/104).
@@ -51,18 +58,24 @@ const Timespec = extern struct {
 pub export fn get_stat_atime_ns(st: *const Stat) c_long {
     if (comptime isDarwin(builtin.os.tag))
         return @intCast(darwinStat(st).st_atimespec.tv_nsec);
+    if (comptime isWindows(builtin.os.tag))
+        return 0; // mingw struct stat has no sub-second fields
     return @intCast(st.st_atim[1]);
 }
 
 pub export fn get_stat_ctime_ns(st: *const Stat) c_long {
     if (comptime isDarwin(builtin.os.tag))
         return @intCast(darwinStat(st).st_ctimespec.tv_nsec);
+    if (comptime isWindows(builtin.os.tag))
+        return 0;
     return @intCast(st.st_ctim[1]);
 }
 
 pub export fn get_stat_mtime_ns(st: *const Stat) c_long {
     if (comptime isDarwin(builtin.os.tag))
         return @intCast(darwinStat(st).st_mtimespec.tv_nsec);
+    if (comptime isWindows(builtin.os.tag))
+        return 0;
     return @intCast(st.st_mtim[1]);
 }
 
@@ -70,6 +83,10 @@ pub export fn get_stat_atime(st: *const Stat) Timespec {
     if (comptime isDarwin(builtin.os.tag)) {
         const d = darwinStat(st);
         return .{ .tv_sec = d.st_atimespec.tv_sec, .tv_nsec = @intCast(d.st_atimespec.tv_nsec) };
+    }
+    if (comptime isWindows(builtin.os.tag)) {
+        const w = windowsStat(st);
+        return .{ .tv_sec = w.st_atime, .tv_nsec = 0 };
     }
     return .{ .tv_sec = st.st_atim[0], .tv_nsec = @intCast(st.st_atim[1]) };
 }
@@ -79,6 +96,10 @@ pub export fn get_stat_ctime(st: *const Stat) Timespec {
         const d = darwinStat(st);
         return .{ .tv_sec = d.st_ctimespec.tv_sec, .tv_nsec = @intCast(d.st_ctimespec.tv_nsec) };
     }
+    if (comptime isWindows(builtin.os.tag)) {
+        const w = windowsStat(st);
+        return .{ .tv_sec = w.st_ctime, .tv_nsec = 0 };
+    }
     return .{ .tv_sec = st.st_ctim[0], .tv_nsec = @intCast(st.st_ctim[1]) };
 }
 
@@ -86,6 +107,10 @@ pub export fn get_stat_mtime(st: *const Stat) Timespec {
     if (comptime isDarwin(builtin.os.tag)) {
         const d = darwinStat(st);
         return .{ .tv_sec = d.st_mtimespec.tv_sec, .tv_nsec = @intCast(d.st_mtimespec.tv_nsec) };
+    }
+    if (comptime isWindows(builtin.os.tag)) {
+        const w = windowsStat(st);
+        return .{ .tv_sec = w.st_mtime, .tv_nsec = 0 };
     }
     return .{ .tv_sec = st.st_mtim[0], .tv_nsec = @intCast(st.st_mtim[1]) };
 }
@@ -119,6 +144,33 @@ const StatDarwin = extern struct {
 };
 
 fn darwinStat(st: *const Stat) *const StatDarwin {
+    return @ptrCast(st);
+}
+
+// mingw-w64 struct stat (48 bytes, default _FILE_OFFSET_BITS off):
+// time_t is __time64_t (64-bit) but off_t stays 32-bit, so the time
+// members sit at 24/32/40 after the 32-bit st_size at 20.
+const StatWindows = extern struct {
+    st_dev: u32,
+    st_ino: u16,
+    st_mode: u16,
+    st_nlink: i16,
+    st_uid: i16,
+    st_gid: i16,
+    st_rdev: u32,
+    st_size: i32,
+    st_atime: i64,
+    st_mtime: i64,
+    st_ctime: i64,
+};
+
+comptime {
+    if (@offsetOf(StatWindows, "st_atime") != 24 or @offsetOf(StatWindows, "st_mtime") != 32 or
+        @offsetOf(StatWindows, "st_ctime") != 40 or @sizeOf(StatWindows) != 48)
+        @compileError("mingw struct stat layout mismatch");
+}
+
+fn windowsStat(st: *const Stat) *const StatWindows {
     return @ptrCast(st);
 }
 
