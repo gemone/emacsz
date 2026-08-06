@@ -590,6 +590,8 @@ pub fn build(b: *std.Build) void {
     const gnulib_tempname_lib =
         b.addLibrary(.{ .name = "gnulib-tempname", .root_module = gnulib_tempname_mod });
     exe.root_module.linkLibrary(gnulib_tempname_lib);
+    if (target.result.os.tag == .windows)
+        gnulib_tempname_mod.linkSystemLibrary("bcrypt", .{}); // Windows RNG
 
     // gnulib-fsusage: an independent Zig package (tools/gnulib-fsusage)
     // providing gnulib's file-system space query (get_fs_usage,

@@ -6,6 +6,10 @@
 // name probes use raw syscalls on Linux (openat O_CREAT|O_EXCL, mkdir,
 // newfstatat) and libc open/mkdir/lstat on Darwin; errno is set on
 // failure exactly as the C code does (callers such as filelock read it).
+// The Windows backend uses the CRT open/mkdir (the same functions
+// gnulib's tempname.c calls through its open/mkdir aliases), the
+// BCryptGenRandom RNG (gnulib's getrandom on Windows) with a
+// system-clock fallback, and GetFileAttributesA for existence probes.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -18,11 +22,17 @@ fn isDarwin(tag: std.Target.Os.Tag) bool {
     };
 }
 
+fn isWindows(tag: std.Target.Os.Tag) bool {
+    return tag == .windows;
+}
+
 // glibc/musl errno location; temacs links libc, so the symbol resolves
 // at final link even though this module itself does not link libc.
 extern fn __errno_location() *c_int;
 // macOS exposes the same thread-local via __error.
 extern "c" fn __error() *c_int;
+// mingw-w64's errno accessor (_errno from the CRT).
+extern "c" fn _errno() *c_int;
 extern "c" fn open(path: [*:0]const u8, flags: c_int, mode: c_int) c_int;
 extern "c" fn mkdir(path: [*:0]const u8, mode: c_int) c_int;
 extern "c" fn lstat(path: [*:0]const u8, buf: *anyopaque) c_int;
@@ -31,6 +41,8 @@ extern "c" fn arc4random_buf(buf: [*]u8, len: usize) void;
 fn errnoLocation() *c_int {
     if (comptime isDarwin(builtin.os.tag))
         return __error();
+    if (comptime isWindows(builtin.os.tag))
+        return _errno();
     return __errno_location();
 }
 
@@ -54,8 +66,26 @@ const GRND_NONBLOCK: u32 = 1;
 
 const O_ACCMODE: c_int = 3;
 const O_RDWR: c_int = 2;
-const O_CREAT: c_int = if (isDarwin(builtin.os.tag)) 0x200 else 0x40;
-const O_EXCL: c_int = if (isDarwin(builtin.os.tag)) 0x800 else 0x80;
+const O_CREAT: c_int = if (isDarwin(builtin.os.tag)) 0x200 else if (isWindows(builtin.os.tag)) 0x100 else 0x40;
+const O_EXCL: c_int = if (isDarwin(builtin.os.tag)) 0x800 else if (isWindows(builtin.os.tag)) 0x400 else 0x80;
+
+// Windows random and probe APIs (kernel32 / bcrypt).
+const FileTime = extern struct {
+    dwLowDateTime: u32,
+    dwHighDateTime: u32,
+};
+
+extern "c" fn GetSystemTimeAsFileTime(ft: *FileTime) void;
+extern "c" fn GetFileAttributesA(name: [*:0]const u8) u32;
+extern "c" fn GetLastError() u32;
+extern "c" fn BCryptGenRandom(alg: ?*anyopaque, buf: [*]u8, len: c_ulong, flags: c_ulong) c_long;
+
+const BCRYPT_USE_SYSTEM_PREFERRED_RNG: c_ulong = 0x00000002;
+const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFFFFFF;
+const ERROR_FILE_NOT_FOUND: u32 = 2;
+const ERROR_PATH_NOT_FOUND: u32 = 3;
+const ERROR_ACCESS_DENIED: u32 = 5;
+const EACCES: c_int = 13;
 
 fn setErrno(e: c_int) void {
     errnoLocation().* = e;
@@ -73,6 +103,25 @@ fn randomBits(r: *u64, s: u64) bool {
         arc4random_buf(&buf, buf.len);
         r.* = std.mem.readInt(u64, &buf, .little);
         return true; // arc4random never fails: always high quality
+    }
+    if (comptime isWindows(builtin.os.tag)) {
+        var buf: [8]u8 = undefined;
+        // gnulib's getrandom on Windows wraps BCryptGenRandom with the
+        // system-preferred RNG flag.
+        if (BCryptGenRandom(null, &buf, buf.len, BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0) {
+            r.* = std.mem.readInt(u64, &buf, .little);
+            return true;
+        }
+        // Ersatz fallback from the system clock, mirroring the C's
+        // clock-based mix (there is no clock_gettime in the Windows CRT).
+        var v = s;
+        var ft: FileTime = undefined;
+        GetSystemTimeAsFileTime(&ft);
+        const ticks: u64 = (@as(u64, ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+        v = mixRandomValues(v, ticks);
+        v = mixRandomValues(v, @intCast(ticks >> 32));
+        r.* = v;
+        return false;
     }
     if (builtin.os.tag != .linux)
         @compileError("gnulib-tempname: no implementation for this OS");
@@ -100,6 +149,13 @@ fn tryFile(tmpl: [*:0]const u8, flags: c_int) TryResult {
         if (r >= 0) return .{ .rc = r, .err = 0 };
         return .{ .rc = -1, .err = errnoLocation().* };
     }
+    if (comptime isWindows(builtin.os.tag)) {
+        // The CRT's open (aliased from _open), as gnulib's C calls.
+        const f: c_int = (flags & ~O_ACCMODE) | O_RDWR | O_CREAT | O_EXCL;
+        const r = open(tmpl, f, 0o600);
+        if (r >= 0) return .{ .rc = r, .err = 0 };
+        return .{ .rc = -1, .err = _errno().* };
+    }
     // Same int arithmetic as the C try_file, then bitcast for the raw syscall.
     const f: u32 = @bitCast((flags & ~O_ACCMODE) | O_RDWR | O_CREAT | O_EXCL);
     const raw = linux.openat(linux.AT.FDCWD, tmpl, @bitCast(f), 0o600);
@@ -112,6 +168,10 @@ fn tryDir(tmpl: [*:0]const u8, _: c_int) TryResult {
     if (comptime isDarwin(builtin.os.tag)) {
         if (mkdir(tmpl, 0o700) == 0) return .{ .rc = 0, .err = 0 };
         return .{ .rc = -1, .err = errnoLocation().* };
+    }
+    if (comptime isWindows(builtin.os.tag)) {
+        if (mkdir(tmpl, 0o700) == 0) return .{ .rc = 0, .err = 0 };
+        return .{ .rc = -1, .err = _errno().* };
     }
     const raw = linux.mkdir(tmpl, 0o700);
     if (raw == 0) return .{ .rc = 0, .err = 0 };
@@ -130,6 +190,21 @@ fn tryNocreate(tmpl: [*:0]const u8, _: c_int) TryResult {
         const e = errnoLocation().*;
         if (e == ENOENT) return .{ .rc = 0, .err = 0 };
         return .{ .rc = -1, .err = e };
+    }
+    if (comptime isWindows(builtin.os.tag)) {
+        // GetFileAttributesA as the existence probe (mingw has no
+        // lstat); a missing path is ENOENT, everything else exists.
+        const attrs = GetFileAttributesA(tmpl);
+        if (attrs != INVALID_FILE_ATTRIBUTES) {
+            _errno().* = EEXIST;
+            return .{ .rc = -1, .err = EEXIST };
+        }
+        const e = GetLastError();
+        if (e == ERROR_FILE_NOT_FOUND or e == ERROR_PATH_NOT_FOUND)
+            return .{ .rc = 0, .err = 0 };
+        const err = if (e == ERROR_ACCESS_DENIED) EACCES else EINVAL;
+        _errno().* = err;
+        return .{ .rc = -1, .err = err };
     }
     // lstat via newfstatat + AT_SYMLINK_NOFOLLOW; only the result matters.
     var st: [512]u8 = undefined;
