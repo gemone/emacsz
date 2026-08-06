@@ -90,32 +90,20 @@ pub fn build(b: *std.Build) void {
     gen_unidata_step.dependOn(&run_gen_emoji_zwj.step);
 
     // Generate etc/charsets/*.map (131 maps) and lisp/international/
-    // {cp51932,eucjp-ms}.el from admin/charsets via the bootstrap Makefile.
-    // Mirrors `make -C admin/charsets charsetdir=$PWD/etc/charsets
-    // top_srcdir=$PWD` (plan lines 26,72). Outputs land in the SOURCE TREE
-    // (where the I9c dump step reads them via EMACSLOADPATH=$PWD/lisp and
-    // EMACSDATA=$PWD/etc); all are gitignored (.gitignore:266,268), so
-    // source-tree writes do not dirty the index. admin/charsets/Makefile is
-    // a CONFIGURE PRODUCT (only Makefile.in is tracked), so the step
-    // degrades gracefully when configure has not run -- identical in spirit
-    // to the dump step requiring the bootstrap config.h. `$PWD` is the repo
-    // root because setCwd(b.path(".")) (same as the dump step below);
-    // `make -C` then cd's into admin/charsets so ${srcdir}=. resolves
-    // mapfiles/awk scripts, while charsetdir/top_srcdir are overridden on
-    // the cmdline. Standalone only -- NOT wired into the default
-    // install/zig build (mirrors generate-unidata above).
-    const gen_charsets = b.addSystemCommand(&[_][]const u8{
-        "sh",
-        "-c",
-        \\set -e
-        \\if [ ! -f admin/charsets/Makefile ]; then
-        \\  echo "Warning: admin/charsets/Makefile not present (run configure);" \
-        \\    "skipping charset map generation"
-        \\  exit 0
-        \\fi
-        \\make -C admin/charsets \
-        \\  charsetdir="$PWD/etc/charsets" top_srcdir="$PWD"
+    // {cp51932,eucjp-ms}.el from admin/charsets via a native Zig tool
+    // (build-aux/gen-charsets.zig), byte-identical to the former
+    // make+gawk+gzip+sed+sort pipeline. Outputs land in the SOURCE TREE
+    // (gitignored). Standalone only -- NOT wired into the default
+    // install/zig build.
+    const gen_charsets_tool = b.addExecutable(.{
+        .name = "gen-charsets",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/gen-charsets.zig"),
+        }),
     });
+    const gen_charsets = b.addRunArtifact(gen_charsets_tool);
     gen_charsets.setCwd(b.path("."));
     const gen_charsets_step = b.step(
         "generate-charsets",
