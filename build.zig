@@ -57,30 +57,37 @@ pub fn build(b: *std.Build) void {
     const generate_step = b.step("generate-headers", "Generate Gnulib .gl.h headers");
     generate_step.dependOn(&generate_headers.step);
 
-    // Generate lisp/international/{charscript,emoji-zwj}.el from admin/unidata
-    // via gawk. Mirrors `make -C admin/unidata charscript.el emoji-zwj.el`.
-    // Outputs land in the SOURCE TREE (where make places them, where the
-    // future I9c dump step reads them via EMACSLOADPATH=$PWD/lisp); both are
-    // gitignored (.gitignore:268), so source-tree writes do not dirty the
-    // index. Use gawk explicitly (the AWK the Makefile sets), not awk, to
-    // avoid mawk portability issues. Standalone only -- NOT wired into the
-    // default install/zig build (deferred to the I9c dump increment).
-    const gen_unidata = b.addSystemCommand(&[_][]const u8{
-        "sh",
-        "-c",
-        \\set -e
-        \\gawk -f admin/unidata/blocks.awk \
-        \\  admin/unidata/Blocks.txt admin/unidata/emoji-data.txt \
-        \\  > lisp/international/charscript.el
-        \\gawk -f admin/unidata/emoji-zwj.awk \
-        \\  admin/unidata/emoji-zwj-sequences.txt admin/unidata/emoji-sequences.txt \
-        \\  > lisp/international/emoji-zwj.el
+    // Generate lisp/international/{charscript,emoji-zwj}.el from
+    // admin/unidata via native Zig tools (build-aux/gen-charscript.zig +
+    // gen-emoji-zwj.zig, byte-identical ports of the gawk scripts).
+    // Outputs land in the SOURCE TREE (gitignored). Standalone only --
+    // NOT wired into the default install/zig build.
+    const gen_charscript_tool = b.addExecutable(.{
+        .name = "gen-charscript",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/gen-charscript.zig"),
+        }),
     });
+    const run_gen_charscript = b.addRunArtifact(gen_charscript_tool);
+    run_gen_charscript.setCwd(b.path("."));
+    const gen_emoji_zwj_tool = b.addExecutable(.{
+        .name = "gen-emoji-zwj",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/gen-emoji-zwj.zig"),
+        }),
+    });
+    const run_gen_emoji_zwj = b.addRunArtifact(gen_emoji_zwj_tool);
+    run_gen_emoji_zwj.setCwd(b.path("."));
     const gen_unidata_step = b.step(
         "generate-unidata",
         "Generate lisp/international/{charscript,emoji-zwj}.el from admin/unidata",
     );
-    gen_unidata_step.dependOn(&gen_unidata.step);
+    gen_unidata_step.dependOn(&run_gen_charscript.step);
+    gen_unidata_step.dependOn(&run_gen_emoji_zwj.step);
 
     // Generate etc/charsets/*.map (131 maps) and lisp/international/
     // {cp51932,eucjp-ms}.el from admin/charsets via the bootstrap Makefile.
