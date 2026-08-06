@@ -1397,6 +1397,12 @@ pub fn build(b: *std.Build) void {
     });
     const run_dump = b.addRunArtifact(bootstrap_dump_tool);
     run_dump.setCwd(b.path("."));
+    // The dump tool and every downstream checker spawn
+    // ./zig-out/bin/temacs, so the install must happen before them.
+    // (Only the named "dump" step carried this dependency before,
+    // which worked locally where a stale temacs existed but failed on
+    // a clean checkout with FileNotFound.)
+    run_dump.step.dependOn(b.getInstallStep());
     // The dump must run with etc/DOC present: loadup calls
     // (Snarf-documentation "DOC"), and in pbootstrap mode it swallows
     // the error if DOC is missing, leaving every C primitive without a
