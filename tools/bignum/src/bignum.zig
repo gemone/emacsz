@@ -12,8 +12,8 @@
 // two-power shifts, size queries, the full division family (truncated,
 // floored, ceiling, single-limb and exact), pow/gcd/addmul/submul,
 // bitwise ops, the limbs API and byte import/export. The remaining
-// surface (string conversion) lands in this slice; doubles and fit
-// predicates follow in the next one.
+// surface (strings, doubles and fit predicates) lands in this slice;
+// the package now covers the full GMP surface Emacs calls.
 
 const std = @import("std");
 
@@ -250,7 +250,7 @@ pub export fn mpz_set_ui(z: *mpz_t, u: u64) void {
 
 pub export fn mpz_set_si(z: *mpz_t, i: i64) void {
     if (i < 0) {
-        mpz_set_ui(z, @as(u64, @bitCast(-i)));
+        mpz_set_ui(z, @as(u64, @bitCast(0 -% i)));
         z._mp_size = -z._mp_size;
     } else {
         mpz_set_ui(z, @intCast(i));
@@ -1437,6 +1437,121 @@ pub export fn mpz_get_str(str: ?[*]u8, base_in: c_int, op: *const mpz_t) ?[*]u8 
     return if (owned) buf else str;
 }
 
+// ---------- double conversion ----------
+
+// Convert OP to a double, truncating toward zero (GMP semantics);
+// magnitudes too large for a double become (+/-)infinity.
+pub export fn mpz_get_d(op: *const mpz_t) f64 {
+    const n = limbCount(op);
+    if (n == 0) return 0;
+    const d = op._mp_d.?;
+    const hi = d[n - 1];
+    const topbits: u64 = 64 - @as(u64, @clz(hi));
+    var mant: u64 = undefined;
+    var exp: i64 = undefined;
+    if (topbits >= 53) {
+        const sh: u6 = @intCast(topbits - 53);
+        mant = hi >> sh;
+        exp = @as(i64, @intCast(64 * (n - 1) + (topbits - 53)));
+    } else if (n >= 2) {
+        const lo = d[n - 2];
+        const combined: u128 = (@as(u128, hi) << 64) | lo;
+        const sh: u7 = @intCast(64 + topbits - 53);
+        mant = @as(u64, @truncate(combined >> sh));
+        exp = @as(i64, @intCast(64 * (n - 2) + (64 + topbits - 53)));
+    } else {
+        const sh: u6 = @intCast(53 - topbits);
+        mant = hi << sh;
+        exp = -@as(i64, @intCast(53 - topbits));
+    }
+    var result = @as(f64, @floatFromInt(mant)) * @exp2(@as(f64, @floatFromInt(exp)));
+    if (op._mp_size < 0) result = -result;
+    return result;
+}
+
+// Convert D to an mpz, truncating toward zero (GMP semantics). GMP
+// aborts on NaN/Inf; we map those to zero instead, and Emacs never
+// passes them here.
+pub export fn mpz_set_d(rop: *mpz_t, d: f64) void {
+    if (std.math.isNan(d) or std.math.isInf(d) or d == 0) {
+        mpz_set_ui(rop, 0);
+        return;
+    }
+    const neg = d < 0;
+    const mag = if (neg) -d else d;
+    const bits: u64 = @bitCast(mag);
+    const e: i64 = @as(i64, @intCast((bits >> 52) & 0x7FF)) - 1023;
+    if (e < 0) {
+        mpz_set_ui(rop, 0); // |d| < 1 (including subnormals) truncates to 0.
+        return;
+    }
+    const frac: u64 = (bits & 0xFFFFFFFFFFFFF) | 0x10000000000000;
+    var t: mpz_t = undefined;
+    mpz_init(&t);
+    defer mpz_clear(&t);
+    if (e >= 52) {
+        mpz_set_ui(&t, frac);
+        if (e > 52) mpz_mul_2exp(&t, &t, @intCast(e - 52));
+    } else {
+        const sh: u6 = @intCast(52 - e);
+        mpz_set_ui(&t, frac >> sh);
+    }
+    if (neg) mpz_neg(&t, &t);
+    mpz_swap(rop, &t);
+}
+
+// Compare OP with D exactly (no truncation of D), like GMP's
+// mpz_cmp_d. NaN never reaches this from Emacs (guarded at the call
+// sites); we return 0 for it, where GMP would abort.
+pub export fn mpz_cmp_d(op: *const mpz_t, d: f64) c_int {
+    if (std.math.isNan(d)) return 0;
+    if (std.math.isInf(d)) return if (d > 0) -1 else 1;
+    const sgn = signOf(op);
+    if (sgn == 0) return if (d > 0) -1 else if (d < 0) 1 else 0;
+    var t: mpz_t = undefined;
+    mpz_init(&t);
+    defer mpz_clear(&t);
+    if (sgn < 0) {
+        if (d >= 0) return -1;
+        mpz_set_d(&t, -d);
+        const c = mpz_cmpabs(op, &t);
+        if (c != 0) return -c;
+        return if (d == @trunc(d)) 0 else 1;
+    } else {
+        if (d <= 0) return 1;
+        mpz_set_d(&t, d);
+        const c = mpz_cmpabs(op, &t);
+        if (c != 0) return c;
+        return if (d == @trunc(d)) 0 else -1;
+    }
+}
+
+// ---------- fit predicates ----------
+
+fn fitsSigned(z: *const mpz_t, lo: i64, hi: i64) bool {
+    const sgn = signOf(z);
+    if (sgn == 0) return true;
+    if (sgn < 0) return mpz_cmp_si(z, lo) >= 0;
+    return mpz_cmp_si(z, hi) <= 0;
+}
+
+fn fitsUnsigned(z: *const mpz_t, hi: u64) bool {
+    if (signOf(z) < 0) return false;
+    return mpz_cmp_ui(z, hi) <= 0;
+}
+
+pub export fn mpz_fits_sint_p(z: *const mpz_t) c_int {
+    return @intFromBool(fitsSigned(z, std.math.minInt(c_int), std.math.maxInt(c_int)));
+}
+
+pub export fn mpz_fits_slong_p(z: *const mpz_t) c_int {
+    return @intFromBool(fitsSigned(z, std.math.minInt(c_long), std.math.maxInt(c_long)));
+}
+
+pub export fn mpz_fits_ulong_p(z: *const mpz_t) c_int {
+    return @intFromBool(fitsUnsigned(z, std.math.maxInt(c_ulong)));
+}
+
 // Test helper: build a magnitude from LIMBS pseudo-random limbs.
 fn rndMagTest(z: *mpz_t, limbs: usize, seed: *u64) void {
     mpz_set_ui(z, 0);
@@ -2243,4 +2358,115 @@ test "mpz set_str get_str" {
     try std.testing.expectEqual(@as(c_int, -1), mpz_set_str(&z, "1", 63));
     try std.testing.expectEqual(@as(c_int, -1), mpz_set_str(&z, "ff", -16));
     try std.testing.expectEqual(@as(c_int, 42), mpz_get_si(&z));
+}
+
+test "mpz get_d set_d cmp_d" {
+    var z: mpz_t = undefined;
+    mpz_init(&z);
+    defer mpz_clear(&z);
+
+    // get_d truncates toward zero and honors the sign.
+    _ = mpz_set_str(&z, "9007199254740993", 10); // 2^53 + 1
+    try std.testing.expectEqual(@as(f64, 9007199254740992.0), mpz_get_d(&z));
+    _ = mpz_set_str(&z, "-9007199254740993", 10);
+    try std.testing.expectEqual(@as(f64, -9007199254740992.0), mpz_get_d(&z));
+    _ = mpz_set_str(&z, "9007199254740991", 10); // 2^53 - 1 is exact
+    try std.testing.expectEqual(@as(f64, 9007199254740991.0), mpz_get_d(&z));
+    _ = mpz_set_str(&z, "1267650600228229401496703205376", 10); // 2^100
+    try std.testing.expectEqual(@exp2(@as(f64, 100.0)), mpz_get_d(&z));
+    mpz_set_ui(&z, 1);
+    try std.testing.expectEqual(@as(f64, 1.0), mpz_get_d(&z));
+    mpz_set_si(&z, -7);
+    try std.testing.expectEqual(@as(f64, -7.0), mpz_get_d(&z));
+    mpz_set_ui(&z, 0);
+    try std.testing.expectEqual(@as(f64, 0.0), mpz_get_d(&z));
+    mpz_set_ui(&z, 1);
+    var i: usize = 0;
+    while (i < 400) : (i += 1) mpz_mul_ui(&z, &z, 10);
+    try std.testing.expect(std.math.isInf(mpz_get_d(&z)));
+    mpz_neg(&z, &z);
+    try std.testing.expect(std.math.isInf(mpz_get_d(&z)));
+    try std.testing.expect(mpz_get_d(&z) < 0);
+
+    // set_d truncates toward zero; NaN/Inf map to zero.
+    mpz_set_d(&z, 1.9);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp_si(&z, 1));
+    mpz_set_d(&z, -1.9);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp_si(&z, -1));
+    mpz_set_d(&z, 0.5);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_sgn(&z));
+    mpz_set_d(&z, 123.0);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp_si(&z, 123));
+    mpz_set_d(&z, 4503599627370496.0); // 2^52
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp_si(&z, 4503599627370496));
+    mpz_set_d(&z, 1e300);
+    try std.testing.expectEqual(@as(f64, 1e300), mpz_get_d(&z));
+    mpz_set_d(&z, -1e300);
+    try std.testing.expectEqual(@as(f64, -1e300), mpz_get_d(&z));
+    mpz_set_d(&z, std.math.nan(f64));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_sgn(&z));
+    mpz_set_d(&z, std.math.inf(f64));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_sgn(&z));
+
+    // cmp_d compares exactly, not against the truncated double.
+    mpz_set_ui(&z, 2);
+    try std.testing.expectEqual(@as(c_int, -1), mpz_cmp_d(&z, 2.9));
+    mpz_set_ui(&z, 3);
+    try std.testing.expectEqual(@as(c_int, 1), mpz_cmp_d(&z, 2.9));
+    mpz_set_si(&z, -2);
+    try std.testing.expectEqual(@as(c_int, 1), mpz_cmp_d(&z, -2.9));
+    mpz_set_si(&z, -3);
+    try std.testing.expectEqual(@as(c_int, -1), mpz_cmp_d(&z, -2.9));
+    mpz_set_ui(&z, 0);
+    try std.testing.expectEqual(@as(c_int, -1), mpz_cmp_d(&z, 2.5));
+    try std.testing.expectEqual(@as(c_int, 1), mpz_cmp_d(&z, -1.0));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp_d(&z, -0.0));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp_d(&z, 0.0));
+    try std.testing.expectEqual(@as(c_int, -1), mpz_cmp_d(&z, std.math.inf(f64)));
+    try std.testing.expectEqual(@as(c_int, 1), mpz_cmp_d(&z, -std.math.inf(f64)));
+    _ = mpz_set_str(&z, "9007199254740993", 10);
+    try std.testing.expectEqual(@as(c_int, 1), mpz_cmp_d(&z, 9007199254740992.0));
+    try std.testing.expectEqual(@as(c_int, -1), mpz_cmp_d(&z, 9007199254740994.0));
+    mpz_set_si(&z, -5);
+    try std.testing.expectEqual(@as(c_int, -1), mpz_cmp_d(&z, std.math.inf(f64)));
+    try std.testing.expectEqual(@as(c_int, 1), mpz_cmp_d(&z, -std.math.inf(f64)));
+}
+
+test "mpz fits predicates" {
+    var z: mpz_t = undefined;
+    mpz_init(&z);
+    defer mpz_clear(&z);
+
+    mpz_set_ui(&z, 0);
+    try std.testing.expectEqual(@as(c_int, 1), mpz_fits_sint_p(&z));
+    try std.testing.expectEqual(@as(c_int, 1), mpz_fits_slong_p(&z));
+    try std.testing.expectEqual(@as(c_int, 1), mpz_fits_ulong_p(&z));
+
+    mpz_set_si(&z, std.math.maxInt(c_int));
+    try std.testing.expectEqual(@as(c_int, 1), mpz_fits_sint_p(&z));
+    mpz_set_si(&z, std.math.maxInt(c_int));
+    mpz_add_ui(&z, &z, 1);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_fits_sint_p(&z));
+    try std.testing.expectEqual(@as(c_int, 1), mpz_fits_slong_p(&z));
+    mpz_set_si(&z, std.math.minInt(c_int));
+    try std.testing.expectEqual(@as(c_int, 1), mpz_fits_sint_p(&z));
+    mpz_set_si(&z, std.math.minInt(c_int));
+    mpz_sub_ui(&z, &z, 1);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_fits_sint_p(&z));
+
+    mpz_set_si(&z, std.math.maxInt(c_long));
+    try std.testing.expectEqual(@as(c_int, 1), mpz_fits_slong_p(&z));
+    try std.testing.expectEqual(@as(c_int, 1), mpz_fits_ulong_p(&z));
+    mpz_set_si(&z, std.math.minInt(c_long));
+    try std.testing.expectEqual(@as(c_int, 1), mpz_fits_slong_p(&z));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_fits_ulong_p(&z));
+    mpz_set_si(&z, -1);
+    try std.testing.expectEqual(@as(c_int, 1), mpz_fits_slong_p(&z));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_fits_ulong_p(&z));
+
+    mpz_set_ui(&z, std.math.maxInt(c_ulong));
+    try std.testing.expectEqual(@as(c_int, 1), mpz_fits_ulong_p(&z));
+    mpz_add_ui(&z, &z, 1);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_fits_ulong_p(&z));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_fits_slong_p(&z));
 }
