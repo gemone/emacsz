@@ -115,12 +115,13 @@ jobs:
       - name: Basic functional test
         run: |
           if [ -f ./zig-out/bin/temacs.exe ]; then
-            ./zig-out/bin/temacs.exe --batch --eval "(progn (message \"Zig build working!\") (kill-emacs 0))" || echo "Windows smoke test failed (expected during development)"
+            # Explicit dump file: the default-search path is the build
+            # tree's lib-src (PATH_EXEC), not the executable directory.
+            ./zig-out/bin/temacs.exe --batch --dump-file=./zig-out/bin/bootstrap-emacs.pdmp --eval "(progn (message \"Zig build working!\") (kill-emacs 0))"
           else
-            ./zig-out/bin/temacs --batch --eval "(progn (message \"Zig build working!\") (kill-emacs 0))" || echo "Test failed (expected during development)"
+            ./zig-out/bin/temacs --batch --eval "(progn (message \"Zig build working!\") (kill-emacs 0))"
           fi
         shell: bash
-        continue-on-error: true
 
       - name: Upload artifacts (Linux)
         if: matrix.os == 'ubuntu-latest' && matrix.mode == 'ReleaseFast'
