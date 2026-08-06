@@ -5206,7 +5206,7 @@ static const char *const lispy_function_keys[] =
     [95]  = "mode-change",
   };
 
-#elif defined HAVE_NTGUI
+#elif defined HAVE_NTGUI || defined WINDOWSNT
 #define FUNCTION_KEY_OFFSET 0x0
 
 const char *const lispy_function_keys[] =

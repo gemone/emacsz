@@ -4834,9 +4834,12 @@ static int
 compute_hash_index_bits (hash_idx_t size)
 {
   /* An upper bound on the size of a hash table index index.  */
-  hash_idx_t upper_bound = min (MOST_POSITIVE_FIXNUM,
-				min (TYPE_MAXIMUM (hash_idx_t),
-				     PTRDIFF_MAX / sizeof (hash_idx_t)));
+  /* The min folds to TYPE_MAXIMUM (hash_idx_t); cast explicitly so
+     LLP64 hosts (where EMACS_INT is long long) do not trip the
+     constant-narrowing diagnostic on the discarded operand.  */
+  hash_idx_t upper_bound = (hash_idx_t) min (MOST_POSITIVE_FIXNUM,
+					     min (TYPE_MAXIMUM (hash_idx_t),
+						  PTRDIFF_MAX / sizeof (hash_idx_t)));
   /* Use next higher power of 2.  This works even for size=0.  */
   int bits = elogb (size) + 1;
   if (bits >= TYPE_WIDTH (uintmax_t) || ((uintmax_t)1 << bits) > upper_bound)

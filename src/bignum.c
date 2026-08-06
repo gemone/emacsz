@@ -198,7 +198,10 @@ mpz_set_intmax_slow (mpz_t result, intmax_t v)
   do
     {
       limb[n++] = u;
-      u = GMP_NUMB_BITS < UINTMAX_WIDTH ? u >> GMP_NUMB_BITS : 0;
+      /* Mask the shift count so an exactly-full limb width (64-bit
+	 limbs on LLP64 hosts) shifts by 0 instead of invoking UB in
+	 the dead branch.  */
+      u = GMP_NUMB_BITS < UINTMAX_WIDTH ? u >> (GMP_NUMB_BITS & (UINTMAX_WIDTH - 1)) : 0;
     }
   while (u != 0);
 
@@ -214,7 +217,7 @@ mpz_set_uintmax_slow (mpz_t result, uintmax_t v)
   do
     {
       limb[n++] = v;
-      v = GMP_NUMB_BITS < INTMAX_WIDTH ? v >> GMP_NUMB_BITS : 0;
+      v = GMP_NUMB_BITS < INTMAX_WIDTH ? v >> (GMP_NUMB_BITS & (INTMAX_WIDTH - 1)) : 0;
     }
   while (v != 0);
 
