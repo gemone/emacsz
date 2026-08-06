@@ -10,9 +10,9 @@
 //
 // Implemented so far: mpz lifecycle, conversions, comparison, add/sub/mul,
 // two-power shifts, size queries, the full division family (truncated,
-// floored, ceiling, single-limb and exact), and pow/gcd/addmul/submul.
-// The remaining surface (import/export, limbs API, bitwise ops, strings)
-// lands in follow-up slices.
+// floored, ceiling, single-limb and exact), pow/gcd/addmul/submul,
+// and bitwise ops. The remaining surface (import/export, limbs API,
+// strings and doubles) lands in follow-up slices.
 
 const std = @import("std");
 
@@ -1011,6 +1011,184 @@ pub export fn mpz_gcd(rop: *mpz_t, a: *const mpz_t, b: *const mpz_t) void {
     mpz_set(rop, &x);
 }
 
+// ---------- bitwise ops ----------
+
+// D = |a| op |b| (magnitudes only), committed with a positive sign.
+fn magBitwise(rop: *mpz_t, a: *const mpz_t, b: *const mpz_t, kind: enum { band, bor, bxor }) void {
+    const an = limbCount(a);
+    const bn = limbCount(b);
+    const n = switch (kind) {
+        .band => @min(an, bn),
+        else => @max(an, bn),
+    };
+    if (n == 0) {
+        ensureCapacity(rop, 1);
+        rop._mp_size = 0;
+        return;
+    }
+    const res = allocLimbs(n) orelse oom();
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const av: u64 = if (i < an) a._mp_d.?[i] else 0;
+        const bv: u64 = if (i < bn) b._mp_d.?[i] else 0;
+        res[i] = switch (kind) {
+            .band => av & bv,
+            .bor => av | bv,
+            .bxor => av ^ bv,
+        };
+    }
+    var used = n;
+    while (used > 0 and res[used - 1] == 0) used -= 1;
+    commit(rop, res, n, used, 1);
+}
+
+// The and/ior/xor family follows GMP's infinite two's-complement model:
+// a negative operand -X acts as ~(X - 1). The four sign combinations
+// reduce to magnitude ops plus at most one subtract and one increment.
+pub export fn mpz_and(rop: *mpz_t, a: *const mpz_t, b: *const mpz_t) void {
+    const na = signOf(a) < 0;
+    const nb = signOf(b) < 0;
+    var x: mpz_t = undefined;
+    var y: mpz_t = undefined;
+    mpz_init(&x);
+    mpz_init(&y);
+    defer mpz_clear(&x);
+    defer mpz_clear(&y);
+    mpz_abs(&x, a);
+    mpz_abs(&y, b);
+    if (na) mpz_sub_ui(&x, &x, 1);
+    if (nb) mpz_sub_ui(&y, &y, 1);
+    if (!na and !nb) {
+        magBitwise(rop, &x, &y, .band);
+    } else if (na and nb) {
+        // ~X & ~Y = ~(X | Y) = -(X | Y) - 1
+        magBitwise(rop, &x, &y, .bor);
+        mpz_add_ui(rop, rop, 1);
+        mpz_neg(rop, rop);
+    } else {
+        // ~X & Y = Y - (X & Y) (and symmetrically)
+        magBitwise(rop, &x, &y, .band);
+        if (na) mpz_sub(rop, &y, rop) else mpz_sub(rop, &x, rop);
+    }
+}
+
+pub export fn mpz_ior(rop: *mpz_t, a: *const mpz_t, b: *const mpz_t) void {
+    const na = signOf(a) < 0;
+    const nb = signOf(b) < 0;
+    var x: mpz_t = undefined;
+    var y: mpz_t = undefined;
+    mpz_init(&x);
+    mpz_init(&y);
+    defer mpz_clear(&x);
+    defer mpz_clear(&y);
+    mpz_abs(&x, a);
+    mpz_abs(&y, b);
+    if (na) mpz_sub_ui(&x, &x, 1);
+    if (nb) mpz_sub_ui(&y, &y, 1);
+    if (!na and !nb) {
+        magBitwise(rop, &x, &y, .bor);
+    } else if (na and nb) {
+        // ~X | ~Y = ~(X & Y) = -(X & Y) - 1
+        magBitwise(rop, &x, &y, .band);
+        mpz_add_ui(rop, rop, 1);
+        mpz_neg(rop, rop);
+    } else {
+        // ~X | Y = ~(X & ~Y) = -(X - (X & Y)) - 1
+        magBitwise(rop, &x, &y, .band);
+        if (na) mpz_sub(rop, &x, rop) else mpz_sub(rop, &y, rop);
+        mpz_add_ui(rop, rop, 1);
+        mpz_neg(rop, rop);
+    }
+}
+
+pub export fn mpz_xor(rop: *mpz_t, a: *const mpz_t, b: *const mpz_t) void {
+    const na = signOf(a) < 0;
+    const nb = signOf(b) < 0;
+    var x: mpz_t = undefined;
+    var y: mpz_t = undefined;
+    mpz_init(&x);
+    mpz_init(&y);
+    defer mpz_clear(&x);
+    defer mpz_clear(&y);
+    mpz_abs(&x, a);
+    mpz_abs(&y, b);
+    if (na) mpz_sub_ui(&x, &x, 1);
+    if (nb) mpz_sub_ui(&y, &y, 1);
+    if (na == nb) {
+        // X ^ Y, or ~X ^ ~Y = X ^ Y
+        magBitwise(rop, &x, &y, .bxor);
+    } else {
+        // ~X ^ Y = ~(X ^ Y) = -(X ^ Y) - 1
+        magBitwise(rop, &x, &y, .bxor);
+        mpz_add_ui(rop, rop, 1);
+        mpz_neg(rop, rop);
+    }
+}
+
+// ROP = ~A = -A - 1.
+pub export fn mpz_com(rop: *mpz_t, a: *const mpz_t) void {
+    var t: mpz_t = undefined;
+    mpz_init(&t);
+    defer mpz_clear(&t);
+    mpz_neg(&t, a);
+    mpz_sub_ui(&t, &t, 1);
+    mpz_set(rop, &t);
+}
+
+pub export fn mpz_odd_p(a: *const mpz_t) c_int {
+    if (signOf(a) == 0) return 0;
+    return if (a._mp_d.?[0] & 1 == 1) 1 else 0;
+}
+
+// GMP defines popcount on the two's-complement representation, which is
+// infinite for negatives; it returns ULONG_MAX in that case.
+pub export fn mpz_popcount(a: *const mpz_t) c_ulong {
+    if (signOf(a) < 0) return std.math.maxInt(c_ulong);
+    const an = limbCount(a);
+    var count: c_ulong = 0;
+    var i: usize = 0;
+    while (i < an) : (i += 1) count += @popCount(a._mp_d.?[i]);
+    return count;
+}
+
+// Scan LIMBS for the first set bit at or after START, treating the limbs
+// as complemented when NEG (the two's complement of a negative value).
+fn scanLimbBits(neg: bool, limbs: [*]const mp_limb_t, an: usize, start: mp_bitcnt_t) c_ulong {
+    const start_limb: usize = @intCast(start / GMP_NUMB_BITS);
+    const start_bit: u6 = @intCast(start % GMP_NUMB_BITS);
+    var i = start_limb;
+    while (i <= an) : (i += 1) {
+        var limb: u64 = 0;
+        if (i < an) {
+            limb = if (neg) ~limbs[i] else limbs[i];
+        } else {
+            if (!neg) break;
+            limb = std.math.maxInt(u64);
+        }
+        const skip: u6 = if (i == start_limb) start_bit else 0;
+        const shifted = limb >> skip;
+        if (shifted != 0) {
+            const idx: u6 = @intCast(@ctz(shifted));
+            return @intCast(i * GMP_NUMB_BITS + @as(usize, skip) + idx);
+        }
+        if (i == an) break; // negative: the infinite 1s start here
+    }
+    return std.math.maxInt(c_ulong);
+}
+
+// Index of the first set bit at or after START in the two's-complement
+// representation, or ULONG_MAX when none exists.
+pub export fn mpz_scan1(a: *const mpz_t, start: mp_bitcnt_t) c_ulong {
+    const an = limbCount(a);
+    if (signOf(a) >= 0) return scanLimbBits(false, a._mp_d.?, an, start);
+    var t: mpz_t = undefined;
+    mpz_init(&t);
+    defer mpz_clear(&t);
+    mpz_abs(&t, a);
+    mpz_sub_ui(&t, &t, 1); // two's complement of -x is ~(x - 1)
+    return scanLimbBits(true, t._mp_d.?, limbCount(&t), start);
+}
+
 // Test helper: build a magnitude from LIMBS pseudo-random limbs.
 fn rndMagTest(z: *mpz_t, limbs: usize, seed: *u64) void {
     mpz_set_ui(z, 0);
@@ -1554,4 +1732,95 @@ test "mpz addmul submul" {
     mpz_set_ui(&chk, 4);
     mpz_mul_2exp(&chk, &chk, 128);
     try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&r, &chk));
+}
+
+test "mpz bitwise and ior xor com" {
+    var a: mpz_t = undefined;
+    var b: mpz_t = undefined;
+    var r: mpz_t = undefined;
+    var chk: mpz_t = undefined;
+    mpz_init(&a);
+    mpz_init(&b);
+    mpz_init(&r);
+    mpz_init(&chk);
+    defer mpz_clear(&a);
+    defer mpz_clear(&b);
+    defer mpz_clear(&r);
+    defer mpz_clear(&chk);
+
+    mpz_set_si(&a, -1);
+    mpz_set_si(&b, 12);
+    mpz_and(&r, &a, &b);
+    try std.testing.expectEqual(@as(i64, 12), mpz_get_si(&r));
+    mpz_set_si(&a, -5);
+    mpz_and(&r, &a, &b);
+    try std.testing.expectEqual(@as(i64, 8), mpz_get_si(&r));
+    mpz_set_si(&b, -12);
+    mpz_and(&r, &a, &b);
+    try std.testing.expectEqual(@as(i64, -16), mpz_get_si(&r));
+    mpz_set_si(&b, 12);
+    mpz_ior(&r, &a, &b);
+    try std.testing.expectEqual(@as(i64, -1), mpz_get_si(&r));
+    mpz_set_si(&b, -12);
+    mpz_ior(&r, &a, &b);
+    try std.testing.expectEqual(@as(i64, -1), mpz_get_si(&r));
+    mpz_set_si(&b, 12);
+    mpz_xor(&r, &a, &b);
+    try std.testing.expectEqual(@as(i64, -9), mpz_get_si(&r));
+    mpz_set_si(&b, -12);
+    mpz_xor(&r, &a, &b);
+    try std.testing.expectEqual(@as(i64, 15), mpz_get_si(&r));
+    mpz_set_si(&a, -5);
+    mpz_com(&r, &a);
+    try std.testing.expectEqual(@as(i64, 4), mpz_get_si(&r));
+    mpz_set_si(&a, 5);
+    mpz_com(&r, &a);
+    try std.testing.expectEqual(@as(i64, -6), mpz_get_si(&r));
+
+    // Multi-limb: (2^128 - 1) & (2^64 + 1) = 2^64 + 1; mixed-sign case.
+    mpz_set_ui(&a, 1);
+    mpz_mul_2exp(&a, &a, 128);
+    mpz_sub_ui(&a, &a, 1);
+    mpz_set_ui(&b, 1);
+    mpz_mul_2exp(&b, &b, 64);
+    mpz_add_ui(&b, &b, 1);
+    mpz_and(&r, &a, &b);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&r, &b));
+    mpz_neg(&a, &a); // a = -(2^128 - 1)
+    mpz_and(&r, &a, &b); // ~(2^128 - 2) & (2^64 + 1) = 1 (only bit 0)
+    try std.testing.expectEqual(@as(u64, 1), mpz_get_ui(&r));
+    mpz_ior(&r, &a, &a);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&r, &a));
+    mpz_xor(&r, &a, &a);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_sgn(&r));
+}
+
+test "mpz popcount scan1 odd" {
+    var a: mpz_t = undefined;
+    mpz_init(&a);
+    defer mpz_clear(&a);
+
+    mpz_set_si(&a, -1);
+    try std.testing.expectEqual(@as(c_ulong, std.math.maxInt(c_ulong)), mpz_popcount(&a));
+    try std.testing.expectEqual(@as(c_ulong, 0), mpz_scan1(&a, 0));
+    try std.testing.expectEqual(@as(c_int, 1), mpz_odd_p(&a));
+    mpz_set_si(&a, -2);
+    try std.testing.expectEqual(@as(c_ulong, 1), mpz_scan1(&a, 0));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_odd_p(&a));
+    mpz_set_si(&a, -5);
+    try std.testing.expectEqual(@as(c_ulong, 0), mpz_scan1(&a, 0));
+    mpz_set_si(&a, -8);
+    try std.testing.expectEqual(@as(c_ulong, 3), mpz_scan1(&a, 0));
+    mpz_set_si(&a, 7);
+    try std.testing.expectEqual(@as(c_ulong, 3), mpz_popcount(&a));
+    try std.testing.expectEqual(@as(c_ulong, 0), mpz_scan1(&a, 0));
+    try std.testing.expectEqual(@as(c_int, 1), mpz_odd_p(&a));
+    mpz_set_si(&a, 0);
+    try std.testing.expectEqual(@as(c_ulong, 0), mpz_popcount(&a));
+    try std.testing.expectEqual(@as(c_ulong, std.math.maxInt(c_ulong)), mpz_scan1(&a, 0));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_odd_p(&a));
+    mpz_set_si(&a, 100);
+    try std.testing.expectEqual(@as(c_ulong, 3), mpz_popcount(&a));
+    try std.testing.expectEqual(@as(c_ulong, 2), mpz_scan1(&a, 0));
+    try std.testing.expectEqual(@as(c_ulong, 5), mpz_scan1(&a, 3));
 }
