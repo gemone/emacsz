@@ -907,6 +907,12 @@ pub fn build(b: *std.Build) void {
         \\else
         \\  ./temacs -batch -l loadup --temacs=pbootstrap
         \\fi
+        \\# Make the binary self-contained like upstream's dumped emacs:
+        \\# load_pdump auto-loads "<argv0>.pdmp" from the executable's
+        \\# directory, so subprocess re-invocations (e.g. gv-tests running
+        \\# (concat invocation-directory invocation-name)) start the dumped
+        \\# emacs instead of re-loading loadup from source.
+        \\ln -sfn bootstrap-emacs.pdmp "$ROOT/zig-out/bin/temacs.pdmp"
     ;
     const run_dump = b.addSystemCommand(&[_][]const u8{ "sh", "-c", dump_script });
     run_dump.setCwd(b.path("."));
