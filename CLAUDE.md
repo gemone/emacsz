@@ -74,7 +74,8 @@ This repository contains GNU Emacs with an ongoing effort to modernize the build
   `aarch64-linux-musl` link fully static binaries with zero system
   libraries (the feature libs are undef'd by the target config;
   `src/termcap.c` supplies the terminal capabilities), verified to run
-  `--batch` + bignum arithmetic.
+  the entire built-in suite: `zig build -Dtarget=x86_64-linux-musl
+  check` runs all 582 ert tests with 0 unexpected (2 locale skips).
 - Windows: `zig build -Dtarget=x86_64-windows-gnu` compiles every
   shared C source and the w32 console modules and links temacs.exe
   (console/keyboard/registry implemented, GUI out of scope); runtime
