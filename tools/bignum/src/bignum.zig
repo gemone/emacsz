@@ -12,7 +12,8 @@
 // two-power shifts, size queries, the full division family (truncated,
 // floored, ceiling, single-limb and exact), pow/gcd/addmul/submul,
 // bitwise ops, the limbs API and byte import/export. The remaining
-// surface (strings and doubles) lands in follow-up slices.
+// surface (string conversion) lands in this slice; doubles and fit
+// predicates follow in the next one.
 
 const std = @import("std");
 
@@ -1312,6 +1313,130 @@ pub export fn mpz_export(rop: ?*anyopaque, countp: ?*usize, order: c_int, size: 
     return rop;
 }
 
+// ---------- string conversion ----------
+
+// Digit value of byte C in the given BASE (2..62), matching GMP:
+// '0'-'9' are 0-9, and for bases <= 36 both letter cases are 10-35,
+// while for bases 37..62 'A'-'Z' are 10-35 and 'a'-'z' are 36-61.
+fn digitToVal(c: u8, base: usize) ?u8 {
+    const v: u8 = switch (c) {
+        '0'...'9' => c - '0',
+        'a'...'z' => if (base <= 36) c - 'a' + 10 else c - 'a' + 36,
+        'A'...'Z' => c - 'A' + 10,
+        else => return null,
+    };
+    return if (v < base) v else null;
+}
+
+// Character for digit value V in the given BASE; UPPER selects
+// upper-case letters for bases 2..36 (GMP's negative-base behavior).
+fn digitToChar(v: u8, base: usize, upper: bool) u8 {
+    if (v < 10) return '0' + v;
+    if (base <= 36) return @as(u8, if (upper) 'A' else 'a') + (v - 10);
+    // Bases 37..62 always use 'A'-'Z' for 10..35 then 'a'-'z'.
+    return @as(u8, if (v <= 35) 'A' else 'a') + (if (v <= 35) v - 10 else v - 36);
+}
+
+// Parse STR as a base-BASE integer into ROP, matching GMP's mpz_set_str:
+// leading/trailing whitespace is skipped, whitespace between digits is
+// ignored, a single leading '-' is allowed (no '+'), base 0 detects the
+// 0x/0X, 0b/0B and leading-0 (octal) prefixes, any other non-digit makes
+// the whole parse fail (returning -1 and leaving ROP untouched), and a
+// bare "0x"/"0b" prefix parses as zero. BASE may be 0 or 2..62.
+pub export fn mpz_set_str(rop: *mpz_t, str: [*:0]const u8, base_in: c_int) c_int {
+    if (base_in < 0 or base_in > 62 or base_in == 1) return -1;
+    var base: usize = @intCast(base_in);
+    var p = str;
+    while (std.ascii.isWhitespace(p[0])) p += 1;
+    var neg = false;
+    if (p[0] == '-') {
+        neg = true;
+        p += 1;
+    }
+    var prefix = false;
+    if (base == 0) {
+        if (p[0] == '0' and (p[1] == 'x' or p[1] == 'X')) {
+            base = 16;
+            prefix = true;
+            p += 2;
+        } else if (p[0] == '0' and (p[1] == 'b' or p[1] == 'B')) {
+            base = 2;
+            prefix = true;
+            p += 2;
+        } else if (p[0] == '0') {
+            base = 8;
+        } else {
+            base = 10;
+        }
+    }
+    var have_digit = false;
+    var acc: mpz_t = undefined;
+    mpz_init(&acc);
+    defer mpz_clear(&acc);
+    while (true) {
+        const c = p[0];
+        if (c == 0) break;
+        if (std.ascii.isWhitespace(c)) {
+            p += 1;
+            continue;
+        }
+        const v = digitToVal(c, base) orelse return -1;
+        have_digit = true;
+        mpz_mul_ui(&acc, &acc, base);
+        mpz_add_ui(&acc, &acc, v);
+        p += 1;
+    }
+    if (!have_digit and !prefix) return -1;
+    if (neg) mpz_neg(&acc, &acc);
+    mpz_swap(rop, &acc);
+    return 0;
+}
+
+// Convert OP to a base-BASE string into STR (allocated via the memory
+// callbacks when STR is null), matching GMP: negative BASE means
+// upper-case digits, the buffer needs mpz_sizeinbase + 2 bytes, and the
+// returned pointer is STR (or the freshly allocated buffer).
+pub export fn mpz_get_str(str: ?[*]u8, base_in: c_int, op: *const mpz_t) ?[*]u8 {
+    const upper = base_in < 0;
+    const base: usize = if (base_in < 0) @intCast(-base_in) else @intCast(base_in);
+    if (base < 2 or base > 62) return null;
+    const cap: usize = @intCast(mpz_sizeinbase(op, @intCast(base)) + 2);
+    var owned = false;
+    var buf: [*]u8 = undefined;
+    if (str) |s| {
+        buf = s;
+    } else {
+        buf = @ptrCast(g_alloc(cap) orelse oom());
+        owned = true;
+    }
+    var end = buf + cap - 1;
+    end[0] = 0;
+    var p = end;
+    var t: mpz_t = undefined;
+    mpz_init(&t);
+    defer mpz_clear(&t);
+    mpz_abs(&t, op);
+    while (limbCount(&t) != 0) {
+        const v: u8 = @intCast(mpz_fdiv_q_ui(&t, &t, base));
+        p -= 1;
+        p[0] = digitToChar(v, base, upper);
+    }
+    if (p == end) {
+        p -= 1;
+        p[0] = '0';
+    }
+    if (op._mp_size < 0) {
+        p -= 1;
+        p[0] = '-';
+    }
+    if (p != buf) {
+        const len = end - p;
+        std.mem.copyForwards(u8, buf[0..len], p[0..len]);
+        buf[len] = 0;
+    }
+    return if (owned) buf else str;
+}
+
 // Test helper: build a magnitude from LIMBS pseudo-random limbs.
 fn rndMagTest(z: *mpz_t, limbs: usize, seed: *u64) void {
     mpz_set_ui(z, 0);
@@ -2037,4 +2162,85 @@ test "mpz import export round trips" {
     _ = mpz_export(&scratch, &n, -1, 8, 0, 0, &z);
     try std.testing.expectEqual(@as(usize, 0), n);
     try std.testing.expectEqual(@as(u8, 0xAA), scratch[0]);
+}
+
+test "mpz set_str get_str" {
+    var z: mpz_t = undefined;
+    var chk: mpz_t = undefined;
+    mpz_init(&z);
+    mpz_init(&chk);
+    defer mpz_clear(&z);
+    defer mpz_clear(&chk);
+
+    // Round trip a signed value through every base 2..36 and base 62.
+    mpz_set_si(&z, -1234567);
+    var base: c_int = 2;
+    while (base <= 36) : (base += 1) {
+        var buf: [64:0]u8 = undefined;
+        const s = mpz_get_str(&buf, base, &z);
+        try std.testing.expect(s == &buf);
+        try std.testing.expectEqual(@as(c_int, 0), mpz_set_str(&chk, @as([*:0]const u8, @ptrCast(s.?)), base));
+        try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&z, &chk));
+    }
+    var buf62: [16:0]u8 = undefined;
+    _ = mpz_get_str(&buf62, 62, &z);
+    try std.testing.expectEqualStrings("-5BAN", std.mem.span(@as([*:0]const u8, @ptrCast(&buf62))));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_set_str(&chk, @as([*:0]const u8, @ptrCast(&buf62)), 62));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&z, &chk));
+
+    // Negative base prints upper-case digits; zero prints "0".
+    _ = mpz_set_str(&z, "-255", 10);
+    var buf: [16:0]u8 = undefined;
+    _ = mpz_get_str(&buf, -16, &z);
+    try std.testing.expectEqualStrings("-FF", std.mem.span(@as([*:0]const u8, @ptrCast(&buf))));
+    mpz_set_ui(&z, 0);
+    _ = mpz_get_str(&buf, 10, &z);
+    try std.testing.expectEqualStrings("0", std.mem.span(@as([*:0]const u8, @ptrCast(&buf))));
+
+    // NULL buffer allocates via the memory callbacks and parses back.
+    _ = mpz_set_str(&z, "12345678901234567890", 10);
+    const s2 = mpz_get_str(null, 10, &z).?;
+    try std.testing.expectEqualStrings("12345678901234567890", std.mem.span(@as([*:0]const u8, @ptrCast(s2))));
+    g_free(s2, @as(usize, @intCast(mpz_sizeinbase(&z, 10) + 2)));
+
+    // Base 0 auto-detects 0x/0X, 0b/0B and leading-zero octal.
+    _ = mpz_set_str(&chk, "16", 10);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_set_str(&z, "0x10", 0));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&z, &chk));
+    _ = mpz_set_str(&chk, "5", 10);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_set_str(&z, "0b101", 0));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&z, &chk));
+    _ = mpz_set_str(&chk, "8", 10);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_set_str(&z, "010", 0));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&z, &chk));
+    _ = mpz_set_str(&chk, "-16", 10);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_set_str(&z, "-0x10", 0));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&z, &chk));
+
+    // Whitespace is skipped (leading, trailing and between digits);
+    // a bare 0x/0b prefix is zero; '+' and stray non-digits fail.
+    _ = mpz_set_str(&chk, "-123", 10);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_set_str(&z, "  -123  ", 10));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&z, &chk));
+    _ = mpz_set_str(&chk, "1234", 10);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_set_str(&z, "12 34", 10));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&z, &chk));
+    mpz_set_ui(&chk, 0);
+    try std.testing.expectEqual(@as(c_int, 0), mpz_set_str(&z, "0x", 0));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&z, &chk));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_set_str(&z, "0b", 0));
+    try std.testing.expectEqual(@as(c_int, 0), mpz_cmp(&z, &chk));
+
+    // Failures leave ROP unchanged.
+    mpz_set_ui(&z, 42);
+    try std.testing.expectEqual(@as(c_int, -1), mpz_set_str(&z, "123abc", 10));
+    try std.testing.expectEqual(@as(c_int, -1), mpz_set_str(&z, "+42", 10));
+    try std.testing.expectEqual(@as(c_int, -1), mpz_set_str(&z, "09", 0));
+    try std.testing.expectEqual(@as(c_int, -1), mpz_set_str(&z, "123.5", 10));
+    try std.testing.expectEqual(@as(c_int, -1), mpz_set_str(&z, "", 10));
+    try std.testing.expectEqual(@as(c_int, -1), mpz_set_str(&z, "-", 10));
+    try std.testing.expectEqual(@as(c_int, -1), mpz_set_str(&z, "1", 1));
+    try std.testing.expectEqual(@as(c_int, -1), mpz_set_str(&z, "1", 63));
+    try std.testing.expectEqual(@as(c_int, -1), mpz_set_str(&z, "ff", -16));
+    try std.testing.expectEqual(@as(c_int, 42), mpz_get_si(&z));
 }
