@@ -129,6 +129,14 @@
         .gnulib_careadlinkat = .{
             .path = "tools/gnulib-careadlinkat",
         },
+        // gnulib-dtoastr: gnulib's accurate float-to-string conversion
+        // (dtoastr, lib/ftoastr.c instantiated for double) provided by an
+        // independent Zig package instead of C. Exact digits via zig
+        // std, round-half-even %g formatting and a parseFloat round-trip
+        // check; no libc call. Linked into temacs (backs float printing).
+        .gnulib_dtoastr = .{
+            .path = "tools/gnulib-dtoastr",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw

@@ -708,6 +708,22 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-careadlinkat", .root_module = gnulib_careadlinkat_mod });
     exe.root_module.linkLibrary(gnulib_careadlinkat_lib);
 
+    // gnulib-dtoastr: an independent Zig package (tools/gnulib-dtoastr)
+    // providing gnulib's accurate float-to-string conversion (dtoastr,
+    // lib/ftoastr.c for double), backing float printing in src/print.c.
+    // Replicates the C's shortest-round-trip loop with no libc call:
+    // exact digits from zig std's decimal renderer, round-half-even %g
+    // formatting and a std.fmt.parseFloat round-trip check. Built
+    // ReleaseFast (leaf conversion).
+    const gnulib_dtoastr_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_dtoastr", .{}).path("src/dtoastr.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const gnulib_dtoastr_lib =
+        b.addLibrary(.{ .name = "gnulib-dtoastr", .root_module = gnulib_dtoastr_mod });
+    exe.root_module.linkLibrary(gnulib_dtoastr_lib);
+
     // emacs-time: an independent Zig package (tools/emacs-time) providing
     // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
     // would otherwise provide, via per-platform NATIVE backends with no libc:
@@ -1594,6 +1610,12 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // the C source is not compiled; the package's exported symbol is
         // linked into temacs below (`file-symlink-p', `file-truename').
         "careadlinkat",
+        // lib/dtoastr.c (the LENGTH-2 instantiation of lib/ftoastr.c) is
+        // provided by an independent Zig package (tools/gnulib-dtoastr,
+        // dependency `gnulib_dtoastr`) -- native Zig dtoastr. Excluded
+        // here so the C source is not compiled; the package's exported
+        // symbol is linked into temacs below (float printing).
+        "dtoastr",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native
