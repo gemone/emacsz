@@ -266,6 +266,28 @@ pub fn build(b: *std.Build) void {
         const linux_doc_sources = [_][]const u8{ "dbusbind.c", "dynlib.c", "inotify.c" };
         for (linux_doc_sources) |name| run_mdf.addArg(name);
     }
+    // The w32 modules are compiled into the Windows build, so their
+    // EXFUN/DEFVAR/DEFSYM declarations must reach globals.h too,
+    // otherwise the C sources that use those symbols before defining
+    // them fail with "use of undeclared identifier".  Mirrors the
+    // Linux-only DEFSYM re-add above (make-docfile -g scans only the
+    // files it is given).  w32dwrite.c carries no Lisp-visible symbols
+    // today but is included for parity with the compile gate.
+    if (target.result.os.tag == .windows) {
+        const windows_doc_sources = [_][]const u8{
+            "w32.c", "w32console.c", "w32heap.c",
+            "w32proc.c", "w32reg.c", "w32dwrite.c",
+            "w32font.c",
+            // w32fns.c carries the Vw32_* key-modifier DEFVARs that
+            // w32inevt.c (the console input layer) reads; scan it for
+            // symbols even though the GUI module itself is not built.
+            "w32fns.c",
+            // w32term.c DEFVARs Vw32_recognize_altgr, also read by
+            // w32inevt.c.
+            "w32term.c",
+        };
+        for (windows_doc_sources) |name| run_mdf.addArg(name);
+    }
     const globals_h = run_mdf.captureStdOut(.{ .basename = "globals.h" });
 
     const gen_globals_step = b.step("generate-globals", "Generate src/globals.h via make-docfile");
@@ -602,7 +624,11 @@ pub fn build(b: *std.Build) void {
     });
     const gnulib_nproc_lib =
         b.addLibrary(.{ .name = "gnulib-nproc", .root_module = gnulib_nproc_mod });
-    exe.root_module.linkLibrary(gnulib_nproc_lib);
+    // w32.c provides num_processors/list_system_processes itself on
+    // Windows, so skip the package there (it stays in the cross-compile
+    // gate); linking both would duplicate the symbols.
+    if (target.result.os.tag != .windows)
+        exe.root_module.linkLibrary(gnulib_nproc_lib);
 
     // gnulib-tempname: an independent Zig package (tools/gnulib-tempname)
     // providing gnulib's temporary-name generation (gen_tempname /
@@ -654,7 +680,9 @@ pub fn build(b: *std.Build) void {
     });
     const gnulib_getloadavg_lib =
         b.addLibrary(.{ .name = "gnulib-getloadavg", .root_module = gnulib_getloadavg_mod });
-    exe.root_module.linkLibrary(gnulib_getloadavg_lib);
+    // w32.c provides getloadavg itself on Windows.
+    if (target.result.os.tag != .windows)
+        exe.root_module.linkLibrary(gnulib_getloadavg_lib);
 
     // gnulib-careadlinkat: an independent Zig package
     // (tools/gnulib-careadlinkat) providing gnulib's symlink reader
@@ -671,7 +699,9 @@ pub fn build(b: *std.Build) void {
     });
     const gnulib_careadlinkat_lib =
         b.addLibrary(.{ .name = "gnulib-careadlinkat", .root_module = gnulib_careadlinkat_mod });
-    exe.root_module.linkLibrary(gnulib_careadlinkat_lib);
+    // w32.c provides careadlinkat itself on Windows.
+    if (target.result.os.tag != .windows)
+        exe.root_module.linkLibrary(gnulib_careadlinkat_lib);
 
     // gnulib-dtoastr: an independent Zig package (tools/gnulib-dtoastr)
     // providing gnulib's accurate float-to-string conversion (dtoastr,
@@ -755,7 +785,9 @@ pub fn build(b: *std.Build) void {
     });
     const gnulib_acl_lib =
         b.addLibrary(.{ .name = "gnulib-acl", .root_module = gnulib_acl_mod });
-    exe.root_module.linkLibrary(gnulib_acl_lib);
+    // w32.c provides the acl_* emulation itself on Windows.
+    if (target.result.os.tag != .windows)
+        exe.root_module.linkLibrary(gnulib_acl_lib);
 
     // gnulib-time-rz: an independent Zig package (tools/gnulib-time-rz)
     // providing gnulib's time zone management (tzalloc / tzfree /
@@ -797,7 +829,10 @@ pub fn build(b: *std.Build) void {
     });
     const gnulib_io_lib =
         b.addLibrary(.{ .name = "gnulib-io", .root_module = gnulib_io_mod });
-    exe.root_module.linkLibrary(gnulib_io_lib);
+    // w32.c provides rpl_pipe2 itself on Windows; close_stream and
+    // set_binary_mode come from lib/close-stream.c and lib/binary-io.c.
+    if (target.result.os.tag != .windows)
+        exe.root_module.linkLibrary(gnulib_io_lib);
 
     // emacs-time: an independent Zig package (tools/emacs-time) providing
     // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
@@ -1049,6 +1084,13 @@ pub fn build(b: *std.Build) void {
         for (base_sources) |src| {
             const flags: []const []const u8 =
                 if (std.mem.eql(u8, src, "src/timefns.c")) timefns_flags else base_flags;
+            // w32console.c provides the terminal-emulation layer itself:
+            // the cm.c cursor-motion globals and the termcap.c sys_* IO
+            // functions (upstream sets CM_OBJ= on MinGW and never builds
+            // termcap.o there; see configure.ac / src/Makefile.in).
+            if (std.mem.eql(u8, src, "src/cm.c") or
+                std.mem.eql(u8, src, "src/termcap.c"))
+                continue;
             exe.root_module.addCSourceFile(.{
                 .file = b.path(src),
                 .flags = flags,
@@ -1103,6 +1145,27 @@ pub fn build(b: *std.Build) void {
             "lib/w32/stpcpy.c",
             "lib/w32/fpending.c",
             "lib/w32/strsignal.c",
+            "lib/w32/time_r.c",
+        }) |w32src| {
+            exe.root_module.addCSourceFile(.{
+                .file = b.path(w32src),
+                .flags = libgnu_flags,
+            });
+        }
+
+        // Windows console build: the w32 native modules.  GUI-only
+        // modules (w32fns/w32term/w32menu/w32select/w32font/...) are
+        // intentionally omitted; the few GUI symbols they would provide
+        // are stubbed by w32-stubs.c instead.
+        for ([_][]const u8{
+            "src/w32.c",
+            "src/w32console.c",
+            "src/w32heap.c",
+            "src/w32inevt.c",
+            "src/w32proc.c",
+            "src/w32reg.c",
+            "src/w32dwrite.c",
+            "src/w32-stubs.c",
         }) |w32src| {
             exe.root_module.addCSourceFile(.{
                 .file = b.path(w32src),
@@ -1154,12 +1217,16 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("ncurses", .{});
     } else {
         // Windows: getrandom (lib/getrandom.c) uses BCryptGenRandom;
-        // sockets and the console UI need ws2_32/kernel32/user32/gdi32.
+        // sockets and the console UI need ws2_32/kernel32/user32/gdi32;
+        // winmm (sound.c mci/waveOut/PlaySound) and mpr (WNet* network
+        // shares in w32.c) mirror upstream's W32_LIBS.
         exe.root_module.linkSystemLibrary("bcrypt", .{});
         exe.root_module.linkSystemLibrary("ws2_32", .{});
         exe.root_module.linkSystemLibrary("kernel32", .{});
         exe.root_module.linkSystemLibrary("user32", .{});
         exe.root_module.linkSystemLibrary("gdi32", .{});
+        exe.root_module.linkSystemLibrary("winmm", .{});
+        exe.root_module.linkSystemLibrary("mpr", .{});
     }
 
     // Install the executable
