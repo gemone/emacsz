@@ -1026,6 +1026,9 @@ pub fn build(b: *std.Build) void {
             // (EMACS_INT is 64-bit long long on Windows) and harmless.
             "-Wno-tautological-constant-out-of-range-compare",
             "-Wno-initializer-overrides",
+            "-Wno-pointer-sign",
+            "-Wno-implicit-const-int-float-conversion",
+            "-Demacs",
             "-D_GNU_SOURCE",
             "-DHAVE_CONFIG_H",
             "-I.",
@@ -1059,6 +1062,9 @@ pub fn build(b: *std.Build) void {
         "-fno-strict-aliasing",
             "-Wno-tautological-constant-out-of-range-compare",
             "-Wno-initializer-overrides",
+            "-Wno-pointer-sign",
+            "-Wno-implicit-const-int-float-conversion",
+            "-Demacs",
             "-D_GNU_SOURCE",
             "-DHAVE_CONFIG_H",
             "-I.",
@@ -1081,7 +1087,8 @@ pub fn build(b: *std.Build) void {
                 std.mem.eql(u8, src, "lib/issymlink.c") or
                 std.mem.eql(u8, src, "lib/issymlinkat.c") or
                 std.mem.eql(u8, src, "lib/malloc.c") or
-                std.mem.eql(u8, src, "lib/realloc.c"))
+                std.mem.eql(u8, src, "lib/realloc.c") or
+                std.mem.eql(u8, src, "lib/fpending.c"))
                 continue;
             exe.root_module.addCSourceFile(.{
                 .file = b.path(src),
@@ -1089,12 +1096,19 @@ pub fn build(b: *std.Build) void {
             });
         }
 
-        // Windows-only shim implementations (mingw lacks glibc's
-        // execinfo backtrace family).
-        exe.root_module.addCSourceFile(.{
-            .file = b.path("lib/w32/execinfo.c"),
-            .flags = libgnu_flags,
-        });
+        // Windows-only shim implementations: execinfo (backtrace
+        // stubs), stpcpy and __fpending that mingw lacks.
+        for ([_][]const u8{
+            "lib/w32/execinfo.c",
+            "lib/w32/stpcpy.c",
+            "lib/w32/fpending.c",
+            "lib/w32/strsignal.c",
+        }) |w32src| {
+            exe.root_module.addCSourceFile(.{
+                .file = b.path(w32src),
+                .flags = libgnu_flags,
+            });
+        }
     }
 
     // Link system libraries (phase 2: based on src/Makefile)
