@@ -4395,7 +4395,7 @@ treesit_traverse_sibling_helper (TSTreeCursor *cursor,
       return false;
     }
   else /* Backward.  */
-#ifdef HAVE_TS_TREE_CURSOR_GOTO_PREVIOUS_SIBLING
+#if defined HAVE_TS_TREE_CURSOR_GOTO_PREVIOUS_SIBLING && TREE_SITTER_LANGUAGE_VERSION >= 15
     {
       if (!named)
 	return ts_tree_cursor_goto_previous_sibling (cursor);
