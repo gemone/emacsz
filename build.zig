@@ -805,6 +805,44 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.linkLibrary(emacs_nanosleep_lib);
 
+    // Cross-platform gate: compile every independent Zig package for the
+    // current target without the C-based temacs exe. The gnulib and
+    // os-layer packages are the parts claimed to build on every target;
+    // where the full C port or the final link against target system
+    // libraries is not yet available (native Windows today), CI verifies
+    // this layer as the authoritative cross-compile gate.
+    const zig_packages_step = b.step(
+        "zig-packages",
+        "Compile all independent Zig packages for the current target",
+    );
+    inline for (.{
+        gnulib_str_lib,
+        gnulib_ctype_lib,
+        gnulib_stdbit_lib,
+        gnulib_hash_lib,
+        gnulib_sig2str_lib,
+        gnulib_filemode_lib,
+        gnulib_timespec_lib,
+        gnulib_filevercmp_lib,
+        gnulib_sigdescr_np_lib,
+        gnulib_nproc_lib,
+        gnulib_tempname_lib,
+        gnulib_fsusage_lib,
+        gnulib_getloadavg_lib,
+        gnulib_careadlinkat_lib,
+        gnulib_dtoastr_lib,
+        gnulib_stat_time_lib,
+        gnulib_boot_time_lib,
+        gnulib_c_strcase_lib,
+        gnulib_acl_lib,
+        gnulib_time_rz_lib,
+        gnulib_io_lib,
+        emacs_time_lib,
+        emacs_nanosleep_lib,
+    }) |lib| {
+        zig_packages_step.dependOn(&lib.step);
+    }
+
     // Determine if we're building for Unix-like systems
     const is_windows = target.result.os.tag == .windows;
 

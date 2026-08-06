@@ -86,11 +86,20 @@ jobs:
         run: |
           brew install pkg-config autoconf automake gnutls libxml2 little-cms2 sqlite3
 
+      # The C-source Windows port is not done yet, so the native Windows
+      # job compiles the cross-platform Zig package layer (the
+      # authoritative gate); Linux/macOS build the full executable.
       - name: Build (TUI mode)
-        run: zig build -Doptimize=${{ matrix.mode }}
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            zig build zig-packages -Doptimize=${{ matrix.mode }}
+          else
+            zig build -Doptimize=${{ matrix.mode }}
+          fi
         shell: bash
 
       - name: Verify temacs executable
+        if: runner.os != 'Windows'
         run: |
           if [ -f zig-out/bin/temacs ]; then
             echo "✓ temacs built successfully"
@@ -102,11 +111,13 @@ jobs:
         shell: bash
 
       - name: Run tests
+        if: runner.os != 'Windows'
         run: zig build test
         shell: bash
         continue-on-error: true
 
       - name: Basic functional test
+        if: runner.os != 'Windows'
         run: |
           ./zig-out/bin/temacs --batch --eval "(progn (message \"Zig build working!\") (kill-emacs 0))" || echo "Test failed (expected during development)"
         shell: bash
