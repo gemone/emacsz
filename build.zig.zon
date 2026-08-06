@@ -76,6 +76,13 @@
         .gnulib_timespec = .{
             .path = "tools/gnulib-timespec",
         },
+        // gnulib-filevercmp: gnulib's version-sort file name comparison
+        // (filevercmp / filenvercmp, lib/filevercmp.c) provided by an
+        // independent Zig package instead of C. Pure string logic; no
+        // libc call. Linked into temacs (backs `string-version-lessp').
+        .gnulib_filevercmp = .{
+            .path = "tools/gnulib-filevercmp",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw

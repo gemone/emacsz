@@ -601,6 +601,20 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-timespec", .root_module = gnulib_timespec_mod });
     exe.root_module.linkLibrary(gnulib_timespec_lib);
 
+    // gnulib-filevercmp: an independent Zig package (tools/gnulib-filevercmp)
+    // providing gnulib's version-sort file name comparison (filevercmp /
+    // filenvercmp, lib/filevercmp.c), the Debian-policy algorithm used by
+    // `string-version-lessp'. Pure byte/string logic with no libc call.
+    // Built ReleaseFast (leaf comparison).
+    const gnulib_filevercmp_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_filevercmp", .{}).path("src/filevercmp.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const gnulib_filevercmp_lib =
+        b.addLibrary(.{ .name = "gnulib-filevercmp", .root_module = gnulib_filevercmp_mod });
+    exe.root_module.linkLibrary(gnulib_filevercmp_lib);
+
     // emacs-time: an independent Zig package (tools/emacs-time) providing
     // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
     // would otherwise provide, via per-platform NATIVE backends with no libc:
@@ -1442,6 +1456,13 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         "dtotimespec",
         "timespec-add",
         "timespec-sub",
+        // lib/filevercmp.c is provided by an independent Zig package
+        // (tools/gnulib-filevercmp, dependency `gnulib_filevercmp`) --
+        // native Zig Debian-policy version sort (filevercmp /
+        // filenvercmp). Excluded here so the C source is not compiled;
+        // the package's exported symbols are linked into temacs below
+        // (`string-version-lessp').
+        "filevercmp",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native
