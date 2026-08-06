@@ -102,10 +102,10 @@ for suite in $suites; do
     attempt=0; rc=0; out=
     while :; do
         attempt=$((attempt+1))
-        out=$(LANG=C HOME=/nonexistent EMACS_TEST_DIRECTORY="$ROOT/test" \
+    out=$(LANG=C HOME=/nonexistent TERM= EMACS_TEST_DIRECTORY="$ROOT/test" \
             timeout -s KILL "$TIMEOUT" \
-            sh -c 'ulimit -s unlimited 2>/dev/null; '"$SETARCH"' "$1" --batch '"$LP"' --dump-file="$2" --eval "$3"' \
-            _ "$TEMACS" "$DUMP" "$form" 2>&1)
+        sh -c 'unset TERM; ulimit -s unlimited 2>/dev/null; cd "$4" || exit 1; '"$SETARCH"' "$1" --batch '"$LP"' --dump-file="$2" --eval "$3"' \
+            _ "$TEMACS" "$DUMP" "$form" "$suitedir" 2>&1)
         rc=$?
         if [ "$rc" -lt 128 ] || [ "$rc" -gt 192 ] || [ "$rc" -eq 137 ]; then
             break
