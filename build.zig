@@ -183,6 +183,33 @@ pub fn build(b: *std.Build) void {
         .step = &run_gen_config.step,
     };
 
+    // make-docfile is a HOST tool: it must compile against a config that
+    // matches the OS it runs on.  The committed values are Linux-derived
+    // (HAVE_DECL_*_UNLOCKED=1 etc.); on a Windows host those would make
+    // lib/unlocked-io.h remap getc/fputs/putchar to *_unlocked symbols
+    // mingw does not have, so the host config carries the Windows tag
+    // whenever the host itself is Windows.  (Cross-compiling from a Linux
+    // host keeps the Linux host config, which is what make-docfile runs
+    // against there.)
+    const host_config_tag: ?[]const u8 = switch (b.graph.host.result.os.tag) {
+        .windows => "windows",
+        else => null,
+    };
+    const mdf_config: TargetConfig = if (host_config_tag) |tag| blk: {
+        const run = b.addRunArtifact(gen_config_tool);
+        run.setCwd(b.path("."));
+        run.addFileArg(b.path("src/config.h.in"));
+        run.addFileArg(b.path("src/config_values.txt"));
+        run.addArg(tag);
+        break :blk TargetConfig{
+            .file = run.captureStdOut(.{ .basename = "config.h" }),
+            .step = &run.step,
+        };
+    } else TargetConfig{
+        .file = config_h_file,
+        .step = &run_gen_config.step,
+    };
+
     // Build make-docfile as a HOST tool (it runs at build time, so it must
     // target the build host rather than the cross target). Reuses the same
     // config.h-aware flags as the libgnu compile; all gnulib headers that
@@ -193,7 +220,7 @@ pub fn build(b: *std.Build) void {
     // O_BINARY=0 under `#ifndef O_BINARY`. Command-line `-Dstreq`/`-Dmemeq`
     // macros actively break the build because they rewrite the inline function
     // identifier in lib/string.h and produce `expected identifier or '('`.
-    const mdf_flags = &[_][]const u8{
+    const mdf_flags_core = [_][]const u8{
         "-std=gnu2x",
         "-fno-common",
         "-fno-strict-aliasing",
@@ -203,6 +230,15 @@ pub fn build(b: *std.Build) void {
         "-Isrc",
         "-Ilib",
     };
+    // The host config carries the Windows tag on a Windows host
+    // (WINDOWSNT -> conf_post.h pulls in ms-w32.h from nt/inc), which
+    // requires the upstream Windows include dir.  On Unix hosts nt/inc
+    // must NOT be on the path: its mingw shims (unistd.h, dirent.h, ...)
+    // would shadow the system headers.
+    const mdf_flags: []const []const u8 = if (host_config_tag != null)
+        &(mdf_flags_core ++ [_][]const u8{"-Int/inc"})
+    else
+        &mdf_flags_core;
     const mdf = b.addExecutable(.{
         .name = "make-docfile",
         .root_module = b.createModule(.{
@@ -236,8 +272,8 @@ pub fn build(b: *std.Build) void {
     // make-docfile's sources include <config.h>; the generated file (from
     // src/config.h.in + src/config_values.txt) is provided via the module
     // include path, so the compile must wait for the generator.
-    mdf.root_module.addIncludePath(config_h_file.dirname());
-    mdf.step.dependOn(&run_gen_config.step);
+    mdf.root_module.addIncludePath(mdf_config.file.dirname());
+    mdf.step.dependOn(mdf_config.step);
 
     // Run `make-docfile -d src -g <names>` and capture stdout as globals.h.
     // make-docfile only rewrites a trailing ".o" to ".c"/".m" (scan_c_file at
