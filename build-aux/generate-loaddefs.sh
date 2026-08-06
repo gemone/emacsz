@@ -56,4 +56,21 @@ $SETARCH "$TEMACS" --batch -L . \
     --dump-file="$DUMP" \
     -f loaddefs-generate--emacs-batch $SUBDIRS
 
+# cus-load.el + finder-inf.el: generated package metadata consumed at
+# runtime by customize (custom-versions-load-alist, needed by
+# customize-changed) and help/finder. Mirror lisp/Makefile.in's
+# custom-deps and finder-data targets (SUBdirs_ALMOST / SUBDIRS_FINDER).
+SUBDIRS_FINDER=$(find . -type d ! -path './obsolete' ! -path './term' \
+    ! -path './leim*' -printf '%p ' | sort | tr '\n' ' ')
+
+$SETARCH "$TEMACS" --batch -L . \
+    --dump-file="$DUMP" -l cus-dep \
+    --eval "(setq generated-custom-dependencies-file \"$ROOT/lisp/cus-load.el\")" \
+    -f custom-make-dependencies $SUBDIRS
+
+$SETARCH "$TEMACS" --batch -L . \
+    --dump-file="$DUMP" -l finder \
+    --eval "(setq generated-finder-keywords-file \"$ROOT/lisp/finder-inf.el\")" \
+    -f finder-compile-keywords-make-dist $SUBDIRS_FINDER
+
 echo "generate-loaddefs: $(find . -name '*-loaddefs.el' | wc -l) *-loaddefs.el + loaddefs.el in lisp/"
