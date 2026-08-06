@@ -543,10 +543,12 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkLibrary(gnulib_stdbit_lib);
 
     // gnulib-hash: an independent Zig package (tools/gnulib-hash) providing
-    // gnulib's cryptographic hashes as native Zig. Currently SHA1
-    // (sha1_init_ctx / sha1_process_bytes / sha1_finish_ctx / sha1_buffer),
-    // operating on the gnulib struct sha1_ctx layout, with no libc call.
-    // Backs `secure-hash'. Built ReleaseFast (leaf crypto).
+    // gnulib's cryptographic hashes as native Zig. SHA1 (sha1_init_ctx /
+    // sha1_process_bytes / sha1_finish_ctx / sha1_buffer) and MD5
+    // (md5_init_ctx / md5_process_block / md5_process_bytes /
+    // md5_finish_ctx / md5_read_ctx / md5_buffer), operating on the gnulib
+    // ctx layouts (lib/sha1.h, lib/md5.h), with no libc call. Backs
+    // `secure-hash' and md5_gz_stream. Built ReleaseFast (leaf crypto).
     const gnulib_hash_mod = b.createModule(.{
         .root_source_file = b.dependency("gnulib_hash", .{}).path("src/hash.zig"),
         .target = target,
@@ -1365,6 +1367,12 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // the C source is not compiled; the package's exported sha1_*
         // symbols are linked into temacs below.
         "sha1",
+        // lib/md5.c is provided by the same Zig package (tools/gnulib-hash)
+        // -- a native Zig MD5 operating on the gnulib struct md5_ctx
+        // (RFC 1321). Excluded by exact name so lib/md5-stream.c (the
+        // FILE*-reading md5_stream wrapper, still C) keeps compiling and
+        // calls the package's exported md5_* symbols.
+        "md5.c",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native
