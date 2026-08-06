@@ -1344,9 +1344,15 @@ pub fn build(b: *std.Build) void {
     // 40-suite baseline), this is the failure-discovery tool: its output
     // is meant to drive the next migration phase, so nothing is excluded.
     // Full per-suite logs land in zig-out/check-all/<suite>.out.
-    const run_check_all = b.addSystemCommand(&[_][]const u8{
-        "sh", "build-aux/check-all.sh",
+    const check_all_tool = b.addExecutable(.{
+        .name = "check-all",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/check-all.zig"),
+        }),
     });
+    const run_check_all = b.addRunArtifact(check_all_tool);
     run_check_all.setCwd(b.path("."));
     run_check_all.step.dependOn(&run_smoke.step);
     run_check_all.step.dependOn(&run_loaddefs_final.step);
