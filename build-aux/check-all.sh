@@ -79,7 +79,10 @@ for suite in $suites; do
     # Per-suite load-path (see note above): bootstrap default + test/ +
     # this suite's dir. Keeps every require searching ~3 dirs, not 500.
     LP="-L $ROOT/test -L $suitedir"
-    form="(progn ${PRE} (load \"${loadtarget}\") (let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit)))"
+    # Mirror test/Makefile.in's SELECTOR_DEFAULT so suites behave like
+    # `make check`: :unstable and :expensive-test tests are skipped, not
+    # run (e.g. srecode-field-utest-impl is a known-broken :unstable test).
+    form="(progn ${PRE} (load \"${loadtarget}\") (let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit (quote (not (or (tag :expensive-test) (tag :unstable)))))))"
     # Retry on signal death only (the pdumper's single-delta heap
     # relocation is intermittently mis-applied under load, killing temacs
     # with SIGBUS/SIGSEGV/SIGABRT during lisp load -- the same flakiness
