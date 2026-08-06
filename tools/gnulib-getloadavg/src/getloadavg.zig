@@ -63,6 +63,7 @@ pub export fn getloadavg(loadavg: [*]f64, nelem: c_int) c_int {
 // Windows, so the entries are reported as zero ("a faithful emulation
 // is going to have to be saved for a rainy day").
 fn getloadavgWindows(loadavg: [*]f64, nelem: c_int) c_int {
+    if (nelem <= 0) return 0; // gnulib's C returns elem (0) untouched
     for (0..@intCast(nelem)) |i|
         loadavg[i] = 0.0;
     return nelem;
