@@ -230,6 +230,14 @@ extern void register_child (pid_t, int);
 
 extern void sys_sleep (int);
 extern int sys_link (const char *, const char *);
+extern int sys_chdir (const char *);
+extern int sys_chmod (const char *, int);
+extern int sys_close (int);
+extern int sys_creat (const char *, int);
+extern int sys_dup (int);
+extern int sys_dup2 (int, int);
+extern int sys_open (const char *, int, ...);
+extern int sys_write (int, const void *, unsigned int);
 extern int openat (int, const char *, int, int);
 extern int fchmodat (int, char const *, mode_t, int);
 extern int lchmod (char const *, mode_t);
@@ -257,6 +265,18 @@ extern int w32_reexec_emacs (char *, const char *);
 
 /* From w32proc.c.  */
 extern void free_wait_pool (void);
+
+/* From w32.c.  */
+extern bool w32_unicode_filenames;
+extern Lisp_Object Vw32_get_true_file_attributes;
+extern Lisp_Object Vw32_downcase_file_names;
+extern void w32_init_main_thread (void);
+extern void sync (void);
+extern const char *sigdescr_np (int);
+struct terminal;
+extern void initialize_w32_display (struct terminal *, int *, int *);
+extern void w32con_hide_cursor (void);
+extern void w32con_show_cursor (void);
 
 #ifdef HAVE_GNUTLS
 #include <gnutls/gnutls.h>

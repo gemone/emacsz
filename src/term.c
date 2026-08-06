@@ -59,7 +59,7 @@ static int been_here = -1;
 
 /* The name of the default console device.  */
 #ifdef WINDOWSNT
-#include "w32term.h"
+#include "w32.h"
 #endif
 
 #ifndef HAVE_ANDROID

@@ -47,6 +47,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <c-ctype.h>
 
 #include "lisp.h"
+#ifdef WINDOWSNT
+#include "w32.h"	/* for Vw32_downcase_file_names */
+#endif
 #include "composite.h"
 #include "character.h"
 #include "buffer.h"

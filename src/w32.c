@@ -4671,8 +4671,18 @@ sys_mkdir (const char * path, mode_t mode)
 }
 
 int
-sys_open (const char * path, int oflag, int mode)
+sys_open (const char * path, int oflag, ...)
 {
+  int mode = 0;
+  /* mode is meaningful only when creating the file, matching POSIX
+     open; callers that pass just (path, flags) leave it unset.  */
+  if (oflag & O_CREAT)
+    {
+      va_list ap;
+      va_start (ap, oflag);
+      mode = va_arg (ap, int);
+      va_end (ap);
+    }
   const char* mpath = map_w32_filename (path, NULL);
   int res = -1;
 

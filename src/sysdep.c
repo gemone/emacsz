@@ -1775,8 +1775,13 @@ deliver_thread_signal (int sig, signal_handler_t handler)
       pthread_kill (main_thread_id, sig);
 
       /* Avoid further damage while the main thread is exiting.  */
+#ifdef WINDOWSNT
+      for (;;)
+	;
+#else
       while (1)
 	sigsuspend (&empty_mask);
+#endif
     }
 #endif
 

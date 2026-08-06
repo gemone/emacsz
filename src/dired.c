@@ -44,6 +44,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "msdos.h"	/* for fstatat */
 #endif
 
+#ifdef WINDOWSNT
+#include "w32.h"	/* for Vw32_get_true_file_attributes */
+#endif
+
 #if !(defined HAVE_ANDROID && !defined ANDROID_STUBIFY)
 typedef DIR emacs_dir;
 #define emacs_readdir readdir

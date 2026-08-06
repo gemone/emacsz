@@ -205,6 +205,14 @@ typedef jmp_buf sigjmp_buf;
 extern void w32_reset_stack_overflow_guard (void);
 
 /* Calls that are emulated or shadowed.  */
+extern int sys_chdir (const char *);
+extern int sys_chmod (const char *, int);
+extern int sys_close (int);
+extern int sys_creat (const char *, int);
+extern int sys_dup (int);
+extern int sys_dup2 (int, int);
+extern int sys_rename (char const *, char const *);
+extern int sys_rmdir (const char *);
 #undef chdir
 #define chdir   sys_chdir
 #undef chmod
@@ -220,6 +228,7 @@ extern void w32_reset_stack_overflow_guard (void);
 #define dup2    sys_dup2
 #define fopen   sys_fopen
 #define link    sys_link
+extern int sys_open (const char *, int, ...);
 #define localtime sys_localtime
 /* We redirect 'read' below, after including io.h, see bug#73444.  */
 #define rename  sys_rename
@@ -243,6 +252,7 @@ extern void w32_reset_stack_overflow_guard (void);
 extern int sys_unlink (const char *);
 #undef write
 #define write   sys_write
+extern int sys_write (int, const void *, unsigned int);
 #undef umask
 #define umask   sys_umask
 extern int sys_umask (int);

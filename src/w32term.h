@@ -18,7 +18,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 /* Added by Kevin Gallo */
 
+#ifdef HAVE_NTGUI
 #include "w32gui.h"
+#endif
 #include "frame.h"
 #include "atimer.h"
 
