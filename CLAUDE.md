@@ -13,16 +13,23 @@ This repository contains GNU Emacs with an ongoing effort to modernize the build
   compiles and links `temacs`. No manual `./configure`/`make` step is
   needed, locally or in CI.
 - **Goal 2 — Zig controls linking, decouple from libc: 🚧 In progress.**
-  Zig drives all compile/link. The first runtime gnulib functions are
-  provided by independent Zig packages (`tools/gnulib-str` provides
-  `memeq`/`streq`, replacing `lib/memeq.c`/`lib/streq.c` with no libc
-  call). Deeper libc decoupling (file-I/O, time modules) is ongoing.
+  Zig drives all compile/link. Runtime gnulib functions are progressively
+  provided by independent Zig packages: `tools/gnulib-str` (`memeq`/`streq`),
+  `tools/gnulib-ctype` (`c_isalpha` & co), `tools/gnulib-stdbit` (the C23
+  bit-count helpers), `tools/gnulib-hash` (SHA1, SHA-224/256/384/512 and MD5,
+  backing `secure-hash`), and `tools/emacs-time` + `tools/emacs-nanosleep`
+  (realtime clock / nanosleep with no libc call). Deeper libc decoupling
+  (file-I/O, time modules) is ongoing.
 - **Goal 3 — Runnable on Linux: ✅ Done.** The final image is
   byte-compiled: `zig build dump` (source bootstrap) →
   `zig build compile-lisp` → `zig build dump-compiled`; `zig build check`
   runs 582 built-in `ert` tests across 40 suites (all passing), and
   `zig build check-all` runs all 484 upstream-discovered suites and
-  classifies every outcome (PASS/FAIL/HANG/CRASH/LOAD).
+  classifies every outcome (PASS/FAIL/HANG/CRASH/LOAD). The full sweep
+  passes all but one timing-dependent live-server test (eglot's
+  `eglot-test-basic-stream-diagnostics`, needs a running ty/ruff server);
+  the two suites that exceed the default 90s timeout (tramp-tests,
+  package-vc-tests) pass with `CHECK_ALL_TIMEOUT=600`.
 
 Zig version: **0.16.0** (strict).
 
@@ -258,4 +265,3 @@ zig targets | grep -E "arch|abi"
 - `CONTRIBUTE` - Contribution guidelines
 - `.github/workflows/build-zig-native.yml` - CI build (pure `zig build`)
 - [Zig 0.16.0 Documentation](https://ziglang.org/documentation/0.16.0/)
-
