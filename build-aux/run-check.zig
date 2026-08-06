@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const aslr = @import("aslr.zig");
+const builtin = @import("builtin");
 
 const test_files = [_][]const u8{
     "cl-macs",         "cl-seq",        "cl-extra",       "alloc-tests",
@@ -31,10 +32,12 @@ pub fn main() !void {
 
     // -O0 eval frames are large; raise the stack limit so the ert-deftest
     // macro expansion does not overflow the C stack (ulimit -s unlimited).
-    std.posix.setrlimit(.STACK, .{
-        .cur = std.posix.RLIM.INFINITY,
-        .max = std.posix.RLIM.INFINITY,
-    }) catch {};
+    if (comptime builtin.os.tag != .windows) {
+        std.posix.setrlimit(.STACK, .{
+            .cur = std.posix.RLIM.INFINITY,
+            .max = std.posix.RLIM.INFINITY,
+        }) catch {};
+    }
 
     var eval: std.ArrayList(u8) = .empty;
     defer eval.deinit(gpa);

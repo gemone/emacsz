@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const aslr = @import("aslr.zig");
+const builtin = @import("builtin");
 
 const preload = "(progn (load \"cl-macs\") (load \"cl-seq\") (load \"cl-extra\") (require (quote ert)))";
 
@@ -17,10 +18,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     const io = io_threaded.io();
     const cwd = std.Io.Dir.cwd();
 
-    std.posix.setrlimit(.STACK, .{
-        .cur = std.posix.RLIM.INFINITY,
-        .max = std.posix.RLIM.INFINITY,
-    }) catch {};
+    if (comptime builtin.os.tag != .windows) {
+        std.posix.setrlimit(.STACK, .{
+            .cur = std.posix.RLIM.INFINITY,
+            .max = std.posix.RLIM.INFINITY,
+        }) catch {};
+    }
 
     var env_map = try std.process.Environ.createMap(minimal.environ, gpa);
     defer env_map.deinit();
