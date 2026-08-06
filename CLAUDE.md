@@ -29,9 +29,10 @@ This repository contains GNU Emacs with an ongoing effort to modernize the build
   (`gen_tempname`/`mkostemp`, backing `make-temp-file` and filelock, via
   getrandom + raw openat/mkdir/lstat), and `tools/emacs-time` +
   `tools/emacs-nanosleep` (realtime clock / nanosleep with no libc call),
-  and `tools/gnulib-fsusage` (`get_fs_usage`, backing `file-system-info`,
-  via raw statfs). Deeper libc decoupling (file-I/O, time modules) is
-  ongoing.
+  `tools/gnulib-fsusage` (`get_fs_usage`, backing `file-system-info`, via
+  raw statfs), and `tools/gnulib-getloadavg` (`getloadavg`, backing
+  `load-average`, via raw sysinfo). Deeper libc decoupling (file-I/O,
+  time modules) is ongoing.
 - **Goal 3 — Runnable on Linux: ✅ Done.** The final image is
   byte-compiled: `zig build dump` (source bootstrap) →
   `zig build compile-lisp` → `zig build dump-compiled`; `zig build check`
