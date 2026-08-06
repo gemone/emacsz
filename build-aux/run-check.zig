@@ -7,6 +7,7 @@
 //! cwd = repo root.
 
 const std = @import("std");
+const aslr = @import("aslr.zig");
 
 const test_files = [_][]const u8{
     "cl-macs",         "cl-seq",        "cl-extra",       "alloc-tests",
@@ -23,6 +24,7 @@ const test_files = [_][]const u8{
 };
 
 pub fn main() !void {
+    aslr.disableAslr();
     const gpa = std.heap.smp_allocator;
     var io_threaded: std.Io.Threaded = .init(gpa, .{});
     const io = io_threaded.io();

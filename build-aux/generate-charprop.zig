@@ -5,6 +5,7 @@
 //! repo root. Incremental: an existing output file is left untouched.
 
 const std = @import("std");
+const aslr = @import("aslr.zig");
 
 const unifiles = [_][]const u8{
     "uni-name",                "uni-category",          "uni-combining",
@@ -16,6 +17,7 @@ const unifiles = [_][]const u8{
 };
 
 pub fn main() !void {
+    aslr.disableAslr();
     const gpa = std.heap.smp_allocator;
     var io_threaded: std.Io.Threaded = .init(gpa, .{});
     const io = io_threaded.io();

@@ -4,8 +4,10 @@
 //! relocation flake is retried on signal death. Run with cwd = repo root.
 
 const std = @import("std");
+const aslr = @import("aslr.zig");
 
 pub fn main() !void {
+    aslr.disableAslr();
     const gpa = std.heap.smp_allocator;
     var io_threaded: std.Io.Threaded = .init(gpa, .{});
     const io = io_threaded.io();

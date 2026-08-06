@@ -10,8 +10,10 @@
 //! the check step does (setarch -R is not available without a shell).
 
 const std = @import("std");
+const aslr = @import("aslr.zig");
 
 pub fn main() !void {
+    aslr.disableAslr();
     const gpa = std.heap.smp_allocator;
     var io_threaded: std.Io.Threaded = .init(gpa, .{});
     const io = io_threaded.io();
