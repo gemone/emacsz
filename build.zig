@@ -1448,6 +1448,30 @@ pub fn build(b: *std.Build) void {
     );
     gen_loaddefs_step.dependOn(&gen_loaddefs.step);
 
+    // generate-charprop: produce lisp/international/{charprop,uni-*}.el
+    // from admin/unidata via the dumped emacs (mirrors admin/unidata/
+    // Makefile). Some lisp files (char-fold.el, shadowfile.el) load
+    // charprop at compile time, so it must exist before compile-lisp;
+    // it runs from the source (pbootstrap) dump, which avoids a cycle.
+    // Outputs are gitignored; on a clean checkout nothing masks a
+    // missing generation.
+    const gen_charprop_tool = b.addExecutable(.{
+        .name = "generate-charprop",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/generate-charprop.zig"),
+        }),
+    });
+    const gen_charprop = b.addRunArtifact(gen_charprop_tool);
+    gen_charprop.setCwd(b.path("."));
+    gen_charprop.step.dependOn(&run_dump.step);
+    const gen_charprop_step = b.step(
+        "generate-charprop",
+        "Generate lisp/international/{charprop,uni-*}.el from admin/unidata",
+    );
+    gen_charprop_step.dependOn(&gen_charprop.step);
+
     // compile-lisp: byte-compile the whole lisp tree with the bootstrap
     // dump. Upstream byte-compiles before its final dump; running from
     // source only breaks behaviors that assume compiled functions (e.g.
@@ -1471,6 +1495,10 @@ pub fn build(b: *std.Build) void {
     run_compile_lisp.setCwd(b.path("."));
     run_compile_lisp.step.dependOn(&run_dump.step);
     run_compile_lisp.step.dependOn(&gen_loaddefs.step);
+    // Some lisp files (char-fold.el, shadowfile.el) load charprop at
+    // compile time, so generate it from the source dump first (a clean
+    // checkout has no stale charprop.el to mask the missing dependency).
+    run_compile_lisp.step.dependOn(&gen_charprop.step);
     const compile_lisp_step = b.step("compile-lisp", "Byte-compile lisp/ with the bootstrap emacs");
     compile_lisp_step.dependOn(&run_compile_lisp.step);
 
@@ -1577,30 +1605,6 @@ pub fn build(b: *std.Build) void {
     // with the dumped emacs, so `zig build test` delegates to it.
     const test_step = b.step("test", "Run a built-in ert test suite with the dumped emacs");
     test_step.dependOn(check_step);
-
-    // generate-charprop: produce lisp/international/{charprop,uni-*}.el
-    // from admin/unidata via the dumped emacs (mirrors admin/unidata/
-    // Makefile). Required at runtime by suites touching ucs-names /
-    // char-from-name (tramp, completion); without it they fail to load.
-    // The bootstrap dump does not bundle charprop (loaded on demand), so
-    // it is generated separately. Outputs are gitignored. Standalone
-    // (like generate-charsets); run before check-all if needed.
-    const gen_charprop_tool = b.addExecutable(.{
-        .name = "generate-charprop",
-        .root_module = b.createModule(.{
-            .target = b.graph.host,
-            .optimize = .Debug,
-            .root_source_file = b.path("build-aux/generate-charprop.zig"),
-        }),
-    });
-    const gen_charprop = b.addRunArtifact(gen_charprop_tool);
-    gen_charprop.setCwd(b.path("."));
-    gen_charprop.step.dependOn(&run_smoke.step);
-    const gen_charprop_step = b.step(
-        "generate-charprop",
-        "Generate lisp/international/{charprop,uni-*}.el from admin/unidata",
-    );
-    gen_charprop_step.dependOn(&gen_charprop.step);
 
     // generate-cedet-grammars: produce the cedet parser files
     // (semantic/*-wy.el, semantic/wisent/*-wy.el, semantic/bovine/*-by.el,
