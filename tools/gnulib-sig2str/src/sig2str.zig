@@ -154,17 +154,27 @@ fn parseDecimal(s: []const u8) ?i64 {
 }
 
 // strtol on a possibly-signed tail (e.g. "+2", "-3"); every byte must
-// be consumed. Returns null on failure.
+// be consumed. Returns null on failure. Like strtol, leading ASCII
+// whitespace in the tail is skipped, so "RTMIN 2" parses as 34 + 2; a
+// whitespace-only tail still fails (strtol's endp lands on the space,
+// not the NUL), while a truly empty tail is a valid 0 (plain "RTMIN").
 fn parseSignedTail(s: []const u8) ?i64 {
-    // strtol("") performs no conversion, returns 0 with endp at the
-    // NUL terminator, so a bare "RTMIN"/"RTMAX" tail is valid (0).
-    if (s.len == 0) return 0;
-    if (s[0] == '+') return parseDecimal(s[1..]);
-    if (s[0] == '-') {
-        const abs = parseDecimal(s[1..]) orelse return null;
+    var i: usize = 0;
+    while (i < s.len and (s[i] == ' ' or s[i] == '\t' or
+        s[i] == '\n' or s[i] == '\x0b' or s[i] == '\x0c' or s[i] == '\r'))
+        i += 1;
+    const t = s[i..];
+    if (t.len == 0) {
+        // strtol("") leaves endp at the NUL (bare "RTMIN"); strtol(" ")
+        // leaves it on the space, so the caller sees a trailing byte.
+        return if (i == 0) 0 else null;
+    }
+    if (t[0] == '+') return parseDecimal(t[1..]);
+    if (t[0] == '-') {
+        const abs = parseDecimal(t[1..]) orelse return null;
         return -abs;
     }
-    return parseDecimal(s);
+    return parseDecimal(t);
 }
 
 fn copyName(dst: [*:0]u8, name: [:0]const u8) void {
