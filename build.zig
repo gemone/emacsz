@@ -544,10 +544,10 @@ pub fn build(b: *std.Build) void {
 
     // gnulib-hash: an independent Zig package (tools/gnulib-hash) providing
     // gnulib's cryptographic hashes as native Zig. SHA1, the SHA-2 family
-    // (sha224/sha256/sha384/sha512) and MD5, operating on the gnulib ctx
-    // layouts (lib/sha1.h, lib/sha256.h, lib/sha512.h, lib/md5.h), with
-    // no libc call. Backs `secure-hash' and md5_gz_stream. Built
-    // ReleaseFast (leaf crypto).
+    // (sha224/sha256/sha384/sha512), SHA-3 (Keccak, sha3_224..512) and
+    // MD5, operating on the gnulib ctx layouts (lib/sha1.h, lib/sha256.h,
+    // lib/sha512.h, lib/sha3.h, lib/md5.h), with no libc call. Backs
+    // `secure-hash' and md5_gz_stream. Built ReleaseFast (leaf crypto).
     const gnulib_hash_mod = b.createModule(.{
         .root_source_file = b.dependency("gnulib_hash", .{}).path("src/hash.zig"),
         .target = target,
@@ -1536,6 +1536,12 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         "sha1",
         "sha256",
         "sha512",
+        // lib/sha3.c is provided by the same Zig package (tools/gnulib-hash)
+        // -- a native Zig SHA-3 (Keccak-f[1600] sponge, FIPS 202) operating
+        // on the gnulib struct sha3_ctx. Excluded here so the C source is
+        // not compiled; the package's exported sha3_* symbols are linked
+        // into temacs below (`secure-hash' sha3_224/256/384/512).
+        "sha3",
         // lib/md5.c is provided by the same Zig package (tools/gnulib-hash)
         // -- a native Zig MD5 operating on the gnulib struct md5_ctx
         // (RFC 1321). Excluded by exact name so lib/md5-stream.c (the

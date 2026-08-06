@@ -217,6 +217,24 @@ fn wr32le(p: [*]u8, i: usize, v: u32) void {
     p[i + 3] = @truncate(v >> 24);
 }
 
+fn rd64le(p: [*]const u8, i: usize) u64 {
+    return @as(u64, p[i]) | (@as(u64, p[i + 1]) << 8) |
+        (@as(u64, p[i + 2]) << 16) | (@as(u64, p[i + 3]) << 24) |
+        (@as(u64, p[i + 4]) << 32) | (@as(u64, p[i + 5]) << 40) |
+        (@as(u64, p[i + 6]) << 48) | (@as(u64, p[i + 7]) << 56);
+}
+
+fn wr64le(p: [*]u8, i: usize, v: u64) void {
+    p[i] = @truncate(v);
+    p[i + 1] = @truncate(v >> 8);
+    p[i + 2] = @truncate(v >> 16);
+    p[i + 3] = @truncate(v >> 24);
+    p[i + 4] = @truncate(v >> 32);
+    p[i + 5] = @truncate(v >> 40);
+    p[i + 6] = @truncate(v >> 48);
+    p[i + 7] = @truncate(v >> 56);
+}
+
 inline fn rotl32(x: u32, s: u5) u32 {
     const r: u5 = @intCast(32 - @as(u31, s));
     return (x << s) | (x >> r);
@@ -894,4 +912,201 @@ export fn sha512_buffer(buffer: *const anyopaque, len: usize, resblock: *anyopaq
 
 export fn sha384_buffer(buffer: *const anyopaque, len: usize, resblock: *anyopaque) *anyopaque {
     return sha512BufferOneShot(true, buffer, len, resblock);
+}
+
+// ---------------------------------------------------------------------------
+// SHA-3 (FIPS 202), replacing gnulib's lib/sha3.c. The ctx layout matches
+// lib/sha3.h exactly (extern struct; buflen/digestlen/blocklen are size_t):
+//   uint64_t state[25]; uint8_t buffer[144]; size_t buflen, digestlen,
+//   blocklen. Keccak-f[1600] sponge with the 0x06 domain suffix.
+
+pub const Sha3Ctx = extern struct {
+    state: [25]u64,
+    buffer: [144]u8,
+    buflen: usize,
+    digestlen: usize,
+    blocklen: usize,
+};
+
+const keccak_rc = [24]u64{
+    0x0000000000000001, 0x0000000000008082, 0x800000000000808a, 0x8000000080008000,
+    0x000000000000808b, 0x0000000080000001, 0x8000000080008081, 0x8000000000008009,
+    0x000000000000008a, 0x0000000000000088, 0x0000000080008009, 0x000000008000000a,
+    0x000000008000808b, 0x800000000000008b, 0x8000000000008089, 0x8000000000008003,
+    0x8000000000008002, 0x8000000000000080, 0x000000000000800a, 0x800000008000000a,
+    0x8000000080008081, 0x8000000000008080, 0x0000000080000001, 0x8000000080008008,
+};
+
+// Rotation offsets for lanes in x + 5y order (FIPS 202 section 3.2.3).
+const keccak_rho = [25]u6{
+    0, 1, 62, 28, 27,
+    36, 44, 6, 55, 20,
+    3, 10, 43, 25, 39,
+    41, 45, 15, 21, 8,
+    18, 2, 61, 56, 14,
+};
+
+// Destination lane for each source lane under the pi permutation.
+const keccak_pi = [25]u8{
+    0, 10, 20, 5, 15,
+    16, 1, 11, 21, 6,
+    7, 17, 2, 12, 22,
+    23, 8, 18, 3, 13,
+    14, 24, 9, 19, 4,
+};
+
+fn keccakF(a: *[25]u64) void {
+    var round: usize = 0;
+    while (round < 24) : (round += 1) {
+        // Theta.
+        var c: [5]u64 = undefined;
+        for (0..5) |x| c[x] = a[x] ^ a[x + 5] ^ a[x + 10] ^ a[x + 15] ^ a[x + 20];
+        var d: [5]u64 = undefined;
+        for (0..5) |x| d[x] = c[(x + 4) % 5] ^ rotl64(c[(x + 1) % 5], 1);
+        for (0..25) |i| a[i] ^= d[i % 5];
+
+        // Rho and Pi.
+        var b: [25]u64 = undefined;
+        for (0..25) |i| b[keccak_pi[i]] = rotl64(a[i], keccak_rho[i]);
+
+        // Chi.
+        for (0..5) |y| {
+            const base = 5 * y;
+            var t: [5]u64 = undefined;
+            for (0..5) |x| t[x] = b[base + x];
+            for (0..5) |x| a[base + x] = t[x] ^ ((~t[(x + 1) % 5]) & t[(x + 2) % 5]);
+        }
+
+        // Iota.
+        a[0] ^= keccak_rc[round];
+    }
+}
+
+inline fn rotl64(x: u64, n: u6) u64 {
+    const r: u6 = @intCast(64 - @as(u63, n));
+    return (x << n) | (x >> r);
+}
+
+fn sha3Init(ctx: *Sha3Ctx, digestlen: usize, blocklen: usize) bool {
+    ctx.state = .{0} ** 25;
+    ctx.buflen = 0;
+    ctx.digestlen = digestlen;
+    ctx.blocklen = blocklen;
+    return true;
+}
+
+pub export fn sha3_224_init_ctx(ctx: *Sha3Ctx) bool {
+    return sha3Init(ctx, 28, 144);
+}
+
+pub export fn sha3_256_init_ctx(ctx: *Sha3Ctx) bool {
+    return sha3Init(ctx, 32, 136);
+}
+
+pub export fn sha3_384_init_ctx(ctx: *Sha3Ctx) bool {
+    return sha3Init(ctx, 48, 104);
+}
+
+pub export fn sha3_512_init_ctx(ctx: *Sha3Ctx) bool {
+    return sha3Init(ctx, 64, 72);
+}
+
+pub export fn sha3_free_ctx(ctx: *Sha3Ctx) void {
+    _ = ctx;
+    // Nothing to free (the gnulib C implementation is a no-op too).
+}
+
+// Process LEN bytes of BUFFER (LEN a multiple of BLOCKLEN), updating CTX.
+pub export fn sha3_process_block(buffer: *const anyopaque, len: usize, ctx: *Sha3Ctx) bool {
+    const bp: [*]const u8 = @ptrCast(buffer);
+    const rate_words = ctx.blocklen / 8;
+    var off: usize = 0;
+    while (off < len) : (off += ctx.blocklen) {
+        for (0..rate_words) |i| {
+            ctx.state[i] ^= rd64le(bp, off + i * 8);
+        }
+        keccakF(&ctx.state);
+    }
+    return true;
+}
+
+// Update CTX for LEN bytes at BUFFER (LEN need not be a multiple of
+// BLOCKLEN); buffer the partial block for the next call.
+pub export fn sha3_process_bytes(buffer: *const anyopaque, len: usize, ctx: *Sha3Ctx) bool {
+    const src: [*]const u8 = @ptrCast(buffer);
+    var s: usize = 0;
+    var remaining = len;
+
+    if (0 < ctx.buflen) {
+        const left = ctx.blocklen - ctx.buflen;
+        if (remaining < left) {
+            @memcpy(ctx.buffer[ctx.buflen..][0..remaining], src[0..remaining]);
+            ctx.buflen += remaining;
+            return true;
+        }
+        @memcpy(ctx.buffer[ctx.buflen..][0..left], src[0..left]);
+        s += left;
+        remaining -= left;
+        _ = sha3_process_block(&ctx.buffer, ctx.blocklen, ctx);
+    }
+
+    const full = remaining - remaining % ctx.blocklen;
+    _ = sha3_process_block(&src[s], full, ctx);
+    s += full;
+    remaining -= full;
+
+    @memcpy(ctx.buffer[0..remaining], src[s..][0..remaining]);
+    ctx.buflen = remaining;
+    return true;
+}
+
+// Write the digest (DIGESTLEN bytes, little-endian state words) to RESBUF.
+pub export fn sha3_read_ctx(ctx: *const Sha3Ctx, resbuf: *anyopaque) *anyopaque {
+    const r: [*]u8 = @ptrCast(resbuf);
+    const words = ctx.digestlen / 8;
+    var i: usize = 0;
+    while (i < words) : (i += 1) wr64le(r, i * 8, ctx.state[i]);
+    var bytes = ctx.digestlen % 8;
+    var off = words * 8;
+    var word = ctx.state[words];
+    while (bytes > 0) : (bytes -= 1) {
+        r[off] = @truncate(word);
+        off += 1;
+        word >>= 8;
+    }
+    return resbuf;
+}
+
+// Pad (0x06 domain suffix + 0x80 terminator), absorb the final block(s)
+// and write the digest to RESBUF.
+pub export fn sha3_finish_ctx(ctx: *Sha3Ctx, resbuf: *anyopaque) *anyopaque {
+    ctx.buffer[ctx.buflen] = 0x06;
+    ctx.buflen += 1;
+    @memset(ctx.buffer[ctx.buflen..][0 .. ctx.blocklen - ctx.buflen], 0);
+    ctx.buffer[ctx.blocklen - 1] |= 0x80;
+    _ = sha3_process_block(&ctx.buffer, ctx.blocklen, ctx);
+    return sha3_read_ctx(ctx, resbuf);
+}
+
+fn sha3BufferOneShot(digestlen: usize, blocklen: usize, buffer: *const anyopaque, len: usize, resblock: *anyopaque) *anyopaque {
+    var ctx: Sha3Ctx = undefined;
+    _ = sha3Init(&ctx, digestlen, blocklen);
+    _ = sha3_process_bytes(buffer, len, &ctx);
+    return sha3_finish_ctx(&ctx, resblock);
+}
+
+pub export fn sha3_224_buffer(buffer: *const anyopaque, len: usize, resblock: *anyopaque) *anyopaque {
+    return sha3BufferOneShot(28, 144, buffer, len, resblock);
+}
+
+pub export fn sha3_256_buffer(buffer: *const anyopaque, len: usize, resblock: *anyopaque) *anyopaque {
+    return sha3BufferOneShot(32, 136, buffer, len, resblock);
+}
+
+pub export fn sha3_384_buffer(buffer: *const anyopaque, len: usize, resblock: *anyopaque) *anyopaque {
+    return sha3BufferOneShot(48, 104, buffer, len, resblock);
+}
+
+pub export fn sha3_512_buffer(buffer: *const anyopaque, len: usize, resblock: *anyopaque) *anyopaque {
+    return sha3BufferOneShot(64, 72, buffer, len, resblock);
 }
