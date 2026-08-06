@@ -691,6 +691,23 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-getloadavg", .root_module = gnulib_getloadavg_mod });
     exe.root_module.linkLibrary(gnulib_getloadavg_lib);
 
+    // gnulib-careadlinkat: an independent Zig package
+    // (tools/gnulib-careadlinkat) providing gnulib's symlink reader
+    // (careadlinkat, lib/careadlinkat.c), backing `file-symlink-p' and
+    // `file-truename'. Reads via the caller-provided preadlinkat
+    // callback into a caller buffer or an allocator-managed buffer,
+    // growing on truncation; the NULL-allocator stdlib fallback is kept
+    // for API compatibility. No libc call on the Emacs path. Built
+    // ReleaseFast (leaf read).
+    const gnulib_careadlinkat_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_careadlinkat", .{}).path("src/careadlinkat.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const gnulib_careadlinkat_lib =
+        b.addLibrary(.{ .name = "gnulib-careadlinkat", .root_module = gnulib_careadlinkat_mod });
+    exe.root_module.linkLibrary(gnulib_careadlinkat_lib);
+
     // emacs-time: an independent Zig package (tools/emacs-time) providing
     // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
     // would otherwise provide, via per-platform NATIVE backends with no libc:
@@ -1571,6 +1588,12 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // the C source is not compiled; the package's exported symbol is
         // linked into temacs below (`load-average').
         "getloadavg",
+        // lib/careadlinkat.c is provided by an independent Zig package
+        // (tools/gnulib-careadlinkat, dependency `gnulib_careadlinkat`)
+        // -- native Zig symlink reader (careadlinkat). Excluded here so
+        // the C source is not compiled; the package's exported symbol is
+        // linked into temacs below (`file-symlink-p', `file-truename').
+        "careadlinkat",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native
