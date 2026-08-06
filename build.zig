@@ -771,6 +771,26 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-c-strcase", .root_module = gnulib_c_strcase_mod });
     exe.root_module.linkLibrary(gnulib_c_strcase_lib);
 
+    // gnulib-acl: an independent Zig package (tools/gnulib-acl)
+    // providing gnulib's ACL copy (qcopy_acl, lib/qcopy-acl.c under
+    // USE_XATTR), backing preserve-permissions in src/fileio.c. On
+    // Linux it replicates the whole C chain with no libc call: raw
+    // chmod/fchmod for the mode bits, libattr's attr_copy_file /
+    // attr_copy_fd semantics (llistxattr/lgetxattr/lsetxattr and f*
+    // variants) filtered by is_attr_permissions (hardcoded ACL names +
+    // /etc/xattr.conf `permissions' actions), and the fdfile_has_aclinfo
+    // EOPNOTSUPP diagnostic (Bug#78328) via listxattr probes. Non-Linux
+    // targets fall back to mode-bit preservation via libc. Built
+    // ReleaseFast (leaf copy operation).
+    const gnulib_acl_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_acl", .{}).path("src/acl.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const gnulib_acl_lib =
+        b.addLibrary(.{ .name = "gnulib-acl", .root_module = gnulib_acl_mod });
+    exe.root_module.linkLibrary(gnulib_acl_lib);
+
     // emacs-time: an independent Zig package (tools/emacs-time) providing
     // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
     // would otherwise provide, via per-platform NATIVE backends with no libc:
@@ -1008,8 +1028,6 @@ pub fn build(b: *std.Build) void {
             exe.root_module.linkSystemLibrary("asound", .{});
             // Linux console mouse (HAVE_GPM): Gpm_*/gpm_* symbols from src/term.c.
             exe.root_module.linkSystemLibrary("gpm", .{});
-            // Extended-attribute ACL copy: attr_copy_* from lib/qcopy-acl.c (libattr.so.1).
-            exe.root_module.linkSystemLibrary("attr", .{});
             // D-Bus (HAVE_DBUS): dbus_* symbols from src/dbusbind.c.
             exe.root_module.linkSystemLibrary("dbus-1", .{});
         }
@@ -1696,6 +1714,22 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // the package's exported symbols are linked into temacs below.
         "c-strcasecmp",
         "c-strncasecmp",
+        // lib/qcopy-acl.c, lib/file-has-acl.c, lib/acl-errno-valid.c,
+        // lib/acl-internal.c, lib/acl_entries.c, lib/set-permissions.c
+        // and lib/get-permissions.c are provided by an independent Zig
+        // package (tools/gnulib-acl, dependency `gnulib_acl`) -- native
+        // Zig ACL copy (qcopy_acl) with the libattr attr_copy_* xattr
+        // semantics and the fdfile_has_aclinfo EOPNOTSUPP diagnostic.
+        // Excluded here so the C sources are not compiled; the package's
+        // exported qcopy_acl symbol is linked into temacs below
+        // (preserve-permissions in Fcopy_file).
+        "qcopy-acl",
+        "file-has-acl",
+        "acl-errno-valid",
+        "acl-internal",
+        "acl_entries",
+        "set-permissions",
+        "get-permissions",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native

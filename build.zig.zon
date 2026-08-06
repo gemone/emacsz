@@ -160,6 +160,16 @@
         .gnulib_c_strcase = .{
             .path = "tools/gnulib-c-strcase",
         },
+        // gnulib-acl: gnulib's ACL copying for preserve-permissions
+        // (lib/qcopy-acl.c under USE_XATTR) provided by an independent
+        // Zig package instead of C. Linux xattr copy (attr_copy_file /
+        // attr_copy_fd semantics with the is_attr_permissions filter,
+        // /etc/xattr.conf actions) plus the fdfile_has_aclinfo EOPNOTSUPP
+        // diagnostic, all via raw syscalls with no libc call. Linked
+        // into temacs (backs `Fcopy_file' with preserve-permissions).
+        .gnulib_acl = .{
+            .path = "tools/gnulib-acl",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw
