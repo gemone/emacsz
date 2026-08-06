@@ -107,6 +107,13 @@
         .gnulib_tempname = .{
             .path = "tools/gnulib-tempname",
         },
+        // gnulib-fsusage: gnulib's file-system space query
+        // (get_fs_usage, lib/fsusage.c) provided by an independent Zig
+        // package instead of C. Raw statfs syscall; no libc call.
+        // Linked into temacs (backs `file-system-info').
+        .gnulib_fsusage = .{
+            .path = "tools/gnulib-fsusage",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw

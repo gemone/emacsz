@@ -661,6 +661,21 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "gnulib-tempname", .root_module = gnulib_tempname_mod });
     exe.root_module.linkLibrary(gnulib_tempname_lib);
 
+    // gnulib-fsusage: an independent Zig package (tools/gnulib-fsusage)
+    // providing gnulib's file-system space query (get_fs_usage,
+    // lib/fsusage.c), backing `file-system-info'. Reads statfs(2) via a
+    // raw syscall and maps the fields into the gnulib struct fs_usage,
+    // with errno set on failure (fileio.c tests ENOSYS). No libc call.
+    // Built ReleaseFast (leaf query).
+    const gnulib_fsusage_mod = b.createModule(.{
+        .root_source_file = b.dependency("gnulib_fsusage", .{}).path("src/fsusage.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const gnulib_fsusage_lib =
+        b.addLibrary(.{ .name = "gnulib-fsusage", .root_module = gnulib_fsusage_mod });
+    exe.root_module.linkLibrary(gnulib_fsusage_lib);
+
     // emacs-time: an independent Zig package (tools/emacs-time) providing
     // the realtime-clock read (gettime / current_timespec) that lib/gettime.c
     // would otherwise provide, via per-platform NATIVE backends with no libc:
@@ -1529,6 +1544,12 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // are linked into temacs below (`make-temp-file', filelock).
         "tempname",
         "mkostemp",
+        // lib/fsusage.c is provided by an independent Zig package
+        // (tools/gnulib-fsusage, dependency `gnulib_fsusage`) -- native
+        // Zig file-system space query (get_fs_usage). Excluded here so
+        // the C source is not compiled; the package's exported symbol is
+        // linked into temacs below (`file-system-info').
+        "fsusage",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native
