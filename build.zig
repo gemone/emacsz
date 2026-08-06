@@ -939,39 +939,58 @@ pub fn build(b: *std.Build) void {
     // optional system-lib features), so skip the corresponding -l flags
     // here as well; only libm and ncurses (terminal support) remain.
     const is_musl = target.result.os.tag == .linux and target.result.abi == .musl;
+    // Host (glibc) include dirs must not leak into the musl compile:
+    // -I/usr/include would inject glibc's C23 redirects (__isoc23_*)
+    // into a musl build. musl uses zig's bundled headers instead.
+    // Host (glibc) include dirs must not leak into the musl compile:
+    // -I/usr/include would inject glibc's C23 redirects (__isoc23_*)
+    // into a musl build. musl uses zig's bundled headers instead.
 
     // Add base C sources with proper flags
     if (!is_windows) {
         // Unix-like systems (macOS, Linux) - with libxml2 include path
-        const base_flags = &[_][]const u8{
+        const base_flags_core = [_][]const u8{
             // No -O flag (module Debug=-O0). -O2 has a separate bug (a
             // -O2 file corrupts lisp state during dump -> bad relocation
             // entries -> SIGSEGV on load) that is NOT fixed by non-PIE
             // or pdumper.c -O0; stay at -O0 until that is root-caused.
             "-std=gnu2x",  // Allow C23 features like _Static_assert without message
             "-fno-common",
-        "-fno-strict-aliasing",
+            "-fno-strict-aliasing",
+            // The fixnum range macros compare int values against the
+            // 61-bit bounds; on targets where those are provably true
+            // clang flags them (same suppression the Windows build
+            // uses).
+            "-Wno-tautological-constant-out-of-range-compare",
             "-D_GNU_SOURCE",
             "-DHAVE_CONFIG_H",
             "-I.",
             "-Isrc",
             "-Ilib",
             "-Ilib/malloc",  // Gnulib generated headers
-            "-I/usr/include",
-            "-I/usr/include/libxml2",  // libxml2 headers
         };
+        // musl reuses the C23/execinfo shims from lib/w32 (generic
+        // headers; the directory name is historical) and must NOT see
+        // glibc's /usr/include (its C23 redirects would leak
+        // __isoc23_* symbols into the musl link).
+        const unix_extra_inc = if (is_musl)
+            [_][]const u8{ "-Ilib/w32", "-Ilib/w32" }
+        else
+            [_][]const u8{ "-I/usr/include", "-I/usr/include/libxml2" };
+        const base_flags_full = base_flags_core ++ unix_extra_inc;
+        const base_flags: []const []const u8 = &base_flags_full;
 
         // src/timefns.c:monotonic_coarse_timespec is provided by the
         // emacs-time Zig package (per-platform native backend, no libc)
         // instead of C; the body is #ifndef'd out in src/timefns.c when
         // EMACS_USE_ZIG_MONOTONIC_COARSE is defined. Passed per-file (like
         // lib/mktime.c above) so only this translation unit is affected.
-        const timefns_flags = base_flags ++
+        const timefns_flags = base_flags_full ++
             [_][]const u8{"-DEMACS_USE_ZIG_MONOTONIC_COARSE"};
 
         for (base_sources) |src| {
             const flags: []const []const u8 =
-                if (std.mem.eql(u8, src, "src/timefns.c")) timefns_flags else base_flags;
+                if (std.mem.eql(u8, src, "src/timefns.c")) &timefns_flags else base_flags;
             exe.root_module.addCSourceFile(.{
                 .file = b.path(src),
                 .flags = flags,
@@ -1010,18 +1029,18 @@ pub fn build(b: *std.Build) void {
                 .file = b.path("src/inotify.c"),
                 .flags = base_flags,
             });
-            const dbus_flags = base_flags ++ [_][]const u8{
+            const dbus_flags = base_flags_full ++ [_][]const u8{
                 "-I/usr/include/dbus-1.0",
                 "-I/usr/lib64/dbus-1.0/include",
             };
             exe.root_module.addCSourceFile(.{
                 .file = b.path("src/dbusbind.c"),
-                .flags = dbus_flags,
+                .flags = &dbus_flags,
             });
         }
 
         // Add Gnulib sources
-        const libgnu_flags = &[_][]const u8{
+        const libgnu_flags_core = [_][]const u8{
             // No -O flag: see base_flags (separate -O2 lisp-corruption bug).
             "-std=gnu2x",
             "-fno-common",
@@ -1032,13 +1051,22 @@ pub fn build(b: *std.Build) void {
             "-Isrc",
             "-Ilib",
             "-Ilib/malloc",  // Gnulib generated headers
-            "-I/usr/include",
-            "-I/usr/include/libxml2",
         };
+        const libgnu_flags_full = libgnu_flags_core ++ unix_extra_inc;
+        const libgnu_flags: []const []const u8 = &libgnu_flags_full;
 
         for (libgnu_sources) |src| {
             exe.root_module.addCSourceFile(.{
                 .file = b.path(src),
+                .flags = libgnu_flags,
+            });
+        }
+        // musl lacks glibc's <execinfo.h>; the lib/w32 shim declares the
+        // backtrace family and this no-op implementation satisfies the
+        // fatal-backtrace call sites in src/sysdep.c.
+        if (is_musl) {
+            exe.root_module.addCSourceFile(.{
+                .file = b.path("lib/w32/execinfo.c"),
                 .flags = libgnu_flags,
             });
         }
@@ -1212,9 +1240,10 @@ pub fn build(b: *std.Build) void {
             exe.root_module.linkSystemLibrary("dbus-1", .{});
         }
     } else if (is_musl) {
-        // Terminal support only; the feature libs are undef'd in the musl
-        // config and are not available as musl builds on this host yet.
-        exe.root_module.linkSystemLibrary("ncurses", .{});
+        // No system libraries: the feature libs are undef'd in the musl
+        // config, and src/termcap.c (compiled via TERMCAP_OBJ) supplies
+        // the terminal capabilities itself, so the static binary links
+        // with only zig's bundled musl + libm.
     } else {
         // Windows: getrandom (lib/getrandom.c) uses BCryptGenRandom;
         // sockets and the console UI need ws2_32/kernel32/user32/gdi32;
