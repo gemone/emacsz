@@ -19,7 +19,8 @@ pub fn main(init: std.process.Init) !void {
     const a = std.heap.smp_allocator;
 
     // argv[0] = program name, argv[1] = absolute repo root.
-    var args_it = std.process.Args.Iterator.init(init.minimal.args);
+    var args_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, a);
+    defer args_it.deinit();
     _ = args_it.skip();
     const repo_z = args_it.next() orelse {
         std.debug.print("usage: gen-epaths <repo-root>\n", .{});
