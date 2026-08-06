@@ -861,6 +861,17 @@ _GL_EXTERN_C void *memset_explicit (void *__s, int __c, size_t __n)
 # endif
 #endif
 
+/* The gnulib-generated declaration above only fires on GCC 15+ (the
+   attribute section is guarded by __GNUC__ >= 15 && !__clang__), yet the
+   C23 memset_explicit is missing from older glibc <string.h> even under
+   _GNU_SOURCE (Ubuntu 24.04 / glibc 2.39 with clang).  Emacs compiles
+   its own lib/memset_explicit.c, so declare the function unconditionally:
+   a compatible redeclaration is harmless on systems that already have it.  */
+#ifndef memset_explicit
+_GL_EXTERN_C void *memset_explicit (void *__s, int __c, size_t __n)
+  _GL_ATTRIBUTE_NONNULL_IF_NONZERO (1, 3);
+#endif
+
 
 /* Clear a block of memory.  The compiler will not delete a call to
    this function, even if the block is dead after the call.  */
