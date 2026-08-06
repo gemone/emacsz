@@ -12,7 +12,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 comptime {
-    if (builtin.os.tag != .linux and builtin.os.tag != .android)
+    if (builtin.os.tag != .linux)
         @compileError("gnulib-stat-time: glibc struct stat layout is Linux-only for now");
 }
 

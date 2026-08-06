@@ -11,7 +11,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 comptime {
-    if (builtin.os.tag != .linux and builtin.os.tag != .android)
+    if (builtin.os.tag != .linux)
         @compileError("gnulib-careadlinkat: current port targets Linux-like POSIX readlinkat");
 }
 

@@ -226,7 +226,7 @@ fn parseLong(s: []const u8) ?i64 {
 // cgroup-v2 CPU quota if the current scheduler honors it, else ULONG_MAX.
 fn cpuQuota() c_ulong {
     var quota: c_ulong = ULONG_MAX;
-    if (builtin.os.tag == .linux or builtin.os.tag == .android) {
+    if (builtin.os.tag == .linux) {
         const rc = linux.sched_getscheduler(0);
         const sched = @as(isize, @bitCast(rc));
         // -1 (error), SCHED_FIFO(1), SCHED_RR(2) and SCHED_DEADLINE(6)

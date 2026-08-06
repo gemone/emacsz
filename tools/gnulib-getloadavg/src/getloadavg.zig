@@ -9,7 +9,7 @@ const linux = std.os.linux;
 const builtin = @import("builtin");
 
 comptime {
-    if (builtin.os.tag != .linux and builtin.os.tag != .android)
+    if (builtin.os.tag != .linux)
         @compileError("gnulib-getloadavg: sysinfo-based implementation is Linux-only for now");
 }
 

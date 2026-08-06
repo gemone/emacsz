@@ -11,7 +11,7 @@ const linux = std.os.linux;
 const builtin = @import("builtin");
 
 comptime {
-    if (builtin.os.tag != .linux and builtin.os.tag != .android)
+    if (builtin.os.tag != .linux)
         @compileError("gnulib-boot-time: Linux implementation only for now");
 }
 
