@@ -29,6 +29,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef DARWIN_OS
+#include <execinfo.h>
+#include <signal.h>
+#endif
 
 #define MAIN_PROGRAM
 #include "lisp.h"
@@ -1326,6 +1330,22 @@ maybe_load_seccomp (int argc, char **argv)
 
 #endif  /* SECCOMP_USABLE */
 
+#ifdef DARWIN_OS
+/* The dumped-image load crashes before Emacs installs its own signal
+   handlers; print a backtrace from a minimal SIGSEGV handler so the
+   failing reloc/hook is identifiable.  */
+static void
+zdiag_segv (int sig)
+{
+  void *bt[32];
+  int n = backtrace (bt, 32);
+  static const char msg[] = "ZDIAG SIGSEGV backtrace:\n";
+  write (2, msg, sizeof msg - 1);
+  backtrace_symbols_fd (bt, n, 2);
+  _exit (1);
+}
+#endif
+
 #if !defined HAVE_ANDROID || defined ANDROID_STUBIFY
 int
 main (int argc, char **argv)
@@ -1446,22 +1466,7 @@ android_emacs_init (int argc, char **argv, char *dump_file)
 #endif
 
 #if defined DARWIN_OS && defined HAVE_PDUMPER
-  /* The dumped-image load crashes before Emacs installs its own signal
-     handlers; print a backtrace from a minimal SIGSEGV handler so the
-     failing reloc/hook is identifiable.  */
   {
-    extern int backtrace (void **, int);
-    extern void backtrace_symbols_fd (void *const *, int, int);
-    extern int write (int, const void *, size_t);
-    static void zdiag_segv (int sig)
-    {
-      void *bt[32];
-      int n = backtrace (bt, 32);
-      static const char msg[] = "ZDIAG SIGSEGV backtrace:\n";
-      write (2, msg, sizeof msg - 1);
-      backtrace_symbols_fd (bt, n, 2);
-      _exit (1);
-    }
     struct sigaction sa = {0};
     sa.sa_handler = zdiag_segv;
     sigaction (SIGSEGV, &sa, NULL);
