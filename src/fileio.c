@@ -1725,6 +1725,11 @@ the root directory.  */)
     if (!(IS_DIRECTORY_SEP (target[0]) && IS_DIRECTORY_SEP (target[1])))
 #endif /* WINDOWSNT */
       {
+#ifdef WINDOWSNT
+	fprintf (stderr, "DIAG expand-file-name abort: drive=%d nm='%s' newdir='%s'\n",
+		 drive, nm, newdir ? newdir : "(null)");
+	fflush (stderr);
+#endif
 	if (!drive) emacs_abort ();
 	target -= 2;
 	target[0] = DRIVE_LETTER (drive);
