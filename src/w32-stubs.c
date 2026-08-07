@@ -40,7 +40,6 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <windows.h>
 #include <bcrypt.h>
-#include <dbghelp.h>
 #include <stdio.h>
 
 /* Temporary startup diagnostic: print the stack on a stack overflow so
@@ -54,19 +53,9 @@ stack_overflow_diag (EXCEPTION_POINTERS *ep)
       void *addrs[40];
       USHORT n = RtlCaptureStackBackTrace (0, 40, addrs, NULL);
       fprintf (stderr, "DIAG: stack overflow, %u frames:\n", n);
-      SymSetOptions (SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
-      SymInitialize (GetCurrentProcess (), NULL, TRUE);
       for (USHORT i = 0; i < n; i++)
 	{
-	  DWORD64 disp = 0;
-	  char name[256] = "?";
-	  union { char raw[sizeof (SYMBOL_INFO) + 256]; SYMBOL_INFO sym; } si;
-	  memset (&si, 0, sizeof si);
-	  si.sym.SizeOfStruct = sizeof (SYMBOL_INFO);
-	  si.sym.MaxNameLen = 255;
-	  if (SymFromAddr (GetCurrentProcess (), (DWORD64) addrs[i], &disp, &si.sym))
-	    snprintf (name, sizeof name, "%s", si.sym.Name);
-	  fprintf (stderr, "  %p %s+0x%llx\n", addrs[i], name[0] ? name : "?", (unsigned long long) disp);
+	  fprintf (stderr, "  %p\n", addrs[i]);
 	}
       fflush (stderr);
     }
