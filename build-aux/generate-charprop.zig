@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const aslr = @import("aslr.zig");
+const env = @import("env.zig");
 const temacs_path = @import("temacs-path.zig");
 
 const unifiles = [_][]const u8{
@@ -17,12 +18,14 @@ const unifiles = [_][]const u8{
     "uni-special-lowercase", "uni-special-titlecase", "uni-brackets",
 };
 
-pub fn main() !void {
+pub fn main(minimal: std.process.Init.Minimal) !void {
     aslr.disableAslr();
     const gpa = std.heap.smp_allocator;
     var io_threaded: std.Io.Threaded = .init(gpa, .{});
     const io = io_threaded.io();
     const cwd = std.Io.Dir.cwd();
+    var env_map = try env.inherit(gpa, minimal);
+    defer env_map.deinit();
 
     const root = try std.process.currentPathAlloc(io, gpa);
     defer gpa.free(root);
@@ -96,7 +99,7 @@ pub fn main() !void {
         if (fileExists(io, cwd, out_el)) continue;
         const eval = try std.fmt.allocPrint(gpa, "(unidata-gen-file \"{s}.el\" \"{s}\" \"unidata.txt\")", .{ lisp_target, lisp_unidata });
         defer gpa.free(eval);
-        try runEmacs(gpa, io, temacs, dump_arg, unidata, "unidata-gen", eval);
+        try runEmacs(gpa, io, &env_map, temacs, dump_arg, unidata, "unidata-gen", eval);
         generated += 1;
     }
 
@@ -118,7 +121,7 @@ pub fn main() !void {
         else
             try std.fmt.allocPrint(gpa, "(unidata-gen-idna-mapping \"{s}/idna-mapping.el\")", .{lisp_out_dir});
         defer gpa.free(eval);
-        try runEmacs(gpa, io, temacs, dump_arg, unidata, "unidata-gen", eval);
+        try runEmacs(gpa, io, &env_map, temacs, dump_arg, unidata, "unidata-gen", eval);
         generated += 1;
     }
     {
@@ -127,7 +130,7 @@ pub fn main() !void {
         if (!fileExists(io, cwd, target)) {
             const eval = try std.fmt.allocPrint(gpa, "(emoji--generate-file \"{s}/emoji-labels.el\")", .{lisp_out_dir});
             defer gpa.free(eval);
-            try runEmacs(gpa, io, temacs, dump_arg, out_dir, "emoji", eval);
+            try runEmacs(gpa, io, &env_map, temacs, dump_arg, out_dir, "emoji", eval);
             generated += 1;
         }
     }
@@ -137,7 +140,7 @@ pub fn main() !void {
         if (!fileExists(io, cwd, target)) {
             const eval = try std.fmt.allocPrint(gpa, "(unidata-gen-charprop \"{s}/charprop.el\")", .{lisp_out_dir});
             defer gpa.free(eval);
-            try runEmacs(gpa, io, temacs, dump_arg, unidata, "unidata-gen", eval);
+            try runEmacs(gpa, io, &env_map, temacs, dump_arg, unidata, "unidata-gen", eval);
             generated += 1;
         }
     }
@@ -160,6 +163,7 @@ fn lispPath(gpa: std.mem.Allocator, path: []const u8) ![]const u8 {
 fn runEmacs(
     gpa: std.mem.Allocator,
     io: std.Io,
+    env_map: *const std.process.Environ.Map,
     temacs: []const u8,
     dump_arg: []const u8,
     load_dir: []const u8,
@@ -171,6 +175,7 @@ fn runEmacs(
     while (true) : (attempt += 1) {
         const res = try std.process.run(gpa, io, .{
             .argv = &argv,
+            .environ_map = env_map,
             .stdout_limit = .unlimited,
             .stderr_limit = .unlimited,
         });

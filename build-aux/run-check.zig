@@ -9,6 +9,7 @@
 const std = @import("std");
 const aslr = @import("aslr.zig");
 const builtin = @import("builtin");
+const env = @import("env.zig");
 const temacs_path = @import("temacs-path.zig");
 
 const test_files = [_][]const u8{
@@ -25,11 +26,15 @@ const test_files = [_][]const u8{
     "regexp-opt-tests", "range-tests", "crypto-hash-tests",
 };
 
-pub fn main() !void {
+pub fn main(minimal: std.process.Init.Minimal) !void {
     aslr.disableAslr();
     const gpa = std.heap.smp_allocator;
     var io_threaded: std.Io.Threaded = .init(gpa, .{});
     const io = io_threaded.io();
+    // Copy the parent environment: POSIX spawns otherwise pass an empty
+    // environment, dropping TMPDIR/PATH from the test session.
+    var env_map = try env.inherit(gpa, minimal);
+    defer env_map.deinit();
 
     // -O0 eval frames are large; raise the stack limit so the ert-deftest
     // macro expansion does not overflow the C stack (ulimit -s unlimited).
@@ -67,6 +72,7 @@ pub fn main() !void {
     while (true) : (attempt += 1) {
         var child = try std.process.spawn(io, .{
             .argv = &argv,
+            .environ_map = &env_map,
             .stdin = .inherit,
             .stdout = .inherit,
             .stderr = .inherit,

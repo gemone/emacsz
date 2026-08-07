@@ -113,8 +113,9 @@ jobs:
           # writing to an existing file there is denied (file-write-data),
           # which fails e.g. the check-declare ert tests that open their
           # temp file for writing.  Point TMPDIR at the runner's writable
-          # temp directory instead of the default /tmp fallback.
-          export TMPDIR="$RUNNER_TEMP"
+          # temp directory (falling back to the workspace) instead of
+          # the default /tmp fallback.
+          export TMPDIR="${RUNNER_TEMP:-$PWD}"
           zig build test
         shell: bash
 

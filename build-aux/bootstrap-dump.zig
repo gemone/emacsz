@@ -8,9 +8,10 @@
 
 const std = @import("std");
 const aslr = @import("aslr.zig");
+const env = @import("env.zig");
 const temacs_path = @import("temacs-path.zig");
 
-pub fn main() !void {
+pub fn main(minimal: std.process.Init.Minimal) !void {
     aslr.disableAslr();
     const gpa = std.heap.smp_allocator;
     var io_threaded: std.Io.Threaded = .init(gpa, .{});
@@ -59,7 +60,7 @@ pub fn main() !void {
     };
 
     // Loadup must run from zig-out/bin with the source-tree env.
-    var env_map = std.process.Environ.Map.init(gpa);
+    var env_map = try env.inherit(gpa, minimal);
     defer env_map.deinit();
     try env_map.put("EMACSLOADPATH", lisp_path);
     try env_map.put("EMACSDATA", etc_path);

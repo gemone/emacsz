@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const aslr = @import("aslr.zig");
+const env = @import("env.zig");
 
 const Grammar = struct {
     tool: []const u8,
@@ -25,12 +26,14 @@ const grammars = [_]Grammar{
     .{ .tool = "semantic/wisent/grammar", .func = "wisent-batch-make-parser", .out = "lisp/cedet/srecode/srt-wy.el", .src = "srecode-template.wy" },
 };
 
-pub fn main() !void {
+pub fn main(minimal: std.process.Init.Minimal) !void {
     aslr.disableAslr();
     const gpa = std.heap.smp_allocator;
     var io_threaded: std.Io.Threaded = .init(gpa, .{});
     const io = io_threaded.io();
     const cwd = std.Io.Dir.cwd();
+    var env_map = try env.inherit(gpa, minimal);
+    defer env_map.deinit();
 
     const root = try std.process.currentPathAlloc(io, gpa);
     defer gpa.free(root);
@@ -74,6 +77,7 @@ pub fn main() !void {
         while (true) : (attempt += 1) {
             var child = try std.process.spawn(io, .{
                 .argv = &argv,
+                .environ_map = &env_map,
                 .stdin = .ignore,
                 .stdout = .ignore,
                 .stderr = .ignore,

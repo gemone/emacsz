@@ -11,14 +11,17 @@
 
 const std = @import("std");
 const aslr = @import("aslr.zig");
+const env = @import("env.zig");
 const temacs_path = @import("temacs-path.zig");
 
-pub fn main() !void {
+pub fn main(minimal: std.process.Init.Minimal) !void {
     aslr.disableAslr();
     const gpa = std.heap.smp_allocator;
     var io_threaded: std.Io.Threaded = .init(gpa, .{});
     const io = io_threaded.io();
     const cwd = std.Io.Dir.cwd();
+    var env_map = try env.inherit(gpa, minimal);
+    defer env_map.deinit();
 
     const root = try std.process.currentPathAlloc(io, gpa);
     defer gpa.free(root);
@@ -54,7 +57,7 @@ pub fn main() !void {
     // so load it explicitly (a clean checkout has no stale tables).
     const charprop_eval = try std.fmt.allocPrint(gpa, "(load \"{s}\")", .{charprop_flat});
     defer gpa.free(charprop_eval);
-    try runEmacs(io, gpa, temacs, dump, lisp_path, &.{
+    try runEmacs(io, gpa, &env_map, temacs, dump, lisp_path, &.{
         "--eval", charprop_eval,
         "-l", "emacs-lisp/loaddefs-gen.el",
         "-f", "loaddefs-generate--emacs-batch",
@@ -62,7 +65,7 @@ pub fn main() !void {
 
     const cus_eval = try std.fmt.allocPrint(gpa, "(setq generated-custom-dependencies-file \"{s}/cus-load.el\")", .{lisp_path_flat});
     defer gpa.free(cus_eval);
-    try runEmacs(io, gpa, temacs, dump, lisp_path, &.{
+    try runEmacs(io, gpa, &env_map, temacs, dump, lisp_path, &.{
         "-l", "cus-dep",
         "--eval", cus_eval,
         "-f", "custom-make-dependencies",
@@ -70,7 +73,7 @@ pub fn main() !void {
 
     const finder_eval = try std.fmt.allocPrint(gpa, "(setq generated-finder-keywords-file \"{s}/finder-inf.el\")", .{lisp_path_flat});
     defer gpa.free(finder_eval);
-    try runEmacs(io, gpa, temacs, dump, lisp_path, &.{
+    try runEmacs(io, gpa, &env_map, temacs, dump, lisp_path, &.{
         "-l", "finder",
         "--eval", finder_eval,
         "-f", "finder-compile-keywords-make-dist",
@@ -118,6 +121,7 @@ fn collectDirs(io: std.Io, gpa: std.mem.Allocator, cwd: std.Io.Dir, for_finder: 
 fn runEmacs(
     io: std.Io,
     gpa: std.mem.Allocator,
+    env_map: *const std.process.Environ.Map,
     temacs: []const u8,
     dump: []const u8,
     lisp_path: []const u8,
@@ -143,6 +147,7 @@ fn runEmacs(
         var child = try std.process.spawn(io, .{
             .argv = argv.items,
             .cwd = .{ .path = lisp_path },
+            .environ_map = env_map,
             .stdin = .inherit,
             .stdout = .inherit,
             .stderr = .inherit,
