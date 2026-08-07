@@ -225,17 +225,9 @@ static void
 init_eval_once_for_pdumper (void)
 {
   enum { size = 50 };
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG eval hook start specpdl=%p\n", (void *) specpdl);
-  fflush (stderr);
-#endif
   union specbinding *pdlvec = malloc ((size + 1) * sizeof *specpdl);
   specpdl = specpdl_ptr = pdlvec + 1;
   specpdl_end = specpdl + size;
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG eval hook done specpdl=%p\n", (void *) specpdl);
-  fflush (stderr);
-#endif
 }
 
 void
@@ -1475,11 +1467,6 @@ Both TAG and VALUE are evalled.  */
        attributes: noreturn)
   (register Lisp_Object tag, Lisp_Object value)
 {
-#if defined DARWIN_OS || defined WINDOWSNT
-  fprintf (stderr, "ZDIAG Fthrow tag=%s\n",
-	   SYMBOLP (tag) ? SSDATA (SYMBOL_NAME (tag)) : "?");
-  fflush (stderr);
-#endif
   struct handler *c;
 
   if (!NILP (tag))

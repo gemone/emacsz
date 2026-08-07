@@ -5674,10 +5674,6 @@ pdumper_load (const char *dump_filename, char *argv0)
                      header,
                      sizeof (*header)) < sizeof (*header))
     goto out;
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG pdump header ok\n");
-  fflush (stderr);
-#endif
 
   if (memcmp (header->magic, dump_magic, sizeof (dump_magic)) != 0)
     {
@@ -5744,11 +5740,6 @@ pdumper_load (const char *dump_filename, char *argv0)
 
   if (!dump_mmap_contiguous (sections, countof (sections)))
     goto out;
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG pdump mmap ok base=%p\n",
-	   (void *) (uintptr_t) sections[DS_HOT].mapping);
-  fflush (stderr);
-#endif
 
   err = PDUMPER_LOAD_ERROR;
   dump_base = (uintptr_t) sections[DS_HOT].mapping;
@@ -5780,16 +5771,8 @@ pdumper_load (const char *dump_filename, char *argv0)
   dump_public.start = dump_base;
   dump_public.end = dump_public.start + dump_size;
 
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG pdump reloc start base=%p\n", (void *) dump_base);
-  fflush (stderr);
-#endif
   dump_do_all_dump_reloc_for_phase (header, dump_base, EARLY_RELOCS);
   dump_do_all_emacs_relocations (header, dump_base);
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG pdump reloc done\n");
-  fflush (stderr);
-#endif
 
   dump_mmap_discard_contents (&sections[DS_DISCARDABLE]);
   for (int i = 0; i < countof (sections); ++i)
@@ -5807,17 +5790,7 @@ pdumper_load (const char *dump_filename, char *argv0)
   /* Run the functions Emacs registered for doing post-dump-load
      initialization.  */
   for (int i = 0; i < nr_dump_hooks; ++i)
-    {
-#ifdef DARWIN_OS
-      fprintf (stderr, "ZDIAG pdump hook %d/%d\n", i, nr_dump_hooks);
-      fflush (stderr);
-#endif
-      dump_hooks[i] ();
-    }
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG pdump hooks done\n");
-  fflush (stderr);
-#endif
+    dump_hooks[i] ();
 
 #ifdef HAVE_NATIVE_COMP
   pdumper_set_emacs_execdir (argv0);
@@ -5826,24 +5799,12 @@ pdumper_load (const char *dump_filename, char *argv0)
 #endif
 
   dump_do_all_dump_reloc_for_phase (header, dump_base, LATE_RELOCS);
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG pdump LATE done\n");
-  fflush (stderr);
-#endif
   dump_do_all_dump_reloc_for_phase (header, dump_base, VERY_LATE_RELOCS);
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG pdump late reloc done\n");
-  fflush (stderr);
-#endif
 
   /* Run the functions Emacs registered for doing post-dump-load
      initialization.  */
   for (int i = 0; i < nr_dump_late_hooks; ++i)
     dump_late_hooks[i] ();
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG pdump late hooks done\n");
-  fflush (stderr);
-#endif
 
   initialized = true;
 

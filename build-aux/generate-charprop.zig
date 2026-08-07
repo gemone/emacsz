@@ -5,17 +5,16 @@
 //! repo root. Incremental: an existing output file is left untouched.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const aslr = @import("aslr.zig");
 const temacs_path = @import("temacs-path.zig");
 
 const unifiles = [_][]const u8{
-    "uni-name",                "uni-category",          "uni-combining",
-    "uni-bidi",                "uni-decomposition",     "uni-decimal",
-    "uni-digit",               "uni-numeric",           "uni-mirrored",
-    "uni-old-name",            "uni-comment",           "uni-uppercase",
-    "uni-lowercase",           "uni-titlecase",         "uni-special-uppercase",
-    "uni-special-lowercase",   "uni-special-titlecase", "uni-brackets",
+    "uni-name",              "uni-category",          "uni-combining",
+    "uni-bidi",              "uni-decomposition",     "uni-decimal",
+    "uni-digit",             "uni-numeric",           "uni-mirrored",
+    "uni-old-name",          "uni-comment",           "uni-uppercase",
+    "uni-lowercase",         "uni-titlecase",         "uni-special-uppercase",
+    "uni-special-lowercase", "uni-special-titlecase", "uni-brackets",
 };
 
 pub fn main() !void {
@@ -85,14 +84,6 @@ pub fn main() !void {
     defer gpa.free(lisp_unidata);
     const lisp_out_dir = try lispPath(gpa, out_dir);
     defer gpa.free(lisp_out_dir);
-    // Darwin has no personality(2); ask dyld to skip the
-    // main-executable slide for the dumped-image children.
-    var darwin_env_map: std.process.Environ.Map = std.process.Environ.Map.init(gpa);
-    defer darwin_env_map.deinit();
-    if (builtin.os.tag == .macos)
-        try darwin_env_map.put("DYLD_NO_PIE", "1");
-    const darwin_env: ?*const std.process.Environ.Map =
-        if (builtin.os.tag == .macos) &darwin_env_map else null;
 
     var generated: usize = 0;
     for (unifiles) |u| {
@@ -103,9 +94,9 @@ pub fn main() !void {
         const out_el = try std.fmt.allocPrint(gpa, "{s}.el", .{target});
         defer gpa.free(out_el);
         if (fileExists(io, cwd, out_el)) continue;
-    const eval = try std.fmt.allocPrint(gpa, "(unidata-gen-file \"{s}.el\" \"{s}\" \"unidata.txt\")", .{ lisp_target, lisp_unidata });
-    defer gpa.free(eval);
-        try runEmacs(gpa, io, temacs, dump_arg, unidata, "unidata-gen", eval, darwin_env);
+        const eval = try std.fmt.allocPrint(gpa, "(unidata-gen-file \"{s}.el\" \"{s}\" \"unidata.txt\")", .{ lisp_target, lisp_unidata });
+        defer gpa.free(eval);
+        try runEmacs(gpa, io, temacs, dump_arg, unidata, "unidata-gen", eval);
         generated += 1;
     }
 
@@ -127,7 +118,7 @@ pub fn main() !void {
         else
             try std.fmt.allocPrint(gpa, "(unidata-gen-idna-mapping \"{s}/idna-mapping.el\")", .{lisp_out_dir});
         defer gpa.free(eval);
-        try runEmacs(gpa, io, temacs, dump_arg, unidata, "unidata-gen", eval, darwin_env);
+        try runEmacs(gpa, io, temacs, dump_arg, unidata, "unidata-gen", eval);
         generated += 1;
     }
     {
@@ -136,7 +127,7 @@ pub fn main() !void {
         if (!fileExists(io, cwd, target)) {
             const eval = try std.fmt.allocPrint(gpa, "(emoji--generate-file \"{s}/emoji-labels.el\")", .{lisp_out_dir});
             defer gpa.free(eval);
-            try runEmacs(gpa, io, temacs, dump_arg, out_dir, "emoji", eval, darwin_env);
+            try runEmacs(gpa, io, temacs, dump_arg, out_dir, "emoji", eval);
             generated += 1;
         }
     }
@@ -146,7 +137,7 @@ pub fn main() !void {
         if (!fileExists(io, cwd, target)) {
             const eval = try std.fmt.allocPrint(gpa, "(unidata-gen-charprop \"{s}/charprop.el\")", .{lisp_out_dir});
             defer gpa.free(eval);
-            try runEmacs(gpa, io, temacs, dump_arg, unidata, "unidata-gen", eval, darwin_env);
+            try runEmacs(gpa, io, temacs, dump_arg, unidata, "unidata-gen", eval);
             generated += 1;
         }
     }
@@ -174,14 +165,12 @@ fn runEmacs(
     load_dir: []const u8,
     load_lib: []const u8,
     eval: []const u8,
-    env_map: ?*const std.process.Environ.Map,
 ) !void {
     const argv = [_][]const u8{ temacs, "--batch", "-L", load_dir, "-l", load_lib, dump_arg, "--eval", eval };
     var attempt: usize = 0;
     while (true) : (attempt += 1) {
         const res = try std.process.run(gpa, io, .{
             .argv = &argv,
-            .environ_map = env_map,
             .stdout_limit = .unlimited,
             .stderr_limit = .unlimited,
         });

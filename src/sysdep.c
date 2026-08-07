@@ -1929,11 +1929,6 @@ static struct sigaction old_sigsegv_handler;
 static void
 handle_sigsegv (int sig, siginfo_t *siginfo, void *arg)
 {
-#if defined DARWIN_OS || defined WINDOWSNT
-  fprintf (stderr, "ZDIAG SIGSEGV addr=%p overflow=%d\n",
-	   siginfo ? siginfo->si_addr : 0, stack_overflow (siginfo));
-  fflush (stderr);
-#endif
   /* Hard GC error may lead to stack overflow caused by
      too nested calls to mark_object.  No way to survive.  */
   bool fatal = gc_in_progress;

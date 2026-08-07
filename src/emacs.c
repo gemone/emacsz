@@ -29,10 +29,6 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#ifdef DARWIN_OS
-#include <execinfo.h>
-#include <signal.h>
-#endif
 
 #define MAIN_PROGRAM
 #include "lisp.h"
@@ -951,10 +947,6 @@ dump_error_to_string (int result)
 static char *
 load_pdump (int argc, char **argv, char *dump_file)
 {
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG load_pdump file=%s\n", dump_file ? dump_file : "(null)");
-  fflush (stderr);
-#endif
 #if defined HAVE_ANDROID && !defined ANDROID_STUBIFY
   int skip_args = 0, result;
 
@@ -1330,22 +1322,6 @@ maybe_load_seccomp (int argc, char **argv)
 
 #endif  /* SECCOMP_USABLE */
 
-#ifdef DARWIN_OS
-/* The dumped-image load crashes before Emacs installs its own signal
-   handlers; print a backtrace from a minimal SIGSEGV handler so the
-   failing reloc/hook is identifiable.  */
-static void
-zdiag_segv (int sig)
-{
-  void *bt[32];
-  int n = backtrace (bt, 32);
-  static const char msg[] = "ZDIAG SIGSEGV backtrace:\n";
-  write (2, msg, sizeof msg - 1);
-  backtrace_symbols_fd (bt, n, 2);
-  _exit (1);
-}
-#endif
-
 #if !defined HAVE_ANDROID || defined ANDROID_STUBIFY
 int
 main (int argc, char **argv)
@@ -1354,11 +1330,6 @@ int
 android_emacs_init (int argc, char **argv, char *dump_file)
 #endif
 {
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG main DYLD_NO_PIE=%s main=%p\n",
-	   getenv ("DYLD_NO_PIE"), (void *) &main);
-  fflush (stderr);
-#endif
   /* Variable near the bottom of the stack, and aligned appropriately
      for pointers.  */
   void *stack_bottom_variable;
@@ -1463,14 +1434,6 @@ android_emacs_init (int argc, char **argv, char *dump_file)
 #ifdef HAVE_NS
   /* Initialize the Obj C autorelease pool.  */
   ns_init_pool ();
-#endif
-
-#if defined DARWIN_OS && defined HAVE_PDUMPER
-  {
-    struct sigaction sa = {0};
-    sa.sa_handler = zdiag_segv;
-    sigaction (SIGSEGV, &sa, NULL);
-  }
 #endif
 
 #ifdef HAVE_PDUMPER
@@ -1660,10 +1623,6 @@ android_emacs_init (int argc, char **argv, char *dump_file)
 	    {
 	      rlim.rlim_cur = newlim;
 	      int sr = setrlimit (RLIMIT_STACK, &rlim);
-#ifdef DARWIN_OS
-	      fprintf (stderr, "ZDIAG grow stack newlim=%lu sr=%d\n",
-		       (unsigned long) newlim, sr);
-#endif
 	      if (sr == 0)
 		lim = newlim;
 	    }

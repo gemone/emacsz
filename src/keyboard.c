@@ -1176,13 +1176,6 @@ top_level_2 (void)
     /* FIXME: Should we (re)use `list_of_error` from `xdisp.c`? */
     push_handler_bind (list1 (Qerror), Qdebug_early__handler, 0);
 
-#if defined DARWIN_OS || defined WINDOWSNT
-  {
-    Lisp_Object vt = Vtop_level;
-    fprintf (stderr, "ZDIAG top_level_2 Vtop_level=%s\n",
-	     CONSP (vt) && SYMBOLP (XCAR (vt)) ? SSDATA (SYMBOL_NAME (XCAR (vt))) : "?");
-  }
-#endif
   Lisp_Object res = Feval (Vtop_level, Qt);
 
   if (setup_handler)
@@ -1209,10 +1202,6 @@ This also exits all active minibuffers.  */
        attributes: noreturn)
   (void)
 {
-#if defined DARWIN_OS || defined WINDOWSNT
-  fprintf (stderr, "ZDIAG Ftop_level called\n");
-  fflush (stderr);
-#endif
 #ifdef HAVE_WINDOW_SYSTEM
   if (display_hourglass_p)
     cancel_hourglass ();

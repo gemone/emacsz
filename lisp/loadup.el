@@ -390,19 +390,9 @@
 (when (compiled-function-p (symbol-function 'cconv-fv))
   (setq internal-make-interpreted-closure-function
         #'cconv-make-interpreted-closure))
-(message "ZDIAG pre-cus-start")
-(condition-case err
-    (dlet ((cus-start--preload t)) ;; Tell `cus-start' we're preloading.
-      (load "cus-start")) ;Late to reduce customize-rogue (needs loaddefs.el anyway)
-  ((quit top-level)
-   (message "ZDIAG cus-start abort %S" err)
-   (debug-early-backtrace))
-  (error
-   (message "ZDIAG cus-start error %S" err)
-   (debug-early-backtrace)))
-(message "ZDIAG after cus-start")
+(dlet ((cus-start--preload t)) ;; Tell `cus-start' we're preloading.
+  (load "cus-start")) ;Late to reduce customize-rogue (needs loaddefs.el anyway)
 (load "tooltip")
-(message "ZDIAG after tooltip")
 (load "international/iso-transl") ; Binds Alt-[ and friends.
 
 ;; Used by `kill-buffer', for instance.
@@ -488,7 +478,6 @@ lost after dumping")))
       (Snarf-documentation "DOC")
     (error nil)))
 (message "Finding pointers to doc strings...done")
-(message "ZDIAG pre-dump dump-mode=%S" dump-mode)
 
 ;; Note: You can cause additional libraries to be preloaded
 ;; by writing a site-init.el that loads them.

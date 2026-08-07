@@ -4271,10 +4271,6 @@ mem_find (void *start)
 static struct mem_node *
 mem_insert (void *start, void *end, enum mem_type type)
 {
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG mem_insert mem_root=%p start=%p\n", (void *) mem_root, start);
-  fflush (stderr);
-#endif
   struct mem_node *c, *parent, *x;
 
   if (min_heap_address == NULL || start < min_heap_address)
@@ -7411,15 +7407,7 @@ init_alloc_once (void)
 static void
 init_alloc_once_for_pdumper (void)
 {
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG alloc hook start\n");
-  fflush (stderr);
-#endif
   mem_init ();
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG alloc hook mem_init done\n");
-  fflush (stderr);
-#endif
 
 #ifdef DOUG_LEA_MALLOC
   mallopt (M_TRIM_THRESHOLD, 128 * 1024); /* Trim threshold.  */
@@ -7430,15 +7418,7 @@ init_alloc_once_for_pdumper (void)
 
   init_finalizer_list (&finalizers);
   init_finalizer_list (&doomed_finalizers);
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG alloc hook finalizers done\n");
-  fflush (stderr);
-#endif
   refill_memory_reserve ();
-#ifdef DARWIN_OS
-  fprintf (stderr, "ZDIAG alloc hook done\n");
-  fflush (stderr);
-#endif
 }
 
 void

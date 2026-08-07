@@ -38,7 +38,8 @@ on:
 jobs:
   # Native gate: the authoritative Linux verification. `zig build check`
   # builds temacs and runs all 582 built-in ert tests; it is a hard gate
-  # (unlike the artifact matrix workflow, which keeps tests informational).
+  # (the native matrix workflow in build-zig-native.yml hard-gates the
+  # same `zig build test` chain on Ubuntu, macOS and Windows).
   linux-check:
     name: Linux build + 582 ert tests
     runs-on: ubuntu-latest
