@@ -2442,7 +2442,11 @@ random (void)
   /* rand_as183 () gives us 15 random bits...hack together 30 bits for
      Emacs with 32-bit EMACS_INT, and at least 31 bit for wider EMACS_INT.  */
 #if EMACS_INT_MAX > INT_MAX
-  return ((rand_as183 () << 30) | (rand_as183 () << 15) | rand_as183 ());
+  /* The 45-bit intermediate overflows a signed int (UBSan traps in
+     Debug builds); shift in unsigned and let the return truncate.  */
+  return (int) (((unsigned int) rand_as183 () << 30)
+		| ((unsigned int) rand_as183 () << 15)
+		| rand_as183 ());
 #else
   return ((rand_as183 () << 15) | rand_as183 ());
 #endif
