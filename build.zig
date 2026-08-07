@@ -520,7 +520,11 @@ pub fn build(b: *std.Build) void {
     // crashes. A non-PIE binary has fixed static addresses, so no
     // runtime relocation is needed. (The target requires PIC code,
     // but PIC code in a non-PIE exe still gets fixed statics.)
-    exe.pie = false;
+    // Darwin always slides the main executable (DYLD_NO_PIE is gone on
+    // modern macOS), so a non-PIE dump would have stale absolute
+    // addresses; keep the PIE relocation model there instead.
+    if (target.result.os.tag != .macos)
+        exe.pie = false;
 
     // temacs includes <config.h>; the generated file (from src/config.h.in +
     // src/config_values.txt) is provided via the module include path, so the
