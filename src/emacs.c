@@ -1622,7 +1622,12 @@ android_emacs_init (int argc, char **argv, char *dump_file)
 	      && pagesize <= newlim - lim)
 	    {
 	      rlim.rlim_cur = newlim;
-	      if (setrlimit (RLIMIT_STACK, &rlim) == 0)
+	      int sr = setrlimit (RLIMIT_STACK, &rlim);
+#ifdef DARWIN_OS
+	      fprintf (stderr, "ZDIAG grow stack newlim=%lu sr=%d\n",
+		       (unsigned long) newlim, sr);
+#endif
+	      if (sr == 0)
 		lim = newlim;
 	    }
 	}
