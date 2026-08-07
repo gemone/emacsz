@@ -5668,6 +5668,12 @@ setup_coding_system (Lisp_Object coding_system, struct coding_system *coding)
 #ifdef WINDOWSNT
   fprintf (stderr, "DIAG setup_coding cs=%lld\n",
 	   (long long) XLI (coding_system));
+  if (SYMBOLP (coding_system))
+    {
+      Lisp_Object csname = SYMBOL_NAME (coding_system);
+      if (STRINGP (csname))
+	fprintf (stderr, "DIAG setup_coding name=%s\n", SSDATA (csname));
+    }
 #endif
   Lisp_Object attrs;
   Lisp_Object eol_type;

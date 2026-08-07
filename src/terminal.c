@@ -317,6 +317,11 @@ create_terminal (enum output_method type, struct redisplay_interface *rif)
       || NILP (Fcoding_system_p (terminal_coding)))
     terminal_coding = Qundecided;
 
+#ifdef WINDOWSNT
+  fprintf (stderr, "DIAG create_terminal kb=%lld term=%lld\n",
+	   (long long) XLI (keyboard_coding),
+	   (long long) XLI (terminal_coding));
+#endif
   setup_coding_system (keyboard_coding, terminal->keyboard_coding);
   setup_coding_system (terminal_coding, terminal->terminal_coding);
 
@@ -662,6 +667,9 @@ initial_free_frame_resources (struct frame *f)
 struct terminal *
 init_initial_terminal (void)
 {
+#ifdef WINDOWSNT
+  fprintf (stderr, "DIAG init_initial_terminal\n");
+#endif
   if (initialized || terminal_list || tty_list)
     emacs_abort ();
 
