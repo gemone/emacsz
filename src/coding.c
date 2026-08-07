@@ -5665,6 +5665,10 @@ encode_coding_charset (struct coding_system *coding)
 void
 setup_coding_system (Lisp_Object coding_system, struct coding_system *coding)
 {
+#ifdef WINDOWSNT
+  fprintf (stderr, "DIAG setup_coding cs=%lld\n",
+	   (long long) XLI (coding_system));
+#endif
   Lisp_Object attrs;
   Lisp_Object eol_type;
   Lisp_Object coding_type;

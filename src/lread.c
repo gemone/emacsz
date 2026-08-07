@@ -1113,6 +1113,10 @@ Return t if the file exists and loads successfully.  */)
   (Lisp_Object file, Lisp_Object noerror, Lisp_Object nomessage,
    Lisp_Object nosuffix, Lisp_Object must_suffix)
 {
+#ifdef WINDOWSNT
+  fprintf (stderr, "DIAG Fload file=%s\n",
+	   STRINGP (file) ? SSDATA (file) : "?");
+#endif
   file_stream stream UNINIT;
   lread_fd fd;
 #ifdef USE_ANDROID_ASSETS

@@ -2630,6 +2630,10 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 
   /* Enter editor command loop.  This never returns.  */
   set_initial_minibuffer_mode ();
+#ifdef WINDOWSNT
+  fprintf (stderr, "DIAG main: entering recursive-edit (noninteractive=%d)\n",
+	   noninteractive);
+#endif
   Frecursive_edit ();
   eassume (false);
 }
