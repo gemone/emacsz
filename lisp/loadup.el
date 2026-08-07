@@ -391,8 +391,12 @@
   (setq internal-make-interpreted-closure-function
         #'cconv-make-interpreted-closure))
 (message "ZDIAG pre-cus-start")
-(dlet ((cus-start--preload t)) ;; Tell `cus-start' we're preloading.
-  (load "cus-start")) ;Late to reduce customize-rogue (needs loaddefs.el anyway)
+(condition-case err
+    (dlet ((cus-start--preload t)) ;; Tell `cus-start' we're preloading.
+      (load "cus-start")) ;Late to reduce customize-rogue (needs loaddefs.el anyway)
+  ((quit top-level)
+   (message "ZDIAG cus-start abort %S" err)
+   (debug-early-backtrace)))
 (message "ZDIAG after cus-start")
 (load "tooltip")
 (message "ZDIAG after tooltip")
