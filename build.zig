@@ -514,7 +514,7 @@ pub fn build(b: *std.Build) void {
     // setrlimit in emacs.c cannot resize an already-allocated main
     // thread on macOS, so set the main-thread stack size at link time.
     if (target.result.os.tag == .macos)
-        exe.root_module.stack_size = 64 * 1024 * 1024;
+        exe.stack_size = 64 * 1024 * 1024;
     // Non-PIE: zig-cc PIE + pdumper mis-relocates static pointers
     // (mem_root, dump_hooks, ...) -> NULL/garbage on dump load ->
     // crashes. A non-PIE binary has fixed static addresses, so no
