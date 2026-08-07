@@ -43,10 +43,16 @@ pub fn main() !void {
 
     const charprop = try std.fs.path.join(gpa, &.{ lisp_path, "international", "charprop" });
     defer gpa.free(charprop);
+    // Lisp strings treat '\' as an escape ("D:\a\..." reads as
+    // "D:<bell>..."), so use forward slashes in the eval forms.
+    const lisp_path_flat = try std.mem.replaceOwned(u8, gpa, lisp_path, "\\", "/");
+    defer gpa.free(lisp_path_flat);
+    const charprop_flat = try std.mem.replaceOwned(u8, gpa, charprop, "\\", "/");
+    defer gpa.free(charprop_flat);
     // The autoload scrape loads files (e.g. tramp-adb) that require the
     // Unicode property data; the source dump does not bundle charprop,
     // so load it explicitly (a clean checkout has no stale tables).
-    const charprop_eval = try std.fmt.allocPrint(gpa, "(load \"{s}\")", .{charprop});
+    const charprop_eval = try std.fmt.allocPrint(gpa, "(load \"{s}\")", .{charprop_flat});
     defer gpa.free(charprop_eval);
     try runEmacs(io, gpa, temacs, dump, lisp_path, &.{
         "--eval", charprop_eval,
@@ -54,7 +60,7 @@ pub fn main() !void {
         "-f", "loaddefs-generate--emacs-batch",
     }, subdirs);
 
-    const cus_eval = try std.fmt.allocPrint(gpa, "(setq generated-custom-dependencies-file \"{s}/cus-load.el\")", .{lisp_path});
+    const cus_eval = try std.fmt.allocPrint(gpa, "(setq generated-custom-dependencies-file \"{s}/cus-load.el\")", .{lisp_path_flat});
     defer gpa.free(cus_eval);
     try runEmacs(io, gpa, temacs, dump, lisp_path, &.{
         "-l", "cus-dep",
@@ -62,7 +68,7 @@ pub fn main() !void {
         "-f", "custom-make-dependencies",
     }, subdirs);
 
-    const finder_eval = try std.fmt.allocPrint(gpa, "(setq generated-finder-keywords-file \"{s}/finder-inf.el\")", .{lisp_path});
+    const finder_eval = try std.fmt.allocPrint(gpa, "(setq generated-finder-keywords-file \"{s}/finder-inf.el\")", .{lisp_path_flat});
     defer gpa.free(finder_eval);
     try runEmacs(io, gpa, temacs, dump, lisp_path, &.{
         "-l", "finder",

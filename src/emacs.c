@@ -1330,6 +1330,11 @@ int
 android_emacs_init (int argc, char **argv, char *dump_file)
 #endif
 {
+#ifdef DARWIN_OS
+  fprintf (stderr, "ZDIAG main DYLD_NO_PIE=%s main=%p\n",
+	   getenv ("DYLD_NO_PIE"), (void *) &main);
+  fflush (stderr);
+#endif
   /* Variable near the bottom of the stack, and aligned appropriately
      for pointers.  */
   void *stack_bottom_variable;
