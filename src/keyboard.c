@@ -88,7 +88,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include TERM_HEADER
 #endif /* HAVE_WINDOW_SYSTEM */
 
-#if defined DARWIN_OS || defined WINDOWSNT
+#ifdef WINDOWSNT
 char const DEV_TTY[] = "CONOUT$";
 #else
 char const DEV_TTY[] = "/dev/tty";
@@ -1176,7 +1176,7 @@ top_level_2 (void)
     /* FIXME: Should we (re)use `list_of_error` from `xdisp.c`? */
     push_handler_bind (list1 (Qerror), Qdebug_early__handler, 0);
 
-#ifdef WINDOWSNT
+#if defined DARWIN_OS || defined WINDOWSNT
   {
     Lisp_Object vt = Vtop_level;
     fprintf (stderr, "ZDIAG top_level_2 Vtop_level=%s\n",
