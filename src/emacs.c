@@ -2001,6 +2001,10 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 	 pointer allocated on the system heap.  */
       init_bignum ();
       init_window_once ();	/* Init the window system.  */
+#ifdef WINDOWSNT
+      fprintf (stderr, "DIAG main: after init_window_once\n");
+      fflush (stderr);
+#endif
 #ifdef HAVE_WINDOW_SYSTEM
       init_fringe_once ();	/* Swap bitmaps if necessary.  */
 #endif /* HAVE_WINDOW_SYSTEM */
@@ -2013,8 +2017,16 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
   init_bignum ();
   init_threads ();
   init_eval ();
+#ifdef WINDOWSNT
+  fprintf (stderr, "DIAG main: after init_eval\n");
+  fflush (stderr);
+#endif
   running_asynch_code = 0;
   init_random ();
+#ifdef WINDOWSNT
+  fprintf (stderr, "DIAG main: after init_random\n");
+  fflush (stderr);
+#endif
   init_xfaces ();
 
   if (!initialized)
