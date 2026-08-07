@@ -947,6 +947,10 @@ dump_error_to_string (int result)
 static char *
 load_pdump (int argc, char **argv, char *dump_file)
 {
+#ifdef DARWIN_OS
+  fprintf (stderr, "ZDIAG load_pdump file=%s\n", dump_file ? dump_file : "(null)");
+  fflush (stderr);
+#endif
 #if defined HAVE_ANDROID && !defined ANDROID_STUBIFY
   int skip_args = 0, result;
 

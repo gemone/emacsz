@@ -5675,6 +5675,10 @@ pdumper_load (const char *dump_filename, char *argv0)
                      header,
                      sizeof (*header)) < sizeof (*header))
     goto out;
+#ifdef DARWIN_OS
+  fprintf (stderr, "ZDIAG pdump header ok\n");
+  fflush (stderr);
+#endif
 
   if (memcmp (header->magic, dump_magic, sizeof (dump_magic)) != 0)
     {
@@ -5741,6 +5745,11 @@ pdumper_load (const char *dump_filename, char *argv0)
 
   if (!dump_mmap_contiguous (sections, countof (sections)))
     goto out;
+#ifdef DARWIN_OS
+  fprintf (stderr, "ZDIAG pdump mmap ok base=%p\n",
+	   (void *) (uintptr_t) sections[DS_HOT].mapping);
+  fflush (stderr);
+#endif
 
   err = PDUMPER_LOAD_ERROR;
   dump_base = (uintptr_t) sections[DS_HOT].mapping;
@@ -5772,8 +5781,16 @@ pdumper_load (const char *dump_filename, char *argv0)
   dump_public.start = dump_base;
   dump_public.end = dump_public.start + dump_size;
 
+#ifdef DARWIN_OS
+  fprintf (stderr, "ZDIAG pdump reloc start base=%p\n", (void *) dump_base);
+  fflush (stderr);
+#endif
   dump_do_all_dump_reloc_for_phase (header, dump_base, EARLY_RELOCS);
   dump_do_all_emacs_relocations (header, dump_base);
+#ifdef DARWIN_OS
+  fprintf (stderr, "ZDIAG pdump reloc done\n");
+  fflush (stderr);
+#endif
 
   dump_mmap_discard_contents (&sections[DS_DISCARDABLE]);
   for (int i = 0; i < countof (sections); ++i)
