@@ -179,6 +179,5 @@ fn runEmacs(
 }
 
 fn printTail(out: []const u8) void {
-    const tail = if (out.len > 65536) out[out.len - 65536 ..] else out;
-    std.debug.print("{s}\n", .{tail});
+    std.debug.print("{s}\n", .{out});
 }
