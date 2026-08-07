@@ -3291,17 +3291,16 @@ static void
 dump_metadata_for_pdumper (struct dump_context *ctx)
 {
   for (int i = 0; i < nr_dump_hooks; ++i)
-    /* Function pointers: non-PIE code addresses are fixed, so record
-	   them as immediate values (no relocation delta).  The default
-	   EMACS_PTR_RAW applies the heap mmap delta, corrupting code
-	   pointers under zig-cc non-PIE (dump hooks fire at garbage).  */
-    dump_emacs_reloc_immediate_intmax_t (ctx, (intmax_t *) &dump_hooks[i],
-				     (intmax_t) (uintptr_t) dump_hooks[i]);
+    /* Function pointers: record them as offsets from the Emacs image
+       basis and rebase at load time.  Immediate values would only be
+       valid for a non-PIE build with a fixed slide; Darwin slides
+       every main executable, so the offset form is required there.  */
+    dump_emacs_reloc_to_emacs_ptr_raw (ctx, &dump_hooks[i], dump_hooks[i]);
   dump_emacs_reloc_immediate_int (ctx, &nr_dump_hooks, nr_dump_hooks);
 
   for (int i = 0; i < nr_dump_late_hooks; ++i)
-    dump_emacs_reloc_immediate_intmax_t (ctx, (intmax_t *) &dump_late_hooks[i],
-				     (intmax_t) (uintptr_t) dump_late_hooks[i]);
+    dump_emacs_reloc_to_emacs_ptr_raw (ctx, &dump_late_hooks[i],
+				       dump_late_hooks[i]);
   dump_emacs_reloc_immediate_int (ctx, &nr_dump_late_hooks,
 				  nr_dump_late_hooks);
 
