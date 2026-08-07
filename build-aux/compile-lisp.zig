@@ -36,7 +36,13 @@ pub fn main() !void {
     // compile time, so charprop must be loaded in the compile session
     // (the source dump does not bundle it; loadup only tolerates its
     // absence). A clean checkout has no stale .elc to hide the need.
-    const eval = try std.fmt.allocPrint(gpa, "(progn (load \"cl-macs\") (load \"cl-seq\") (load \"cl-extra\") (load \"{s}\") (byte-recompile-directory \"{s}\" 0))", .{ charprop, lisp_path });
+    // Lisp strings treat '\' as an escape ("D:\a\..." reads as
+    // "D:<bell>..."), so use forward slashes in the eval forms.
+    const charprop_flat = try std.mem.replaceOwned(u8, gpa, charprop, "\\", "/");
+    defer gpa.free(charprop_flat);
+    const lisp_path_flat = try std.mem.replaceOwned(u8, gpa, lisp_path, "\\", "/");
+    defer gpa.free(lisp_path_flat);
+    const eval = try std.fmt.allocPrint(gpa, "(progn (load \"cl-macs\") (load \"cl-seq\") (load \"cl-extra\") (load \"{s}\") (byte-recompile-directory \"{s}\" 0))", .{ charprop_flat, lisp_path_flat });
     defer gpa.free(eval);
     const dump_arg = try std.fmt.allocPrint(gpa, "--dump-file={s}", .{dump});
     defer gpa.free(dump_arg);
