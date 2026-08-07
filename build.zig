@@ -507,6 +507,14 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    // Darwin arm64 frames are larger than x86-64 and the 8MB default
+    // main-thread stack overflows during the batch loadup dump
+    // (handle_sigsegv longjmps back to the command loop and loadup
+    // re-enters, dying on the second characters load).  The runtime
+    // setrlimit in emacs.c cannot resize an already-allocated main
+    // thread on macOS, so set the main-thread stack size at link time.
+    if (target.result.os.tag == .macos)
+        exe.root_module.stack_size = 64 * 1024 * 1024;
     // Non-PIE: zig-cc PIE + pdumper mis-relocates static pointers
     // (mem_root, dump_hooks, ...) -> NULL/garbage on dump load ->
     // crashes. A non-PIE binary has fixed static addresses, so no
