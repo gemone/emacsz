@@ -1009,11 +1009,16 @@ pub fn build(b: *std.Build) void {
         // musl reuses the C23/execinfo shims from lib/w32 (generic
         // headers; the directory name is historical) and must NOT see
         // glibc's /usr/include (its C23 redirects would leak
-        // __isoc23_* symbols into the musl link).
+        // __isoc23_* symbols into the musl link). macOS also lacks the
+        // C23 <stdbit.h> (and friends), so it gets the same shims while
+        // keeping the Homebrew system-dir flags. Duplicated -I entries
+        // are harmless; the fixed 4-slot array keeps the concat type.
         const unix_extra_inc = if (is_musl)
-            [_][]const u8{ "-Ilib/w32", "-Ilib/w32" }
+            [_][]const u8{ "-Ilib/w32", "-Ilib/w32", "-Ilib/w32", "-Ilib/w32" }
+        else if (target.result.os.tag == .macos)
+            [_][]const u8{ "-I/usr/include", "-I/usr/include/libxml2", "-Ilib/w32", "-Ilib/w32" }
         else
-            [_][]const u8{ "-I/usr/include", "-I/usr/include/libxml2" };
+            [_][]const u8{ "-I/usr/include", "-I/usr/include/libxml2", "-I/usr/include", "-I/usr/include" };
         const base_flags_full = base_flags_core ++ unix_extra_inc;
         const base_flags: []const []const u8 = &base_flags_full;
 
