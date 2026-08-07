@@ -270,6 +270,9 @@ const windows_overrides: []const Override = &.{
     // ('/' and 0) made Fexpand_file_name miss every drive letter and
     // abort on any absolute path.
     .{ .name = "DIRECTORY_SEP", .value = "'\\\\'" },
+    // Windows path-list separator is ';' (the Linux ':' would split
+    // every drive letter off "D:/..." paths during startup).
+    .{ .name = "SEPCHAR", .value = "';'" },
 };
 
 pub fn main(minimal: std.process.Init.Minimal) !void {
