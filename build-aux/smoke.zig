@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const aslr = @import("aslr.zig");
+const temacs_path = @import("temacs-path.zig");
 
 pub fn main() !void {
     aslr.disableAslr();
@@ -27,7 +28,7 @@ pub fn main() !void {
     try env_map.put("LC_ALL", "C");
 
     const temacs_argv = [_][]const u8{
-        "./zig-out/bin/temacs",
+        "./zig-out/bin/" ++ temacs_path.name,
         "--batch",
         "--dump-file=./zig-out/bin/bootstrap-emacs.pdmp",
         "--eval", "(princ emacs-version)",

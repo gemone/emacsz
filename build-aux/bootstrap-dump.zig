@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const aslr = @import("aslr.zig");
+const temacs_path = @import("temacs-path.zig");
 
 pub fn main() !void {
     aslr.disableAslr();
@@ -64,7 +65,7 @@ pub fn main() !void {
     try env_map.put("EMACSDATA", etc_path);
     try env_map.put("LC_ALL", "C");
 
-    const argv = [_][]const u8{ "./temacs", "-batch", "-l", "loadup", "--temacs=pbootstrap" };
+    const argv = [_][]const u8{ "./" ++ temacs_path.name, "-batch", "-l", "loadup", "--temacs=pbootstrap" };
     var attempt: usize = 0;
     while (true) : (attempt += 1) {
         var child = try std.process.spawn(io, .{

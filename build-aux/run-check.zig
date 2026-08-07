@@ -9,6 +9,7 @@
 const std = @import("std");
 const aslr = @import("aslr.zig");
 const builtin = @import("builtin");
+const temacs_path = @import("temacs-path.zig");
 
 const test_files = [_][]const u8{
     "cl-macs",         "cl-seq",        "cl-extra",       "alloc-tests",
@@ -52,7 +53,7 @@ pub fn main() !void {
     try eval.appendSlice(gpa, "(let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit (quote (not (or (tag :expensive-test) (tag :unstable) (tag :nativecomp)))))))");
 
     const argv = [_][]const u8{
-        "./zig-out/bin/temacs",
+        "./zig-out/bin/" ++ temacs_path.name,
         "--batch",
         "-L", "test/src",
         "-L", "test/lisp",

@@ -8,6 +8,7 @@
 const std = @import("std");
 const aslr = @import("aslr.zig");
 const builtin = @import("builtin");
+const temacs_path = @import("temacs-path.zig");
 
 const preload = "(progn (load \"cl-macs\") (load \"cl-seq\") (load \"cl-extra\") (require (quote ert)))";
 
@@ -135,7 +136,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         defer gpa.free(dump_path);
         const dump_arg = try std.fmt.allocPrint(gpa, "--dump-file={s}", .{dump_path});
         defer gpa.free(dump_arg);
-        const temacs = try std.fs.path.join(gpa, &.{ root, "zig-out", "bin", "temacs" });
+        const temacs = try temacs_path.joinBin(gpa, root);
         defer gpa.free(temacs);
         const l1 = try std.fs.path.join(gpa, &.{ root, "test" });
         defer gpa.free(l1);

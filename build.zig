@@ -236,7 +236,7 @@ pub fn build(b: *std.Build) void {
     // requires the upstream Windows include dir.  On Unix hosts nt/inc
     // must NOT be on the path: its mingw shims (unistd.h, dirent.h, ...)
     // would shadow the system headers.
-    const mdf_flags: []const []const u8 = if (host_config_tag != null)
+    const mdf_flags: []const []const u8 = if (host_config_tag != null and b.graph.host.result.os.tag == .windows)
         &(mdf_flags_core ++ [_][]const u8{"-Int/inc"})
     else
         &mdf_flags_core;

@@ -16,7 +16,8 @@ pub fn main() !void {
     defer gpa.free(root);
     const lisp_path = try std.fs.path.join(gpa, &.{ root, "lisp" });
     defer gpa.free(lisp_path);
-    const temacs = try std.fs.path.join(gpa, &.{ root, "zig-out", "bin", "temacs" });
+    const temacs_path = @import("temacs-path.zig");
+    const temacs = try temacs_path.joinBin(gpa, root);
     defer gpa.free(temacs);
     const dump = try std.fs.path.join(gpa, &.{ root, "zig-out", "bin", "bootstrap-emacs.pdmp" });
     defer gpa.free(dump);
