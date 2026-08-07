@@ -1,5 +1,7 @@
 /* Darwin-only shims for glibc symbols the SDK lacks.  */
 
+#include <config.h>
+
 #ifdef DARWIN_OS
 
 #include <errno.h>
