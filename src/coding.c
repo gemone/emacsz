@@ -8699,6 +8699,10 @@ detect_coding_system (const unsigned char *src,
 
   if (NILP (coding_system))
     coding_system = Qundecided;
+#ifdef WINDOWSNT
+  /* Temporary diagnostic (see print.c printchar_to_stream).  */
+  fprintf (stderr, "DIAG detect_coding cs=%lld\n", (long long) XLI (coding_system));
+#endif
   setup_coding_system (coding_system, &coding);
   attrs = CODING_ID_ATTRS (coding.id);
   eol_type = CODING_ID_EOL_TYPE (coding.id);
