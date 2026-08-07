@@ -1467,6 +1467,11 @@ Both TAG and VALUE are evalled.  */
        attributes: noreturn)
   (register Lisp_Object tag, Lisp_Object value)
 {
+#if defined DARWIN_OS || defined WINDOWSNT
+  fprintf (stderr, "ZDIAG Fthrow tag=%s\n",
+	   SYMBOLP (tag) ? SSDATA (SYMBOL_NAME (tag)) : "?");
+  fflush (stderr);
+#endif
   struct handler *c;
 
   if (!NILP (tag))

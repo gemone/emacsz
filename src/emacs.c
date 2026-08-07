@@ -1592,6 +1592,14 @@ android_emacs_init (int argc, char **argv, char *dump_file)
       int extra = (30 * 1000) * 50;
 
       bool try_to_grow_stack = !noninteractive || initialized;
+#ifdef DARWIN_OS
+      /* Darwin (arm64) frames are considerably larger than x86-64, and
+	 the 8MB default stack overflows during the batch loadup dump
+	 (the SIGSEGV lands in cus-start and handle_sigsegv silently
+	 longjmps back to the command loop).  Upstream grows the stack
+	 for interactive sessions; do the same here.  */
+      try_to_grow_stack = true;
+#endif
 
       if (try_to_grow_stack)
 	{
