@@ -108,7 +108,14 @@ jobs:
         shell: bash
 
       - name: Run tests
-        run: zig build test
+        run: |
+          # GitHub macOS runners sandbox /tmp: creating files works, but
+          # writing to an existing file there is denied (file-write-data),
+          # which fails e.g. the check-declare ert tests that open their
+          # temp file for writing.  Point TMPDIR at the runner's writable
+          # temp directory instead of the default /tmp fallback.
+          export TMPDIR="$RUNNER_TEMP"
+          zig build test
         shell: bash
 
       - name: Basic functional test
