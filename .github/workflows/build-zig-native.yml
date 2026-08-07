@@ -111,13 +111,14 @@ jobs:
         env:
           ZIG_COMPILE_LISP_PROBE: ${{ matrix.os == 'windows-latest' && '1' || '' }}
         run: |
-          # GitHub macOS runners sandbox /tmp: creating files works, but
-          # writing to an existing file there is denied (file-write-data),
-          # which fails e.g. the check-declare ert tests that open their
-          # temp file for writing.  Point TMPDIR at the runner's writable
-          # temp directory (falling back to the workspace) instead of
-          # the default /tmp fallback.
-          export TMPDIR="${RUNNER_TEMP:-$PWD}"
+          # GitHub macOS runners sandbox the step process: creating files
+          # works, but writing to an existing file is denied both in /tmp
+          # and in RUNNER_TEMP (file-write-data), which fails e.g. the
+          # check-declare ert tests that open their temp file for
+          # writing.  The workspace (zig-out is gitignored) is writable
+          # for existing files, so point TMPDIR there.
+          mkdir -p "${PWD}/zig-out/tmp"
+          export TMPDIR="${PWD}/zig-out/tmp"
           zig build test
         shell: bash
 
