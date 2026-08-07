@@ -365,7 +365,7 @@ fn parseOmpThreads(threads: ?[]const u8) c_ulong {
 
 // Return the number of processors for QUERY (NPROC_ALL, NPROC_CURRENT or
 // NPROC_CURRENT_OVERRIDABLE); guaranteed >= 1.
-pub export fn num_processors(query_in: c_int) c_ulong {
+fn numProcessorsImpl(query_in: c_int) callconv(.c) c_ulong {
     var query = query_in;
     var nproc_limit: c_ulong = ULONG_MAX;
 
@@ -395,4 +395,13 @@ pub export fn num_processors(query_in: c_int) c_ulong {
     }
 
     return nproc_limit;
+}
+
+// Darwin provides `num_processors' from src/darwin-shims.c (libc
+// sysconf); exporting this symbol here too would shadow the libc call
+// inside the shim and recurse.  Windows is handled by w32.c, which is
+// why the package is only linked on the Unix-ish targets.
+comptime {
+    if (builtin.os.tag == .linux)
+        @export(&numProcessorsImpl, .{ .name = "num_processors" });
 }
