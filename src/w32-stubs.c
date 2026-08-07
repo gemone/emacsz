@@ -42,32 +42,6 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <bcrypt.h>
 #include <stdio.h>
 
-/* Temporary startup diagnostic: print the stack on a stack overflow so
-   the Windows loadup failure can be identified from the CI log.  */
-static LONG WINAPI
-stack_overflow_diag (EXCEPTION_POINTERS *ep)
-{
-  if (ep->ExceptionRecord->ExceptionCode == 0xC00000FD)
-    {
-      _resetstkoflw ();		/* restore the guard page before calling APIs */
-      void *addrs[40];
-      USHORT n = RtlCaptureStackBackTrace (0, 40, addrs, NULL);
-      fprintf (stderr, "DIAG: stack overflow, %u frames:\n", n);
-      for (USHORT i = 0; i < n; i++)
-	{
-	  fprintf (stderr, "  %p\n", addrs[i]);
-	}
-      fflush (stderr);
-    }
-  return EXCEPTION_CONTINUE_SEARCH;
-}
-
-void
-w32_install_stack_diag (void)
-{
-  SetUnhandledExceptionFilter (stack_overflow_diag);
-}
-
 /* w32image.c owns the GDI+ lifecycle in the GUI build.  */
 void
 w32_gdiplus_shutdown (void)

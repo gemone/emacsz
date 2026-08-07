@@ -1432,10 +1432,6 @@ make_initial_frame (void)
   terminal = init_initial_terminal ();
 
   f = make_frame (true);
-#ifdef WINDOWSNT
-  fprintf (stderr, "DIAG make_initial_frame: after make_frame\n");
-  fflush (stderr);
-#endif
   XSETFRAME (frame, f);
   frame_set_id (f, 0);
 
@@ -1466,10 +1462,6 @@ make_initial_frame (void)
 
   /* Allocate glyph matrices.  */
   adjust_frame_glyphs (f);
-#ifdef WINDOWSNT
-  fprintf (stderr, "DIAG make_initial_frame: after glyphs\n");
-  fflush (stderr);
-#endif
 
   if (!noninteractive)
     init_frame_faces (f);

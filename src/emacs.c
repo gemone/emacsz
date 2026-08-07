@@ -1429,7 +1429,6 @@ android_emacs_init (int argc, char **argv, char *dump_file)
   w32_init_current_directory ();
 #endif
   w32_init_main_thread ();
-  w32_install_stack_diag ();	/* temporary: diagnose the loadup stack overflow */
 #endif
 
 #ifdef HAVE_NS
@@ -2011,10 +2010,6 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 	 pointer allocated on the system heap.  */
       init_bignum ();
       init_window_once ();	/* Init the window system.  */
-#ifdef WINDOWSNT
-      fprintf (stderr, "DIAG main: after init_window_once\n");
-      fflush (stderr);
-#endif
 #ifdef HAVE_WINDOW_SYSTEM
       init_fringe_once ();	/* Swap bitmaps if necessary.  */
 #endif /* HAVE_WINDOW_SYSTEM */
@@ -2027,28 +2022,12 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
   init_bignum ();
   init_threads ();
   init_eval ();
-#ifdef WINDOWSNT
-  fprintf (stderr, "DIAG main: after init_eval\n");
-  fflush (stderr);
-#endif
   running_asynch_code = 0;
   init_random ();
-#ifdef WINDOWSNT
-  fprintf (stderr, "DIAG main: after init_random\n");
-  fflush (stderr);
-#endif
   init_xfaces ();
-#ifdef WINDOWSNT
-  fprintf (stderr, "DIAG main: after init_xfaces\n");
-  fflush (stderr);
-#endif
 
   if (!initialized)
     syms_of_comp ();
-#ifdef WINDOWSNT
-  fprintf (stderr, "DIAG main: after syms_of_comp\n");
-  fflush (stderr);
-#endif
 
   /* Do less garbage collection in batch mode (since these tend to be
      more short-lived, and the memory is returned to the OS on exit
@@ -2570,34 +2549,18 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
   init_process_emacs (sockfd);
 
   init_keyboard ();	/* This too must precede init_sys_modes.  */
-#ifdef WINDOWSNT
-  fprintf (stderr, "DIAG main: after init_keyboard\n");
-  fflush (stderr);
-#endif
   init_display ();	/* Determine terminal type.  Calls init_sys_modes.  */
-#ifdef WINDOWSNT
-  fprintf (stderr, "DIAG main: after init_display\n");
-  fflush (stderr);
-#endif
 #if HAVE_W32NOTIFY
   if (noninteractive)
     init_crit ();	/* w32notify.c needs this in batch mode.  */
 #endif	/* HAVE_W32NOTIFY */
   init_xdisp ();
-#ifdef WINDOWSNT
-  fprintf (stderr, "DIAG main: after init_xdisp\n");
-  fflush (stderr);
-#endif
 #ifdef HAVE_WINDOW_SYSTEM
   init_fringe ();
 #endif /* HAVE_WINDOW_SYSTEM */
   init_macros ();
   init_window ();
   init_font ();
-#ifdef WINDOWSNT
-  fprintf (stderr, "DIAG main: after init_window/font\n");
-  fflush (stderr);
-#endif
 
 #ifdef HAVE_ANDROID
   init_androidmenu ();
@@ -2676,11 +2639,6 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 
   /* Enter editor command loop.  This never returns.  */
   set_initial_minibuffer_mode ();
-#ifdef WINDOWSNT
-  fprintf (stderr, "DIAG main: entering recursive-edit (noninteractive=%d)\n",
-	   noninteractive);
-  fflush (stderr);
-#endif
   Frecursive_edit ();
   eassume (false);
 }

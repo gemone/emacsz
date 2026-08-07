@@ -9179,10 +9179,6 @@ static void init_window_once_for_pdumper (void)
       mode_line_in_non_selected_windows = false;
     }
   struct frame *f = make_initial_frame ();
-#ifdef WINDOWSNT
-  fprintf (stderr, "DIAG init_window_once: after make_initial_frame\n");
-  fflush (stderr);
-#endif
   if (saved_dumped_with_pdumper)
     mode_line_in_non_selected_windows =
       old_mode_line_in_non_selected_windows;

@@ -12594,13 +12594,6 @@ message_to_stderr (Lisp_Object m)
 
       if (!NILP (Vcoding_system_for_write))
 	coding_system = Vcoding_system_for_write;
-#ifdef WINDOWSNT
-      fprintf (stderr, "DIAG message_to_stderr loc=%lld write=%lld cs=%lld\n",
-	       (long long) XLI (Vlocale_coding_system),
-	       (long long) XLI (Vcoding_system_for_write),
-	       (long long) XLI (coding_system));
-      fflush (stderr);
-#endif
       if (!NILP (coding_system))
 	s = code_convert_string_norecord (m, coding_system, true);
       else

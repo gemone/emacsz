@@ -176,7 +176,6 @@ extern void term_ntproc (int);
 extern HANDLE maybe_load_unicows_dll (void);
 extern void load_unicows_dll_for_w32fns (HMODULE);
 extern void globals_of_w32 (void);
-extern void w32_install_stack_diag (void); /* temporary diagnostic */
 
 extern void term_timers (void);
 extern void init_timers (void);

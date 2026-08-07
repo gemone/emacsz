@@ -246,19 +246,6 @@ printchar_to_stream (unsigned int ch, FILE *stream)
   if (!NILP (coding_system))
     encode_p = true;
 
-#ifdef WINDOWSNT
-  /* Temporary diagnostic: the loadup stack overflow on Windows is an
-     infinite printchar_to_stream <-> detect_coding_system recursion.
-     Print the raw coding-system values (integers only, so this cannot
-     recurse) to see why the encode path is active during loadup.  */
-  fprintf (stderr, "DIAG printchar ch=%u enc=%d loc=%lld write=%lld cs=%lld\n",
-	   ch, encode_p,
-	   (long long) XLI (Vlocale_coding_system),
-	   (long long) XLI (Vcoding_system_for_write),
-	   (long long) XLI (coding_system));
-  fflush (stderr);
-#endif
-
   if (CHAR_VALID_P (ch) && DISP_TABLE_P (Vstandard_display_table))
     {
       dv = DISP_CHAR_VECTOR (XCHAR_TABLE (Vstandard_display_table), ch);
