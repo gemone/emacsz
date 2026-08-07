@@ -392,6 +392,7 @@
         #'cconv-make-interpreted-closure))
 (dlet ((cus-start--preload t)) ;; Tell `cus-start' we're preloading.
   (load "cus-start")) ;Late to reduce customize-rogue (needs loaddefs.el anyway)
+(message "ZDIAG after cus-start")
 (load "tooltip")
 (load "international/iso-transl") ; Binds Alt-[ and friends.
 
@@ -478,6 +479,7 @@ lost after dumping")))
       (Snarf-documentation "DOC")
     (error nil)))
 (message "Finding pointers to doc strings...done")
+(message "ZDIAG pre-dump dump-mode=%S" dump-mode)
 
 ;; Note: You can cause additional libraries to be preloaded
 ;; by writing a site-init.el that loads them.
