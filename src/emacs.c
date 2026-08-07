@@ -1419,6 +1419,7 @@ android_emacs_init (int argc, char **argv, char *dump_file)
   w32_init_current_directory ();
 #endif
   w32_init_main_thread ();
+  w32_install_stack_diag ();	/* temporary: diagnose the loadup stack overflow */
 #endif
 
 #ifdef HAVE_NS

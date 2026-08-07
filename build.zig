@@ -1299,6 +1299,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("gdi32", .{});
         exe.root_module.linkSystemLibrary("winmm", .{});
         exe.root_module.linkSystemLibrary("mpr", .{});
+        exe.root_module.linkSystemLibrary("dbghelp", .{}); // temporary stack-overflow diagnostic
     }
 
     // Install the executable

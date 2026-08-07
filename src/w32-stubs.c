@@ -40,6 +40,44 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <windows.h>
 #include <bcrypt.h>
+#include <dbghelp.h>
+#include <stdio.h>
+
+/* Temporary startup diagnostic: print the stack on a stack overflow so
+   the Windows loadup failure can be identified from the CI log.  */
+static LONG WINAPI
+stack_overflow_diag (EXCEPTION_POINTERS *ep)
+{
+  if (ep->ExceptionRecord->ExceptionCode == 0xC00000FD)
+    {
+      SymSetOptions (SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+      SymInitialize (GetCurrentProcess (), NULL, TRUE);
+      void *addrs[40];
+      USHORT n = RtlCaptureStackBackTrace (0, 40, addrs, NULL);
+      fprintf (stderr, "DIAG: stack overflow, %u frames:\n", n);
+      for (USHORT i = 0; i < n; i++)
+	{
+	  DWORD64 disp = 0;
+	  char name[256] = "?";
+	  union { char raw[sizeof (SYMBOL_INFO) + 256]; SYMBOL_INFO sym; } si;
+	  memset (&si, 0, sizeof si);
+	  si.sym.SizeOfStruct = sizeof (SYMBOL_INFO);
+	  si.sym.MaxNameLen = 255;
+	  if (SymFromAddr (GetCurrentProcess (), (DWORD64) addrs[i], &disp, &si.sym))
+	    snprintf (name, sizeof name, "%s", si.sym.Name);
+	  fprintf (stderr, "  %p %s+0x%llx\n", addrs[i], name, (unsigned long long) disp);
+	}
+      fflush (stderr);
+      _resetstkoflw ();
+    }
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void
+w32_install_stack_diag (void)
+{
+  SetUnhandledExceptionFilter (stack_overflow_diag);
+}
 
 /* w32image.c owns the GDI+ lifecycle in the GUI build.  */
 void
