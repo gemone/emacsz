@@ -1000,6 +1000,10 @@ pub fn build(b: *std.Build) void {
             // clang flags them (same suppression the Windows build
             // uses).
             "-Wno-tautological-constant-out-of-range-compare",
+            // macOS deprecates some APIs (e.g. the older
+            // posix_spawn_file_actions_addchdir_np name); keep the
+            // shared sources compiling until the call sites migrate.
+            "-Wno-deprecated-declarations",
             "-D_GNU_SOURCE",
             "-DHAVE_CONFIG_H",
             "-I.",

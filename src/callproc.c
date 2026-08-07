@@ -25,6 +25,11 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <sys/types.h>
 #include <unistd.h>
 
+#ifdef DARWIN_OS
+# include <crt_externs.h>
+# define environ (*_NSGetEnviron ())
+#endif
+
 #ifdef MSDOS
 extern char **environ;
 #endif

@@ -82,6 +82,15 @@ const macos_overrides: []const Override = &.{
     .{ .name = "HAVE_TREE_SITTER" },
     .{ .name = "HAVE_COPY_FILE_RANGE" },
     .{ .name = "HAVE_MALLOC_H" },
+    .{ .name = "HAVE_TIMERFD" },
+    .{ .name = "HAVE_STDIO_EXT_H" },
+    .{ .name = "HAVE_SYS_SYSINFO_H" },
+    .{ .name = "HAVE_LINUX_SECCOMP_H" },
+    .{ .name = "HAVE_LINUX_FS_H" },
+    .{ .name = "HAVE_MEMPCPY" },
+    .{ .name = "HAVE_MEMRCHR" },
+    .{ .name = "HAVE_LANGINFO__NL_PAPER_WIDTH" },
+    .{ .name = "HAVE_ENVIRON_DECL" },
 };
 
 // Windows additionally drops the POSIX-only subsystems that need mingw
