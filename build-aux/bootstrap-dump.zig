@@ -68,22 +68,25 @@ pub fn main() !void {
     const argv = [_][]const u8{ "./" ++ temacs_path.name, "-batch", "-l", "loadup", "--temacs=pbootstrap" };
     var attempt: usize = 0;
     while (true) : (attempt += 1) {
-        var child = try std.process.spawn(io, .{
+        const res = std.process.run(gpa, io, .{
             .argv = &argv,
             .cwd = .{ .path = bin_dir },
             .environ_map = &env_map,
-            .stdin = .inherit,
-            .stdout = .inherit,
-            .stderr = .inherit,
-        });
-        const term = try child.wait(io);
-        switch (term) {
+            .stdout_limit = .unlimited,
+            .stderr_limit = .unlimited,
+        }) catch |err| {
+            std.debug.print("bootstrap-dump: spawn failed: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+        switch (res.term) {
             .exited => |code| {
                 if (code == 0) break;
+                printTail(res.stdout);
                 std.debug.print("bootstrap-dump: temacs exited {d}\n", .{code});
                 std.process.exit(1);
             },
             .signal => |sig| {
+                printTail(res.stdout);
                 std.debug.print("bootstrap-dump: temacs died with signal {d}; retrying ({d}/3)\n", .{ @intFromEnum(sig), attempt + 1 });
                 if (attempt >= 2) std.process.exit(1);
             },
@@ -98,4 +101,9 @@ pub fn main() !void {
     defer gpa.free(pdmp_link);
     std.Io.Dir.deleteFileAbsolute(io, pdmp_link) catch {};
     try cwd.symLink(io, "bootstrap-emacs.pdmp", pdmp_link, .{});
+}
+
+fn printTail(out: []const u8) void {
+    const tail = if (out.len > 8192) out[out.len - 8192 ..] else out;
+    std.debug.print("{s}\n", .{tail});
 }
