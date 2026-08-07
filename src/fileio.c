@@ -1726,8 +1726,12 @@ the root directory.  */)
 #endif /* WINDOWSNT */
       {
 #ifdef WINDOWSNT
-	fprintf (stderr, "DIAG expand-file-name abort: drive=%d nm='%s' newdir='%s'\n",
-		 drive, nm, newdir ? newdir : "(null)");
+	fprintf (stderr,
+		 "DIAG expand-file-name abort: drive=%d nm='%s' newdir='%s' "
+		 "name='%s' default_directory='%s'\n",
+		 drive, nm, newdir ? newdir : "(null)",
+		 STRINGP (name) ? SSDATA (name) : "?",
+		 STRINGP (default_directory) ? SSDATA (default_directory) : "?");
 	fflush (stderr);
 #endif
 	if (!drive) emacs_abort ();
