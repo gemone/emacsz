@@ -33,7 +33,11 @@ extern fn __errno_location() *c_int;
 extern "c" fn __error() *c_int;
 // mingw-w64's errno accessor (_errno from the CRT).
 extern "c" fn _errno() *c_int;
-extern "c" fn open(path: [*:0]const u8, flags: c_int, mode: c_int) c_int;
+// Darwin (and POSIX generally) declare open as variadic (mode is only
+// read when O_CREAT is set).  A fixed-arity extern declaration makes
+// Zig emit a call whose mode argument is dropped on Apple arm64, so
+// declare it variadic and cast the mode at every call site.
+extern "c" fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
 extern "c" fn mkdir(path: [*:0]const u8, mode: c_int) c_int;
 extern "c" fn lstat(path: [*:0]const u8, buf: *anyopaque) c_int;
 extern "c" fn arc4random_buf(buf: [*]u8, len: usize) void;
@@ -145,14 +149,14 @@ const TryResult = struct { rc: c_int, err: c_int };
 fn tryFile(tmpl: [*:0]const u8, flags: c_int) TryResult {
     if (comptime isDarwin(builtin.os.tag)) {
         const f: c_int = (flags & ~O_ACCMODE) | O_RDWR | O_CREAT | O_EXCL;
-        const r = open(tmpl, f, 0o600);
+        const r = open(tmpl, f, @as(c_int, 0o600));
         if (r >= 0) return .{ .rc = r, .err = 0 };
         return .{ .rc = -1, .err = errnoLocation().* };
     }
     if (comptime isWindows(builtin.os.tag)) {
         // The CRT's open (aliased from _open), as gnulib's C calls.
         const f: c_int = (flags & ~O_ACCMODE) | O_RDWR | O_CREAT | O_EXCL;
-        const r = open(tmpl, f, 0o600);
+        const r = open(tmpl, f, @as(c_int, 0o600));
         if (r >= 0) return .{ .rc = r, .err = 0 };
         return .{ .rc = -1, .err = _errno().* };
     }
