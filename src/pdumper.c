@@ -5809,6 +5809,10 @@ pdumper_load (const char *dump_filename, char *argv0)
      initialization.  */
   for (int i = 0; i < nr_dump_hooks; ++i)
     dump_hooks[i] ();
+#ifdef DARWIN_OS
+  fprintf (stderr, "ZDIAG pdump hooks done\n");
+  fflush (stderr);
+#endif
 
 #ifdef HAVE_NATIVE_COMP
   pdumper_set_emacs_execdir (argv0);
@@ -5817,6 +5821,10 @@ pdumper_load (const char *dump_filename, char *argv0)
 #endif
 
   dump_do_all_dump_reloc_for_phase (header, dump_base, LATE_RELOCS);
+#ifdef DARWIN_OS
+  fprintf (stderr, "ZDIAG pdump LATE done\n");
+  fflush (stderr);
+#endif
   dump_do_all_dump_reloc_for_phase (header, dump_base, VERY_LATE_RELOCS);
 #ifdef DARWIN_OS
   fprintf (stderr, "ZDIAG pdump late reloc done\n");
