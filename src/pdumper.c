@@ -5808,7 +5808,13 @@ pdumper_load (const char *dump_filename, char *argv0)
   /* Run the functions Emacs registered for doing post-dump-load
      initialization.  */
   for (int i = 0; i < nr_dump_hooks; ++i)
-    dump_hooks[i] ();
+    {
+#ifdef DARWIN_OS
+      fprintf (stderr, "ZDIAG pdump hook %d/%d\n", i, nr_dump_hooks);
+      fflush (stderr);
+#endif
+      dump_hooks[i] ();
+    }
 #ifdef DARWIN_OS
   fprintf (stderr, "ZDIAG pdump hooks done\n");
   fflush (stderr);
