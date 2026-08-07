@@ -73,6 +73,15 @@ const macos_overrides: []const Override = &.{
     // committed stat-time.h switches on.
     .{ .name = "HAVE_STRUCT_STAT_ST_ATIM_TV_NSEC" },
     .{ .name = "HAVE_STRUCT_STAT_ST_ATIMESPEC_TV_NSEC", .value = "1" },
+    // DARWIN_OS selects the Mach-O subr section (__DATA,subrs) and the
+    // darwin-specific code paths; the committed Linux values enable
+    // Linux-only subsystems (GPM console mouse, tree-sitter, the
+    // copy_file_range wrapper) and glibc's <malloc.h>.
+    .{ .name = "DARWIN_OS", .value = "1" },
+    .{ .name = "HAVE_GPM" },
+    .{ .name = "HAVE_TREE_SITTER" },
+    .{ .name = "HAVE_COPY_FILE_RANGE" },
+    .{ .name = "HAVE_MALLOC_H" },
 };
 
 // Windows additionally drops the POSIX-only subsystems that need mingw
