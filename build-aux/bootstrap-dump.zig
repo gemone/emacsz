@@ -82,11 +82,13 @@ pub fn main() !void {
             .exited => |code| {
                 if (code == 0) break;
                 printTail(res.stdout);
+                printTail(res.stderr);
                 std.debug.print("bootstrap-dump: temacs exited {d}\n", .{code});
                 std.process.exit(1);
             },
             .signal => |sig| {
                 printTail(res.stdout);
+                printTail(res.stderr);
                 std.debug.print("bootstrap-dump: temacs died with signal {d}; retrying ({d}/3)\n", .{ @intFromEnum(sig), attempt + 1 });
                 if (attempt >= 2) std.process.exit(1);
             },

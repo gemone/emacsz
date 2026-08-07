@@ -93,6 +93,22 @@ jobs:
         run: zig build -Doptimize=${{ matrix.mode }}
         shell: bash
 
+      # Diagnostic for the Windows loadup failure: run the exact dump
+      # command the build pipeline runs and capture its output, so a
+      # silent early exit becomes visible in the log.
+      - name: Diagnose Windows loadup
+        if: runner.os == 'Windows'
+        shell: cmd
+        continue-on-error: true
+        run: |
+          cd zig-out\bin
+          set EMACSLOADPATH=%CD%\..\..\lisp
+          set EMACSDATA=%CD%\..\..\etc
+          set LC_ALL=C
+          .\temacs.exe -batch -l loadup --temacs=pbootstrap > dump_out.txt 2>&1
+          echo DUMP_EXIT=%errorlevel%
+          type dump_out.txt
+
       - name: Verify temacs executable
         run: |
           if [ -f zig-out/bin/temacs ]; then
