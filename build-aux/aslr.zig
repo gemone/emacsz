@@ -14,7 +14,13 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 pub fn disableAslr() void {
-    if (comptime builtin.os.tag != .linux) return;
-    // linux/personality.h: ADDR_NO_RANDOMIZE = 0x0040000.
-    _ = std.os.linux.syscall1(.personality, 0x0040000);
+    if (comptime builtin.os.tag == .linux) {
+        // linux/personality.h: ADDR_NO_RANDOMIZE = 0x0040000.
+        _ = std.os.linux.syscall1(.personality, 0x0040000);
+    } else if (comptime builtin.os.tag == .macos) {
+        // Darwin has no personality(2); dyld skips the main-executable
+        // slide for children when DYLD_NO_PIE=1 is exported, so the
+        // spawned temacs loads the pdmp at fixed addresses.
+        std.posix.setenv("DYLD_NO_PIE", "1", true) catch {};
+    }
 }
