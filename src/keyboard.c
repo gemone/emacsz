@@ -1209,6 +1209,10 @@ This also exits all active minibuffers.  */
        attributes: noreturn)
   (void)
 {
+#if defined DARWIN_OS || defined WINDOWSNT
+  fprintf (stderr, "ZDIAG Ftop_level called\n");
+  fflush (stderr);
+#endif
 #ifdef HAVE_WINDOW_SYSTEM
   if (display_hourglass_p)
     cancel_hourglass ();

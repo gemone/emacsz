@@ -396,6 +396,9 @@
       (load "cus-start")) ;Late to reduce customize-rogue (needs loaddefs.el anyway)
   ((quit top-level)
    (message "ZDIAG cus-start abort %S" err)
+   (debug-early-backtrace))
+  (error
+   (message "ZDIAG cus-start error %S" err)
    (debug-early-backtrace)))
 (message "ZDIAG after cus-start")
 (load "tooltip")
