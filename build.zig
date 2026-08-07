@@ -161,8 +161,9 @@ pub fn build(b: *std.Build) void {
     // temacs C compile switches to the target config.
     const target_config_tag: ?[]const u8 = switch (target.result.os.tag) {
         .windows => "windows",
+        .macos => "macos",
         .linux => if (target.result.abi == .musl) "musl" else null,
-        else => null, // macOS keeps the Linux-derived values for now
+        else => null,
     };
     const TargetConfig = struct {
         file: std.Build.LazyPath,
