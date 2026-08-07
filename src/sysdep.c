@@ -306,11 +306,18 @@ get_current_dir_name_or_unreachable (void)
 
   ptrdiff_t pwdlen;
   struct stat dotstat, pwdstat;
+#ifndef WINDOWSNT
   pwd = getenv ("PWD");
+#endif
 
   /* If PWD is accurate, use it instead of calling getcwd.  PWD is
      sometimes a nicer name, and using it may avoid a fatal error if a
-     parent directory is searchable but not readable.  */
+     parent directory is searchable but not readable.  Not on Windows:
+     shells like Git Bash export a unix-style PWD (lowercase drive,
+     forward slashes) that the Windows path logic (e.g.
+     Fexpand_file_name's uppercase-only IS_DRIVE) cannot consume, so
+     the startup directory would be misparsed and hit emacs_abort.  */
+#ifndef WINDOWSNT
   if (pwd
       && (pwdlen = strnlen (pwd, bufsize_max)) < bufsize_max
       && IS_DIRECTORY_SEP (pwd[pwdlen && IS_DEVICE_SEP (pwd[1]) ? 2 : 0])
@@ -320,6 +327,7 @@ get_current_dir_name_or_unreachable (void)
       && dotstat.st_dev == pwdstat.st_dev)
     return strdup (pwd);
   else
+#endif
     {
       ptrdiff_t buf_size = min (bufsize_max, 1024);
       for (;;)
