@@ -4271,6 +4271,10 @@ mem_find (void *start)
 static struct mem_node *
 mem_insert (void *start, void *end, enum mem_type type)
 {
+#ifdef DARWIN_OS
+  fprintf (stderr, "ZDIAG mem_insert mem_root=%p start=%p\n", (void *) mem_root, start);
+  fflush (stderr);
+#endif
   struct mem_node *c, *parent, *x;
 
   if (min_heap_address == NULL || start < min_heap_address)
