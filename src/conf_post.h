@@ -38,6 +38,18 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 # include <ms-w32.h>
 #endif
 
+/* The macOS SDK lacks the GNU <string.h> extensions mempcpy/memrchr.
+   The gnulib providers (lib/mempcpy.c, lib/memrchr.c) are compiled into
+   the build whenever the corresponding HAVE_* knob is off, so declare
+   them here for the callers that expect the declarations from glibc.
+   (lib/string.h is a committed Linux-configured gnulib header and does
+   not emit these declarations on Darwin.)  */
+#ifdef DARWIN_OS
+# include <stddef.h>
+extern void *mempcpy (void *dest, const void *src, size_t n);
+extern void *memrchr (void const *s, int c_in, size_t n);
+#endif
+
 /* GNUC_PREREQ (V, W, X) is true if this is GNU C version V.W.X or later.
    It can be used in a preprocessor expression.  */
 #ifndef __GNUC_MINOR__

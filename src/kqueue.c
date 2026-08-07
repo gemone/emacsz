@@ -27,10 +27,6 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "keyboard.h"
 #include "process.h"
 
-/* The event action symbols; kqueue.c is not compiled on Linux, so the
-   missing extern declarations were masked until the macOS build.  */
-static Lisp_Object Qcreate, Qdelete, Qwrite, Qextend, Qattrib, Qlink, Qrename, Qrevoke;
-
 #ifdef HAVE_SYS_RESOURCE_H
 #include <sys/resource.h>
 #endif /* HAVE_SYS_RESOURCE_H  */

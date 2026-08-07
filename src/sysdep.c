@@ -3458,8 +3458,10 @@ put_jiffies (Lisp_Object attrs, Lisp_Object propname,
 static Lisp_Object
 get_host_uptime (Lisp_Object hz)
 {
-  /* clock_gettime is available in glibc 2.14+, Android, and musl libc.  */
-# if !defined __GLIBC__ || 2 < __GLIBC__ + (14 <= __GLIBC_MINOR__)
+  /* clock_gettime is available in glibc 2.14+, Android, and musl libc.
+     CLOCK_BOOTTIME is a Linux clock; Darwin only offers the MONOTONIC
+     family, so require the macro before using it.  */
+# if defined CLOCK_BOOTTIME
   struct timespec upt;
   if (0 <= clock_gettime (CLOCK_BOOTTIME, &upt))
     return Ftime_convert (timespec_to_lisp (upt), hz);

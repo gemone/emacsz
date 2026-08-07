@@ -91,6 +91,68 @@ const macos_overrides: []const Override = &.{
     .{ .name = "HAVE_MEMRCHR" },
     .{ .name = "HAVE_LANGINFO__NL_PAPER_WIDTH" },
     .{ .name = "HAVE_ENVIRON_DECL" },
+    // POSIX timers (timer_create/timer_settime/timer_getoverrun) are
+    // glibc-only; without HAVE_TIMER_SETTIME, syssignal.h leaves
+    // HAVE_ITIMERSPEC undefined and atimer.c/profiler.c fall back to
+    // setitimer, which Darwin does provide.
+    .{ .name = "HAVE_TIMER_SETTIME" },
+    .{ .name = "HAVE_TIMER_GETOVERRUN" },
+    // pty.h is a glibc header; the Darwin PTY path uses the baked
+    // PTY_OPEN (posix_openpt) macro instead of including it.
+    .{ .name = "HAVE_PTY_H" },
+    // The SDK has no OSS sound headers and no sound architecture.
+    .{ .name = "HAVE_SYS_SOUNDCARD_H" },
+    .{ .name = "HAVE_MACHINE_SOUNDCARD_H" },
+    .{ .name = "HAVE_SOUNDCARD_H" },
+    .{ .name = "HAVE_SOUND" },
+    // macOS's sqlite3 is built without SQLITE_ENABLE_LOAD_EXTENSION.
+    .{ .name = "HAVE_SQLITE3_LOAD_EXTENSION" },
+    // sys/personality.h is Linux-only; the ASLR personality() call is
+    // not available on Darwin.
+    .{ .name = "HAVE_PERSONALITY_ADDR_NO_RANDOMIZE" },
+    // linux/kd.h backs HAVE_STRUCT_UNIPAIR_UNICODE on Linux only.
+    .{ .name = "HAVE_STRUCT_UNIPAIR_UNICODE" },
+    // Darwin declares strmode in <string.h> (BSD heritage); flip the
+    // knob so filemode.h stops declaring its own copy.
+    .{ .name = "HAVE_DECL_STRMODE", .value = "1" },
+    // Darwin's pthread_setname_np takes a single argument.
+    .{ .name = "HAVE_PTHREAD_SETNAME_NP_1ARG", .value = "1" },
+    .{ .name = "HAVE_PTHREAD_SETNAME_NP_3ARG" },
+    // Linux-kernel/glibc-only APIs absent from the Darwin SDK.
+    .{ .name = "HAVE_ALSA" },
+    .{ .name = "HAVE_DBUS" },
+    .{ .name = "HAVE_DBUS_MESSAGE_SET_ALLOW_INTERACTIVE_AUTHORIZATION" },
+    .{ .name = "HAVE_DBUS_TYPE_IS_VALID" },
+    .{ .name = "HAVE_DBUS_VALIDATE_BUS_NAME" },
+    .{ .name = "HAVE_DBUS_VALIDATE_INTERFACE" },
+    .{ .name = "HAVE_DBUS_VALIDATE_MEMBER" },
+    .{ .name = "HAVE_DBUS_VALIDATE_PATH" },
+    .{ .name = "HAVE_DBUS_WATCH_GET_UNIX_FD" },
+    .{ .name = "HAVE_INOTIFY" },
+    .{ .name = "HAVE_INOTIFY_INIT" },
+    .{ .name = "HAVE_INOTIFY_INIT1" },
+    .{ .name = "HAVE_LINUX_FILTER_H" },
+    .{ .name = "HAVE_LINUX_SYSINFO" },
+    .{ .name = "HAVE_LINUX_XATTR_H" },
+    .{ .name = "HAVE_MNTENT_H" },
+    .{ .name = "HAVE_SETMNTENT" },
+    .{ .name = "HAVE_PROCFS" },
+    .{ .name = "HAVE_MALLOC_TRIM" },
+    .{ .name = "HAVE_RENAMEAT2" },
+    .{ .name = "HAVE_GETRANDOM" },
+    .{ .name = "HAVE_PIPE2" },
+    .{ .name = "HAVE_ACCEPT4" },
+    .{ .name = "HAVE_SCHED_GETAFFINITY" },
+    .{ .name = "HAVE_SCHED_GETAFFINITY_LIKE_GLIBC" },
+    .{ .name = "HAVE_GET_CURRENT_DIR_NAME" },
+    .{ .name = "HAVE_SIGDESCR_NP" },
+    .{ .name = "HAVE_GETADDRINFO_A" },
+    .{ .name = "HAVE_GETPT" },
+    .{ .name = "HAVE_DECL_SYSINFO" },
+    // Darwin's struct ifreq exposes ifr_addr/ifr_broadaddr but not the
+    // Linux-only ifr_netmask member; process.c then falls back to
+    // reading the address union directly.
+    .{ .name = "HAVE_STRUCT_IFREQ_IFR_NETMASK" },
 };
 
 // Windows additionally drops the POSIX-only subsystems that need mingw

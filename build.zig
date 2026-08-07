@@ -304,6 +304,16 @@ pub fn build(b: *std.Build) void {
         const linux_doc_sources = [_][]const u8{ "dbusbind.c", "dynlib.c", "inotify.c" };
         for (linux_doc_sources) |name| run_mdf.addArg(name);
     }
+    // kqueue.c is compiled only on BSD/macOS, so its DEFSYM/defsubr
+    // symbols (Qcreate/Qdelete/... and Fkqueue_*) never reach globals.h
+    // from the Linux base sources.  Scan it for the macOS target so the
+    // generated header carries the lispsym indices and EXFUN
+    // declarations, exactly like the Linux/windows re-adds above;
+    // otherwise the Q* macros are missing and the Fkqueue_* forward
+    // references are undeclared.
+    if (target.result.os.tag == .macos) {
+        run_mdf.addArg("kqueue.c");
+    }
     // The w32 modules are compiled into the Windows build, so their
     // EXFUN/DEFVAR/DEFSYM declarations must reach globals.h too,
     // otherwise the C sources that use those symbols before defining
