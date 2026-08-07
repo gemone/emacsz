@@ -1054,6 +1054,17 @@ pub fn build(b: *std.Build) void {
             });
         }
 
+        // Darwin-only shims: the glibc-style __errno_location the Zig
+        // gnulib packages extern, getrandom(2) for the secure-random
+        // callers, and the darwin_getloadavg alias for the Zig
+        // getloadavg package.  Mirrors the w32-stubs.c pattern.
+        if (target.result.os.tag == .macos) {
+            exe.root_module.addCSourceFile(.{
+                .file = b.path("src/darwin-shims.c"),
+                .flags = base_flags,
+            });
+        }
+
         // Add platform-specific sources
         // kqueue.c is BSD/macOS-specific (HAVE_KQUEUE)
         const is_macos = target.result.os.tag == .macos;

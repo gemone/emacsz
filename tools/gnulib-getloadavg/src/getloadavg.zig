@@ -51,7 +51,7 @@ comptime {
 // Return the number written (3), or -1 with errno set on failure.
 pub export fn getloadavg(loadavg: [*]f64, nelem: c_int) c_int {
     if (comptime isDarwin(builtin.os.tag))
-        return c_getloadavg(loadavg, nelem);
+        return darwin_getloadavg(loadavg, nelem);
     if (comptime isWindows(builtin.os.tag))
         return getloadavgWindows(loadavg, nelem);
     if (builtin.os.tag != .linux)
@@ -87,4 +87,7 @@ fn getloadavgLinux(loadavg: [*]f64, nelem: c_int) c_int {
     return 3;
 }
 
-extern "c" fn c_getloadavg(loadavg: [*]f64, nelem: c_int) c_int;
+// Darwin has no `c_getloadavg'; src/darwin-shims.c provides this unique
+// name so the libc getloadavg(3) call does not resolve to this
+// package's own exported `getloadavg' symbol.
+extern "c" fn darwin_getloadavg(loadavg: [*]f64, nelem: c_int) c_int;
