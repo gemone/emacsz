@@ -161,7 +161,8 @@ fn fileExists(io: std.Io, cwd: std.Io.Dir, path: []const u8) bool {
 }
 
 fn lispPath(gpa: std.mem.Allocator, path: []const u8) ![]const u8 {
-    if (std.mem.indexOfScalar(u8, path, '\\') == null) return path;
+    // Always return an owned copy: the callers free the result, and
+    // returning the input pointer would double-free the original path.
     return std.mem.replaceOwned(u8, gpa, path, "\\", "/");
 }
 
