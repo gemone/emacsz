@@ -77,15 +77,24 @@ pub fn main() !void {
 
     const dump_arg = try std.fmt.allocPrint(gpa, "--dump-file={s}", .{dump});
     defer gpa.free(dump_arg);
+    // Lisp strings treat '\' as an escape, so "D:\a\..." would read the
+    // path as "D:<bell>...".  Forward slashes work everywhere on
+    // Windows and keep the eval forms readable.
+    const lisp_unidata = try lispPath(gpa, unidata);
+    defer gpa.free(lisp_unidata);
+    const lisp_out_dir = try lispPath(gpa, out_dir);
+    defer gpa.free(lisp_out_dir);
 
     var generated: usize = 0;
     for (unifiles) |u| {
         const target = try std.fs.path.join(gpa, &.{ out_dir, u });
         defer gpa.free(target);
+        const lisp_target = try lispPath(gpa, target);
+        defer gpa.free(lisp_target);
         const out_el = try std.fmt.allocPrint(gpa, "{s}.el", .{target});
         defer gpa.free(out_el);
         if (fileExists(io, cwd, out_el)) continue;
-    const eval = try std.fmt.allocPrint(gpa, "(unidata-gen-file \"{s}.el\" \"{s}\" \"unidata.txt\")", .{ target, unidata });
+    const eval = try std.fmt.allocPrint(gpa, "(unidata-gen-file \"{s}.el\" \"{s}\" \"unidata.txt\")", .{ lisp_target, lisp_unidata });
     defer gpa.free(eval);
         try runEmacs(gpa, io, temacs, dump_arg, unidata, "unidata-gen", eval);
         generated += 1;
@@ -103,11 +112,11 @@ pub fn main() !void {
         defer gpa.free(target);
         if (fileExists(io, cwd, target)) continue;
         const eval = if (std.mem.eql(u8, sp.name, "uni-scripts.el"))
-            try std.fmt.allocPrint(gpa, "(unidata-gen-scripts \"{s}/uni-scripts.el\")", .{out_dir})
+            try std.fmt.allocPrint(gpa, "(unidata-gen-scripts \"{s}/uni-scripts.el\")", .{lisp_out_dir})
         else if (std.mem.eql(u8, sp.name, "uni-confusable.el"))
-            try std.fmt.allocPrint(gpa, "(unidata-gen-confusable \"{s}/uni-confusable.el\")", .{out_dir})
+            try std.fmt.allocPrint(gpa, "(unidata-gen-confusable \"{s}/uni-confusable.el\")", .{lisp_out_dir})
         else
-            try std.fmt.allocPrint(gpa, "(unidata-gen-idna-mapping \"{s}/idna-mapping.el\")", .{out_dir});
+            try std.fmt.allocPrint(gpa, "(unidata-gen-idna-mapping \"{s}/idna-mapping.el\")", .{lisp_out_dir});
         defer gpa.free(eval);
         try runEmacs(gpa, io, temacs, dump_arg, unidata, "unidata-gen", eval);
         generated += 1;
@@ -116,7 +125,7 @@ pub fn main() !void {
         const target = try std.fs.path.join(gpa, &.{ out_dir, "emoji-labels.el" });
         defer gpa.free(target);
         if (!fileExists(io, cwd, target)) {
-            const eval = try std.fmt.allocPrint(gpa, "(emoji--generate-file \"{s}/emoji-labels.el\")", .{out_dir});
+            const eval = try std.fmt.allocPrint(gpa, "(emoji--generate-file \"{s}/emoji-labels.el\")", .{lisp_out_dir});
             defer gpa.free(eval);
             try runEmacs(gpa, io, temacs, dump_arg, out_dir, "emoji", eval);
             generated += 1;
@@ -126,7 +135,7 @@ pub fn main() !void {
         const target = try std.fs.path.join(gpa, &.{ out_dir, "charprop.el" });
         defer gpa.free(target);
         if (!fileExists(io, cwd, target)) {
-            const eval = try std.fmt.allocPrint(gpa, "(unidata-gen-charprop \"{s}/charprop.el\")", .{out_dir});
+            const eval = try std.fmt.allocPrint(gpa, "(unidata-gen-charprop \"{s}/charprop.el\")", .{lisp_out_dir});
             defer gpa.free(eval);
             try runEmacs(gpa, io, temacs, dump_arg, unidata, "unidata-gen", eval);
             generated += 1;
@@ -140,6 +149,11 @@ fn fileExists(io: std.Io, cwd: std.Io.Dir, path: []const u8) bool {
     var f = cwd.openFile(io, path, .{}) catch return false;
     f.close(io);
     return true;
+}
+
+fn lispPath(gpa: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, path, '\\') == null) return path;
+    return std.mem.replaceOwned(u8, gpa, path, "\\", "/");
 }
 
 fn runEmacs(
