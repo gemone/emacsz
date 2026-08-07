@@ -265,6 +265,11 @@ const windows_overrides: []const Override = &.{
     .{ .name = "HAVE_STDBIT_H" },
     .{ .name = "HAVE_SYS_RANDOM_H" },
     .{ .name = "HAVE_EXECINFO_H" },
+    // Windows native separator conventions: backslash directory
+    // separator and ':' device separator.  The committed Linux values
+    // ('/' and 0) made Fexpand_file_name miss every drive letter and
+    // abort on any absolute path.
+    .{ .name = "DIRECTORY_SEP", .value = "'\\\\'" },
 };
 
 pub fn main(minimal: std.process.Init.Minimal) !void {

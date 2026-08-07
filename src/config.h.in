@@ -911,10 +911,20 @@
 #define IS_ANY_SEP(_c_) (IS_DIRECTORY_SEP (_c_))
 
 /* Returns true if character is a device separator. */
-#define IS_DEVICE_SEP(_c_) 0
+#ifdef WINDOWSNT
+# define IS_DEVICE_SEP(_c_) ((_c_) == ':')
+#else
+# define IS_DEVICE_SEP(_c_) 0
+#endif
 
 /* Returns true if character is a directory separator. */
-#define IS_DIRECTORY_SEP(_c_) ((_c_) == DIRECTORY_SEP)
+#ifdef WINDOWSNT
+/* Windows accepts both '\' and '/' as separators; DIRECTORY_SEP is
+   set to '\\' by the windows config tag.  */
+# define IS_DIRECTORY_SEP(_c_) ((_c_) == DIRECTORY_SEP || (_c_) == '/')
+#else
+# define IS_DIRECTORY_SEP(_c_) ((_c_) == DIRECTORY_SEP)
+#endif
 
 /* Use GNU style printf and scanf.  */
 #ifndef __USE_MINGW_ANSI_STDIO
