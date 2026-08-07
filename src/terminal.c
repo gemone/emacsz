@@ -321,6 +321,7 @@ create_terminal (enum output_method type, struct redisplay_interface *rif)
   fprintf (stderr, "DIAG create_terminal kb=%lld term=%lld\n",
 	   (long long) XLI (keyboard_coding),
 	   (long long) XLI (terminal_coding));
+  fflush (stderr);
 #endif
   setup_coding_system (keyboard_coding, terminal->keyboard_coding);
   setup_coding_system (terminal_coding, terminal->terminal_coding);
@@ -669,6 +670,7 @@ init_initial_terminal (void)
 {
 #ifdef WINDOWSNT
   fprintf (stderr, "DIAG init_initial_terminal\n");
+  fflush (stderr);
 #endif
   if (initialized || terminal_list || tty_list)
     emacs_abort ();

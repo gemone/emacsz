@@ -2541,17 +2541,29 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 
   init_keyboard ();	/* This too must precede init_sys_modes.  */
   init_display ();	/* Determine terminal type.  Calls init_sys_modes.  */
+#ifdef WINDOWSNT
+  fprintf (stderr, "DIAG main: after init_display\n");
+  fflush (stderr);
+#endif
 #if HAVE_W32NOTIFY
   if (noninteractive)
     init_crit ();	/* w32notify.c needs this in batch mode.  */
 #endif	/* HAVE_W32NOTIFY */
   init_xdisp ();
+#ifdef WINDOWSNT
+  fprintf (stderr, "DIAG main: after init_xdisp\n");
+  fflush (stderr);
+#endif
 #ifdef HAVE_WINDOW_SYSTEM
   init_fringe ();
 #endif /* HAVE_WINDOW_SYSTEM */
   init_macros ();
   init_window ();
   init_font ();
+#ifdef WINDOWSNT
+  fprintf (stderr, "DIAG main: after init_window/font\n");
+  fflush (stderr);
+#endif
 
 #ifdef HAVE_ANDROID
   init_androidmenu ();
@@ -2633,6 +2645,7 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 #ifdef WINDOWSNT
   fprintf (stderr, "DIAG main: entering recursive-edit (noninteractive=%d)\n",
 	   noninteractive);
+  fflush (stderr);
 #endif
   Frecursive_edit ();
   eassume (false);

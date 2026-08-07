@@ -1116,6 +1116,7 @@ Return t if the file exists and loads successfully.  */)
 #ifdef WINDOWSNT
   fprintf (stderr, "DIAG Fload file=%s\n",
 	   STRINGP (file) ? SSDATA (file) : "?");
+  fflush (stderr);
 #endif
   file_stream stream UNINIT;
   lread_fd fd;

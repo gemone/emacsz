@@ -256,6 +256,7 @@ printchar_to_stream (unsigned int ch, FILE *stream)
 	   (long long) XLI (Vlocale_coding_system),
 	   (long long) XLI (Vcoding_system_for_write),
 	   (long long) XLI (coding_system));
+  fflush (stderr);
 #endif
 
   if (CHAR_VALID_P (ch) && DISP_TABLE_P (Vstandard_display_table))

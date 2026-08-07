@@ -5668,11 +5668,15 @@ setup_coding_system (Lisp_Object coding_system, struct coding_system *coding)
 #ifdef WINDOWSNT
   fprintf (stderr, "DIAG setup_coding cs=%lld\n",
 	   (long long) XLI (coding_system));
+  fflush (stderr);
   if (SYMBOLP (coding_system))
     {
       Lisp_Object csname = SYMBOL_NAME (coding_system);
       if (STRINGP (csname))
-	fprintf (stderr, "DIAG setup_coding name=%s\n", SSDATA (csname));
+	{
+	  fprintf (stderr, "DIAG setup_coding name=%s\n", SSDATA (csname));
+	  fflush (stderr);
+	}
     }
 #endif
   Lisp_Object attrs;
@@ -8712,6 +8716,7 @@ detect_coding_system (const unsigned char *src,
 #ifdef WINDOWSNT
   /* Temporary diagnostic (see print.c printchar_to_stream).  */
   fprintf (stderr, "DIAG detect_coding cs=%lld\n", (long long) XLI (coding_system));
+  fflush (stderr);
 #endif
   setup_coding_system (coding_system, &coding);
   attrs = CODING_ID_ATTRS (coding.id);
