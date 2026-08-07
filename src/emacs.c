@@ -437,6 +437,16 @@ using_utf8 (void)
 
 /* Report a fatal error due to signal SIG, output a backtrace of at
    most BACKTRACE_LIMIT lines, and exit.  */
+#if defined WINDOWSNT && !defined HAVE_NTGUI
+/* ms-w32.h maps emacs_raise to emacs_abort, which is only safe for the
+   NTGUI build where emacs_abort terminates via the crash dialog.  The
+   console build's emacs_abort goes through terminate_due_to_signal, so
+   the mapping would make the final raise recurse forever (stack
+   overflow, bug seen on the native windows runner).  Deliver the fatal
+   signal for real instead.  */
+# undef emacs_raise
+# define emacs_raise(sig) raise (sig)
+#endif
 AVOID
 terminate_due_to_signal (int sig, int backtrace_limit)
 {
@@ -2028,9 +2038,17 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
   fflush (stderr);
 #endif
   init_xfaces ();
+#ifdef WINDOWSNT
+  fprintf (stderr, "DIAG main: after init_xfaces\n");
+  fflush (stderr);
+#endif
 
   if (!initialized)
     syms_of_comp ();
+#ifdef WINDOWSNT
+  fprintf (stderr, "DIAG main: after syms_of_comp\n");
+  fflush (stderr);
+#endif
 
   /* Do less garbage collection in batch mode (since these tend to be
      more short-lived, and the memory is returned to the OS on exit
@@ -2552,6 +2570,10 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
   init_process_emacs (sockfd);
 
   init_keyboard ();	/* This too must precede init_sys_modes.  */
+#ifdef WINDOWSNT
+  fprintf (stderr, "DIAG main: after init_keyboard\n");
+  fflush (stderr);
+#endif
   init_display ();	/* Determine terminal type.  Calls init_sys_modes.  */
 #ifdef WINDOWSNT
   fprintf (stderr, "DIAG main: after init_display\n");

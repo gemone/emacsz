@@ -2405,6 +2405,18 @@ renameat_noreplace (int srcfd, char const *src, int dstfd, char const *dst)
 void
 emacs_abort (void)
 {
+#ifdef WINDOWSNT
+  /* Temporary diagnostic: report the first abort call site so the
+     failing startup code can be identified from the CI log.  */
+  static bool w32_abort_diag_done;
+  if (!w32_abort_diag_done)
+    {
+      w32_abort_diag_done = true;
+      fprintf (stderr, "DIAG first emacs_abort caller=%p\n",
+	       __builtin_return_address (0));
+      fflush (stderr);
+    }
+#endif
   terminate_due_to_signal (SIGABRT, 40);
 }
 #endif
