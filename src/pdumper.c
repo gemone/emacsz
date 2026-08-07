@@ -5818,11 +5818,19 @@ pdumper_load (const char *dump_filename, char *argv0)
 
   dump_do_all_dump_reloc_for_phase (header, dump_base, LATE_RELOCS);
   dump_do_all_dump_reloc_for_phase (header, dump_base, VERY_LATE_RELOCS);
+#ifdef DARWIN_OS
+  fprintf (stderr, "ZDIAG pdump late reloc done\n");
+  fflush (stderr);
+#endif
 
   /* Run the functions Emacs registered for doing post-dump-load
      initialization.  */
   for (int i = 0; i < nr_dump_late_hooks; ++i)
     dump_late_hooks[i] ();
+#ifdef DARWIN_OS
+  fprintf (stderr, "ZDIAG pdump late hooks done\n");
+  fflush (stderr);
+#endif
 
   initialized = true;
 
