@@ -85,9 +85,9 @@ pub fn main() !void {
         const out_el = try std.fmt.allocPrint(gpa, "{s}.el", .{target});
         defer gpa.free(out_el);
         if (fileExists(io, cwd, out_el)) continue;
-        const eval = try std.fmt.allocPrint(gpa, "(unidata-gen-file \"{s}.el\" \"{s}\" \"unidata.txt\")", .{ target, unidata });
-        defer gpa.free(eval);
-        try runEmacs(io, temacs, dump_arg, unidata, "unidata-gen", eval);
+    const eval = try std.fmt.allocPrint(gpa, "(unidata-gen-file \"{s}.el\" \"{s}\" \"unidata.txt\")", .{ target, unidata });
+    defer gpa.free(eval);
+        try runEmacs(gpa, io, temacs, dump_arg, unidata, "unidata-gen", eval);
         generated += 1;
     }
 
@@ -109,7 +109,7 @@ pub fn main() !void {
         else
             try std.fmt.allocPrint(gpa, "(unidata-gen-idna-mapping \"{s}/idna-mapping.el\")", .{out_dir});
         defer gpa.free(eval);
-        try runEmacs(io, temacs, dump_arg, unidata, "unidata-gen", eval);
+        try runEmacs(gpa, io, temacs, dump_arg, unidata, "unidata-gen", eval);
         generated += 1;
     }
     {
@@ -118,7 +118,7 @@ pub fn main() !void {
         if (!fileExists(io, cwd, target)) {
             const eval = try std.fmt.allocPrint(gpa, "(emoji--generate-file \"{s}/emoji-labels.el\")", .{out_dir});
             defer gpa.free(eval);
-            try runEmacs(io, temacs, dump_arg, out_dir, "emoji", eval);
+            try runEmacs(gpa, io, temacs, dump_arg, out_dir, "emoji", eval);
             generated += 1;
         }
     }
@@ -128,7 +128,7 @@ pub fn main() !void {
         if (!fileExists(io, cwd, target)) {
             const eval = try std.fmt.allocPrint(gpa, "(unidata-gen-charprop \"{s}/charprop.el\")", .{out_dir});
             defer gpa.free(eval);
-            try runEmacs(io, temacs, dump_arg, unidata, "unidata-gen", eval);
+            try runEmacs(gpa, io, temacs, dump_arg, unidata, "unidata-gen", eval);
             generated += 1;
         }
     }
@@ -143,6 +143,7 @@ fn fileExists(io: std.Io, cwd: std.Io.Dir, path: []const u8) bool {
 }
 
 fn runEmacs(
+    gpa: std.mem.Allocator,
     io: std.Io,
     temacs: []const u8,
     dump_arg: []const u8,
@@ -153,24 +154,31 @@ fn runEmacs(
     const argv = [_][]const u8{ temacs, "--batch", "-L", load_dir, "-l", load_lib, dump_arg, "--eval", eval };
     var attempt: usize = 0;
     while (true) : (attempt += 1) {
-        var child = try std.process.spawn(io, .{
+        const res = try std.process.run(gpa, io, .{
             .argv = &argv,
-            .stdin = .ignore,
-            .stdout = .ignore,
-            .stderr = .ignore,
+            .stdout_limit = .unlimited,
+            .stderr_limit = .unlimited,
         });
-        const term = try child.wait(io);
-        switch (term) {
+        switch (res.term) {
             .exited => |code| {
                 if (code == 0) return;
+                printTail(res.stdout);
+                printTail(res.stderr);
                 std.debug.print("generate-charprop: temacs exited {d}\n", .{code});
                 std.process.exit(1);
             },
             .signal => |sig| {
+                printTail(res.stdout);
+                printTail(res.stderr);
                 std.debug.print("generate-charprop: temacs died with signal {d}; retrying ({d}/3)\n", .{ @intFromEnum(sig), attempt + 1 });
                 if (attempt >= 2) std.process.exit(1);
             },
             else => std.process.exit(1),
         }
     }
+}
+
+fn printTail(out: []const u8) void {
+    const tail = if (out.len > 65536) out[out.len - 65536 ..] else out;
+    std.debug.print("{s}\n", .{tail});
 }

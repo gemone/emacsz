@@ -126,7 +126,6 @@ jobs:
       - name: Run tests
         run: zig build test
         shell: bash
-        continue-on-error: true
 
       - name: Basic functional test
         run: |

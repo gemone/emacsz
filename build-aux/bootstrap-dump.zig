@@ -68,6 +68,7 @@ pub fn main() !void {
     const argv = [_][]const u8{ "./" ++ temacs_path.name, "-batch", "-l", "loadup", "--temacs=pbootstrap" };
     var attempt: usize = 0;
     while (true) : (attempt += 1) {
+        std.debug.print("bootstrap-dump: attempt {d}\n", .{attempt + 1});
         const res = std.process.run(gpa, io, .{
             .argv = &argv,
             .cwd = .{ .path = bin_dir },
@@ -106,6 +107,6 @@ pub fn main() !void {
 }
 
 fn printTail(out: []const u8) void {
-    const tail = if (out.len > 8192) out[out.len - 8192 ..] else out;
+    const tail = if (out.len > 65536) out[out.len - 65536 ..] else out;
     std.debug.print("{s}\n", .{tail});
 }
