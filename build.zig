@@ -1,5 +1,18 @@
 const std = @import("std");
 
+// Canonical GNU-style configuration string for the build target
+// (EMACS_CONFIGURATION); autoconf derives the same value from the host
+// triple (e.g. aarch64-apple-darwin25.3.0).  Zig reports the OS
+// micro-version separately, so the versionless canonical form is used;
+// nothing in lisp or C keys off the version suffix.
+fn canonicalConfiguration(t: std.Target, allocator: std.mem.Allocator) []const u8 {
+    return switch (t.os.tag) {
+        .macos => std.fmt.allocPrint(allocator, "{s}-apple-darwin", .{@tagName(t.cpu.arch)}) catch @panic("OOM"),
+        .windows => std.fmt.allocPrint(allocator, "{s}-pc-windows-msvc", .{@tagName(t.cpu.arch)}) catch @panic("OOM"),
+        else => std.Target.linuxTriple(&t, allocator) catch @panic("OOM"),
+    };
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -175,6 +188,8 @@ pub fn build(b: *std.Build) void {
         run.addFileArg(b.path("src/config.h.in"));
         run.addFileArg(b.path("src/config_values.txt"));
         run.addArg(tag);
+        if (std.mem.eql(u8, tag, "macos"))
+            run.addArg(canonicalConfiguration(target.result, b.allocator));
         break :blk TargetConfig{
             .file = run.captureStdOut(.{ .basename = "config.h" }),
             .step = &run.step,
@@ -203,6 +218,8 @@ pub fn build(b: *std.Build) void {
         run.addFileArg(b.path("src/config.h.in"));
         run.addFileArg(b.path("src/config_values.txt"));
         run.addArg(tag);
+        if (std.mem.eql(u8, tag, "macos"))
+            run.addArg(canonicalConfiguration(b.graph.host.result, b.allocator));
         break :blk TargetConfig{
             .file = run.captureStdOut(.{ .basename = "config.h" }),
             .step = &run.step,
