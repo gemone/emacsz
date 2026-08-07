@@ -49,14 +49,20 @@ comptime {
 
 // Put the 1-, 5- and 15-minute load averages into LOADAVG[0..2].
 // Return the number written (3), or -1 with errno set on failure.
-pub export fn getloadavg(loadavg: [*]f64, nelem: c_int) c_int {
-    if (comptime isDarwin(builtin.os.tag))
-        return darwin_getloadavg(loadavg, nelem);
+fn getloadavgImpl(loadavg: [*]f64, nelem: c_int) callconv(.c) c_int {
     if (comptime isWindows(builtin.os.tag))
         return getloadavgWindows(loadavg, nelem);
     if (builtin.os.tag != .linux)
         @compileError("gnulib-getloadavg: no implementation for this OS");
     return getloadavgLinux(loadavg, nelem);
+}
+
+// Darwin provides `getloadavg' from src/darwin-shims.c, which reaches
+// libc's getloadavg(3) via dlsym; exporting this symbol here too would
+// shadow the libc call inside the shim and recurse forever.
+comptime {
+    if (builtin.os.tag == .linux)
+        @export(&getloadavgImpl, .{ .name = "getloadavg" });
 }
 
 // gnulib's WINDOWS32 path: there is no load-average source on native
@@ -86,8 +92,3 @@ fn getloadavgLinux(loadavg: [*]f64, nelem: c_int) c_int {
     loadavg[2] = @as(f64, @floatFromInt(info.loads[2])) / 65536.0;
     return 3;
 }
-
-// Darwin has no `c_getloadavg'; src/darwin-shims.c provides this unique
-// name so the libc getloadavg(3) call does not resolve to this
-// package's own exported `getloadavg' symbol.
-extern "c" fn darwin_getloadavg(loadavg: [*]f64, nelem: c_int) c_int;

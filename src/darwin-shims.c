@@ -5,6 +5,7 @@
 #ifdef DARWIN_OS
 
 #include <errno.h>
+#include <dlfcn.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -28,13 +29,19 @@ getrandom (void *buffer, size_t length, unsigned int flags)
   return (ssize_t) length;
 }
 
-/* libc getloadavg(3) under a unique name, so the Zig
-   gnulib-getloadavg package can call it without clashing with its own
-   exported `getloadavg' symbol.  */
+/* Provide `getloadavg' for the C callers.  The executable defines this
+   symbol itself, so a direct call would bind to this definition and
+   recurse; dlsym(RTLD_NEXT) skips the main image and reaches
+   libSystem's getloadavg(3).  */
 int
-darwin_getloadavg (double *loadavg, int nelem)
+getloadavg (double *loadavg, int nelem)
 {
-  return getloadavg (loadavg, nelem);
+  static int (*volatile libc_getloadavg) (double *, int);
+  if (!libc_getloadavg)
+    libc_getloadavg = (int (*) (double *, int)) dlsym (RTLD_NEXT, "getloadavg");
+  if (!libc_getloadavg)
+    return -1;
+  return libc_getloadavg (loadavg, nelem);
 }
 
 #endif /* DARWIN_OS */
