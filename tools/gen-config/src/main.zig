@@ -68,6 +68,11 @@ const macos_overrides: []const Override = &.{
     .{ .name = "HAVE_DECL_GETCHAR_UNLOCKED" },
     .{ .name = "HAVE_DECL_PUTCHAR_UNLOCKED" },
     .{ .name = "HAVE_DECL_PUTC_UNLOCKED" },
+    // Darwin struct stat uses st_atimespec/st_mtimespec/st_ctimespec
+    // instead of glibc's st_atim/st_mtim/st_ctim, so flip the knob the
+    // committed stat-time.h switches on.
+    .{ .name = "HAVE_STRUCT_STAT_ST_ATIM_TV_NSEC" },
+    .{ .name = "HAVE_STRUCT_STAT_ST_ATIMESPEC_TV_NSEC", .value = "1" },
 };
 
 // Windows additionally drops the POSIX-only subsystems that need mingw
