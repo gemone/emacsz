@@ -106,6 +106,6 @@ pub fn main() !void {
 }
 
 fn printTail(out: []const u8) void {
-    const tail = if (out.len > 65536) out[out.len - 65536 ..] else out;
+    const tail = if (out.len > 8192) out[out.len - 8192 ..] else out;
     std.debug.print("{s}\n", .{tail});
 }
