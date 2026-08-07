@@ -7411,7 +7411,15 @@ init_alloc_once (void)
 static void
 init_alloc_once_for_pdumper (void)
 {
+#ifdef DARWIN_OS
+  fprintf (stderr, "ZDIAG alloc hook start\n");
+  fflush (stderr);
+#endif
   mem_init ();
+#ifdef DARWIN_OS
+  fprintf (stderr, "ZDIAG alloc hook mem_init done\n");
+  fflush (stderr);
+#endif
 
 #ifdef DOUG_LEA_MALLOC
   mallopt (M_TRIM_THRESHOLD, 128 * 1024); /* Trim threshold.  */
@@ -7422,7 +7430,15 @@ init_alloc_once_for_pdumper (void)
 
   init_finalizer_list (&finalizers);
   init_finalizer_list (&doomed_finalizers);
+#ifdef DARWIN_OS
+  fprintf (stderr, "ZDIAG alloc hook finalizers done\n");
+  fflush (stderr);
+#endif
   refill_memory_reserve ();
+#ifdef DARWIN_OS
+  fprintf (stderr, "ZDIAG alloc hook done\n");
+  fflush (stderr);
+#endif
 }
 
 void
