@@ -108,6 +108,8 @@ jobs:
         shell: bash
 
       - name: Run tests
+        env:
+          ZIG_COMPILE_LISP_PROBE: ${{ matrix.os == 'windows-latest' && '1' || '' }}
         run: |
           # GitHub macOS runners sandbox /tmp: creating files works, but
           # writing to an existing file there is denied (file-write-data),

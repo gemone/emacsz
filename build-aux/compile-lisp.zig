@@ -43,7 +43,33 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     defer gpa.free(charprop_flat);
     const lisp_path_flat = try std.mem.replaceOwned(u8, gpa, lisp_path, "\\", "/");
     defer gpa.free(lisp_path_flat);
-    const eval = try std.fmt.allocPrint(gpa, "(progn (load \"cl-macs\") (load \"cl-seq\") (load \"cl-extra\") (load \"{s}\") (byte-recompile-directory \"{s}\" 0))", .{ charprop_flat, lisp_path_flat });
+    const diary_target = try std.fmt.allocPrint(gpa, "{s}/calendar/diary-icalendar.el", .{lisp_path_flat});
+    defer gpa.free(diary_target);
+    // TEMPORARY diagnostic (remove after the windows diary-icalendar
+    // abort is identified): when ZIG_COMPILE_LISP_PROBE is set, run a
+    // stepwise load/compile of diary-icalendar.el instead of the full
+    // tree so the last P-marker before a crash pinpoints the abort.
+    const probe_enabled = if (env_map.get("ZIG_COMPILE_LISP_PROBE")) |v|
+        std.mem.eql(u8, v, "1")
+    else
+        false;
+    const eval = if (probe_enabled)
+        try std.fmt.allocPrint(gpa,
+            \\(progn (load "cl-macs") (load "cl-seq") (load "cl-extra") (load "{s}")
+            \\ (message "P0 env HOME=%S SHELL=%S TEMP=%S" (getenv "HOME") (getenv "SHELL") (getenv "TEMP"))
+            \\ (message "P0b user-real-login-name=%S" (user-real-login-name))
+            \\ (message "P1 load icalendar") (load "calendar/icalendar")
+            \\ (message "P2 load icalendar-parser") (load "calendar/icalendar-parser")
+            \\ (message "P3 load icalendar-utils") (load "calendar/icalendar-utils")
+            \\ (message "P4 load icalendar-recur") (load "calendar/icalendar-recur")
+            \\ (message "P5 load icalendar-ast") (load "calendar/icalendar-ast")
+            \\ (message "P6 load org-element-ast") (load "org/org-element-ast")
+            \\ (message "P7 load diary-icalendar") (load "calendar/diary-icalendar")
+            \\ (message "P8 byte-compile diary-icalendar") (byte-compile-file "{s}")
+            \\ (message "P9 done"))
+        , .{ charprop_flat, diary_target })
+    else
+        try std.fmt.allocPrint(gpa, "(progn (load \"cl-macs\") (load \"cl-seq\") (load \"cl-extra\") (load \"{s}\") (byte-recompile-directory \"{s}\" 0))", .{ charprop_flat, lisp_path_flat });
     defer gpa.free(eval);
     const dump_arg = try std.fmt.allocPrint(gpa, "--dump-file={s}", .{dump});
     defer gpa.free(dump_arg);
