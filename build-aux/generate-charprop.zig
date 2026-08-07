@@ -5,6 +5,7 @@
 //! repo root. Incremental: an existing output file is left untouched.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const aslr = @import("aslr.zig");
 const temacs_path = @import("temacs-path.zig");
 
