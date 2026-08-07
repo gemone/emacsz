@@ -50,11 +50,12 @@ stack_overflow_diag (EXCEPTION_POINTERS *ep)
 {
   if (ep->ExceptionRecord->ExceptionCode == 0xC00000FD)
     {
-      SymSetOptions (SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
-      SymInitialize (GetCurrentProcess (), NULL, TRUE);
+      _resetstkoflw ();		/* restore the guard page before calling APIs */
       void *addrs[40];
       USHORT n = RtlCaptureStackBackTrace (0, 40, addrs, NULL);
       fprintf (stderr, "DIAG: stack overflow, %u frames:\n", n);
+      SymSetOptions (SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+      SymInitialize (GetCurrentProcess (), NULL, TRUE);
       for (USHORT i = 0; i < n; i++)
 	{
 	  DWORD64 disp = 0;
@@ -65,10 +66,9 @@ stack_overflow_diag (EXCEPTION_POINTERS *ep)
 	  si.sym.MaxNameLen = 255;
 	  if (SymFromAddr (GetCurrentProcess (), (DWORD64) addrs[i], &disp, &si.sym))
 	    snprintf (name, sizeof name, "%s", si.sym.Name);
-	  fprintf (stderr, "  %p %s+0x%llx\n", addrs[i], name, (unsigned long long) disp);
+	  fprintf (stderr, "  %p %s+0x%llx\n", addrs[i], name[0] ? name : "?", (unsigned long long) disp);
 	}
       fflush (stderr);
-      _resetstkoflw ();
     }
   return EXCEPTION_CONTINUE_SEARCH;
 }
