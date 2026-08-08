@@ -106,6 +106,7 @@ void mpz_cdiv_q (mpz_t, mpz_srcptr, mpz_srcptr);
 mp_limb_t mpz_fdiv_q_ui (mpz_t, mpz_srcptr, unsigned long int);
 void mpz_divexact (mpz_t, mpz_srcptr, mpz_srcptr);
 void mpz_init_set_ui (mpz_t, unsigned long int);
+void mpz_init_set_si (mpz_t, signed long int);
 
 /* Bitwise operations and bit queries.  */
 void mpz_and (mpz_t, mpz_srcptr, mpz_srcptr);

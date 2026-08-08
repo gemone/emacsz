@@ -933,6 +933,11 @@ pub export fn mpz_init_set_ui(z: *mpz_t, u: u64) void {
     mpz_set_ui(z, u);
 }
 
+pub export fn mpz_init_set_si(z: *mpz_t, i: i64) void {
+    mpz_init(z);
+    mpz_set_si(z, i);
+}
+
 // ROP += |A| * |B| with full sign arithmetic. Any operand may alias ROP.
 pub export fn mpz_addmul(rop: *mpz_t, a: *const mpz_t, b: *const mpz_t) void {
     var t: mpz_t = undefined;

@@ -172,6 +172,12 @@ const macos_overrides: []const Override = &.{
     .{ .name = "SYSTEM_TYPE", .value = "\"darwin\"" },
     .{ .name = "DYNAMIC_LIB_SUFFIX", .value = "\".dylib\"" },
     .{ .name = "DYNAMIC_LIB_SECONDARY_SUFFIX", .value = "\".so\"" },
+    // Module suffixes mirror upstream configure.ac (MODULES_SUFFIX follows
+    // DYNAMIC_LIB_SUFFIX; darwin additionally sets MODULES_SECONDARY_SUFFIX =
+    // DYNAMIC_LIB_SECONDARY_SUFFIX = ".so" so dlopen-based modules load on
+    // macOS alongside the .dylib form). See configure.ac:5093-5116.
+    .{ .name = "MODULES_SUFFIX", .value = "\".dylib\"" },
+    .{ .name = "MODULES_SECONDARY_SUFFIX", .value = "\".so\"" },
 };
 
 // Windows additionally drops the POSIX-only subsystems that need mingw
@@ -287,6 +293,10 @@ const windows_overrides: []const Override = &.{
     // Windows path-list separator is ';' (the Linux ':' would split
     // every drive letter off "D:/..." paths during startup).
     .{ .name = "SEPCHAR", .value = "';'" },
+    // Module suffix mirrors upstream configure.ac's mingw case
+    // (MODULES_SUFFIX follows DYNAMIC_LIB_SUFFIX = ".dll"). See
+    // configure.ac:5093-5116.
+    .{ .name = "MODULES_SUFFIX", .value = "\".dll\"" },
 };
 
 pub fn main(minimal: std.process.Init.Minimal) !void {

@@ -415,6 +415,17 @@ pub fn build(b: *std.Build) void {
         };
         for (windows_doc_sources) |name| run_mdf.addArg(name);
     }
+    // emacs-module.c (when -Dmodules=true) carries the module runtime's
+    // DEFSYM/DEFVAR/DEFUN declarations (Qmodule_function_p, Fmodule_load,
+    // Qinvalid_arity, ...).  It is MODULES_OBJ -- a separate autoconf var
+    // (src/Makefile.in:270-271), not in base_obj -- so parseBaseSources
+    // never picks it up; make-docfile must scan it explicitly so globals.h
+    // carries those declarations, otherwise src/emacs-module.c and the
+    // lread.c #ifdef HAVE_MODULES blocks fail with "undeclared identifier".
+    // Mirrors the platform re-adds above.  (For a musl+modules build
+    // modules_enabled is false, so emacs-module.c is not compiled; the
+    // resulting globals.h externs are then unused-but-harmless.)
+    if (enable_modules) run_mdf.addArg("emacs-module.c");
     const globals_h = run_mdf.captureStdOut(.{ .basename = "globals.h" });
 
     const gen_globals_step = b.step("generate-globals", "Generate src/globals.h via make-docfile");
@@ -472,6 +483,11 @@ pub fn build(b: *std.Build) void {
             run_doc.addArg(o_name);
         }
     }
+    // Scan emacs-module.c for its doc strings when modules are on, so its
+    // DEFUN primitives (Fmodule_load etc.) carry doc strings in etc/DOC --
+    // mirrors the globals.h re-add above.  Passed as the .o name upstream's
+    // doc_obj uses (make-docfile rewrites to .c after the -d src chdir).
+    if (enable_modules) run_doc.addArg("emacs-module.o");
     const doc_capture = run_doc.captureStdOut(.{ .basename = "DOC" });
     // Install etc/DOC into the source tree with the native
     // UpdateSourceFiles step (no shell; etc/DOC is a gitignored
@@ -492,6 +508,9 @@ pub fn build(b: *std.Build) void {
         var buf: std.ArrayList(u8) = .empty;
         for (base_sources) |src| appendBuildobjEntry(a, &buf, src) catch @panic("build.zig: OOM building buildobj.h");
         for (libgnu_sources) |src| appendBuildobjEntry(a, &buf, src) catch @panic("build.zig: OOM building buildobj.h");
+        // emacs-module.o is MODULES_OBJ (not base_obj); upstream's $(obj)
+        // folds it into buildobj when modules are on, so mirror that here.
+        if (enable_modules) appendBuildobjEntry(a, &buf, "src/emacs-module.c") catch @panic("build.zig: OOM building buildobj.h");
         break :blk buf.toOwnedSlice(a) catch @panic("build.zig: OOM building buildobj.h");
     };
     const buildobj_wf = b.addWriteFiles();
@@ -1081,6 +1100,12 @@ pub fn build(b: *std.Build) void {
     // optional system-lib features), so skip the corresponding -l flags
     // here as well; only libm and ncurses (terminal support) remain.
     const is_musl = target.result.os.tag == .linux and target.result.abi == .musl;
+    // Dynamic modules (-Dmodules=true) need dlopen, which requires dynamic
+    // linking -- impossible in a fully-static musl build (plan section
+    // 13.1.6 / B4).  Force the switch off there; it stays on for glibc-Linux
+    // (dlopen lives in libc since glibc 2.34, so no -ldl is needed), macOS
+    // and Windows.  The off-by-default behavior is untouched.
+    const modules_enabled = enable_modules and !is_musl;
     // Host (glibc) include dirs must not leak into the musl compile:
     // -I/usr/include would inject glibc's C23 redirects (__isoc23_*)
     // into a musl build. musl uses zig's bundled headers instead.
@@ -1177,7 +1202,26 @@ pub fn build(b: *std.Build) void {
                 .flags = base_flags,
             });
         }
-        if (enable_modules) exe.root_module.addCMacro("HAVE_MODULES", "1");
+        // Dynamic modules (Track B, plan section 13).  -DHAVE_MODULES
+        // activates the upstream module runtime (lread.c module-file
+        // detection via MODULES_SUFFIX, eval.c funcall_module dispatch,
+        // alloc.c make_user_ptr, emacs.c syms_of_module init).  config.h
+        // carries MODULES_SUFFIX (set in src/config_values.txt + the
+        // per-target gen-config overrides), so the lread.c #ifdef
+        // HAVE_MODULES blocks compile.  emacs-module.c is the runtime
+        // implementation -- it is src/Makefile.in's MODULES_OBJ, a separate
+        // @MODULES_OBJ@ var (comment at Makefile.in:270), so it is NOT in
+        // parseBaseSources's base_obj and must be compiled here exactly like
+        // compz.c above.  musl is forced off (modules_enabled) since static
+        // musl cannot dlopen; on glibc 2.34+ no -ldl is needed (dlopen et al.
+        // live in libc).
+        if (modules_enabled) {
+            exe.root_module.addCMacro("HAVE_MODULES", "1");
+            exe.root_module.addCSourceFile(.{
+                .file = b.path("src/emacs-module.c"),
+                .flags = base_flags,
+            });
+        }
         if (enable_modules_zig) exe.root_module.addCMacro("HAVE_MODULES_ZIG", "1");
 
         // TERMCAP_OBJ: upstream builds terminfo.o when TERMINFO, else
@@ -2245,6 +2289,79 @@ pub fn build(b: *std.Build) void {
     run_check_all.step.dependOn(&run_loaddefs_final.step);
     const check_all_step = b.step("check-all", "Run ALL ert suites (no skip; per-suite isolation + timeout) and classify failures");
     check_all_step.dependOn(&run_check_all.step);
+
+    // modules-test: build the sample dynamic module
+    // (test/src/emacs-module-resources/mod-test.c) as mod-test.so and install
+    // it to zig-out/test/src/emacs-module-resources/, the path
+    // emacs-module-tests.el resolves mod-test-file to (relative to
+    // invocation-directory = zig-out/bin).  mod-test.c uses the mpz_* bignum
+    // API (extract/make_big_integer, the nanoseconds test), so the .so links
+    // emacs-bignum (its own copy, separate from temacs's -- the module is a
+    // standalone shared object) and includes the tools/bignum gmp.h shim.
+    // Upstream MODULE_CFLAGS is just -fPIC.  Gated on modules_enabled (Track
+    // B B2, plan section 13); off by default so the default build is
+    // unchanged.  The dumped emacs validates the module via a separate
+    // invocation (see the modules-test invocation in the plan):
+    //   ./zig-out/bin/emacs --batch -L test -L test/src -l ert \
+    //     -l test/src/emacs-module-tests.el -f ert-run-tests-batch-and-exit
+    if (modules_enabled) {
+        const mod_test_mod = b.createModule(.{
+            .target = target,
+            // ReleaseFast (not the build's Debug default): mod-test.c calls
+            // memset (NULL, 'a', 0) on a zero-length allocation (line 748),
+            // which is a libc no-op but traps under Zig's Debug nonnull
+            // safety check.  ReleaseFast disables that check (matching how
+            // gcc/clang build this module upstream) while keeping the C
+            // semantics identical.  Same optimize the gnulib Zig packages use.
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+        });
+        const mod_test_flags = [_][]const u8{
+            "-std=gnu2x",
+            "-fno-common",
+            "-fPIC",
+            "-fno-strict-aliasing",
+            "-D_GNU_SOURCE",
+            "-DHAVE_CONFIG_H",
+            "-Isrc",
+        };
+        mod_test_mod.addCSourceFile(.{
+            .file = b.path("test/src/emacs-module-resources/mod-test.c"),
+            .flags = &mod_test_flags,
+        });
+        // mod-test.c includes "config.h" + <emacs-module.h> (src/) +
+        // <gmp.h> (tools/bignum/include).  The target config provides config.h.
+        mod_test_mod.addIncludePath(target_config_h_file.file.dirname());
+        mod_test_mod.addIncludePath(
+            b.dependency("bignum", .{}).path("include"),
+        );
+        mod_test_mod.linkLibrary(bignum_lib);
+        const mod_test_lib = b.addLibrary(.{
+            .name = "mod-test",
+            .root_module = mod_test_mod,
+            .linkage = .dynamic,
+        });
+        // Ensure config.h is generated before mod-test.c compiles (the
+        // addIncludePath LazyPath carries the file dependency; this adds the
+        // ordering edge to the generator step, mirroring exe at line 616).
+        mod_test_lib.step.dependOn(target_config_h_file.step);
+        // Install as mod-test.so (NOT libmod-test.so): the suite resolves the
+        // load path with the bare module base name, no lib prefix.  .prefix is
+        // the zig-out root, so the full dest_rel_path lands the .so exactly
+        // where emacs-module-tests.el's mod-test-file points.
+        const install_mod_test = b.addInstallFileWithDir(
+            mod_test_lib.getEmittedBin(),
+            .prefix,
+            "test/src/emacs-module-resources/mod-test.so",
+        );
+        install_mod_test.step.dependOn(&mod_test_lib.step);
+        b.getInstallStep().dependOn(&install_mod_test.step);
+        const modules_test_step = b.step(
+            "modules-test",
+            "Build the sample dynamic module (mod-test.so) for emacs-module-tests",
+        );
+        modules_test_step.dependOn(&install_mod_test.step);
+    }
 
     // Help step
     const help_step = b.step("help", "Show build information");
