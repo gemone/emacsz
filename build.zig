@@ -1323,8 +1323,29 @@ pub fn build(b: *std.Build) void {
         // XML parsing
         exe.root_module.linkSystemLibrary("xml2", .{});
 
-        // Compression
-        exe.root_module.linkSystemLibrary("z", .{});
+        // Compression: zlib built from source as a Zig-managed dependency
+        // (build.zig.zon -> zlib_src URL dep), replacing the system libz.
+        // Compiled in its own module so the Emacs config.h flags never
+        // leak into zlib, and exported as a static libz for the exe.
+        const zlib_src = b.dependency("zlib_src", .{});
+        const zlib_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        zlib_mod.addIncludePath(zlib_src.path(""));
+        const zlib_sources = [_][]const u8{
+            "adler32.c", "compress.c", "crc32.c", "deflate.c", "gzclose.c",
+            "gzlib.c", "gzread.c", "gzwrite.c", "infback.c", "inffast.c",
+            "inflate.c", "inftrees.c", "trees.c", "uncompr.c", "zutil.c",
+        };
+        const zlib_flags = [_][]const u8{ "-O2", "-DHAVE_UNISTD_H" };
+        for (zlib_sources) |zsrc| {
+            zlib_mod.addCSourceFile(.{ .file = zlib_src.path(zsrc), .flags = &zlib_flags });
+        }
+        const zlib_lib = b.addLibrary(.{ .name = "z", .root_module = zlib_mod });
+        exe.root_module.linkLibrary(zlib_lib);
+        exe.root_module.addIncludePath(zlib_src.path(""));
 
         // Color management
         exe.root_module.linkSystemLibrary("lcms2", .{});

@@ -221,6 +221,13 @@
         .bignum = .{
             .path = "tools/bignum",
         },
+        // zlib: the compression library, fetched by zig and compiled with
+        // zig cc into the static libz that replaces the system-installed
+        // library (zig-managed dependency).
+        .zlib_src = .{
+            .url = "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz",
+            .hash = "N-V-__8AAB0eQwD-0MdOEBmz7intriBReIsIDNlukNVoNu6o",
+        },
     },
     .paths = .{
         "build.zig",
