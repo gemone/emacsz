@@ -79,6 +79,11 @@ const macos_overrides: []const Override = &.{
     // Linux-only subsystems (GPM console mouse, tree-sitter, the
     // copy_file_range wrapper) and glibc's <malloc.h>.
     .{ .name = "DARWIN_OS", .value = "1" },
+    // kqueue is the macOS file-notification backend (src/kqueue.c is
+    // compiled for macOS); without the feature, filenotify reports "No
+    // file notification package available" and eglot's dynamic
+    // didChangeWatchedFiles registration fails.
+    .{ .name = "HAVE_KQUEUE", .value = "1" },
     .{ .name = "HAVE_GPM" },
     .{ .name = "HAVE_TREE_SITTER" },
     .{ .name = "HAVE_COPY_FILE_RANGE" },
