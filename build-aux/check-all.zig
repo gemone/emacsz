@@ -117,7 +117,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // file".  Spawning from the copies keeps the run self-consistent.
     const temacs_snap = try std.fs.path.join(gpa, &.{ out_dir, "temacs-snapshot" });
     defer gpa.free(temacs_snap);
-    const pdmp_snap = try std.fs.path.join(gpa, &.{ out_dir, "bootstrap-emacs-snapshot.pdmp" });
+    const pdmp_snap = try std.fs.path.join(gpa, &.{ out_dir, "temacs-snapshot.pdmp" });
     defer gpa.free(pdmp_snap);
     const temacs_src = try std.fs.path.join(gpa, &.{ root, "zig-out", "bin", "temacs" });
     defer gpa.free(temacs_src);
