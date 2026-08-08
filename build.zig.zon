@@ -242,6 +242,17 @@
             .url = "https://github.com/mm2/Little-CMS/archive/refs/tags/lcms2.17.tar.gz",
             .hash = "N-V-__8AAFoTpADc6ISFB0o4tCLbYUI8NXZdYGCpgqAlQrsQ",
         },
+        // Tree-sitter: the parsing library backing `treesit-*' (src/treesit.c).
+        // Fetched by zig and built with tree-sitter's own Zig-native
+        // build.zig (0.16 API) into the static libtree-sitter that replaces
+        // the system-installed library. Pinned to the master commit
+        // 308aee0c9 (version 0.27.0): the only tree-sitter revision whose
+        // build.zig targets Zig 0.16 (v0.26.11 and earlier still use the
+        // 0.15 API and fail with Zig 0.16).
+        .tree_sitter = .{
+            .url = "https://github.com/tree-sitter/tree-sitter/archive/308aee0c90b0527b185b3100046781d69935c5c5.tar.gz",
+            .hash = "tree_sitter-0.27.0-Tw2sRyInDABGKEDtbdaXPvz52f0cFYqTIuTKdsHKVA5g",
+        },
     },
     .paths = .{
         "build.zig",

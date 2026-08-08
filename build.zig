@@ -1405,7 +1405,16 @@ pub fn build(b: *std.Build) void {
             exe.root_module.linkSystemLibrary("acl", .{});
 
             // Tree-sitter (HAVE_TREE_SITTER): ts_* symbols from src/treesit.c.
-            exe.root_module.linkSystemLibrary("tree-sitter", .{});
+            // Built from source as a Zig-managed dependency (build.zig.zon
+            // -> tree_sitter URL dep, pinned master commit 308aee0c9 /
+            // version 0.27.0) using tree-sitter's own Zig 0.16 build.zig,
+            // replacing the system-installed library.
+            const tree_sitter = b.dependency("tree_sitter", .{
+                .target = target,
+                .optimize = optimize,
+            });
+            exe.root_module.linkLibrary(tree_sitter.artifact("tree-sitter"));
+            exe.root_module.addIncludePath(tree_sitter.path("lib/include"));
             // ALSA audio (HAVE_ALSA): snd_* symbols from src/sound.c.
             exe.root_module.linkSystemLibrary("asound", .{});
             // Linux console mouse (HAVE_GPM): Gpm_*/gpm_* symbols from src/term.c.
