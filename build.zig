@@ -1827,8 +1827,13 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("mpr", .{});
     }
 
-    // Install the executable
-    b.installArtifact(exe);
+    // Install the executable.  The step is kept as an explicit handle so
+    // the dump tool can depend on "temacs is in place" without pulling in
+    // the whole install step (which would otherwise create an install ->
+    // dump -> install dependency cycle once the default build produces the
+    // dumped image below).
+    const install_temacs = b.addInstallArtifact(exe, .{});
+    b.getInstallStep().dependOn(&install_temacs.step);
 
     // Install the `emacs` wrapper script (build-aux/emacs-launcher.sh) as
     // zig-out/bin/emacs. The wrapper resolves temacs and bootstrap-emacs.pdmp
@@ -1840,10 +1845,10 @@ pub fn build(b: *std.Build) void {
     // above), NOT a generated artifact -- only build-aux/emacs-launcher.sh and
     // build.zig are touched.
     //
-    // Not gated on run_dump: the wrapper is a static script, so the default
-    // `zig build` stays light (dump still needs bootstrap data + config.h).
-    // The wrapper errors clearly if the pdmp is absent -- the user runs
-    // `zig build dump` first.
+    // The wrapper is a static script; the default `zig build` produces the
+    // dumped image (bootstrap-emacs.pdmp) and the runtime loaddefs via the
+    // dump-compiled chain wired into the install step below, so a plain
+    // `zig build` leaves a fully usable editor.
     //
     // Exec-bit defense: 0.16.0's InstallFile step has no .mode option (it
     // delegates to Io.Dir.updateFile with default options, which copies the
@@ -1931,11 +1936,11 @@ pub fn build(b: *std.Build) void {
     const run_dump = b.addRunArtifact(bootstrap_dump_tool);
     run_dump.setCwd(b.path("."));
     // The dump tool and every downstream checker spawn
-    // ./zig-out/bin/temacs, so the install must happen before them.
-    // (Only the named "dump" step carried this dependency before,
+    // ./zig-out/bin/temacs, so the executable install must happen before
+    // them.  (Only the named "dump" step carried this dependency before,
     // which worked locally where a stale temacs existed but failed on
     // a clean checkout with FileNotFound.)
-    run_dump.step.dependOn(b.getInstallStep());
+    run_dump.step.dependOn(&install_temacs.step);
     // The dumped image loads the charset maps and the unicode script
     // tables from the source tree; both are gitignored generated data,
     // so a clean checkout must generate them before the dump runs.
@@ -2058,6 +2063,12 @@ pub fn build(b: *std.Build) void {
     run_dump_compiled.step.dependOn(&run_compile_lisp.step);
     const dump_compiled_step = b.step("dump-compiled", "Re-dump bootstrap-emacs.pdmp with compiled lisp");
     dump_compiled_step.dependOn(&run_dump_compiled.step);
+    // The default `zig build` must produce a usable emacs, not just
+    // temacs + the wrapper: wire the dumped image (bootstrap-emacs.pdmp)
+    // and the runtime loaddefs files into the install step.  The dump
+    // chain depends on install_temacs (not the whole install step), so
+    // there is no cycle.
+    b.getInstallStep().dependOn(dump_compiled_step);
 
     // Final loaddefs generation for check/check-all: dump-compiled
     // scrubbed the loaddefs, and suites (require 'foo-loaddefs) at
