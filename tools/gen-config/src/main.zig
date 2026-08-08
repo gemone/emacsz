@@ -11,11 +11,12 @@
 //
 // Run with cwd = repo root; the template and answer files are passed as
 // argv[1] and argv[2] (relative to cwd) so the build tracks their content.
-// An optional argv[3] target tag ("linux", "musl", "windows") applies
-// per-target overrides on top of the committed Linux values, so cross
-// builds get a config matching what they can actually link. The
-// generated config.h body is written to STDOUT; the consumer captures it
-// via captureStdOut and lands it in the zig-cache.
+// An optional argv[3] target tag ("linux", "musl", "windows", "macos")
+// applies per-target overrides on top of the committed Linux values, so
+// cross builds get a config matching what they can actually link.  For
+// "macos" an extra argv[4] carries the canonical target triple used for
+// EMACS_CONFIGURATION.  The generated config.h body is written to STDOUT;
+// the consumer captures it via captureStdOut and lands it in the zig-cache.
 const std = @import("std");
 
 // Optional system-library features disabled for targets where the
@@ -165,6 +166,14 @@ const macos_overrides: []const Override = &.{
     // Linux-only ifr_netmask member; process.c then falls back to
     // reading the address union directly.
     .{ .name = "HAVE_STRUCT_IFREQ_IFR_NETMASK" },
+    // The committed Linux answer data must not leak into a darwin build:
+    // system-type drives the Lisp platform branches (files.el, startup.el,
+    // dired, ...), and the module suffixes follow upstream configure.ac's
+    // darwin case.  EMACS_CONFIGURATION is set separately from the argv
+    // triple (below) so the arch matches the actual build target.
+    .{ .name = "SYSTEM_TYPE", .value = "\"darwin\"" },
+    .{ .name = "DYNAMIC_LIB_SUFFIX", .value = "\".dylib\"" },
+    .{ .name = "DYNAMIC_LIB_SECONDARY_SUFFIX", .value = "\".so\"" },
 };
 
 // Windows additionally drops the POSIX-only subsystems that need mingw
@@ -340,6 +349,14 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             for (list) |ov| {
                 try config_values.put(ov.name, ov.value);
             }
+        }
+        // The darwin build reports its own canonical configuration string
+        // (e.g. aarch64-apple-darwin), passed by build.zig as argv[4]; the
+        // committed Linux value must not leak into the macOS image.
+        if (std.mem.eql(u8, tag, "macos")) {
+            const triple = it.next() orelse return error.MissingTripleArg;
+            const quoted = try std.fmt.allocPrint(a, "\"{s}\"", .{triple});
+            try config_values.put("EMACS_CONFIGURATION", quoted);
         }
     }
 
