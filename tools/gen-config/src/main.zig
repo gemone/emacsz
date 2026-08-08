@@ -26,14 +26,9 @@ const Override = struct { name: []const u8, value: []const u8 = "" };
 
 const musl_overrides: []const Override = &.{
     .{ .name = "HAVE_GNUTLS" },
-    .{ .name = "HAVE_LIBXML2" },
-    .{ .name = "HAVE_LCMS2" },
-    .{ .name = "HAVE_SQLITE3" },
-    .{ .name = "HAVE_TREE_SITTER" },
     .{ .name = "HAVE_ALSA" },
     .{ .name = "HAVE_GPM" },
     .{ .name = "HAVE_DBUS" },
-    .{ .name = "HAVE_ZLIB" },
     // glibc-only features absent from musl; TERMINFO is dropped so
     // src/termcap.c (compiled via TERMCAP_OBJ) supplies the terminal
     // capabilities instead of ncurses; ACLs stay with the Zig package.
@@ -76,8 +71,9 @@ const macos_overrides: []const Override = &.{
     .{ .name = "HAVE_STRUCT_STAT_ST_ATIMESPEC_TV_NSEC", .value = "1" },
     // DARWIN_OS selects the Mach-O subr section (__DATA,subrs) and the
     // darwin-specific code paths; the committed Linux values enable
-    // Linux-only subsystems (GPM console mouse, tree-sitter, the
-    // copy_file_range wrapper) and glibc's <malloc.h>.
+    // Linux-only subsystems (GPM console mouse, the copy_file_range
+    // wrapper) and glibc's <malloc.h>; tree-sitter is vendored and
+    // enabled on every platform.
     .{ .name = "DARWIN_OS", .value = "1" },
     // kqueue is the macOS file-notification backend (src/kqueue.c is
     // compiled for macOS); without the feature, filenotify reports "No
@@ -85,7 +81,6 @@ const macos_overrides: []const Override = &.{
     // didChangeWatchedFiles registration fails.
     .{ .name = "HAVE_KQUEUE", .value = "1" },
     .{ .name = "HAVE_GPM" },
-    .{ .name = "HAVE_TREE_SITTER" },
     .{ .name = "HAVE_COPY_FILE_RANGE" },
     .{ .name = "HAVE_MALLOC_H" },
     .{ .name = "HAVE_TIMERFD" },
@@ -116,8 +111,6 @@ const macos_overrides: []const Override = &.{
     .{ .name = "HAVE_MACHINE_SOUNDCARD_H" },
     .{ .name = "HAVE_SOUNDCARD_H" },
     .{ .name = "HAVE_SOUND" },
-    // macOS's sqlite3 is built without SQLITE_ENABLE_LOAD_EXTENSION.
-    .{ .name = "HAVE_SQLITE3_LOAD_EXTENSION" },
     // sys/personality.h is Linux-only; the ASLR personality() call is
     // not available on Darwin.
     .{ .name = "HAVE_PERSONALITY_ADDR_NO_RANDOMIZE" },
@@ -193,14 +186,9 @@ const macos_overrides: []const Override = &.{
 // the plain getc path (mingw has no getc_unlocked).
 const windows_overrides: []const Override = &.{
     .{ .name = "HAVE_GNUTLS" },
-    .{ .name = "HAVE_LIBXML2" },
-    .{ .name = "HAVE_LCMS2" },
-    .{ .name = "HAVE_SQLITE3" },
-    .{ .name = "HAVE_TREE_SITTER" },
     .{ .name = "HAVE_ALSA" },
     .{ .name = "HAVE_GPM" },
     .{ .name = "HAVE_DBUS" },
-    .{ .name = "HAVE_ZLIB" },
     .{ .name = "WINDOWSNT", .value = "1" },
     .{ .name = "DOS_NT", .value = "1" },
     .{ .name = "HAVE_BCRYPT_H", .value = "1" },
