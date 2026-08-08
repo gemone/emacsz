@@ -40,7 +40,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     const a = std.heap.smp_allocator;
     const cwd = std.Io.Dir.cwd();
 
-    var arg_it = std.process.Args.Iterator.init(minimal.args);
+    var arg_it = try std.process.Args.Iterator.initAllocator(minimal.args, a);
     defer arg_it.deinit();
     _ = arg_it.next(); // argv[0]
     const target_tag = arg_it.next() orelse hostTag();
