@@ -61,14 +61,7 @@ jobs:
             pkg-config \
             libgnutls28-dev \
             libncurses-dev \
-            libxml2-dev \
-            zlib1g-dev \
-            liblcms2-dev \
-            libsqlite3-dev \
-            libgmp-dev \
             libacl1-dev \
-            libselinux1-dev \
-            libtree-sitter-dev \
             libasound2-dev \
             libgpm-dev \
             libdbus-1-dev
@@ -111,12 +104,7 @@ jobs:
       - name: Install host headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libxml2-dev \
-            libgnutls28-dev \
-            liblcms2-dev \
-            libsqlite3-dev \
-            libgmp-dev
+          sudo apt-get install -y libgnutls28-dev
 
       - name: Cross-compile check
         shell: bash
@@ -178,14 +166,7 @@ jobs:
             pkg-config \
             libgnutls28-dev \
             libncurses-dev \
-            libxml2-dev \
-            zlib1g-dev \
-            liblcms2-dev \
-            libsqlite3-dev \
-            libgmp-dev \
             libacl1-dev \
-            libselinux1-dev \
-            libtree-sitter-dev \
             libasound2-dev \
             libgpm-dev \
             libdbus-1-dev

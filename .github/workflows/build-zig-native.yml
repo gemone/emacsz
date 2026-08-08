@@ -65,26 +65,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             pkg-config \
-            autoconf automake \
-            texinfo \
             libgnutls28-dev \
             libncurses5-dev \
-            libxml2-dev \
-            zlib1g-dev \
-            liblcms2-dev \
-            libsqlite3-dev \
-            libgmp-dev \
             libacl1-dev \
-            libselinux1-dev \
-            libtree-sitter-dev \
             libasound2-dev \
             libgpm-dev \
             libdbus-1-dev
-
-      - name: Install dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install pkg-config autoconf automake gnutls libxml2 little-cms2 sqlite3
 
       # Windows now builds the full executable (w32 console modules are
       # wired in); the cross platform zig package layer is still covered
