@@ -1347,8 +1347,37 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkLibrary(zlib_lib);
         exe.root_module.addIncludePath(zlib_src.path(""));
 
-        // Color management
-        exe.root_module.linkSystemLibrary("lcms2", .{});
+        // Color management: Little CMS built from source as a Zig-managed
+        // dependency (build.zig.zon -> lcms2_src), replacing the system
+        // liblcms2.  Own module so Emacs config flags do not leak in.
+        const lcms2_src = b.dependency("lcms2_src", .{});
+        const lcms2_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        lcms2_mod.addIncludePath(lcms2_src.path("src"));
+        lcms2_mod.addIncludePath(lcms2_src.path("include"));
+        const lcms2_sources = [_][]const u8{
+            "src/cmsalpha.c", "src/cmscam02.c", "src/cmscgats.c", "src/cmscnvrt.c",
+            "src/cmserr.c", "src/cmsgamma.c", "src/cmsgmt.c", "src/cmshalf.c",
+            "src/cmsintrp.c", "src/cmsio0.c", "src/cmsio1.c", "src/cmslut.c",
+            "src/cmsmd5.c", "src/cmsmtrx.c", "src/cmsnamed.c", "src/cmsopt.c",
+            "src/cmspack.c", "src/cmspcs.c", "src/cmsplugin.c", "src/cmsps2.c",
+            "src/cmssamp.c", "src/cmssm.c", "src/cmstypes.c", "src/cmsvirt.c",
+            "src/cmswtpnt.c", "src/cmsxform.c",
+        };
+        const lcms2_flags = [_][]const u8{ "-O2" };
+        for (lcms2_sources) |lcsrc| {
+            lcms2_mod.addCSourceFile(.{
+                .file = lcms2_src.path(lcsrc),
+                .flags = &lcms2_flags,
+            });
+        }
+        const lcms2_lib = b.addLibrary(.{ .name = "lcms2", .root_module = lcms2_mod });
+        exe.root_module.linkLibrary(lcms2_lib);
+        exe.root_module.addIncludePath(lcms2_src.path("src"));
+        exe.root_module.addIncludePath(lcms2_src.path("include"));
 
         // SQLite database: the amalgamation built from source as a
         // Zig-managed dependency (build.zig.zon -> sqlite_src), replacing

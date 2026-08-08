@@ -235,6 +235,13 @@
             .url = "https://sqlite.org/2025/sqlite-autoconf-3500200.tar.gz",
             .hash = "N-V-__8AAOPlvAALuSJh_gqzcnf5pdEL2fLS_zEi8TPxQYDJ",
         },
+        // Little CMS: the color-management library, fetched by zig and
+        // compiled with zig cc into the static liblcms2 that replaces the
+        // system-installed library.
+        .lcms2_src = .{
+            .url = "https://github.com/mm2/Little-CMS/archive/refs/tags/lcms2.17.tar.gz",
+            .hash = "N-V-__8AAFoTpADc6ISFB0o4tCLbYUI8NXZdYGCpgqAlQrsQ",
+        },
     },
     .paths = .{
         "build.zig",
