@@ -107,12 +107,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     const out_dir = try std.fs.path.join(gpa, &.{ root, "zig-out", "check-all" });
     defer gpa.free(out_dir);
     {
-        const out_dir_z = try std.fmt.allocPrintSentinel(gpa, "{s}", .{out_dir}, 0);
-        defer gpa.free(out_dir_z);
-        const rc = std.os.linux.mkdir(out_dir_z, 0o755);
-        const e: c_int = @intCast(-@as(isize, @bitCast(rc)));
-        if (@as(isize, @bitCast(rc)) < 0 and e != 17) // EEXIST
-            return error.MkdirFailed;
+    // std.os.linux.mkdir is Linux-only; on macOS it silently does
+    // nothing, so the per-suite logs were never written.  Use the
+    // cross-platform Io API instead.
+    cwd.createDir(io, out_dir, @enumFromInt(0o755)) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
     }
 
     var pass: usize = 0;
