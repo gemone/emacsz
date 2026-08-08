@@ -426,6 +426,13 @@ pub fn build(b: *std.Build) void {
     // modules_enabled is false, so emacs-module.c is not compiled; the
     // resulting globals.h externs are then unused-but-harmless.)
     if (enable_modules) run_mdf.addArg("emacs-module.c");
+    // compz.c (when -Dnative-comp-zig=true) carries the ZELN DEFUNs
+    // (Scomp_z_load_zeln, Scomp_z_write_spike_zunit) and the DEFVAR_LISP
+    // Vzeln_abi_hash, whose slots make-docfile must materialize in
+    // globals.h or the compile fails with "no member f_Vzeln_abi_hash".
+    // Scanned ONLY when the flag is on so the off-path globals.h stays
+    // byte-identical (zero footprint, plan section 0 pillar 3).
+    if (enable_native_comp_zig) run_mdf.addArg("compz.c");
     const globals_h = run_mdf.captureStdOut(.{ .basename = "globals.h" });
 
     const gen_globals_step = b.step("generate-globals", "Generate src/globals.h via make-docfile");
@@ -2361,6 +2368,64 @@ pub fn build(b: *std.Build) void {
             "Build the sample dynamic module (mod-test.so) for emacs-module-tests",
         );
         modules_test_step.dependOn(&install_mod_test.step);
+    }
+
+    // Phase-2.1 native-comp Zig path (M0 spike, plan §6).  Opt-in: only
+    // when -Dnative-comp-zig=true AND a native glibc-Linux build (M0 is
+    // glibc-Linux only; the .zeln is a Linux ELF .so).  Produces
+    // zig-out/bin/test-spike.zeln via zunit -> .ll -> `zig cc -shared`,
+    // and proves the full C<->Zig contract (plan §8).  OFF by default =>
+    // zero footprint (compz.c is not even compiled; see line 1198).
+    if (enable_native_comp_zig and is_native_target and
+        target.result.os.tag == .linux and !is_musl)
+    {
+        // The zeln-compile tool: a host Zig executable that parses a
+        // zunit, emits the Tier-0 .ll, and drives `zig cc -shared`.
+        // Mirrors compile_lisp_tool (an addExecutable over a tools/
+        // package root, targeting the build host).  Built whenever the
+        // flag is on so `zig build -Dnative-comp-zig=true` produces it.
+        const zeln_compile_dep = b.dependency("zeln_compile", .{});
+        const zeln_compile_tool = b.addExecutable(.{
+            .name = "zeln-compile",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = zeln_compile_dep.path("src/main.zig"),
+            }),
+        });
+
+        // Step 1: run the dumped emacs to serialize the spike zunit +
+        // manifest (comp-z-write-spike-zunit is defined in src/compz.c).
+        // The dumped emacs (bootstrap-emacs.pdmp from dump-compiled) and
+        // the runtime loaddefs must both be in place; chmod_emacs_wrapper
+        // ensures ./zig-out/bin/emacs is executable.  Output lands in
+        // zig-out/bin (a real directory; zig-out/etc is a symlink to the
+        // source tree and must not be polluted by spike artifacts).
+        const spike_ser = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs", "--batch", "--eval",
+            "(comp-z-write-spike-zunit \"zig-out/bin/zeln-spike\")",
+        });
+        spike_ser.setCwd(b.path("."));
+        spike_ser.step.dependOn(&run_dump_compiled.step);
+        spike_ser.step.dependOn(&run_loaddefs_final.step);
+        spike_ser.step.dependOn(&chmod_emacs_wrapper.step);
+
+        // Step 2: run zeln-compile over the zunit -> .ll -> .zeln.
+        const spike_compile = b.addRunArtifact(zeln_compile_tool);
+        spike_compile.setCwd(b.path("."));
+        spike_compile.addArg("zig-out/bin/zeln-spike.zunit");
+        spike_compile.addArg("zig-out/bin/zeln-spike.manifest");
+        spike_compile.addArg("zig-out/bin/test-spike.zeln");
+        spike_compile.step.dependOn(&spike_ser.step);
+
+        // test-spike.zeln now lives under zig-out/bin (a real dir); no
+        // separate install step is needed.  The step is the single handle
+        // the M0 proof / CI gate (plan §8) drives.
+        const zeln_spike_step = b.step(
+            "zeln-compile-spike",
+            "M0 spike: build test-spike.zeln (zunit -> .ll -> .zeln)",
+        );
+        zeln_spike_step.dependOn(&spike_compile.step);
     }
 
     // Help step

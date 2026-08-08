@@ -349,6 +349,11 @@
 #undef HAVE_MNTENT_H
 #undef HAVE_MODULES
 #undef HAVE_NATIVE_COMP
+/* HAVE_NATIVE_COMP_ZIG: the parallel Zig/LLVM native-comp path (.zeln).
+   NOT a config_values auto-on -- it is gated purely by the build switch
+   -Dnative-comp-zig (addCMacro in build.zig). Present here only so the
+   off-path config.h renders it as a clean undef comment. plan section 2.  */
+#undef HAVE_NATIVE_COMP_ZIG
 #undef HAVE_NATIVE_IMAGE_API
 #undef HAVE_NEARLY_WORKING_FCHMODAT
 #undef HAVE_NEARLY_WORKING_UTIMENSAT
@@ -779,6 +784,10 @@
 #undef subprocesses
 #undef typeof
 #undef vfork
+/* ZELN_ABI_VERSION (native-comp Zig path): version tag baked into the
+   .zeln freloc hash (plan section 5.2). Always defined in config.h (a
+   version string); only consulted by compz.c under HAVE_NATIVE_COMP_ZIG.  */
+#undef ZELN_ABI_VERSION
 
 /* Gnulib boilerplate ported from the autoconf-generated config.h
    (see m4/extern-inline.m4): extern-inline semantics, the OS X ctype
