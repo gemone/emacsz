@@ -18,6 +18,7 @@ on:
       - 'build-aux/**'
       - 'etc/**'
       - 'test/**'
+  workflow_dispatch:
       - 'lisp/**'
       - '.github/workflows/zig-verify.yml'
   pull_request:
@@ -70,6 +71,7 @@ jobs:
         run: zig build
 
       - name: Built-in ert tests
+        timeout-minutes: 30
         run: zig build check
 
   # Cross-compile verification.  Windows and musl now link fully (w32
