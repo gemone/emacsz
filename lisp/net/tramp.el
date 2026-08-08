@@ -122,7 +122,6 @@
 
 (require 'tramp-compat)
 (require 'tramp-message)
-(require 'tramp-integration)
 (require 'trampver)
 
 ;;; User Customizable Internal Variables:
@@ -597,6 +596,10 @@ host runs a restricted shell, it shall be added to this list, too."
 	;; OpenSUSE.
 	"ipv6-localhost" "ipv6-loopback")
   "List of host names which are regarded as local host.")
+
+;; tramp-integration's top-level forms consult `tramp-local-host-names'
+;; on macOS, so it must load after the variable above is defined.
+(require 'tramp-integration)
 
 ;;;###tramp-autoload
 (defcustom tramp-local-host-regexp
