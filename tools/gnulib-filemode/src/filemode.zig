@@ -1,6 +1,6 @@
 // Native Zig implementation of gnulib's lib/filemode.c: strmode and
 // filemodestring turn a file mode into an ls-style string like
-// "-rwxr-xr-x". No libc call, no std import.
+// "-rwxr-xr-x". No libc call.
 //
 // Only st_mode is consulted. The extra S_TYPEISSEM/S_TYPEISMQ/
 // S_TYPEISSHM/S_TYPEISTMO type letters (F/Q/S/T) are 0 on Linux
@@ -8,7 +8,24 @@
 // strmode (statp->st_mode) on this target.
 //
 // Stat is glibc x86_64's struct stat layout; the comptime check below
-// pins st_mode's offset so a wrong layout fails at compile time.
+// pins st_mode's offset so a wrong layout fails at compile time.  The
+// per-target reinterpret casts below mirror the layouts the build can
+// actually link (Darwin, aarch64 Linux, mingw), so only the mode field
+// is read no matter which struct stat the C caller passes.
+
+const std = @import("std");
+const builtin = @import("builtin");
+
+fn isDarwin(tag: std.Target.Os.Tag) bool {
+    return switch (tag) {
+        .macos, .ios, .tvos, .watchos, .visionos, .driverkit, .maccatalyst => true,
+        else => false,
+    };
+}
+
+fn isWindows(tag: std.Target.Os.Tag) bool {
+    return tag == .windows;
+}
 
 const Stat = extern struct {
     st_dev: u64,
@@ -31,6 +48,92 @@ const Stat = extern struct {
 comptime {
     if (@offsetOf(Stat, "st_mode") != 24)
         @compileError("struct stat layout mismatch: st_mode expected at offset 24");
+}
+
+// Darwin struct stat (mode_t is u16 and sits at offset 4, before the
+// 64-bit st_ino).  Layout taken from sys/stat.h (any-darwin-any).
+const StatDarwin = extern struct {
+    st_dev: i32,
+    st_mode: u16,
+    st_nlink: u16,
+    st_ino: u64,
+    st_uid: u32,
+    st_gid: u32,
+    st_rdev: i32,
+    st_atimespec: [2]i64,
+    st_mtimespec: [2]i64,
+    st_ctimespec: [2]i64,
+    st_birthtimespec: [2]i64,
+    st_size: i64,
+    st_blocks: i64,
+    st_blksize: i32,
+    st_flags: u32,
+    st_gen: u32,
+    st_lspare: i32,
+    st_qspare: [2]i64,
+};
+
+comptime {
+    if (@offsetOf(StatDarwin, "st_mode") != 4)
+        @compileError("darwin struct stat layout mismatch: st_mode expected at offset 4");
+}
+
+fn darwinStat(st: *const Stat) *const StatDarwin {
+    return @ptrCast(st);
+}
+
+// glibc aarch64 struct stat (mode_t u32 at offset 16, followed by the
+// 32-bit st_nlink; st_ino/st_dev are 64-bit).
+const StatLinuxAarch64 = extern struct {
+    st_dev: u64,
+    st_ino: u64,
+    st_mode: u32,
+    st_nlink: u32,
+    st_uid: u32,
+    st_gid: u32,
+    st_rdev: u64,
+    pad0: u64,
+    st_size: i64,
+    st_blksize: i32,
+    pad1: i32,
+    st_blocks: i64,
+    st_atim: [2]i64,
+    st_mtim: [2]i64,
+    st_ctim: [2]i64,
+    reserved: [2]u32,
+};
+
+comptime {
+    if (@offsetOf(StatLinuxAarch64, "st_mode") != 16)
+        @compileError("aarch64 linux struct stat layout mismatch: st_mode expected at offset 16");
+}
+
+fn linuxAarch64Stat(st: *const Stat) *const StatLinuxAarch64 {
+    return @ptrCast(st);
+}
+
+// mingw-w64 struct stat (48 bytes): mode_t is u16 at offset 6.
+const StatWindows = extern struct {
+    st_dev: u32,
+    st_ino: u16,
+    st_mode: u16,
+    st_nlink: i16,
+    st_uid: i16,
+    st_gid: i16,
+    st_rdev: u32,
+    st_size: i32,
+    st_atime: i64,
+    st_mtime: i64,
+    st_ctime: i64,
+};
+
+comptime {
+    if (@offsetOf(StatWindows, "st_mode") != 6 or @sizeOf(StatWindows) != 48)
+        @compileError("mingw struct stat layout mismatch");
+}
+
+fn windowsStat(st: *const Stat) *const StatWindows {
+    return @ptrCast(st);
 }
 
 // File-type bits (POSIX/glibc S_IFMT 0170000 with S_IFxxx values).
@@ -99,5 +202,13 @@ export fn strmode(mode: u32, str: [*]u8) void {
 
 // Fill STR with the mode string of STATP (12 bytes, NUL-terminated).
 export fn filemodestring(statp: *const Stat, str: [*]u8) void {
-    strmode(statp.st_mode, str);
+    if (comptime isDarwin(builtin.os.tag)) {
+        strmode(darwinStat(statp).st_mode, str);
+    } else if (comptime isWindows(builtin.os.tag)) {
+        strmode(windowsStat(statp).st_mode, str);
+    } else if (comptime builtin.cpu.arch == .aarch64) {
+        strmode(linuxAarch64Stat(statp).st_mode, str);
+    } else {
+        strmode(statp.st_mode, str);
+    }
 }
