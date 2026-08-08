@@ -253,6 +253,16 @@
             .url = "https://github.com/tree-sitter/tree-sitter/archive/308aee0c90b0527b185b3100046781d69935c5c5.tar.gz",
             .hash = "tree_sitter-0.27.0-Tw2sRyInDABGKEDtbdaXPvz52f0cFYqTIuTKdsHKVA5g",
         },
+        // libxml2: the XML parser backing `libxml-parse-xml-region' and
+        // `libxml-parse-html-region' (src/xml.c). Fetched by zig and
+        // compiled with zig cc into the static libxml2 that replaces the
+        // system-installed library. The configure-generated
+        // include/libxml/xmlversion.h is produced from the vendored
+        // template via zig's addConfigHeader (autoconf @VAR@ style).
+        .xml2_src = .{
+            .url = "https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.3.tar.xz",
+            .hash = "N-V-__8AAGkIggL0prR3gvyXGozgwaS9Gmq1QoJmCjqqwEnB",
+        },
     },
     .paths = .{
         "build.zig",

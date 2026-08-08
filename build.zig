@@ -325,7 +325,7 @@ pub fn build(b: *std.Build) void {
     // Qaccess/Qcreate/... (inotify.c, 21 DEFSYMs) and the compile fails with
     // "use of undeclared identifier". dynlib.c has zero DEFSYMs but is added
     // for parity with the compile gate.
-    if (target.result.os.tag == .linux) {
+    if (target.result.abi != .musl and target.result.os.tag == .linux) {
         const linux_doc_sources = [_][]const u8{ "dbusbind.c", "dynlib.c", "inotify.c" };
         for (linux_doc_sources) |name| run_mdf.addArg(name);
     }
@@ -1118,6 +1118,13 @@ pub fn build(b: *std.Build) void {
                 .file = b.path("src/kqueue.c"),
                 .flags = base_flags,
             });
+            // dynlib.c (dlopen wrapper) backs treesit language loading and
+            // module support on POSIX systems; the POSIX branch is selected
+            // by HAVE_UNISTD_H and uses dlopen/dlsym from libc.
+            exe.root_module.addCSourceFile(.{
+                .file = b.path("src/dynlib.c"),
+                .flags = base_flags,
+            });
         }
 
         // Linux-only sources. Mirrors the kqueue gate above but keyed on
@@ -1301,6 +1308,7 @@ pub fn build(b: *std.Build) void {
             "src/w32proc.c",
             "src/w32reg.c",
             "src/w32dwrite.c",
+            "src/dynlib.c",
             "src/w32-stubs.c",
         }) |w32src| {
             exe.root_module.addCSourceFile(.{
@@ -1313,121 +1321,253 @@ pub fn build(b: *std.Build) void {
     // Link system libraries (phase 2: based on src/Makefile)
     exe.root_module.linkSystemLibrary("m", .{});
 
+    // -------------------------------------------------------------------
+    // Zig-managed third-party libraries.  Every vendored dependency is
+    // cross-platform, so it is built from source into a static lib linked
+    // on all targets (macOS, Linux, musl and Windows) and the matching
+    // config.h feature flag is enabled everywhere (see tools/gen-config);
+    // only genuinely platform-specific libraries stay behind guards.
+
+    // XML parsing: libxml2 built from source as a Zig-managed dependency
+    // (build.zig.zon -> xml2_src URL dep), replacing the system-installed
+    // library. The two configure-generated headers (the public
+    // include/libxml/xmlversion.h and the private config.h) are produced
+    // from the vendored templates by zig's addConfigHeader (autoconf
+    // @VAR@ / #undef styles); optional features Emacs never calls (HTTP,
+    // catalog, C14N, debug, ICU, iconv, zlib/lzma compression) are
+    // compiled out. On Windows the pthread/unistd/dlfcn/mmap features are
+    // dropped so libxml2 takes its win32 code paths.
+    const xml2_src = b.dependency("xml2_src", .{});
+    const xml2_win = target.result.os.tag == .windows;
+    const xml2_cfg = b.addConfigHeader(.{
+        .style = .{ .autoconf_at = xml2_src.path("include/libxml/xmlversion.h.in") },
+        .include_path = "libxml/xmlversion.h",
+    }, .{
+        .VERSION = "2.15.3",
+        .LIBXML_VERSION_NUMBER = "21503",
+        .LIBXML_VERSION_EXTRA = "",
+        .MODULE_EXTENSION = ".so",
+        .WITH_THREADS = 1,
+        // Windows keeps per-thread allocation on: with C11 TLS (USE_TLS)
+        // and per-thread allocation off, globals.c's DllMain cleanup
+        // references the undeclared `globalkey' (upstream 2.15.x quirk).
+        .WITH_THREAD_ALLOC = if (xml2_win) @as(i32, 1) else @as(i32, 0),
+        .WITH_OUTPUT = 1,
+        .WITH_PUSH = 1,
+        .WITH_READER = 1,
+        .WITH_PATTERN = 1,
+        .WITH_WRITER = 1,
+        .WITH_SAX1 = 1,
+        .WITH_HTTP = 0,
+        .WITH_VALID = 1,
+        .WITH_HTML = 1,
+        .WITH_C14N = 0,
+        .WITH_CATALOG = 0,
+        .WITH_XPATH = 1,
+        .WITH_XPTR = 1,
+        .WITH_XINCLUDE = 1,
+        .WITH_ICONV = 0,
+        .WITH_ICU = 0,
+        .WITH_ISO8859X = 1,
+        .WITH_DEBUG = 0,
+        .WITH_REGEXPS = 1,
+        .WITH_RELAXNG = 1,
+        .WITH_SCHEMAS = 1,
+        .WITH_SCHEMATRON = 1,
+        .WITH_MODULES = 0,
+        .WITH_ZLIB = 0,
+    });
+    const xml2_config_cfg = b.addConfigHeader(.{
+        .style = .{ .autoconf_undef = xml2_src.path("config.h.in") },
+        .include_path = "config.h",
+    }, .{
+        // getentropy is a glibc/POSIX-2024 API; musl and Windows fall back
+        // to the time-based seed in dict.c's xmlInitRandom.
+        .HAVE_DECL_GETENTROPY = if (xml2_win or is_musl) null else @as(?i32, 1),
+        .HAVE_DECL_GLOB = null,
+        .HAVE_DECL_MMAP = if (xml2_win) null else @as(?i32, 1),
+        .HAVE_DLFCN_H = if (xml2_win) null else @as(?i32, 1),
+        .HAVE_DLOPEN = null,
+        .HAVE_FUNC_ATTRIBUTE_DESTRUCTOR = 1,
+        .HAVE_INTTYPES_H = 1,
+        .HAVE_LIBHISTORY = null,
+        .HAVE_LIBREADLINE = null,
+        .HAVE_PTHREAD_H = if (xml2_win) null else @as(?i32, 1),
+        .HAVE_SHLLOAD = null,
+        .HAVE_STDINT_H = 1,
+        .HAVE_STDIO_H = 1,
+        .HAVE_STDLIB_H = 1,
+        .HAVE_STRINGS_H = 1,
+        .HAVE_STRING_H = 1,
+        .HAVE_SYS_STAT_H = 1,
+        .HAVE_SYS_TYPES_H = 1,
+        .HAVE_UNISTD_H = if (xml2_win) null else @as(?i32, 1),
+        .HAVE_ZLIB_H = null,
+        .LT_OBJDIR = "",
+        .PACKAGE = "libxml2",
+        .PACKAGE_BUGREPORT = "",
+        .PACKAGE_NAME = "libxml2",
+        .PACKAGE_STRING = "libxml2 2.15.3",
+        .PACKAGE_TARNAME = "libxml2",
+        .PACKAGE_URL = "",
+        .PACKAGE_VERSION = "2.15.3",
+        .STDC_HEADERS = 1,
+        .VERSION = "2.15.3",
+        .XML_SYSCONFDIR = "/etc",
+        .XML_THREAD_LOCAL = ._Thread_local,
+    });
+    const xml2_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    xml2_mod.addConfigHeader(xml2_cfg);
+    xml2_mod.addConfigHeader(xml2_config_cfg);
+    xml2_mod.addIncludePath(xml2_src.path(""));
+    xml2_mod.addIncludePath(xml2_src.path("include"));
+    const xml2_files = [_][]const u8{
+        "HTMLparser.c", "HTMLtree.c", "SAX2.c", "buf.c", "chvalid.c",
+        "dict.c", "encoding.c", "entities.c", "error.c", "globals.c",
+        "hash.c", "list.c", "parser.c", "parserInternals.c",
+        "pattern.c", "relaxng.c", "schematron.c", "threads.c",
+        "tree.c", "uri.c", "valid.c", "xinclude.c", "xlink.c",
+        "xmlIO.c", "xmlmemory.c", "xmlreader.c", "xmlregexp.c",
+        "xmlsave.c", "xmlschemas.c", "xmlschemastypes.c",
+        "xmlstring.c", "xmlwriter.c", "xpath.c", "xpointer.c",
+    };
+    xml2_mod.addCSourceFiles(.{
+        .root = xml2_src.path("."),
+        .files = &xml2_files,
+        .flags = &.{ "-std=c11", "-D_FILE_OFFSET_BITS=64", "-D_LARGEFILE_SOURCE" },
+    });
+    const xml2_lib = b.addLibrary(.{ .name = "xml2", .root_module = xml2_mod });
+    exe.root_module.linkLibrary(xml2_lib);
+    exe.root_module.addConfigHeader(xml2_cfg);
+    exe.root_module.addIncludePath(xml2_src.path("include"));
+
+    // Compression: zlib built from source as a Zig-managed dependency
+    // (build.zig.zon -> zlib_src URL dep), replacing the system libz.
+    // Compiled in its own module so the Emacs config.h flags never
+    // leak into zlib, and exported as a static libz for the exe.
+    const zlib_src = b.dependency("zlib_src", .{});
+    const zlib_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    zlib_mod.addIncludePath(zlib_src.path(""));
+    const zlib_sources = [_][]const u8{
+        "adler32.c", "compress.c", "crc32.c", "deflate.c", "gzclose.c",
+        "gzlib.c", "gzread.c", "gzwrite.c", "infback.c", "inffast.c",
+        "inflate.c", "inftrees.c", "trees.c", "uncompr.c", "zutil.c",
+    };
+    const zlib_flags = [_][]const u8{ "-O2", "-DHAVE_UNISTD_H" };
+    for (zlib_sources) |zsrc| {
+        zlib_mod.addCSourceFile(.{ .file = zlib_src.path(zsrc), .flags = &zlib_flags });
+    }
+    const zlib_lib = b.addLibrary(.{ .name = "z", .root_module = zlib_mod });
+    exe.root_module.linkLibrary(zlib_lib);
+    exe.root_module.addIncludePath(zlib_src.path(""));
+
+    // Color management: Little CMS built from source as a Zig-managed
+    // dependency (build.zig.zon -> lcms2_src), replacing the system
+    // liblcms2.  Own module so Emacs config flags do not leak in.
+    const lcms2_src = b.dependency("lcms2_src", .{});
+    const lcms2_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    lcms2_mod.addIncludePath(lcms2_src.path("src"));
+    lcms2_mod.addIncludePath(lcms2_src.path("include"));
+    const lcms2_sources = [_][]const u8{
+        "src/cmsalpha.c", "src/cmscam02.c", "src/cmscgats.c", "src/cmscnvrt.c",
+        "src/cmserr.c", "src/cmsgamma.c", "src/cmsgmt.c", "src/cmshalf.c",
+        "src/cmsintrp.c", "src/cmsio0.c", "src/cmsio1.c", "src/cmslut.c",
+        "src/cmsmd5.c", "src/cmsmtrx.c", "src/cmsnamed.c", "src/cmsopt.c",
+        "src/cmspack.c", "src/cmspcs.c", "src/cmsplugin.c", "src/cmsps2.c",
+        "src/cmssamp.c", "src/cmssm.c", "src/cmstypes.c", "src/cmsvirt.c",
+        "src/cmswtpnt.c", "src/cmsxform.c",
+    };
+    const lcms2_flags = [_][]const u8{ "-O2" };
+    for (lcms2_sources) |lcsrc| {
+        lcms2_mod.addCSourceFile(.{
+            .file = lcms2_src.path(lcsrc),
+            .flags = &lcms2_flags,
+        });
+    }
+    const lcms2_lib = b.addLibrary(.{ .name = "lcms2", .root_module = lcms2_mod });
+    exe.root_module.linkLibrary(lcms2_lib);
+    exe.root_module.addIncludePath(lcms2_src.path("src"));
+    exe.root_module.addIncludePath(lcms2_src.path("include"));
+
+    // SQLite database: the amalgamation built from source as a
+    // Zig-managed dependency (build.zig.zon -> sqlite_src), replacing
+    // the system libsqlite3.  Own module so Emacs config flags do not
+    // leak in; exported as a static libsqlite3 for the exe.  Loadable
+    // extensions are compiled in so `sqlite-load-extension' works on
+    // every target (the vendored build, unlike the platform sqlite3).
+    const sqlite_src = b.dependency("sqlite_src", .{});
+    const sqlite_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    sqlite_mod.addIncludePath(sqlite_src.path(""));
+    sqlite_mod.addCSourceFile(.{
+        .file = sqlite_src.path("sqlite3.c"),
+        .flags = &.{ "-O2", "-DHAVE_USLEEP", "-DSQLITE_ENABLE_LOAD_EXTENSION" },
+    });
+    const sqlite_lib = b.addLibrary(.{ .name = "sqlite3", .root_module = sqlite_mod });
+    exe.root_module.linkLibrary(sqlite_lib);
+    exe.root_module.addIncludePath(sqlite_src.path(""));
+
+    // Tree-sitter (HAVE_TREE_SITTER): ts_* symbols from src/treesit.c.
+    // Built from source as a Zig-managed dependency (build.zig.zon ->
+    // tree_sitter URL dep, pinned master commit 308aee0c9 / version
+    // 0.27.0) using tree-sitter's own Zig 0.16 build.zig, replacing the
+    // system-installed library on every platform.
+    const tree_sitter = b.dependency("tree_sitter", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.linkLibrary(tree_sitter.artifact("tree-sitter"));
+    exe.root_module.addIncludePath(tree_sitter.path("lib/include"));
+
+    // System libraries that are not (yet) vendored, or are inherently
+    // platform-specific.  gnutls is not vendored yet; ncurses is a Unix
+    // terminal library and the w32 console needs no terminfo, so both
+    // stay on non-Windows Unix-likes.  ACL/ALSA/GPM/D-Bus back Linux-only
+    // subsystems (POSIX ACLs, ALSA sound, console mouse, D-Bus).
     if (!is_windows and !is_musl) {
         // Core libraries
         exe.root_module.linkSystemLibrary("gnutls", .{});
 
         // Terminal support
         exe.root_module.linkSystemLibrary("ncurses", .{});
+    }
 
-        // XML parsing
-        exe.root_module.linkSystemLibrary("xml2", .{});
-
-        // Compression: zlib built from source as a Zig-managed dependency
-        // (build.zig.zon -> zlib_src URL dep), replacing the system libz.
-        // Compiled in its own module so the Emacs config.h flags never
-        // leak into zlib, and exported as a static libz for the exe.
-        const zlib_src = b.dependency("zlib_src", .{});
-        const zlib_mod = b.createModule(.{
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        });
-        zlib_mod.addIncludePath(zlib_src.path(""));
-        const zlib_sources = [_][]const u8{
-            "adler32.c", "compress.c", "crc32.c", "deflate.c", "gzclose.c",
-            "gzlib.c", "gzread.c", "gzwrite.c", "infback.c", "inffast.c",
-            "inflate.c", "inftrees.c", "trees.c", "uncompr.c", "zutil.c",
-        };
-        const zlib_flags = [_][]const u8{ "-O2", "-DHAVE_UNISTD_H" };
-        for (zlib_sources) |zsrc| {
-            zlib_mod.addCSourceFile(.{ .file = zlib_src.path(zsrc), .flags = &zlib_flags });
-        }
-        const zlib_lib = b.addLibrary(.{ .name = "z", .root_module = zlib_mod });
-        exe.root_module.linkLibrary(zlib_lib);
-        exe.root_module.addIncludePath(zlib_src.path(""));
-
-        // Color management: Little CMS built from source as a Zig-managed
-        // dependency (build.zig.zon -> lcms2_src), replacing the system
-        // liblcms2.  Own module so Emacs config flags do not leak in.
-        const lcms2_src = b.dependency("lcms2_src", .{});
-        const lcms2_mod = b.createModule(.{
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        });
-        lcms2_mod.addIncludePath(lcms2_src.path("src"));
-        lcms2_mod.addIncludePath(lcms2_src.path("include"));
-        const lcms2_sources = [_][]const u8{
-            "src/cmsalpha.c", "src/cmscam02.c", "src/cmscgats.c", "src/cmscnvrt.c",
-            "src/cmserr.c", "src/cmsgamma.c", "src/cmsgmt.c", "src/cmshalf.c",
-            "src/cmsintrp.c", "src/cmsio0.c", "src/cmsio1.c", "src/cmslut.c",
-            "src/cmsmd5.c", "src/cmsmtrx.c", "src/cmsnamed.c", "src/cmsopt.c",
-            "src/cmspack.c", "src/cmspcs.c", "src/cmsplugin.c", "src/cmsps2.c",
-            "src/cmssamp.c", "src/cmssm.c", "src/cmstypes.c", "src/cmsvirt.c",
-            "src/cmswtpnt.c", "src/cmsxform.c",
-        };
-        const lcms2_flags = [_][]const u8{ "-O2" };
-        for (lcms2_sources) |lcsrc| {
-            lcms2_mod.addCSourceFile(.{
-                .file = lcms2_src.path(lcsrc),
-                .flags = &lcms2_flags,
-            });
-        }
-        const lcms2_lib = b.addLibrary(.{ .name = "lcms2", .root_module = lcms2_mod });
-        exe.root_module.linkLibrary(lcms2_lib);
-        exe.root_module.addIncludePath(lcms2_src.path("src"));
-        exe.root_module.addIncludePath(lcms2_src.path("include"));
-
-        // SQLite database: the amalgamation built from source as a
-        // Zig-managed dependency (build.zig.zon -> sqlite_src), replacing
-        // the system libsqlite3.  Own module so Emacs config flags do not
-        // leak in; exported as a static libsqlite3 for the exe.
-        const sqlite_src = b.dependency("sqlite_src", .{});
-        const sqlite_mod = b.createModule(.{
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        });
-        sqlite_mod.addIncludePath(sqlite_src.path(""));
-        sqlite_mod.addCSourceFile(.{
-            .file = sqlite_src.path("sqlite3.c"),
-            .flags = &.{ "-O2", "-DHAVE_USLEEP" },
-        });
-        const sqlite_lib = b.addLibrary(.{ .name = "sqlite3", .root_module = sqlite_mod });
-        exe.root_module.linkLibrary(sqlite_lib);
-        exe.root_module.addIncludePath(sqlite_src.path(""));
+    if (target.result.os.tag == .linux) {
         // ACL support (Linux only). Link libacl: config.h defines HAVE_ACL_*
         // and the library is installed. Do NOT link libselinux: config.h has
         // HAVE_LIBSELINUX undefined and the library is absent on the host, so
         // linking it only breaks the build.
-        if (target.result.os.tag == .linux) {
-            exe.root_module.linkSystemLibrary("acl", .{});
+        exe.root_module.linkSystemLibrary("acl", .{});
+        // ALSA audio (HAVE_ALSA): snd_* symbols from src/sound.c.
+        exe.root_module.linkSystemLibrary("asound", .{});
+        // Linux console mouse (HAVE_GPM): Gpm_*/gpm_* symbols from src/term.c.
+        exe.root_module.linkSystemLibrary("gpm", .{});
+        // D-Bus (HAVE_DBUS): dbus_* symbols from src/dbusbind.c.
+        exe.root_module.linkSystemLibrary("dbus-1", .{});
+    }
 
-            // Tree-sitter (HAVE_TREE_SITTER): ts_* symbols from src/treesit.c.
-            // Built from source as a Zig-managed dependency (build.zig.zon
-            // -> tree_sitter URL dep, pinned master commit 308aee0c9 /
-            // version 0.27.0) using tree-sitter's own Zig 0.16 build.zig,
-            // replacing the system-installed library.
-            const tree_sitter = b.dependency("tree_sitter", .{
-                .target = target,
-                .optimize = optimize,
-            });
-            exe.root_module.linkLibrary(tree_sitter.artifact("tree-sitter"));
-            exe.root_module.addIncludePath(tree_sitter.path("lib/include"));
-            // ALSA audio (HAVE_ALSA): snd_* symbols from src/sound.c.
-            exe.root_module.linkSystemLibrary("asound", .{});
-            // Linux console mouse (HAVE_GPM): Gpm_*/gpm_* symbols from src/term.c.
-            exe.root_module.linkSystemLibrary("gpm", .{});
-            // D-Bus (HAVE_DBUS): dbus_* symbols from src/dbusbind.c.
-            exe.root_module.linkSystemLibrary("dbus-1", .{});
-        }
-    } else if (is_musl) {
-        // No system libraries: the feature libs are undef'd in the musl
-        // config, and src/termcap.c (compiled via TERMCAP_OBJ) supplies
-        // the terminal capabilities itself, so the static binary links
-        // with only zig's bundled musl + libm.
-    } else {
+    if (is_musl) {
+        // No system libraries: the remaining feature libs (gnutls, ALSA,
+        // GPM, D-Bus) are undef'd in the musl config, and src/termcap.c
+        // (compiled via TERMCAP_OBJ) supplies the terminal capabilities
+        // itself, so the static binary links with only zig's bundled
+        // musl + libm plus the vendored static libs above.
+    } else if (is_windows) {
         // Windows: getrandom (lib/getrandom.c) uses BCryptGenRandom;
         // sockets and the console UI need ws2_32/kernel32/user32/gdi32;
         // winmm (sound.c mci/waveOut/PlaySound) and mpr (WNet* network
