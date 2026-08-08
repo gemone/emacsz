@@ -1,0 +1,12 @@
+.{
+    .name = .zeln_compile,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .fingerprint = 0xbda0736667398e3b,
+    .dependencies = .{},
+    .paths = .{
+        "build.zig.zon",
+        "build.zig",
+        "src/main.zig",
+    },
+}

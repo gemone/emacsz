@@ -16,6 +16,12 @@
         .gen_config = .{
             .path = "tools/gen-config",
         },
+        // The native-comp Zig tool (HAVE_NATIVE_COMP_ZIG path): parses a
+        // zunit, emits LLVM IR, drives `zig cc -shared` to produce `.zeln`.
+        // Skeleton at scaffold stage; run when -Dnative-comp-zig=true (M0+).
+        .zeln_compile = .{
+            .path = "tools/zeln-compile",
+        },
         // The src/epaths.h generator, extracted as an independent Zig
         // package (mirrors gen_config above; formats the 11 PATH_* macros
         // from the absolute repo root passed as argv[1]).

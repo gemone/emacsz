@@ -154,6 +154,7 @@ extern char etext;
 
 /* Include these only because of INLINE.  */
 #include "comp.h"
+#include "compz.h"		/* HAVE_NATIVE_COMP_ZIG path (empty when off).  */
 #include "thread.h"
 
 static const char emacs_version[] = PACKAGE_VERSION;
@@ -2037,6 +2038,10 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 
   if (!initialized)
     syms_of_comp ();
+#ifdef HAVE_NATIVE_COMP_ZIG
+  if (!initialized)
+    syms_of_compz ();
+#endif
 
   /* Do less garbage collection in batch mode (since these tend to be
      more short-lived, and the memory is returned to the OS on exit

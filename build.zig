@@ -67,6 +67,13 @@ pub fn build(b: *std.Build) void {
     // (two counts followed by the lists) and exit without installing artifacts.
     // Used to verify the build-time parsers against the autotools source lists.
     const show_sources = b.option(bool, "show-sources", "Print parsed base/lib source lists and exit") orelse false;
+    // Phase-2.1 subsystem switches (all OFF by default => the build is
+    // byte-identical to main). When ON, build.zig injects the matching
+    // -DHAVE_* and, for the native-comp Zig path, compiles src/compz.c.
+    // See .omc/plans/native-comp-zig-zeln.md (sections 2 and 13).
+    const enable_native_comp_zig = b.option(bool, "native-comp-zig", "Enable the Zig/LLVM native-comp path (.zeln)") orelse false;
+    const enable_modules = b.option(bool, "modules", "Enable upstream dynamic modules (HAVE_MODULES)") orelse false;
+    const enable_modules_zig = b.option(bool, "modules-zig", "Enable the Zig dynamic-module subsystem (HAVE_MODULES_ZIG)") orelse false;
 
     // Build-time file interface (single-threaded, synchronous). Used to parse
     // src/Makefile.in and glob lib/*.c so that `zig build` no longer requires a
@@ -1158,6 +1165,20 @@ pub fn build(b: *std.Build) void {
                 .flags = flags,
             });
         }
+
+        // Phase-2.1 subsystem switches (all OFF by default => the build is
+        // byte-identical to main). When ON they inject -DHAVE_* (activating
+        // the matching #ifdef blocks); the native-comp Zig path also compiles
+        // src/compz.c. OFF => all no-ops. See .omc/plans/native-comp-zig-zeln.md.
+        if (enable_native_comp_zig) {
+            exe.root_module.addCMacro("HAVE_NATIVE_COMP_ZIG", "1");
+            exe.root_module.addCSourceFile(.{
+                .file = b.path("src/compz.c"),
+                .flags = base_flags,
+            });
+        }
+        if (enable_modules) exe.root_module.addCMacro("HAVE_MODULES", "1");
+        if (enable_modules_zig) exe.root_module.addCMacro("HAVE_MODULES_ZIG", "1");
 
         // TERMCAP_OBJ: upstream builds terminfo.o when TERMINFO, else
         // termcap.o (+ tparam.o on MS-DOS).  Every ncurses/terminfo
