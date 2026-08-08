@@ -1838,9 +1838,15 @@ new_child (void)
   child_process *cp;
   DWORD id;
 
-  for (cp = child_procs + (child_proc_count-1); cp >= child_procs; cp--)
-    if (!CHILD_ACTIVE (cp) && cp->procinfo.hProcess == NULL)
-      goto Initialize;
+  /* child_proc_count is 0 on the first call (no children yet), in which
+     case child_procs + (child_proc_count - 1) forms a pointer before the
+     array -- undefined behavior that zig cc traps as an out-of-bounds
+     index.  Skip the reuse scan then and fall through to allocate a fresh
+     slot below.  */
+  if (child_proc_count > 0)
+    for (cp = child_procs + (child_proc_count-1); cp >= child_procs; cp--)
+      if (!CHILD_ACTIVE (cp) && cp->procinfo.hProcess == NULL)
+	goto Initialize;
   if (child_proc_count == MAX_CHILDREN)
     {
       int i = 0;
