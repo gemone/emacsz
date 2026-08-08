@@ -372,7 +372,7 @@ pub fn build(b: *std.Build) void {
     // Qaccess/Qcreate/... (inotify.c, 21 DEFSYMs) and the compile fails with
     // "use of undeclared identifier". dynlib.c has zero DEFSYMs but is added
     // for parity with the compile gate.
-    if (target.result.abi != .musl and target.result.os.tag == .linux) {
+    if (target.result.os.tag == .linux) {
         const linux_doc_sources = [_][]const u8{ "dbusbind.c", "dynlib.c", "inotify.c" };
         for (linux_doc_sources) |name| run_mdf.addArg(name);
     }
@@ -1612,7 +1612,13 @@ pub fn build(b: *std.Build) void {
     // committed in tools/gnutls-config (macOS aarch64 reference build; see
     // tools/gnutls-config/README.md).  macOS only for now - the other
     // targets keep the system library until their configs are vendored.
-    if (target.result.os.tag == .macos) {
+    // The vendored GnuTLS/nettle build needs the macOS SDK (Security/
+    // CoreFoundation frameworks, sys/ttydev.h, ...), so it is only
+    // compiled when the host is macOS.  Cross-compiling the macOS target
+    // from another host falls through to the system-library link below
+    // (which fails at link time on a non-macOS host, as before the
+    // vendoring).
+    if (target.result.os.tag == .macos and b.graph.host.result.os.tag == .macos) {
         const nettle_src = b.dependency("nettle_src", .{});
         const nettle_mod = b.createModule(.{
             .target = target,
@@ -1721,7 +1727,7 @@ pub fn build(b: *std.Build) void {
     // tools/ncurses-config (macOS aarch64 reference build; see
     // tools/ncurses-config/README.md).  Terminfo dirs point at the
     // system /usr/share/terminfo, matching the reference configure.
-    if (target.result.os.tag == .macos) {
+    if (target.result.os.tag == .macos and b.graph.host.result.os.tag == .macos) {
         const ncurses_src = b.dependency("ncurses_src", .{});
         const ncurses_mod = b.createModule(.{
             .target = target,
@@ -1762,7 +1768,11 @@ pub fn build(b: *std.Build) void {
     // other Unix-likes until their configs are vendored (the w32 console
     // needs no terminfo).  ACL/ALSA/GPM/D-Bus back Linux-only subsystems
     // (POSIX ACLs, ALSA sound, console mouse, D-Bus).
-    if (target.result.os.tag == .macos) {
+    // macOS builds link the vendored gnutls/ncurses above when the host
+    // is macOS; every other Unix-like (Linux, BSD, or a non-macOS host
+    // cross-compiling the macOS target) keeps the system libraries until
+    // their configs are vendored.
+    if (target.result.os.tag == .macos and b.graph.host.result.os.tag == .macos) {
         // gnutls + ncurses are already linked from the vendored libs above.
     } else if (!is_windows and !is_musl) {
         // Core libraries
@@ -1772,7 +1782,10 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("ncurses", .{});
     }
 
-    if (target.result.os.tag == .linux) {
+    // ACL/ALSA/GPM/D-Bus are glibc-target Linux subsystems; the musl
+    // config undefs HAVE_ACL/HAVE_ALSA/HAVE_GPM/HAVE_DBUS, so musl links
+    // only the vendored static libs above (no system libraries).
+    if (target.result.abi != .musl and target.result.os.tag == .linux) {
         // ACL support (Linux only). Link libacl: config.h defines HAVE_ACL_*
         // and the library is installed. Do NOT link libselinux: config.h has
         // HAVE_LIBSELINUX undefined and the library is absent on the host, so
