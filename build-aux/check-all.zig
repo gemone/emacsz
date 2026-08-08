@@ -28,9 +28,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     var env_map = try std.process.Environ.createMap(minimal.environ, gpa);
     defer env_map.deinit();
-    // Mirror check-all.sh: TERM is unset for the batch runs (terminfo
-    // lookups for a terminal type fail under HOME=/nonexistent).
-    _ = env_map.array_hash_map.orderedRemove("TERM");
+    // Mirror the upstream test environment: TERM=dumb for the batch
+    // runs.  A missing TERM makes terminal-dependent suites misbehave
+    // (tab-bar-tests skips its tty test only when TERM is "dumb" on
+    // darwin), while an unknown term type fails terminfo lookups under
+    // HOME=/nonexistent.
+    try env_map.put("TERM", "dumb");
     try env_map.put("LANG", "C");
     try env_map.put("HOME", "/nonexistent");
 
