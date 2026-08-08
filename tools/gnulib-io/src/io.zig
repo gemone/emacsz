@@ -185,7 +185,12 @@ fn pipeFailRestore(fd: [*]c_int, tmp0: c_int, tmp1: c_int) c_int {
 // Non-Linux fallback: the same Unix algorithm via libc pipe/fcntl, with
 // per-platform O_* values; Windows uses the CRT _pipe like the C code.
 extern "c" fn pipe(fd: [*]c_int) c_int;
-extern "c" fn fcntl(fd: c_int, cmd: c_int, arg: usize) c_int;
+// libc fcntl is variadic (the third arg is only read for F_SETFL /
+// F_SETFD); a fixed-arity extern drops the arg on Apple arm64, leaving
+// the FD_CLOEXEC bit unset, so the child inherits the exec-monitor
+// pipe and make-process blocks until the child exits.  Declare it
+// variadic and cast the mode at every call site.
+extern "c" fn fcntl(fd: c_int, cmd: c_int, ...) c_int;
 extern "c" fn close(fd: c_int) c_int;
 extern "c" fn _pipe(fd: [*]c_int, bufsize: c_uint, mode: c_int) c_int;
 
@@ -245,10 +250,10 @@ fn rplPipe2Portable(fd: [*]c_int, flags: c_int) c_int {
 }
 
 fn setFdFlagPortable(fd: c_int, get_cmd: c_int, set_cmd: c_int, flag: c_int) c_int {
-    const old = fcntl(fd, get_cmd, 0);
+    const old = fcntl(fd, get_cmd, @as(c_int, 0));
     if (old < 0)
         return -1;
-    if (fcntl(fd, set_cmd, @intCast(old | flag)) < 0)
+    if (fcntl(fd, set_cmd, @as(c_int, @intCast(old | flag))) < 0)
         return -1;
     return 0;
 }
