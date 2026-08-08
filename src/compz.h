@@ -83,15 +83,40 @@ typedef struct
    dynlib_sym (handle, "zeln_entry").  */
 zeln_entry_t *zeln_entry (void);
 
-/* Vzeln_abi_hash is NOT declared here: DEFVAR_LISP in compz.c makes
-   make-docfile emit `#define Vzeln_abi_hash globals.f_Vzeln_abi_hash'
-   into globals.h, so the name is globally available with no separate
-   extern (same pattern as comp.c's Vcomp_abi_hash).  */
+/* Vzeln_abi_hash / Vnative_comp_zeln_load_path / Vcomp_z_native_version_dir /
+   Vzeln_to_el_h are NOT declared here: DEFVAR_LISP in compz.c makes
+   make-docfile emit `#define <name> globals.f_<name>' into globals.h, so
+   each name is globally available with no separate extern (same pattern
+   as comp.c's Vcomp_abi_hash / Vnative_comp_eln_load_path).  compz.c is
+   fed to make-docfile only when -Dnative-comp-zig=true (build.zig:435),
+   so the slots materialize exactly when the code referencing them is
+   compiled (src/lread.c gates every reference under
+   HAVE_NATIVE_COMP_ZIG).  */
 
 /* M1 serializer: extracts bytecode + constants + stack-depth +
    args_template from a real compiled closure and writes the M1 zunit +
    manifest.  Defined in compz.c.  */
 extern Lisp_Object Fcomp_z_write_zunit (Lisp_Object fun, Lisp_Object out_prefix);
+
+/* M1.5 cache layout.  Self-contained mirror of comp.c's
+   Fcomp_el_to_eln_rel_filename (comp.c:4306) — it CANNOT reuse the gccjit
+   helper, whose whole definition lives under #ifdef HAVE_NATIVE_COMP and
+   is therefore invisible in the M1.5 config (gccjit OFF).  Returns the
+   .zeln rel-filename for SRC_NAME (an .el / .el.gz source path):
+   `<basename>-<path_hash>-<content_hash>.zeln', path/content hashes
+   computed via the Ffuncall ("md5",...) trick (no md5.h/zlib dep).
+   Called by src/lread.c maybe_swap_for_zeln to LOCATE the .zeln; the
+   same call computes the name when PLACING the .zeln, so serialize-side
+   and load-side agree by construction.  */
+extern Lisp_Object Fcomp_z_el_to_zeln_rel_filename (Lisp_Object src_name);
+
+/* M1.5: lazily build Vcomp_z_native_version_dir from Vzeln_abi_hash
+   (mirror comp.c:795-821 building Vcomp_native_version_dir from
+   Vcomp_abi_hash).  Distinct from the gccjit version-dir so a .zeln and
+   a .eln for the same source can never collide on disk even if both
+   caches pointed at the same root.  Idempotent.  Called from
+   src/lread.c maybe_swap_for_zeln and src/emacs.c's load-path fixup.  */
+extern void compute_z_version_dir (void);
 
 /* Defined in compz.c; called from src/emacs.c under
    #ifdef HAVE_NATIVE_COMP_ZIG.  */

@@ -45,7 +45,11 @@
 
 #ifdef HAVE_NATIVE_COMP_ZIG
 
+#include <stdlib.h>		/* realpath */
 #include "dynlib.h"
+#include "sysstdio.h"		/* FILE, fseeko, ftello, fread, rewind */
+#include "coding.h"		/* ENCODE_FILE / DECODE_FILE */
+#include <epaths.h>		/* PATH_DUMPLOADSEARCH / PATH_REL_LOADSEARCH */
 
 /* ------------------------------------------------------------------ */
 /* (a) freloc state — mirror comp.c:526 f_reloc_t / comp.c:824
@@ -681,6 +685,210 @@ For internal use.  */)
 }
 
 /* ------------------------------------------------------------------ */
+/* (e) M1.5 cache layout + load-path plumbing.
+   These mirror comp.c's .eln machinery (Fcomp_el_to_eln_rel_filename at
+   comp.c:4306, comp_hash_string/comp_hash_source_file at comp.c:723/733,
+   hash_native_abi's version-dir tail at comp.c:795-821, and the
+   Vnative_comp_eln_load_path / Vcomp_native_version_dir / Vcomp_eln_to_el_h
+   DEFVARs at comp.c:5770/5756/5766) — but reimplemented self-contained
+   here because ALL of those comp.c helpers live inside #ifdef
+   HAVE_NATIVE_COMP (comp.c:25..end) and are therefore invisible in the
+   M1.5 config (gccjit OFF).  The hash need only be self-consistent
+   within the zeln path (a .elc -> exactly one .zeln); it does NOT have
+   to match the .eln hash, so independent reimplementation is safe.
+
+   compz.c reaches MD5 through the Lisp-visible `md5' (the same
+   Ffuncall trick hash_zeln_abi already uses), so it carries no md5.h or
+   zlib dependency.  */
+
+/* MD5 hex digest (first 8 chars) of a Lisp string, via `(md5 STRING nil
+   nil 'binary)'.  Mirror comp.c:723 comp_hash_string (md5_buffer over
+   SBYTES).  'binary hashes the raw storage bytes of a unibyte string,
+   matching md5_buffer for ASCII/unibyte input; for the path hash the
+   exact byte choice is irrelevant as long as serialize-side and
+   load-side agree (both call THIS function on the same normalized
+   path), so self-consistency holds regardless.  */
+static Lisp_Object
+comp_z_hash_string (Lisp_Object string)
+{
+  Lisp_Object md5_args[5] = { intern_c_string ("md5"), string, Qnil, Qnil,
+			      intern_c_string ("binary") };
+  Lisp_Object digest = Ffuncall (5, md5_args);
+  return Fsubstring (digest, Qnil, make_fixnum (8));
+}
+
+/* MD5 hex digest (first 8 chars) of a source (.el / .el.gz) file's
+   contents.  Mirror comp.c:733 comp_hash_source_file.  comp.c streams
+   through md5_stream (and md5_gz_stream under HAVE_ZLIB); compz.c reads
+   the whole file into a unibyte string and md5s it.  For plain .el this
+   is byte-identical to comp.c; for .el.gz it hashes the COMPRESSED
+   bytes (still a self-consistent source->zeln binding; full gzip-aware
+   hashing is M2 — it needs HAVE_ZLIB, deliberately not a compz.c dep).
+   content_hash is what binds a given .elc to exactly ONE .zeln and
+   defeats stale dlopen-handle reuse (the rationale at comp.c:4348-4356
+   carries over verbatim).  */
+static Lisp_Object
+comp_z_hash_source_file (Lisp_Object filename)
+{
+  Lisp_Object encoded = ENCODE_FILE (filename);
+  FILE *f = emacs_fopen (SSDATA (encoded), "rb");
+  if (!f)
+    report_file_error ("Opening source file", filename);
+
+  if (fseeko (f, 0, SEEK_END) != 0)
+    {
+      emacs_fclose (f);
+      report_file_error ("Seeking source file", filename);
+    }
+  off_t sz = ftello (f);
+  if (sz < 0)
+    {
+      emacs_fclose (f);
+      report_file_error ("Querying source file size", filename);
+    }
+  rewind (f);
+
+  /* Read the whole file in one shot (source .el files are small).  */
+  char *buf = xmalloc (sz);
+  size_t got = fread (buf, 1, sz, f);
+  bool err = ferror (f);
+  emacs_fclose (f);
+  if (err)
+    {
+      xfree (buf);
+      xsignal2 (Qfile_notify_error, build_string ("hashing failed"), filename);
+    }
+
+  Lisp_Object acc = make_unibyte_string (buf, got);
+  xfree (buf);
+
+  Lisp_Object md5_args[5] = { intern_c_string ("md5"), acc, Qnil, Qnil,
+			      intern_c_string ("binary") };
+  Lisp_Object digest = Ffuncall (5, md5_args);
+  return Fsubstring (digest, Qnil, make_fixnum (8));
+}
+
+/* Cached compiled loadsearch-prefix regexps (mirror comp.c:4291
+   loadsearch_re_list).  Built once, staticpro'd in syms_of_compz.  */
+static Lisp_Object zeln_loadsearch_re_list;
+
+DEFUN ("comp-z-el-to-zeln-rel-filename", Fcomp_z_el_to_zeln_rel_filename,
+       Scomp_z_el_to_zeln_rel_filename, 1, 1, 0,
+       doc: /* Return the relative name of the .zeln file for source FILENAME.
+FILENAME must exist.  The value is
+
+    <basename>-<path_hash>-<content_hash>.zeln
+
+where <basename> is the source file's base name, <path_hash> hashes the
+normalized source path (after stripping the build-tree / installed
+loadsearch prefix, so installed vs build-tree paths collide
+intentionally), and <content_hash> hashes the source file's contents.
+
+This is the .zeln analogue of `comp-el-to-eln-rel-filename'; the two
+need NOT agree (each is self-consistent within its own cache).  For
+internal use.  */)
+  (Lisp_Object filename)
+{
+  CHECK_STRING (filename);
+
+  /* Resolve symlinks so path_hash compares equal across links (Bug#44701).  */
+  filename = Fexpand_file_name (filename, Qnil);
+  char *file_normalized = realpath (SSDATA (ENCODE_FILE (filename)), NULL);
+  if (file_normalized)
+    {
+      filename = DECODE_FILE (make_unibyte_string (file_normalized,
+						   strlen (file_normalized)));
+      xfree (file_normalized);
+    }
+
+  if (NILP (Ffile_exists_p (filename)))
+    xsignal1 (Qfile_missing, filename);
+
+  Lisp_Object content_hash = comp_z_hash_source_file (filename);
+
+  /* Strip a trailing ".gz" before computing path_hash / basename (so
+     foo.el.gz and foo.el map consistently).  */
+  if (suffix_p (filename, ".gz"))
+    filename = Fsubstring (filename, Qnil, make_fixnum (-3));
+
+  /* Normalize the build-tree / installed loadsearch prefix to "//" so
+     the same source compiled in the build tree and after install hash
+     to the same .zeln name (mirror comp.c:4363-4387).  */
+  if (NILP (zeln_loadsearch_re_list))
+    {
+      Lisp_Object sys_re =
+	concat2 (build_string ("\\`[[:ascii:]]+"),
+		 Fregexp_quote (build_string ("/" PATH_REL_LOADSEARCH "/")));
+      Lisp_Object dump_load_search =
+	Fexpand_file_name (build_string (PATH_DUMPLOADSEARCH "/"), Qnil);
+      zeln_loadsearch_re_list =
+	list2 (sys_re, Fregexp_quote (dump_load_search));
+    }
+
+  Lisp_Object lds_re_tail = zeln_loadsearch_re_list;
+  FOR_EACH_TAIL (lds_re_tail)
+    {
+      Lisp_Object match_idx =
+	Fstring_match (XCAR (lds_re_tail), filename, Qnil, Qnil);
+      if (BASE_EQ (match_idx, make_fixnum (0)))
+	{
+	  filename =
+	    Freplace_match (build_string ("//"), Qt, Qt, filename, Qnil);
+	  break;
+	}
+    }
+
+  Lisp_Object separator = build_string ("-");
+  Lisp_Object path_hash = comp_z_hash_string (filename);
+
+  /* basename = nondirectory of FILENAME with the trailing ".el" stripped
+     (mirror comp.c:4390).  */
+  filename = concat2 (Ffile_name_nondirectory
+		      (Fsubstring (filename, Qnil, make_fixnum (-3))),
+		      separator);
+  Lisp_Object hash = concat3 (path_hash, separator, content_hash);
+  return concat3 (filename, hash, build_string (".zeln"));
+}
+
+/* Lazily build Vcomp_z_native_version_dir from Vzeln_abi_hash (mirror
+   comp.c:795-821 building Vcomp_native_version_dir from Vcomp_abi_hash).
+   Distinct value from the gccjit version-dir because the hash input
+   differs (Vzeln_abi_hash vs Vcomp_abi_hash), so the two caches' dirs
+   never collide.  Computed lazily because it needs Vemacs_version +
+   coding systems (md5) post-dump; syms_of_compz runs before coding
+   systems exist.  Idempotent.  */
+void
+compute_z_version_dir (void)
+{
+  if (!NILP (Vcomp_z_native_version_dir))
+    return;
+
+  hash_zeln_abi ();		/* ensure Vzeln_abi_hash */
+
+  Lisp_Object version = Vemacs_version;
+
+#ifdef NS_SELF_CONTAINED
+  /* macOS self-contained bundles dislike dots in Frameworks dir names.  */
+  version = STRING_MULTIBYTE (Vemacs_version)
+    ? make_uninit_multibyte_string (SCHARS (Vemacs_version),
+				    SBYTES (Vemacs_version))
+    : make_uninit_string (SBYTES (Vemacs_version));
+  const unsigned char *from = SDATA (Vemacs_version);
+  unsigned char *to = SDATA (version);
+  while (from < SDATA (Vemacs_version) + SBYTES (Vemacs_version))
+    {
+      unsigned char c = *from++;
+      if (c == '.')
+	c = '_';
+      *to++ = c;
+    }
+#endif
+
+  Vcomp_z_native_version_dir =
+    concat3 (version, build_string ("-"), Vzeln_abi_hash);
+}
+
+/* ------------------------------------------------------------------ */
 /* syms_of_compz — called from src/emacs.c under HAVE_NATIVE_COMP_ZIG.  */
 
 void
@@ -706,9 +914,43 @@ identity + the imported-subr surface.  Each loaded .zeln bakes the same
 hash; mismatch on load signals `native-lisp-file-inconsistent'.  */);
   Vzeln_abi_hash = Qnil;
 
+  /* M1.5 load-path / cache plumbing — the exact parallel of comp.c's
+     Vnative_comp_eln_load_path (comp.c:5770), Vcomp_native_version_dir
+     (comp.c:5756), and Vcomp_eln_to_el_h (comp.c:5766).  All three are
+     DEFVAR'd fresh here because the gccjit DEFVARs live under
+     #ifdef HAVE_NATIVE_COMP and are invisible in the M1.5 config.  */
+
+  DEFVAR_LISP ("native-comp-zeln-load-path", Vnative_comp_zeln_load_path,
+	       doc: /* List of directories to look for native-compiled *.zeln files.
+The *.zeln files are looked for in a version-specific subdirectory of
+each directory in this list, determined by `comp-z-native-version-dir'.
+If a directory name is not absolute, it is relative to
+`invocation-directory'.  This is the .zeln analogue of
+`native-comp-eln-load-path'; the two caches are independent.  */);
+  /* Temporary bootstrap default (mirror comp.c:5785): invocation-directory
+     is unset during the dump, so the relative name is fixed up against it
+     in src/emacs.c on dump reload.  */
+  Vnative_comp_zeln_load_path = Fcons (build_string ("../zeln-lisp/"), Qnil);
+
+  DEFVAR_LISP ("comp-z-native-version-dir", Vcomp_z_native_version_dir,
+	       doc: /* Directory used to disambiguate .zeln compatibility.
+Built lazily from `emacs-version' and `zeln-abi-hash' (distinct from
+`comp-native-version-dir' so the two caches never collide).  */);
+  Vcomp_z_native_version_dir = Qnil;
+
+  DEFVAR_LISP ("comp-zeln-to-el-h", Vzeln_to_el_h,
+	       doc: /* Hash table zeln-filename -> el-filename.
+Mirrors `comp-eln-to-el-h'; used so loading a .zeln reports the source
+.elc in `load-file-name' / `load-history'.  */);
+  Vzeln_to_el_h = CALLN (Fmake_hash_table, QCtest, Qequal);
+
+  staticpro (&zeln_loadsearch_re_list);
+  zeln_loadsearch_re_list = Qnil;
+
   defsubr (&Scomp_z_load_zeln);
   defsubr (&Scomp_z_write_spike_zunit);
   defsubr (&Scomp_z_write_zunit);
+  defsubr (&Scomp_z_el_to_zeln_rel_filename);
 
   /* Fill the freloc table early (pure pointer copy, no Lisp): the .zeln
      loader needs it.  Do NOT call hash_zeln_abi here: it builds the hash

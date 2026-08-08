@@ -44,6 +44,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "termhooks.h"
 #include "blockinput.h"
 #include "pdumper.h"
+#ifdef HAVE_NATIVE_COMP_ZIG
+#include "compz.h"
+#endif
 #include <c-ctype.h>
 
 #ifdef MSDOS
@@ -1027,6 +1030,26 @@ compute_found_effective (Lisp_Object found)
   return concat2 (src_name, build_string ("c"));
 }
 
+#ifdef HAVE_NATIVE_COMP_ZIG
+/* The .zeln twin of `compute_found_effective' (above): reconstruct the
+   .elc filename a swapped-out .zeln stood in for, so `load-file-name'
+   and `load-history' report the .elc (NOT the .zeln), exactly as the
+   .eln path does.  Vzeln_to_el_h is populated by maybe_swap_for_zeln1
+   (key = .zeln basename, value = the .el source path).  */
+static Lisp_Object
+compute_found_effective_z (Lisp_Object found)
+{
+  Lisp_Object src_name =
+    Fgethash (Ffile_name_nondirectory (found), Vzeln_to_el_h, Qnil);
+  if (NILP (src_name))
+    /* Manual .zeln load (no swap).  */
+    return found;
+  if (suffix_p (src_name, "el.gz"))
+    src_name = Fsubstring (src_name, make_fixnum (0), make_fixnum (-3));
+  return concat2 (src_name, build_string ("c"));
+}
+#endif
+
 static void
 loadhist_initialize (Lisp_Object filename)
 {
@@ -1296,6 +1319,10 @@ Return t if the file exists and loads successfully.  */)
   bool is_native_elisp = false;
 #endif
 
+#ifdef HAVE_NATIVE_COMP_ZIG
+  bool is_zeln_elisp = suffix_p (found, ".zeln");
+#endif
+
   /* Check if we're stuck in a recursive load cycle.
 
      2000-09-21: It's not possible to just check for the file loaded
@@ -1325,6 +1352,16 @@ Return t if the file exists and loads successfully.  */)
   Lisp_Object found_eff =
     is_native_elisp
     ? compute_found_effective (found)
+#ifdef HAVE_NATIVE_COMP_ZIG
+    /* A swapped .zeln maps to its .elc via Vzeln_to_el_h (the .zeln twin
+       of the eln mapping above), so load-file-name / load-history report
+       the .elc.  is_zeln_elisp and is_native_elisp are mutually exclusive
+       (a found name is one suffix or the other), so the nested ternary is
+       unambiguous.  Off-path this whole branch is absent, leaving the
+       exact `is_native_elisp ? ... : found' form upstream has.  */
+    : is_zeln_elisp
+    ? compute_found_effective_z (found)
+#endif
     : found;
 
   hist_file_name = (! NILP (Vpurify_flag)
@@ -1398,7 +1435,11 @@ Return t if the file exists and loads successfully.  */)
             } /* !load_prefer_newer */
 	}
     }
-  else if (!is_module && !is_native_elisp)
+  else if (!is_module && !is_native_elisp
+#ifdef HAVE_NATIVE_COMP_ZIG
+	   && !is_zeln_elisp
+#endif
+	   )
     {
       /* We are loading a source file (*.el).  */
       if (!NILP (Vload_source_file_function))
@@ -1425,7 +1466,11 @@ Return t if the file exists and loads successfully.  */)
       stream = file_stream_invalid;
       errno = EINVAL;
     }
-  else if (!is_module && !is_native_elisp)
+  else if (!is_module && !is_native_elisp
+#ifdef HAVE_NATIVE_COMP_ZIG
+	   && !is_zeln_elisp
+#endif
+	   )
     {
 #ifdef WINDOWSNT
       emacs_close (fd);
@@ -1449,7 +1494,11 @@ Return t if the file exists and loads successfully.  */)
      might be accessed by the unbind_to call below.  */
   struct infile input;
 
-  if (is_module || is_native_elisp)
+  if (is_module || is_native_elisp
+#ifdef HAVE_NATIVE_COMP_ZIG
+      || is_zeln_elisp
+#endif
+      )
     {
       /* `module-load' uses the file name, so we can close the stream
          now.  */
@@ -1479,6 +1528,10 @@ Return t if the file exists and loads successfully.  */)
         message_with_string ("Loading %s (module)...", file, 1);
       else if (is_native_elisp)
         message_with_string ("Loading %s (native-compiled elisp)...", file, 1);
+#ifdef HAVE_NATIVE_COMP_ZIG
+      else if (is_zeln_elisp)
+        message_with_string ("Loading %s (zeln-compiled elisp)...", file, 1);
+#endif
       else if (!compiled)
 	message_with_string ("Loading %s (source)...", file, 1);
       else if (newer)
@@ -1516,6 +1569,32 @@ Return t if the file exists and loads successfully.  */)
 #endif
 
     }
+#ifdef HAVE_NATIVE_COMP_ZIG
+  else if (is_zeln_elisp)
+    {
+      /* The .zeln twin of the `is_native_elisp' branch above.  The swap
+	 hook (maybe_swap_for_zeln, called from openp) has already
+	 replaced FOUND with the .zeln path; dispatch through the Zig
+	 loader, which dlopens the .zeln, verifies the ABI hash, patches
+	 the freloc table, reconstructs constants, and returns a subr
+	 wrapping the native machine code (Fcomp_z_load_zeln does its own
+	 dynlib_open on FOUND, exactly like Fnative_elisp_load).  */
+      loadhist_initialize (hist_file_name);
+      Lisp_Object native = Fcomp_z_load_zeln (found);
+      /* M1 .zeln embodies a single function; bind it under the symbol
+	 named by the source basename, mirroring how loading a single-def
+	 .elc would fset that symbol via its top-level `defun' (so
+	 `(load \"foo\")' leaves `foo' natively callable).  found_eff is
+	 the reconstructed .elc; strip its ".elc" (4 chars) for the name.
+	 M2 will instead carry the defun symbol inside the .zeln format.  */
+      Lisp_Object src_eff = found_eff;
+      Lisp_Object base = Ffile_name_nondirectory
+	(Fsubstring (src_eff, make_fixnum (0), make_fixnum (-4)));
+      Lisp_Object sym = Fintern (base, Qnil);
+      Ffset (sym, native);
+      build_load_history (hist_file_name, true);
+    }
+#endif
   else
     {
       Fset (Qlexical_binding,
@@ -1555,6 +1634,10 @@ Return t if the file exists and loads successfully.  */)
         message_with_string ("Loading %s (module)...done", file, 1);
       else if (is_native_elisp)
 	message_with_string ("Loading %s (native-compiled elisp)...done", file, 1);
+#ifdef HAVE_NATIVE_COMP_ZIG
+      else if (is_zeln_elisp)
+	message_with_string ("Loading %s (zeln-compiled elisp)...done", file, 1);
+#endif
       else if (!compiled)
 	message_with_string ("Loading %s (source)...done", file, 1);
       else if (newer)
@@ -1717,6 +1800,111 @@ maybe_swap_for_eln (bool no_native, Lisp_Object *filename, int *fd,
 		       filename, fd, mtime);
 #endif
 }
+
+#ifdef HAVE_NATIVE_COMP_ZIG
+/* The .zeln twins of maybe_swap_for_eln1 / maybe_swap_for_eln (above):
+   faithful structural mirrors.  When the gccjit switch is OFF (the M1.5
+   config) the eln functions above are no-ops (their whole bodies sit
+   under #ifdef HAVE_NATIVE_COMP), so only the zeln swap fires; with BOTH
+   switches on (M2.5) zeln runs second, so precedence is decided later by
+   native-comp-z-prefer.  */
+
+static bool
+maybe_swap_for_zeln1 (Lisp_Object src_name, Lisp_Object zeln_name,
+		      Lisp_Object *filename, int *fd, struct timespec mtime)
+{
+  struct stat zeln_st;
+  int zeln_fd = emacs_open (SSDATA (ENCODE_FILE (zeln_name)), O_RDONLY, 0);
+
+  if (zeln_fd > 0)
+    {
+      if (sys_fstat (zeln_fd, &zeln_st) || S_ISDIR (zeln_st.st_mode))
+	emacs_close (zeln_fd);
+      else
+	{
+	  /* The SAME staleness gate maybe_swap_for_eln1 uses: the .zeln
+	     must be no older than the .elc it would replace.  A too-old
+	     .zeln is skipped in favor of the bytecode.  */
+	  struct timespec zeln_mtime = get_stat_mtime (&zeln_st);
+	  if (timespec_cmp (zeln_mtime, mtime) >= 0)
+	    {
+	      emacs_close (*fd);
+	      *fd = zeln_fd;
+	      *filename = zeln_name;
+	      /* Record zeln -> el so load-file-name / load-history report
+		 the .elc (mirrors Vcomp_eln_to_el_h in maybe_swap_for_eln1).  */
+	      Fputhash (Ffile_name_nondirectory (zeln_name),
+			src_name, Vzeln_to_el_h);
+	      return true;
+	    }
+	  else
+	    emacs_close (zeln_fd);
+	}
+    }
+
+  return false;
+}
+
+/* Look for a suitable .zeln file to be loaded in place of FILENAME.
+   If found replace the content of FILENAME and FD.  */
+
+static void
+maybe_swap_for_zeln (bool no_native, Lisp_Object *filename, int *fd,
+		     struct timespec mtime)
+{
+  /* Never run during the dump phase: no .zeln can exist then (they are
+     produced AFTER the dump), and — critically — the path/content hashes
+     below reach Lisp `md5' (Ffuncall), which is unavailable before md5.el
+     and the coding systems are loaded during bootstrap.  will_dump_p()
+     is true precisely while building the dump image (temacs bootstrap /
+     dump / dump-compiled) and false in the runtime dumped emacs.  */
+  if (will_dump_p ())
+    return;
+  /* The zeln path keeps no V_comp_no_native_file_h analogue (M1.5 has no
+     deferred-compile machinery that consults it); just honor the
+     no_native / load-no-native suppressors and the .elc requirement.  */
+  if (no_native
+      || load_no_native
+      || !suffix_p (*filename, ".elc"))
+    return;
+
+  compute_z_version_dir ();
+
+  /* Search zeln in the zeln-cache directories.  */
+  Lisp_Object zeln_path_tail = Vnative_comp_zeln_load_path;
+  Lisp_Object src_name =
+    Fsubstring (*filename, Qnil, make_fixnum (-1));
+  if (NILP (Ffile_exists_p (src_name)))
+    {
+      src_name = concat2 (src_name, build_string (".gz"));
+      if (NILP (Ffile_exists_p (src_name)))
+	/* No source file -> no content_hash possible -> give up silently.
+	   (M1.5 has no warning-on-missing-source equivalent; the gccjit
+	   warning at lread.c:1673 is gated on its own DEFVAR.)  */
+	return;
+    }
+  Lisp_Object zeln_rel_name = Fcomp_z_el_to_zeln_rel_filename (src_name);
+
+  Lisp_Object dir = Qnil;
+  FOR_EACH_TAIL_SAFE (zeln_path_tail)
+    {
+      dir = XCAR (zeln_path_tail);
+      Lisp_Object zeln_name =
+	Fexpand_file_name (zeln_rel_name,
+			   Fexpand_file_name (Vcomp_z_native_version_dir, dir));
+      if (maybe_swap_for_zeln1 (src_name, zeln_name, filename, fd, mtime))
+	return;
+    }
+
+  /* Look also in preloaded subfolder of the last entry in
+     `native-comp-zeln-load-path' (mirror lread.c:1713).  */
+  dir = Fexpand_file_name (build_string ("preloaded"),
+			   Fexpand_file_name (Vcomp_z_native_version_dir,
+					      dir));
+  maybe_swap_for_zeln1 (src_name, Fexpand_file_name (zeln_rel_name, dir),
+			filename, fd, mtime);
+}
+#endif
 
 /* Search for a file whose name is STR, looking in directories
    in the Lisp list PATH, and trying suffixes from SUFFIX.
@@ -2003,6 +2191,10 @@ openp (Lisp_Object path, Lisp_Object str, Lisp_Object suffixes,
 		  {
 		    maybe_swap_for_eln (no_native, &string, &fd,
 					get_stat_mtime (&st));
+#ifdef HAVE_NATIVE_COMP_ZIG
+		    maybe_swap_for_zeln (no_native, &string, &fd,
+					 get_stat_mtime (&st));
+#endif
 		    /* We succeeded; return this descriptor and filename.  */
 		    if (storeptr)
 		      *storeptr = string;
@@ -2016,6 +2208,10 @@ openp (Lisp_Object path, Lisp_Object str, Lisp_Object suffixes,
 	      {
 		maybe_swap_for_eln (no_native, &save_string, &save_fd,
 				    save_mtime);
+#ifdef HAVE_NATIVE_COMP_ZIG
+		maybe_swap_for_zeln (no_native, &save_string, &save_fd,
+				     save_mtime);
+#endif
 		if (storeptr)
 		  *storeptr = save_string;
 		SAFE_FREE ();

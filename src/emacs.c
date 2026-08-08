@@ -2615,6 +2615,21 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 				    Vinvocation_directory),
 		 Qnil);
 #endif
+#ifdef HAVE_NATIVE_COMP_ZIG
+      /* The .zeln twin of the eln fixup above: expand the bootstrap
+	 default ("../zeln-lisp/", set in syms_of_compz) against
+	 invocation-directory so it resolves to the installed location,
+	 and lazily build comp-z-native-version-dir (needs Vemacs_version
+	 + coding systems, both available post-dump).  */
+      if (!NILP (Vtop_level) && !temacs)
+	{
+	  compute_z_version_dir ();
+	  Vnative_comp_zeln_load_path =
+	    Fcons (Fexpand_file_name (XCAR (Vnative_comp_zeln_load_path),
+				      Vinvocation_directory),
+		   Qnil);
+	}
+#endif
     }
 
   /* Set up for profiling.  This is known to work on FreeBSD,

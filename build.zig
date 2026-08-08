@@ -427,12 +427,23 @@ pub fn build(b: *std.Build) void {
     // resulting globals.h externs are then unused-but-harmless.)
     if (enable_modules) run_mdf.addArg("emacs-module.c");
     // compz.c (when -Dnative-comp-zig=true) carries the ZELN DEFUNs
-    // (Scomp_z_load_zeln, Scomp_z_write_spike_zunit) and the DEFVAR_LISP
-    // Vzeln_abi_hash, whose slots make-docfile must materialize in
-    // globals.h or the compile fails with "no member f_Vzeln_abi_hash".
-    // Scanned ONLY when the flag is on so the off-path globals.h stays
-    // byte-identical (zero footprint, plan section 0 pillar 3).
-    if (enable_native_comp_zig) run_mdf.addArg("compz.c");
+    // (Scomp_z_load_zeln, Scomp_z_write_spike_zunit, ...) and the DEFVAR_LISP
+    // slots (Vzeln_abi_hash, Vnative_comp_zeln_load_path,
+    // Vcomp_z_native_version_dir, Vzeln_to_el_h), which make-docfile must
+    // materialize in globals.h or the compile fails with
+    // "no member f_Vnative_comp_zeln_load_path" / etc.  Scanned ONLY when
+    // the flag is on so the off-path globals.h stays byte-identical (zero
+    // footprint, plan section 0 pillar 3).
+    //
+    // Passed via addFileArg (not addArg) so Zig tracks compz.c as a file
+    // INPUT to this Run step: compz.c is under active development (M1+),
+    // and a plain addArg basename would let the globals.h output go STALE
+    // across compz.c edits (the Run cache keys only on the make-docfile
+    // binary + argv, not on file contents it isn't told about).  The
+    // absolute path make-docfile receives resolves fine after its `-d src`
+    // chdir (verified), and the other base sources above are stable enough
+    // to keep as plain addArg basenames.
+    if (enable_native_comp_zig) run_mdf.addFileArg(b.path("src/compz.c"));
     const globals_h = run_mdf.captureStdOut(.{ .basename = "globals.h" });
 
     const gen_globals_step = b.step("generate-globals", "Generate src/globals.h via make-docfile");
