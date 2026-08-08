@@ -127,9 +127,12 @@ jobs:
           fi
           # Expected failure shape: the final exe link needs the target's
           # system libraries, which are not installed on a Linux host.
-          if printf '%s\n' "$out" | grep -q "unable to find dynamic system library"; then
+          # macOS cross links also need the target's frameworks (gnutls
+          # links Security/CoreFoundation), which a Linux host cannot
+          # resolve; treat that the same as a missing system library.
+          if printf '%s\n' "$out" | grep -qE "unable to find (dynamic system library|framework)"; then
             real="$(printf '%s\n' "$out" | grep -E "error:" | \
-              grep -vE "unable to find dynamic system library|process exited with error code|the following build command failed" || true)"
+              grep -vE "unable to find (dynamic system library|framework)|process exited with error code|the following build command failed" || true)"
             if [ -n "$real" ]; then
               printf '%s\n' "$real"
               echo "::error::compile errors for ${{ matrix.target }}"
