@@ -2067,8 +2067,15 @@ pub fn build(b: *std.Build) void {
     // temacs + the wrapper: wire the dumped image (bootstrap-emacs.pdmp)
     // and the runtime loaddefs files into the install step.  The dump
     // chain depends on install_temacs (not the whole install step), so
-    // there is no cycle.
-    b.getInstallStep().dependOn(dump_compiled_step);
+    // there is no cycle.  Native only: the dump *executes* temacs over
+    // loadup, which is impossible for a cross target (the foreign temacs
+    // cannot run on the build host), so a cross `zig build -Dtarget=...`
+    // stays a compile-only check (install_temacs only), matching the
+    // cross-compile gates in zig-verify.yml.
+    const is_native_target = target.result.cpu.arch == b.graph.host.result.cpu.arch and
+        target.result.os.tag == b.graph.host.result.os.tag and
+        target.result.abi == b.graph.host.result.abi;
+    if (is_native_target) b.getInstallStep().dependOn(dump_compiled_step);
 
     // Final loaddefs generation for check/check-all: dump-compiled
     // scrubbed the loaddefs, and suites (require 'foo-loaddefs) at
