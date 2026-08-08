@@ -13,6 +13,53 @@ fn canonicalConfiguration(t: std.Target, allocator: std.mem.Allocator) []const u
     };
 }
 
+// Parse a committed vendored-source list (one relative path per line,
+// '#' comments allowed) into an allocated slice.  Keeps the hundreds of
+// nettle/gnutls C files out of build.zig while the lists themselves stay
+// content-tracked and reviewable under tools/gnutls-config/.  The parsed
+// strings point into the @embedFile'd list, which is static data, so the
+// returned slice stays valid for the whole build.
+fn vendorSourceList(b: *std.Build, comptime path: []const u8) []const []const u8 {
+    const contents = @embedFile(path);
+    var count: usize = 0;
+    var count_it = std.mem.splitScalar(u8, contents, '\n');
+    while (count_it.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (t.len > 0 and t[0] != '#') count += 1;
+    }
+    const list = b.allocator.alloc([]const u8, count) catch @panic("OOM");
+    var i: usize = 0;
+    var fill_it = std.mem.splitScalar(u8, contents, '\n');
+    while (fill_it.next()) |line| {
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (t.len > 0 and t[0] != '#') {
+            list[i] = t;
+            i += 1;
+        }
+    }
+    return list;
+}
+
+// gnulib modules whose global symbols GnuTLS's bundled gl/ redefines
+// (c-ctype, c-strcasecmp, memeq/streq, stat-time).  Emacs already provides
+// those exact symbols from its own Zig gnulib packages, so the GnuTLS
+// copies are compiled with hidden visibility to avoid duplicate exported
+// symbols in the final temacs link.
+fn gnutlsGlCollision(src: []const u8) bool {
+    const names = [_][]const u8{
+        "gl/c-ctype.c",
+        "gl/c-strcasecmp.c",
+        "gl/c-strncasecmp.c",
+        "gl/memeq.c",
+        "gl/streq.c",
+        "gl/stat-time.c",
+    };
+    for (names) |n| {
+        if (std.mem.eql(u8, src, n)) return true;
+    }
+    return false;
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -1534,12 +1581,125 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkLibrary(tree_sitter.artifact("tree-sitter"));
     exe.root_module.addIncludePath(tree_sitter.path("lib/include"));
 
+    // GnuTLS (HAVE_GNUTLS): gnutls_* symbols from src/gnutls.c.  Built
+    // from source as a Zig-managed dependency (build.zig.zon -> gnutls_src
+    // + nettle_src URL deps), replacing the Homebrew/system-installed
+    // library.  The configure-generated headers (config.h, gnutls.h, the
+    // gnulib + unistring replacements) and the exact source lists are
+    // committed in tools/gnutls-config (macOS aarch64 reference build; see
+    // tools/gnutls-config/README.md).  macOS only for now - the other
+    // targets keep the system library until their configs are vendored.
+    if (target.result.os.tag == .macos) {
+        const nettle_src = b.dependency("nettle_src", .{});
+        const nettle_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        // Nettle builds with its own config.h (committed as
+        // tools/gnutls-config/nettle/config.h) plus the bundled mini-gmp,
+        // so no external GMP is needed; the whole nettle+hogweed+mini-gmp
+        // source set lands in one static libnettle.
+        nettle_mod.addIncludePath(nettle_src.path("."));
+        nettle_mod.addIncludePath(b.path("tools/gnutls-config/nettle"));
+        const nettle_flags = [_][]const u8{ "-O2", "-DHAVE_CONFIG_H" };
+        // mini-gmp.o's mpz_* globals would collide with Emacs's own bignum
+        // (src/bignum.c, GMP-compatible); compile it hidden so GnuTLS's
+        // references bind to the local copy while Emacs's stay untouched.
+        const nettle_hidden_flags = [_][]const u8{ "-O2", "-DHAVE_CONFIG_H", "-fvisibility=hidden" };
+        for (vendorSourceList(b, "tools/gnutls-config/nettle-sources.txt")) |src| {
+            const flags = if (std.mem.eql(u8, src, "mini-gmp.c")) &nettle_hidden_flags else &nettle_flags;
+            nettle_mod.addCSourceFile(.{ .file = nettle_src.path(src), .flags = flags });
+        }
+        const nettle_lib = b.addLibrary(.{ .name = "nettle", .root_module = nettle_mod });
+
+        const gnutls_src = b.dependency("gnutls_src", .{});
+        // Vendored libunistring (NFC/NFKC normalization + Unicode category
+        // tables used by str-unicode.c/str-iconv.c); a separate module
+        // mirroring GnuTLS's own lib/unistring subbuild, whose sources must
+        // not see the main library's gnulib include dirs.
+        const gnutls_unistring_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        gnutls_unistring_mod.addIncludePath(b.path("tools/gnutls-config/unistring"));
+        gnutls_unistring_mod.addIncludePath(gnutls_src.path("lib/unistring"));
+        gnutls_unistring_mod.addIncludePath(b.path("tools/gnutls-config"));
+        for (vendorSourceList(b, "tools/gnutls-config/gnutls-unistring-sources.txt")) |src| {
+            gnutls_unistring_mod.addCSourceFile(.{ .file = gnutls_src.path(src), .flags = &nettle_flags });
+        }
+        const gnutls_unistring_lib = b.addLibrary(.{ .name = "unistring", .root_module = gnutls_unistring_mod });
+
+        const gnutls_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        // Include order mirrors lib/Makefile.am (DEFAULT_INCLUDES first,
+        // then AM_CPPFLAGS): lib, config.h dir, top, gnulib source +
+        // generated, public headers, x509, unistring, minitasn1, nettle.
+        gnutls_mod.addIncludePath(gnutls_src.path("lib"));
+        gnutls_mod.addIncludePath(b.path("tools/gnutls-config"));
+        gnutls_mod.addIncludePath(gnutls_src.path("."));
+        gnutls_mod.addIncludePath(gnutls_src.path("gl"));
+        gnutls_mod.addIncludePath(b.path("tools/gnutls-config/gl"));
+        gnutls_mod.addIncludePath(gnutls_src.path("lib/includes"));
+        gnutls_mod.addIncludePath(gnutls_src.path("lib/x509"));
+        gnutls_mod.addIncludePath(b.path("tools/gnutls-config/unistring"));
+        gnutls_mod.addIncludePath(gnutls_src.path("lib/unistring"));
+        gnutls_mod.addIncludePath(gnutls_src.path("lib/minitasn1"));
+        gnutls_mod.addIncludePath(gnutls_src.path("lib/nettle"));
+        gnutls_mod.addIncludePath(gnutls_src.path("lib/nettle/int"));
+        // <nettle/...> public headers (committed copies of the 47 headers
+        // GnuTLS's compiled sources include, mirroring the install prefix
+        // the reference build pointed NETTLE_CFLAGS at).
+        gnutls_mod.addIncludePath(b.path("tools/gnutls-config/nettle"));
+        const gnutls_flags = [_][]const u8{
+            "-O2",
+            "-DHAVE_CONFIG_H",
+            "-DGNUTLS_BUILDING_LIB=1",
+            "-DLOCALEDIR=\"\"",
+            "-DSYSTEM_PRIORITY_FILE=\"\"",
+        };
+        const gnutls_hidden_flags = [_][]const u8{
+            "-O2",
+            "-DHAVE_CONFIG_H",
+            "-DGNUTLS_BUILDING_LIB=1",
+            "-fvisibility=hidden",
+            "-DLOCALEDIR=\"\"",
+            "-DSYSTEM_PRIORITY_FILE=\"\"",
+        };
+        for (vendorSourceList(b, "tools/gnutls-config/gnutls-sources.txt")) |src| {
+            const flags = if (gnutlsGlCollision(src)) &gnutls_hidden_flags else &gnutls_flags;
+            gnutls_mod.addCSourceFile(.{ .file = gnutls_src.path(src), .flags = flags });
+        }
+        gnutls_mod.linkLibrary(nettle_lib);
+        gnutls_mod.linkLibrary(gnutls_unistring_lib);
+        // GnuTLS's macOS system-certificate loading (system/certs.c) uses
+        // Security + CoreFoundation; same frameworks as upstream's MACOSX
+        // branch of lib/Makefile.am.
+        gnutls_mod.linkFramework("Security", .{});
+        gnutls_mod.linkFramework("CoreFoundation", .{});
+        const gnutls_lib = b.addLibrary(.{ .name = "gnutls", .root_module = gnutls_mod });
+        exe.root_module.linkLibrary(gnutls_lib);
+        // src/gnutls.c includes <gnutls/gnutls.h> (generated, committed)
+        // and <gnutls/x509.h> + <gnutls/crypto.h> (from the tarball).
+        exe.root_module.addIncludePath(b.path("tools/gnutls-config"));
+        exe.root_module.addIncludePath(gnutls_src.path("lib/includes"));
+    }
+
     // System libraries that are not (yet) vendored, or are inherently
-    // platform-specific.  gnutls is not vendored yet; ncurses is a Unix
-    // terminal library and the w32 console needs no terminfo, so both
-    // stay on non-Windows Unix-likes.  ACL/ALSA/GPM/D-Bus back Linux-only
-    // subsystems (POSIX ACLs, ALSA sound, console mouse, D-Bus).
-    if (!is_windows and !is_musl) {
+    // platform-specific.  ncurses is a Unix terminal library and the w32
+    // console needs no terminfo, so it stays on non-Windows Unix-likes;
+    // gnutls comes from the vendored dependency above on macOS and from
+    // the system library on the other Unix-likes until their configs are
+    // vendored.  ACL/ALSA/GPM/D-Bus back Linux-only subsystems (POSIX
+    // ACLs, ALSA sound, console mouse, D-Bus).
+    if (target.result.os.tag == .macos) {
+        // Terminal support (gnutls is already linked above).
+        exe.root_module.linkSystemLibrary("ncurses", .{});
+    } else if (!is_windows and !is_musl) {
         // Core libraries
         exe.root_module.linkSystemLibrary("gnutls", .{});
 

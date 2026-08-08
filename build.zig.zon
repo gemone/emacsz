@@ -263,9 +263,29 @@
             .url = "https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.3.tar.xz",
             .hash = "N-V-__8AAGkIggL0prR3gvyXGozgwaS9Gmq1QoJmCjqqwEnB",
         },
+        // nettle: the crypto backend for GnuTLS (hashes, ciphers, public
+        // key), fetched by zig and compiled with zig cc into the static
+        // libnettle (with its bundled mini-gmp, so no external GMP).
+        // Configure-generated config.h/version.h are committed under
+        // tools/gnutls-config (macOS aarch64 reference build).
+        .nettle_src = .{
+            .url = "https://ftp.gnu.org/gnu/nettle/nettle-3.10.2.tar.gz",
+            .hash = "N-V-__8AADwFewBo6OJWkkth2AnOW9eVOt3svhCtS7ga_OQc",
+        },
+        // gnutls: the TLS library backing `gnutls-*' (src/gnutls.c).
+        // Fetched by zig and compiled with zig cc (minitasn1 + vendored
+        // unistring + nettle backend; no p11-kit/tpm/pkcs11/idn2/zlib)
+        // into the static libgnutls that replaces the system-installed
+        // library. Configure-generated config.h + gnutls.h + gnulib and
+        // unistring headers are committed under tools/gnutls-config.
+        .gnutls_src = .{
+            .url = "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.13.tar.xz",
+            .hash = "N-V-__8AAH0-EAR3RviaBbm3AeH1WBMFsgm_sQIS_InlvfyY",
+        },
     },
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        "tools/gnutls-config/**",
     },
 }
