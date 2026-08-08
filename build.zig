@@ -1135,15 +1135,21 @@ pub fn build(b: *std.Build) void {
         for (base_sources) |src| {
             const flags: []const []const u8 =
                 if (std.mem.eql(u8, src, "src/timefns.c")) &timefns_flags else base_flags;
-            // On macOS the vendored libncurses provides tgetent/tgetstr/
-            // tputs/tgoto/UP/BC/PC from the system terminfo database;
-            // Emacs's own termcap.c only reads /etc/termcap (absent on
-            // macOS) and tparam.c's BC/UP/tgoto would duplicate the
-            // ncurses globals, so both are skipped (terminfo.c supplies
-            // tparam via ncurses tparm; same reasoning as the w32 skip
-            // below - upstream leaves TERMCAP_OBJ empty when a terminfo
-            // library is present).
-            if (target.result.os.tag == .macos and
+            // On every ncurses/terminfo platform (macOS with the vendored
+            // libncurses, and glibc Linux with the system libncurses),
+            // tgetent/tgetstr/tputs/tgoto/UP/BC/PC come from the ncurses
+            // terminfo database.  Emacs's own termcap.c only reads
+            // /etc/termcap (absent on modern systems); if compiled it
+            // provides a tgetent that SHADOWS ncurses's and fails to find
+            // any terminal (e.g. interactive `emacs -nw` aborts with
+            // "Cannot open terminfo database file"), and tparam.c's
+            // BC/UP/tgoto would duplicate the ncurses globals.  So both are
+            // skipped on ncurses builds (terminfo.c supplies tparam via
+            // ncurses tparm; same reasoning as the w32 skip below - upstream
+            // leaves TERMCAP_OBJ empty when a terminfo library is present).
+            // musl keeps termcap.c (no ncurses; TERMCAP_OBJ=termcap.o);
+            // w32 needs no terminfo.
+            if (!is_windows and !is_musl and
                 (std.mem.eql(u8, src, "src/termcap.c") or
                  std.mem.eql(u8, src, "src/tparam.c")))
                 continue;
@@ -1154,10 +1160,12 @@ pub fn build(b: *std.Build) void {
         }
 
         // TERMCAP_OBJ: upstream builds terminfo.o when TERMINFO, else
-        // termcap.o (+ tparam.o on MS-DOS).  macOS uses the vendored
-        // libncurses terminfo, so terminfo.c (tparam via ncurses tparm)
-        // replaces the termcap/tparam pair skipped above.
-        if (target.result.os.tag == .macos) {
+        // termcap.o (+ tparam.o on MS-DOS).  Every ncurses/terminfo
+        // platform (macOS vendored libncurses, glibc Linux system
+        // libncurses) uses terminfo.c (tparam via ncurses tparm) to
+        // replace the termcap/tparam pair skipped above.  musl stays on
+        // termcap.c (no ncurses); w32 has no terminfo.
+        if (!is_windows and !is_musl) {
             exe.root_module.addCSourceFile(.{
                 .file = b.path("src/terminfo.c"),
                 .flags = base_flags,
@@ -2069,6 +2077,17 @@ pub fn build(b: *std.Build) void {
     // run after an external clean and suites fail to load *-loaddefs.el.
     run_loaddefs_final.has_side_effects = true;
     run_loaddefs_final.step.dependOn(&run_dump_compiled.step);
+    // dump-compiled produces "the pdmp that interactive use actually loads"
+    // (its own docstring); smoke verifies that dumped emacs starts. Both must
+    // leave the runtime loaddefs files present: the dump SCRUBBED them (loadup
+    // must use ldefs-boot.el), and cl-lib.el loads cl-loaddefs.el at runtime
+    // to autoload cl-extra's cl-some/cl-mapcan/cl-coerce (cl-lib deliberately
+    // does NOT require cl-extra). Without this, an interactive `emacs -nw`
+    // has void cl-* functions and fails to load any use-package-based
+    // ~/.emacs.d. check already pulls run_loaddefs_final (via run-check); wire
+    // it into the two "produce a usable emacs" flows too so they leave a tree
+    // that autoloads correctly.
+    dump_compiled_step.dependOn(&run_loaddefs_final.step);
 
     // Smoke step (`zig build smoke`): prove the dumped emacs actually starts
     // and evaluates Lisp by printing emacs-version from the pdmp. Mirrors
@@ -2095,6 +2114,7 @@ pub fn build(b: *std.Build) void {
     const run_smoke = b.addRunArtifact(smoke_tool);
     run_smoke.setCwd(b.path("."));
     run_smoke.step.dependOn(&run_dump_compiled.step);
+    run_smoke.step.dependOn(&run_loaddefs_final.step);
     // Depend on chmod_emacs_wrapper (which depends on install_emacs_wrapper)
     // so the +x bit is set before smoke runs ./zig-out/bin/emacs.
     run_smoke.step.dependOn(&chmod_emacs_wrapper.step);
