@@ -14,7 +14,14 @@
 // Run with cwd = repo root. The 3 .gl.h outputs land in lib/malloc/
 // alongside the tracked sources and are themselves tracked, so
 // byte-identical regeneration does not dirty the working tree.
+//
+// Additionally generates lib/endian.h from lib/endian.in.h with the
+// per-target @VAR@ substitution configure performs, so a fresh checkout
+// builds without autotools artifacts.  The target tag is passed as
+// argv[1] ("macos", "linux", "windows"); without it the build host is
+// used.
 const std = @import("std");
+const builtin = @import("builtin");
 
 const banner = "/* DO NOT EDIT! GENERATED AUTOMATICALLY! */";
 
@@ -27,11 +34,16 @@ const Job = struct {
     drop_libc_hidden_proto: bool,
 };
 
-pub fn main() !void {
+pub fn main(minimal: std.process.Init.Minimal) !void {
     var io_threaded: std.Io.Threaded = .init_single_threaded;
     const io = io_threaded.io();
     const a = std.heap.smp_allocator;
     const cwd = std.Io.Dir.cwd();
+
+    var arg_it = std.process.Args.Iterator.init(minimal.args);
+    defer arg_it.deinit();
+    _ = arg_it.next(); // argv[0]
+    const target_tag = arg_it.next() orelse hostTag();
 
     const jobs = [_]Job{
         .{
@@ -66,6 +78,63 @@ pub fn main() !void {
     };
 
     for (jobs) |job| try runOne(io, a, cwd, job);
+    try generateEndianH(io, a, cwd, target_tag);
+}
+
+/// "macos" for Darwin/BSD, "linux" for glibc/musl, "windows" otherwise.
+fn hostTag() []const u8 {
+    return switch (builtin.os.tag) {
+        .macos, .ios, .tvos, .watchos, .visionos, .freebsd, .openbsd, .netbsd, .dragonfly => "macos",
+        .windows => "windows",
+        else => "linux",
+    };
+}
+
+/// Substitute configure's @VAR@ placeholders in lib/endian.in.h and
+/// write lib/endian.h, prepending the generated banner.  macOS and the
+/// BSDs provide <sys/endian.h> (not <endian.h>); Linux/musl provide
+/// <endian.h>; Windows has neither, so the template's byte-order
+/// fallback definitions are used.
+fn generateEndianH(io: std.Io, a: std.mem.Allocator, cwd: std.Io.Dir, target_tag: []const u8) !void {
+    const input = try cwd.readFileAlloc(io, "lib/endian.in.h", a, .limited(8 * 1024 * 1024));
+    defer a.free(input);
+
+    const is_linux = std.mem.eql(u8, target_tag, "linux");
+    const is_windows = std.mem.eql(u8, target_tag, "windows");
+    const have_endian: []const u8 = if (is_linux) "1" else "0";
+    const have_sys_endian: []const u8 = if (is_linux or is_windows) "0" else "1";
+
+    const tokens = [_][2][]const u8{
+        .{ "@GUARD_PREFIX@", "GL" },
+        .{ "@PRAGMA_SYSTEM_HEADER@", "#pragma GCC system_header" },
+        .{ "@PRAGMA_COLUMNS@", "" },
+        .{ "@HAVE_ENDIAN_H@", have_endian },
+        .{ "@INCLUDE_NEXT@", "include_next" },
+        .{ "@NEXT_ENDIAN_H@", "<endian.h>" },
+        .{ "@HAVE_SYS_ENDIAN_H@", have_sys_endian },
+        .{ "@ENDIAN_H_JUST_MISSING_STDINT@", "0" },
+    };
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(a);
+    try out.appendSlice(a, banner);
+    try out.append(a, '\n');
+
+    var it = std.mem.splitScalar(u8, input, '\n');
+    while (it.next()) |line0| {
+        var line: []u8 = try a.dupe(u8, line0);
+        defer a.free(line);
+        for (tokens) |tok| {
+            if (std.mem.indexOf(u8, line, tok[0]) == null) continue;
+            const next = try replaceAll(a, line, tok[0], tok[1]);
+            a.free(line);
+            line = next;
+        }
+        try out.appendSlice(a, line);
+        try out.append(a, '\n');
+    }
+
+    try cwd.writeFile(io, .{ .sub_path = "lib/endian.h", .data = out.items });
 }
 
 fn runOne(io: std.Io, a: std.mem.Allocator, cwd: std.Io.Dir, job: Job) !void {

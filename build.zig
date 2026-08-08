@@ -67,6 +67,14 @@ pub fn build(b: *std.Build) void {
     });
     const generate_headers = b.addRunArtifact(gl_tool);
     generate_headers.setCwd(b.path("."));
+    // The endian.h content depends on the target (macOS/BSD use
+    // <sys/endian.h>, Linux/musl <endian.h>); pass the tag so the
+    // generated header matches the build target, not the host.
+    generate_headers.addArg(switch (target.result.os.tag) {
+        .macos, .ios, .tvos, .watchos, .visionos, .freebsd, .openbsd, .netbsd, .dragonfly => "macos",
+        .windows => "windows",
+        else => "linux",
+    });
     const generate_step = b.step("generate-headers", "Generate Gnulib .gl.h headers");
     generate_step.dependOn(&generate_headers.step);
 
