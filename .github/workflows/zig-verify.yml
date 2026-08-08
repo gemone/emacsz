@@ -18,7 +18,6 @@ on:
       - 'build-aux/**'
       - 'etc/**'
       - 'test/**'
-  workflow_dispatch:
       - 'lisp/**'
       - '.github/workflows/zig-verify.yml'
   pull_request:
