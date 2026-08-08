@@ -133,6 +133,13 @@ const macos_overrides: []const Override = &.{
     .{ .name = "HAVE_INOTIFY_INIT1" },
     .{ .name = "HAVE_LINUX_FILTER_H" },
     .{ .name = "HAVE_LINUX_SYSINFO" },
+    .{ .name = "HAVE_DECL_SECCOMP_SET_MODE_FILTER" },
+    .{ .name = "HAVE_DECL_SECCOMP_FILTER_FLAG_TSYNC" },
+    // The committed Linux value advertises Linux-only subsystems
+    // (SECCOMP, DBUS, GPM, INOTIFY, SOUND, XIM) in
+    // EMACS_CONFIG_FEATURES; the seccomp ert tests key off that token,
+    // so a darwin build must not claim them.
+    .{ .name = "EMACS_CONFIG_FEATURES", .value = "\"ACL GMP GNUTLS LCMS2 LIBXML2 NOTIFY PDUMPER SQLITE3 THREADS TREE_SITTER ZLIB\"" },
     .{ .name = "HAVE_LINUX_XATTR_H" },
     .{ .name = "HAVE_MNTENT_H" },
     .{ .name = "HAVE_SETMNTENT" },
