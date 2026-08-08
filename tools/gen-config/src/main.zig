@@ -87,6 +87,11 @@ const macos_overrides: []const Override = &.{
     .{ .name = "HAVE_SYS_SYSINFO_H" },
     .{ .name = "HAVE_LINUX_SECCOMP_H" },
     .{ .name = "HAVE_LINUX_FS_H" },
+    // The committed Linux answer defines GNU_LINUX; without an undef it
+    // leaks into darwin builds and sysdep.c selects the /proc-based
+    // system_process_attributes, making process-attributes return nil
+    // (no /proc on macOS), which breaks desktop-tests.
+    .{ .name = "GNU_LINUX" },
     .{ .name = "HAVE_MEMPCPY" },
     .{ .name = "HAVE_MEMRCHR" },
     .{ .name = "HAVE_LANGINFO__NL_PAPER_WIDTH" },
