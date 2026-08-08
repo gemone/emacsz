@@ -8,7 +8,6 @@
 const std = @import("std");
 const aslr = @import("aslr.zig");
 const builtin = @import("builtin");
-const temacs_path = @import("temacs-path.zig");
 
 const preload = "(progn (load \"cl-macs\") (load \"cl-seq\") (load \"cl-extra\") (require (quote ert)))";
 
@@ -106,7 +105,6 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     const out_dir = try std.fs.path.join(gpa, &.{ root, "zig-out", "check-all" });
     defer gpa.free(out_dir);
-    {
     // std.os.linux.mkdir is Linux-only; on macOS it silently does
     // nothing, so the per-suite logs were never written.  Use the
     // cross-platform Io API instead.
@@ -114,7 +112,20 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         error.PathAlreadyExists => {},
         else => return err,
     };
-    }
+    // Snapshot the temacs binary and its dump: a concurrent rebuild can
+    // replace them mid-run, and every suite then dies with "not a dump
+    // file".  Spawning from the copies keeps the run self-consistent.
+    const temacs_snap = try std.fs.path.join(gpa, &.{ out_dir, "temacs-snapshot" });
+    defer gpa.free(temacs_snap);
+    const pdmp_snap = try std.fs.path.join(gpa, &.{ out_dir, "bootstrap-emacs-snapshot.pdmp" });
+    defer gpa.free(pdmp_snap);
+    const temacs_src = try std.fs.path.join(gpa, &.{ root, "zig-out", "bin", "temacs" });
+    defer gpa.free(temacs_src);
+    const pdmp_src = try std.fs.path.join(gpa, &.{ root, "zig-out", "bin", "bootstrap-emacs.pdmp" });
+    defer gpa.free(pdmp_src);
+    const snap_options: std.Io.Dir.CopyFileOptions = .{ .replace = true };
+    try std.Io.Dir.copyFileAbsolute(temacs_src, temacs_snap, io, snap_options);
+    try std.Io.Dir.copyFileAbsolute(pdmp_src, pdmp_snap, io, snap_options);
 
     var pass: usize = 0;
     var fail: usize = 0;
@@ -136,16 +147,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
         const form = try std.fmt.allocPrint(gpa, "(progn {s} (load \"{s}\") (let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit (quote (not (or (tag :expensive-test) (tag :unstable) (tag :nativecomp)))))))", .{ preload, loadtarget });
         defer gpa.free(form);
-        const dump_path = try std.fs.path.join(gpa, &.{ root, "zig-out", "bin", "bootstrap-emacs.pdmp" });
-        defer gpa.free(dump_path);
-        const dump_arg = try std.fmt.allocPrint(gpa, "--dump-file={s}", .{dump_path});
+        const dump_arg = try std.fmt.allocPrint(gpa, "--dump-file={s}", .{pdmp_snap});
         defer gpa.free(dump_arg);
-        const temacs = try temacs_path.joinBin(gpa, root);
-        defer gpa.free(temacs);
         const l1 = try std.fs.path.join(gpa, &.{ root, "test" });
         defer gpa.free(l1);
 
-        const argv = [_][]const u8{ temacs, "--batch", "-L", l1, "-L", suitedir, dump_arg, "--eval", form };
+        const argv = [_][]const u8{ temacs_snap, "--batch", "-L", l1, "-L", suitedir, dump_arg, "--eval", form };
 
         var out: []u8 = &.{};
         var out_owned = false;
