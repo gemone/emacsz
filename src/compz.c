@@ -49,14 +49,11 @@
 
 /* ------------------------------------------------------------------ */
 /* (a) freloc state — mirror comp.c:526 f_reloc_t / comp.c:824
-   freloc_check_fill, but ZELN-scoped.  The spike imports exactly ONE
-   runtime subr (&Fmessage); index = freloc slot.  The .ll emitted by
-   tools/zeln-compile loads freloc[0] and calls it with the Emacs MANY
-   calling convention (Lisp_Object (*)(ptrdiff_t, Lisp_Object *)),
-   matching struct Lisp_Subr's aMANY slot — so the .ll needs no extern
-   shim and the main executable does not need -rdynamic: the .zeln
-   reaches Fmessage purely through the loader-patched freloc pointer,
-   exactly like gccjit's .eln (comp.c:5311).  */
+   freloc_check_fill, but ZELN-scoped over the fixed M1 surface below.
+   The .ll reaches every C entry point purely through the loader-patched
+   freloc pointer (`base -> base[IDX_*]'), so the .zeln needs no extern
+   symbol and the main executable needs no -rdynamic — exactly like
+   gccjit's .eln (comp.c:5311).  */
 
 #define ZELN_F_RELOC_MAX 64
 
@@ -68,16 +65,202 @@ typedef struct
 
 static zeln_f_reloc_t zeln_freloc;
 
-/* IDX_MESSAGE = 0 is the single imported runtime subr for the spike.
-   The native fn (message "zeln-spike alive") 42 calls message once.  */
-enum { IDX_MESSAGE = 0 };
+/* ------------------------------------------------------------------ */
+/* M1 freloc surface — a FIXED, CLOSED set of C entry points every M1
+   .zeln may call.  Each opcode the M1 emitter translates maps to a
+   fixed IDX_* known to both the emitter (tools/zeln-compile) and this
+   table; the manifest / ABI hash are derived from the same table, so
+   there is no per-function freloc walking and no per-function ABI
+   drift (plan M1 design).  Direct-call specialization is M3.
+
+   The table holds void* fn pointers; the emitter emits a per-IDX call
+   with the agreed signature (heterogeneous calling convention, uniform
+   storage).  Two conventions are in use:
+
+     - IDX_SETUP_ARGS:  Lisp_Object *(*)(ptrdiff_t, ptrdiff_t,
+                            Lisp_Object *, Lisp_Object *)  -> ptr
+       (the native prologue; returns the new virtual-stack `top').
+     - IDX_NILP:        ptrdiff_t (*)(ptrdiff_t, Lisp_Object *) -> 0/1
+       (a RAW 0/1, not a tagged Lisp_Object, so the IR can branch on
+       `icmp eq i64 %ret, 0' without knowing Lisp_Object tag bits).
+     - every other IDX: Lisp_Object (*)(ptrdiff_t, Lisp_Object *)
+       (the uniform MANY convention matching struct Lisp_Subr aMANY).
+
+   ZELN_ABI_VERSION was bumped Z1 -> Z2 for this layout + surface, so a
+   stale M0 .zeln (whose freloc surface was just &Fmessage) is rejected
+   by the hash gate before any native code runs.  */
+
+/* Prologue helper: replicates exec_byte_code setup_frame arg binding
+   (bytecode.c:535-549) into the caller-provided virtual stack.  ARGS
+   is the MANY args vector the subr received; STACK is &frame_base of
+   the native fn's alloca.  Returns the new `top' (deepest pushed
+   value), aliasing STACK — exactly the interpreter's `top' after its
+   arg-binding loop.  Mandatory/rest/nonrest are decoded from
+   ARGS_TEMPLATE, which the emitter bakes in as a compile-time literal.  */
+Lisp_Object *
+zeln_setup_args (ptrdiff_t args_template, ptrdiff_t nargs,
+		 Lisp_Object *args, Lisp_Object *stack)
+{
+  bool rest = (args_template & 128) != 0;
+  int mandatory = args_template & 127;
+  ptrdiff_t nonrest = args_template >> 8;
+  if (! (mandatory <= nargs && (rest || nargs <= nonrest)))
+    Fsignal (Qwrong_number_of_arguments,
+	     list2 (Fcons (make_fixnum (mandatory), make_fixnum (nonrest)),
+		    make_fixnum (nargs)));
+  Lisp_Object *top = stack - 1;	/* mirror `top = frame_base - 1' */
+  ptrdiff_t pushedargs = min (nonrest, nargs);
+  for (ptrdiff_t i = 0; i < pushedargs; i++)
+    *++top = args[i];		/* PUSH */
+  if (nonrest < nargs)
+    *++top = Flist (nargs - nonrest, args + nonrest);
+  else
+    for (ptrdiff_t i = nargs - rest; i < nonrest; i++)
+      *++top = Qnil;
+  return top;
+}
+
+/* Generic call shim for the Bcall family.  args[0] = fun (the TOP the
+   interpreter reads), args[1..nargs-1] = the actuals.  funcall_general
+   is the EXACT non-fast-path the interpreter's docall falls back to
+   (bytecode.c:824): it does symbol resolution, closure dispatch
+   (recursive exec_byte_code), funcall_subr, with full backtrace /
+   debug / gc.  So a .zeln calling another closure or a subr behaves
+   identically to the interpreter.  */
+static Lisp_Object
+zeln_funcall (ptrdiff_t nargs, Lisp_Object *args)
+{
+  return funcall_general (args[0], nargs - 1, args + 1);
+}
+
+/* Branch-test helper.  Returns a RAW 0/1 (NOT a tagged Lisp_Object) so
+   the emitter's conditional `br' can test `icmp eq i64 %ret, 0' without
+   ever computing Lisp_Object tag bits in the IR (USE_LSB_TAG never
+   leaks).  The value is consumed only by the branch.  */
+static ptrdiff_t
+zeln_isnil (ptrdiff_t nargs, Lisp_Object *args)
+{
+  return NILP (args[0]) ? 1 : 0;
+}
+
+/* Per-opcode primitive shims.  Each wraps the C primitive the M1
+   opcode maps to, behind the uniform MANY signature.  Calling the
+   generic primitive directly (instead of the interpreter's fixnum
+   inline fast path) is behaviorally identical: the fast path only
+   short-circuits the common case and falls back to the SAME primitive
+   on overflow / non-fixnum (bytecode.c:1331 Bplus, 1256 Beqlsign, ...).
+   The differential test includes fixnum-overflow inputs to prove it.  */
+static Lisp_Object zeln_plus     (ptrdiff_t n, Lisp_Object *a) { return Fplus     (n, a); }
+static Lisp_Object zeln_minus    (ptrdiff_t n, Lisp_Object *a) { return Fminus    (n, a); }
+static Lisp_Object zeln_times    (ptrdiff_t n, Lisp_Object *a) { return Ftimes    (n, a); }
+static Lisp_Object zeln_sub1     (ptrdiff_t n, Lisp_Object *a) { return Fsub1     (a[0]); }
+static Lisp_Object zeln_add1     (ptrdiff_t n, Lisp_Object *a) { return Fadd1     (a[0]); }
+static Lisp_Object zeln_negate   (ptrdiff_t n, Lisp_Object *a) { return Fminus    (1, a); }
+static Lisp_Object zeln_max      (ptrdiff_t n, Lisp_Object *a) { return Fmax      (n, a); }
+static Lisp_Object zeln_min      (ptrdiff_t n, Lisp_Object *a) { return Fmin      (n, a); }
+static Lisp_Object zeln_eqlsign  (ptrdiff_t n, Lisp_Object *a) { return Feqlsign  (n, a); }
+static Lisp_Object zeln_gtr      (ptrdiff_t n, Lisp_Object *a) { return Fgtr      (n, a); }
+static Lisp_Object zeln_lss      (ptrdiff_t n, Lisp_Object *a) { return Flss      (n, a); }
+static Lisp_Object zeln_leq      (ptrdiff_t n, Lisp_Object *a) { return Fleq      (n, a); }
+static Lisp_Object zeln_geq      (ptrdiff_t n, Lisp_Object *a) { return Fgeq      (n, a); }
+static Lisp_Object zeln_equal    (ptrdiff_t n, Lisp_Object *a) { return Fequal    (a[0], a[1]); }
+static Lisp_Object zeln_eq       (ptrdiff_t n, Lisp_Object *a) { return Feq       (a[0], a[1]); }
+static Lisp_Object zeln_null     (ptrdiff_t n, Lisp_Object *a) { return Fnull     (a[0]); }
+static Lisp_Object zeln_car      (ptrdiff_t n, Lisp_Object *a) { return Fcar      (a[0]); }
+static Lisp_Object zeln_cdr      (ptrdiff_t n, Lisp_Object *a) { return Fcdr      (a[0]); }
+static Lisp_Object zeln_cons     (ptrdiff_t n, Lisp_Object *a) { return Fcons     (a[0], a[1]); }
+static Lisp_Object zeln_list1    (ptrdiff_t n, Lisp_Object *a) { return list1     (a[0]); }
+static Lisp_Object zeln_list2    (ptrdiff_t n, Lisp_Object *a) { return list2     (a[0], a[1]); }
+static Lisp_Object zeln_list3    (ptrdiff_t n, Lisp_Object *a) { return list3     (a[0], a[1], a[2]); }
+static Lisp_Object zeln_list4    (ptrdiff_t n, Lisp_Object *a) { return list4     (a[0], a[1], a[2], a[3]); }
+static Lisp_Object zeln_list     (ptrdiff_t n, Lisp_Object *a) { return Flist     (n, a); }
+static Lisp_Object zeln_symbolp  (ptrdiff_t n, Lisp_Object *a) { return Fsymbolp  (a[0]); }
+static Lisp_Object zeln_consp    (ptrdiff_t n, Lisp_Object *a) { return Fconsp    (a[0]); }
+static Lisp_Object zeln_stringp  (ptrdiff_t n, Lisp_Object *a) { return Fstringp  (a[0]); }
+static Lisp_Object zeln_listp    (ptrdiff_t n, Lisp_Object *a) { return Flistp    (a[0]); }
+static Lisp_Object zeln_numberp  (ptrdiff_t n, Lisp_Object *a) { return Fnumberp  (a[0]); }
+static Lisp_Object zeln_integerp (ptrdiff_t n, Lisp_Object *a) { return Fintegerp (a[0]); }
+
+/* The IDX_* enum: stable indices referenced by the emitter's IR
+   (`getelementptr [SURFACE x ptr], %lt, 0, IDX_*').  Order is frozen:
+   adding an entry appends; never reorder (the hash fingerprints the
+   ordered name list).  */
+enum {
+  IDX_SETUP_ARGS = 0,
+  IDX_FUNCALL,
+  IDX_NILP,
+  IDX_PLUS,
+  IDX_MINUS,
+  IDX_TIMES,
+  IDX_SUB1,
+  IDX_ADD1,
+  IDX_NEGATE,
+  IDX_MAX,
+  IDX_MIN,
+  IDX_EQLSIGN,
+  IDX_GTR,
+  IDX_LSS,
+  IDX_LEQ,
+  IDX_GEQ,
+  IDX_EQUAL,
+  IDX_EQ,
+  IDX_NULL,
+  IDX_CAR,
+  IDX_CDR,
+  IDX_CONS,
+  IDX_LIST1,
+  IDX_LIST2,
+  IDX_LIST3,
+  IDX_LIST4,
+  IDX_LIST,
+  IDX_SYMBOLP,
+  IDX_CONSP,
+  IDX_STRINGP,
+  IDX_LISTP,
+  IDX_NUMBERP,
+  IDX_INTEGERP,
+  ZELN_F_RELOC_COUNT
+};
 
 static const struct
 {
   const char *name;
+  const char *arity;		/* prin1-style arity fingerprint token */
   void *fn;
 } zeln_imports[] = {
-  { "message", (void *) &Fmessage },
+  [IDX_SETUP_ARGS] = { "zeln-setup-args", "(0 . many)", (void *) &zeln_setup_args },
+  [IDX_FUNCALL]    = { "zeln-funcall",    "(0 . many)", (void *) &zeln_funcall },
+  [IDX_NILP]       = { "zeln-isnil",      "1",          (void *) &zeln_isnil },
+  [IDX_PLUS]       = { "+",               "(0 . many)", (void *) &zeln_plus },
+  [IDX_MINUS]      = { "-",               "(0 . many)", (void *) &zeln_minus },
+  [IDX_TIMES]      = { "*",               "(0 . many)", (void *) &zeln_times },
+  [IDX_SUB1]       = { "1-",              "1",          (void *) &zeln_sub1 },
+  [IDX_ADD1]       = { "1+",              "1",          (void *) &zeln_add1 },
+  [IDX_NEGATE]     = { "negate",          "1",          (void *) &zeln_negate },
+  [IDX_MAX]        = { "max",             "(1 . many)", (void *) &zeln_max },
+  [IDX_MIN]        = { "min",             "(1 . many)", (void *) &zeln_min },
+  [IDX_EQLSIGN]    = { "=",               "(1 . many)", (void *) &zeln_eqlsign },
+  [IDX_GTR]        = { ">",               "(1 . many)", (void *) &zeln_gtr },
+  [IDX_LSS]        = { "<",               "(1 . many)", (void *) &zeln_lss },
+  [IDX_LEQ]        = { "<=",              "(1 . many)", (void *) &zeln_leq },
+  [IDX_GEQ]        = { ">=",              "(1 . many)", (void *) &zeln_geq },
+  [IDX_EQUAL]      = { "equal",           "2",          (void *) &zeln_equal },
+  [IDX_EQ]         = { "eq",              "2",          (void *) &zeln_eq },
+  [IDX_NULL]       = { "null",            "1",          (void *) &zeln_null },
+  [IDX_CAR]        = { "car",             "1",          (void *) &zeln_car },
+  [IDX_CDR]        = { "cdr",             "1",          (void *) &zeln_cdr },
+  [IDX_CONS]       = { "cons",            "2",          (void *) &zeln_cons },
+  [IDX_LIST1]      = { "list1",           "1",          (void *) &zeln_list1 },
+  [IDX_LIST2]      = { "list2",           "2",          (void *) &zeln_list2 },
+  [IDX_LIST3]      = { "list3",           "3",          (void *) &zeln_list3 },
+  [IDX_LIST4]      = { "list4",           "4",          (void *) &zeln_list4 },
+  [IDX_LIST]       = { "list",            "(0 . many)", (void *) &zeln_list },
+  [IDX_SYMBOLP]    = { "symbolp",         "1",          (void *) &zeln_symbolp },
+  [IDX_CONSP]      = { "consp",           "1",          (void *) &zeln_consp },
+  [IDX_STRINGP]    = { "stringp",         "1",          (void *) &zeln_stringp },
+  [IDX_LISTP]      = { "listp",           "1",          (void *) &zeln_listp },
+  [IDX_NUMBERP]    = { "numberp",         "1",          (void *) &zeln_numberp },
+  [IDX_INTEGERP]   = { "integerp",        "1",          (void *) &zeln_integerp },
 };
 
 static void
@@ -85,18 +268,21 @@ zeln_freloc_check_fill (void)
 {
   if (zeln_freloc.size)
     return;
-  eassert (countof (zeln_imports) <= ZELN_F_RELOC_MAX);
-  for (ptrdiff_t i = 0; i < (ptrdiff_t) countof (zeln_imports); i++)
-    zeln_freloc.link_table[i] = zeln_imports[i].fn;
-  zeln_freloc.size = (ptrdiff_t) countof (zeln_imports);
+  eassert (ZELN_F_RELOC_COUNT <= ZELN_F_RELOC_MAX);
+  for (ptrdiff_t i = 0; i < ZELN_F_RELOC_COUNT; i++)
+    {
+      eassert (zeln_imports[i].fn != NULL);
+      zeln_freloc.link_table[i] = zeln_imports[i].fn;
+    }
+  zeln_freloc.size = ZELN_F_RELOC_COUNT;
 }
 
 /* ------------------------------------------------------------------ */
 /* (b) ABI hash — mirror comp.c:782 hash_native_abi + comp.c:723
    comp_hash_string (MD5 -> hex -> first 8 chars), but over ZELN's own
-   ABI tag + the spike's own imported subr surface.  Distinct from the
-   gccjit ABI_VERSION "13" so a stale .eln hash can never collide with a
-   ZELN hash and vice versa.
+   ABI tag + the fixed M1 freloc surface.  Distinct from the gccjit
+   ABI_VERSION "13" so a stale .eln hash can never collide with a ZELN
+   hash and vice versa.
 
    Vzeln_abi_hash is NOT declared here: DEFVAR_LISP ("zeln-abi-hash",
    Vzeln_abi_hash, ...) in syms_of_compz makes make-docfile emit
@@ -104,27 +290,35 @@ zeln_freloc_check_fill (void)
    the name is globally available (via lisp.h -> globals.h) with no
    separate extern/definition (same pattern as comp.c's Vcomp_abi_hash).  */
 
+/* The signature fingerprint over the ordered M1 freloc surface:
+   name ++ arity per import (mirror comp.c:769 comp--subr-signature).
+   Constant for ALL M1 functions; shared by the hash and the manifest
+   so they cannot drift apart.  */
+static Lisp_Object
+zeln_signature_string (void)
+{
+  Lisp_Object sig = build_string ("");
+  for (ptrdiff_t i = 0; i < ZELN_F_RELOC_COUNT; i++)
+    sig = concat3 (sig,
+		   build_string (zeln_imports[i].name),
+		   build_string (zeln_imports[i].arity));
+  return sig;
+}
+
 static void
 hash_zeln_abi (void)
 {
   if (!NILP (Vzeln_abi_hash))
     return;
 
-  /* Subr-signature string for the spike's imports:
-       name ++ prin1 (subr-arity)        mirror comp.c:769 comp--subr-signature
-     The M0 spike imports exactly one subr, `message', whose arity is
-     (1 . MANY) -> prin1 -> "(1 . many)"; the composed signature is the
-     fixed literal below.  (M1+ generalizes this by walking the imported
-     subr list through Fsymbol_function + Fsubr_arity; Fsubr_arity takes
-     the subr Lisp_Object, not the C fn ptr, so the general form belongs
-     with the real importer.)  */
-  Lisp_Object sig = build_string ("message(1 . many)");
+  Lisp_Object sig = zeln_signature_string ();
 
   /* Key = ABI_VERSION ++ version ++ config ++ config-options ++ sig,
-     mirroring comp.c:787-793.  ZELN_ABI_VERSION ("Z1") is the
+     mirroring comp.c:787-793.  ZELN_ABI_VERSION ("Z2" for M1) is the
      ZELN-native analogue of gccjit's ABI_VERSION ("13"); it comes from
      config.h (config_values.txt + tools/gen-config), not a #define
-     here, so the spike and the gate compute it from one source.  */
+     here, so the serializer, the gate, and the Zig tool compute it from
+     one source.  */
   Lisp_Object key
     = concat3 (build_string (ZELN_ABI_VERSION),
 	       concat3 (Vemacs_version, Vsystem_configuration,
@@ -224,21 +418,31 @@ For internal use.  */)
   zeln_patch_freloc (e);
   zeln_fill_d_reloc (e);
 
-  /* Wrap the native machine code into a freshly-allocated subr-0 so the
-     caller can funcall it.  Mirrors how comp.c exposes a native fn as a
-     callable Lisp_Object; M0 uses a plain C subr (gccjit uses a closure)
-     because the spike has no captured lexvars.  ALLOCATE_PLAIN_PSEUDOVECTOR
-     sets lisplen=0, so GC traces none of the subr's Lisp_Object slots —
-     we still zero the non-header fields defensively (backtrace / doc
-     lookup may read symbol_name / intspec / doc).  */
+  /* Wrap the native machine code into a freshly-allocated MANY subr so
+     the caller can funcall it.  M1 native fns use the MANY convention
+     (i64 (i64 nargs, ptr args)) matching the aMANY slot (lisp.h:2188);
+     the M0 spike's @zeln_spike_native was moved to the same convention
+     so one loader path serves both.  funcall_subr dispatches aMANY when
+     max_args == MANY (eval.c:3301), passing the raw (nargs, args) — the
+     native fn's prologue (zeln_setup_args) is the real arity enforcer
+     (it bakes args_template and signals wrong_number_of_arguments), so
+     min=0/max=MANY here is correct without embedding arity in the entry
+     struct (which stays field-for-field identical to M0).  Mirrors how
+     comp.c exposes a native fn as a callable Lisp_Object; we use a
+     plain C subr (gccjit uses a closure) because M1 closures carry no
+     captured lexvars across the C<->Zig boundary (constants live in
+     d_reloc_z).  ALLOCATE_PLAIN_PSEUDOVECTOR sets lisplen=0, so GC
+     traces none of the subr's Lisp_Object slots — we still zero the
+     non-header fields defensively (backtrace / doc lookup may read
+     symbol_name / intspec / doc).  */
   struct Lisp_Subr *subr =
     ALLOCATE_PLAIN_PSEUDOVECTOR (struct Lisp_Subr, PVEC_SUBR);
   memclear (&subr->function,
 	    sizeof (*subr) - offsetof (struct Lisp_Subr, function));
-  subr->function.a0 = e->native_fn;	/* Lisp_Object (*) (void) */
+  subr->function.aMANY = e->native_fn;
   subr->min_args = 0;
-  subr->max_args = 0;
-  subr->symbol_name = "zeln-spike";
+  subr->max_args = MANY;
+  subr->symbol_name = "zeln-native";
 
   Lisp_Object subr_obj;
   XSETSUBR (subr_obj, subr);
@@ -360,12 +564,130 @@ that tools/zeln-compile bakes into the .zeln.  For internal use.  */)
 }
 
 /* ------------------------------------------------------------------ */
+/* (d-m1) serializer.  comp-z-write-zunit (FUNCTION OUT-PREFIX): takes
+   a REAL compiled closure and writes the M1 zunit + manifest.  Extracts
+   bytestr / constants / maxdepth / args_template via the same CLOSURE_
+   slots the interpreter itself reads (exec_byte_code, bytecode.c:494-
+   549).  The opcodes field is the raw bytestr — the EXACT bytes the C
+   VM runs, copied verbatim; the emitter decodes them at compile time.  */
+
+/* Forward-compat advisory tag for a constant (0=nil, 1=fixnum, 2=symbol,
+   3=string, 4=other).  The LOADER IGNORES IT (read-syntax is the source
+   of truth, exactly like M0's blob); kept only so a future reader can
+   short-circuit on type without Fread.  */
+static uint8_t
+zeln_const_tag (Lisp_Object c)
+{
+  if (NILP (c))		return 0;
+  if (FIXNUMP (c))	return 1;
+  if (SYMBOLP (c))	return 2;
+  if (STRINGP (c))	return 3;
+  return 4;
+}
+
+DEFUN ("comp-z-write-zunit", Fcomp_z_write_zunit, Scomp_z_write_zunit,
+       2, 2, 0,
+       doc: /* Write the M1 zunit + manifest for compiled closure FUNCTION.
+FUNCTION must be a lexical byte-compiled closure (CLOSUREP with a
+fixnum args-template in slot 0) — the exact shape `exec_byte_code'
+consumes.  Interpreted functions, &rest-only lambdas, and subrs are
+rejected (out of M1 scope).  OUT-PREFIX is the output path with no
+suffix; this writes <OUT-PREFIX>.zunit and <OUT-PREFIX>.manifest.
+For internal use.  */)
+  (Lisp_Object fun, Lisp_Object out_prefix)
+{
+  /* INPUT VALIDATION: CLOSUREP (PVEC_COMPILED) AND a fixnum args-template
+     (a lexical closure; slot 0 holds args_template — lisp.h:3208).  This
+     is the exact shape exec_byte_code consumes (bytecode.c:494-505,
+     531-549).  Reject everything else (interpreted functions, &rest-only
+     lambdas, subrs) with wrong-type-argument.  */
+  CHECK_TYPE (CLOSUREP (fun), Qcompiled_function_p, fun);
+  CHECK_STRING (out_prefix);
+  CHECK_TYPE (FIXNUMP (AREF (fun, CLOSURE_ARGLIST)),
+	      Qcompiled_function_p, fun);
+
+  /* EXTRACT via the CLOSURE_ slots the interpreter uses.  */
+  Lisp_Object bytestr   = AREF (fun, CLOSURE_CODE);	/* slot 1 */
+  Lisp_Object vector    = AREF (fun, CLOSURE_CONSTANTS);	/* slot 2 */
+  Lisp_Object maxdepth  = AREF (fun, CLOSURE_STACK_DEPTH);	/* slot 3 */
+  ptrdiff_t args_tmpl   = XFIXNUM (AREF (fun, CLOSURE_ARGLIST)); /* slot 0 */
+  CHECK_TYPE (STRINGP (bytestr), Qstringp, bytestr);
+  CHECK_TYPE (VECTORP (vector), Qvectorp, vector);
+  CHECK_TYPE (FIXNATP (maxdepth), Qwholenump, maxdepth);
+
+  ptrdiff_t opcode_len = SBYTES (bytestr);
+  ptrdiff_t nconsts    = ASIZE (vector);
+  if (opcode_len > 0xFFFFFFFFu || nconsts > 0xFFFFFFFFu)
+    error ("comp-z-write-zunit: bytecode/constants too large");
+
+  hash_zeln_abi ();
+  eassert (!NILP (Vzeln_abi_hash));
+
+  char prefix[4096];
+  ptrdiff_t plen = SBYTES (out_prefix);
+  if (plen >= (ptrdiff_t) sizeof (prefix) - 16)
+    error ("comp-z-write-zunit: prefix too long");
+  memcpy (prefix, SSDATA (out_prefix), plen);
+  prefix[plen] = '\0';
+
+  /* --- .zunit (M1, zabi=2): u32 magic; u8 zabi=2; u32 args_template;
+     u16 stack_depth; u32 opcode_len; u8 opcodes[opcode_len]; u32 nconsts;
+     then nconsts × { u8 tag_advisory; u32 len; u8 read_syntax[len] }.  */
+  char path[4096 + 16];
+  snprintf (path, sizeof path, "%s.zunit", prefix);
+  FILE *zout = emacs_fopen (path, "wb");
+  if (!zout)
+    report_file_error ("Opening zunit", build_string (path));
+
+  emit_u32 (zout, ZUNIT_MAGIC);
+  emit_u8  (zout, 2);				/* zabi_version (M1) */
+  emit_u32 (zout, (uint32_t) args_tmpl);	/* 15-bit args_template */
+  emit_u16 (zout, (uint16_t) XFIXNAT (maxdepth));
+  emit_u32 (zout, (uint32_t) opcode_len);
+  emit_bytes (zout, SSDATA (bytestr), opcode_len);	/* raw opcodes */
+  emit_u32 (zout, (uint32_t) nconsts);
+
+  /* Each constant serialized Lisp-aware via Fprin1_to_string (print.c:795)
+     → its read-syntax bytes; the loader Freads them back (M0 mechanism,
+     just N≥2).  */
+  for (ptrdiff_t i = 0; i < nconsts; i++)
+    {
+      Lisp_Object c = AREF (vector, i);
+      Lisp_Object printed = Fprin1_to_string (c, Qnil, Qnil);
+      ptrdiff_t clen = SBYTES (printed);
+      if (clen > 0xFFFFFFFFu)
+	error ("comp-z-write-zunit: constant read-syntax too large");
+      emit_u8  (zout, zeln_const_tag (c));	/* advisory; loader ignores */
+      emit_u32 (zout, (uint32_t) clen);
+      emit_bytes (zout, SSDATA (printed), clen);
+    }
+
+  if (emacs_fclose (zout) != 0)
+    report_file_error ("Closing zunit", build_string (path));
+
+  /* --- .manifest: `<ZELN_ABI_VERSION>\n<sig>\n<8-hex>\n'.  The sig line
+     is the fixed M1 surface (constant for all fns); the 8-hex is what
+     the Zig tool bakes into the .zeln as freloc_hash_z.  */
+  snprintf (path, sizeof path, "%s.manifest", prefix);
+  FILE *mout = emacs_fopen (path, "w");
+  if (!mout)
+    report_file_error ("Opening manifest", build_string (path));
+  fprintf (mout, "%s\n", ZELN_ABI_VERSION);
+  fprintf (mout, "%s\n", SSDATA (zeln_signature_string ()));
+  fprintf (mout, "%s\n", SSDATA (Vzeln_abi_hash));
+  emacs_fclose (mout);
+
+  return Qt;
+}
+
+/* ------------------------------------------------------------------ */
 /* syms_of_compz — called from src/emacs.c under HAVE_NATIVE_COMP_ZIG.  */
 
 void
 syms_of_compz (void)
 {
   DEFSYM (Qnative_lisp_file_inconsistent, "native-lisp-file-inconsistent");
+  DEFSYM (Qcompiled_function_p, "compiled-function-p");
   /* Make it a proper error condition so condition-case can match it.
      comp.c:5706-5709 does this under HAVE_NATIVE_COMP (off here), so the
      ZELN path sets it up itself: inherits from `error' (a minimal
@@ -386,6 +708,7 @@ hash; mismatch on load signals `native-lisp-file-inconsistent'.  */);
 
   defsubr (&Scomp_z_load_zeln);
   defsubr (&Scomp_z_write_spike_zunit);
+  defsubr (&Scomp_z_write_zunit);
 
   /* Fill the freloc table early (pure pointer copy, no Lisp): the .zeln
      loader needs it.  Do NOT call hash_zeln_abi here: it builds the hash

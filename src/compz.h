@@ -38,10 +38,13 @@ typedef struct
    all 8-byte aligned on x86-64, so there is no padding to negotiate).  */
 typedef struct
 {
-  /* The actual machine code: @zeln_spike_native.  Emacs subr-0 shape
-     (no args); the loader wraps it into a struct Lisp_Subr on load.
-     Returning Lisp_Object (an EMACS_INT / i64 in the IR).  */
-  Lisp_Object (*native_fn) (void);
+  /* The actual machine code (M1: the MANY-convention native fn emitted
+     by tools/zeln-compile).  The loader wraps it into a struct
+     Lisp_Subr with min/max decoded from the embedded args_template (see
+     Fcomp_z_load_zeln).  M0's spike also used MANY (the @zeln_spike_native
+     fn was (i64,ptr)->i64 with min=max=0).  Lisp_Object is EMACS_INT /
+     i64 in the IR; matches struct Lisp_Subr's aMANY slot (lisp.h:2188).  */
+  Lisp_Object (*native_fn) (ptrdiff_t, Lisp_Object *);
 
   /* &@freloc_link_table_z_slot: the loader writes the live
      zeln_freloc.link_table base address into this slot (mirrors
@@ -84,6 +87,11 @@ zeln_entry_t *zeln_entry (void);
    make-docfile emit `#define Vzeln_abi_hash globals.f_Vzeln_abi_hash'
    into globals.h, so the name is globally available with no separate
    extern (same pattern as comp.c's Vcomp_abi_hash).  */
+
+/* M1 serializer: extracts bytecode + constants + stack-depth +
+   args_template from a real compiled closure and writes the M1 zunit +
+   manifest.  Defined in compz.c.  */
+extern Lisp_Object Fcomp_z_write_zunit (Lisp_Object fun, Lisp_Object out_prefix);
 
 /* Defined in compz.c; called from src/emacs.c under
    #ifdef HAVE_NATIVE_COMP_ZIG.  */

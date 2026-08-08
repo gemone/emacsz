@@ -2426,9 +2426,76 @@ pub fn build(b: *std.Build) void {
             "M0 spike: build test-spike.zeln (zunit -> .ll -> .zeln)",
         );
         zeln_spike_step.dependOn(&spike_compile.step);
-    }
 
-    // Help step
+        // ---- M1 differential-test step (plan M1) ----------------------------
+        // The M1 correctness gate.  byte-compile each corpus fn, serialize it
+        // via comp-z-write-zunit, compile each .zunit to .zeln, then funcall
+        // the reference closure (exec_byte_code) vs the .zeln native fn on a
+        // shared input set and assert behavioral identity.  Behavioral IDENTITY
+        // is the only gate; speed is not measured (Tier-0; M3 is the perf gate).
+        // OFF unless -Dnative-comp-zig=true (this whole block is under that
+        // guard) so the default build has zero footprint.
+        //
+        // The corpus + inputs live in build-aux/zeln-diff.el (single source of
+        // truth); build.zig only needs the fn names here to mint one
+        // zeln-compile run step per fn (zeln-compile consumes one zunit).
+        const diff_names = [_][]const u8{
+            "inc", "arith", "abs", "cadr", "conslist", "loop",
+            "rec", "fmt", "list3", "strpred", "rest", "list6", "list7", "const2",
+        };
+
+        // (a) Serialize: emacs --batch -l zeln-diff.el --eval run-serialize.
+        // Produces zig-out/bin/zeln-diff/<name>.{zunit,manifest} per fn.
+        const diff_ser = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs", "--batch",
+            "-l", "build-aux/zeln-diff.el",
+            "--eval", "(zeln-diff-run-serialize)",
+        });
+        diff_ser.setCwd(b.path("."));
+        diff_ser.step.dependOn(&run_dump_compiled.step);
+        diff_ser.step.dependOn(&run_loaddefs_final.step);
+        diff_ser.step.dependOn(&chmod_emacs_wrapper.step);
+
+        // (c) Harness: emacs --batch -l zeln-diff.el --eval run-harness.  Loads
+        // each .zeln, funcalls baseline vs native on the shared inputs, prints
+        // "M1 differential: N/N functions identical", and exits non-zero on the
+        // first mismatch.  Declared before the compile loop so each per-fn
+        // compile step can be wired as its dependency (it must run AFTER every
+        // .zeln is produced).
+        const diff_harness = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs", "--batch",
+            "-l", "build-aux/zeln-diff.el",
+            "--eval", "(zeln-diff-run-harness)",
+        });
+        diff_harness.setCwd(b.path("."));
+        diff_harness.step.dependOn(&run_dump_compiled.step);
+        diff_harness.step.dependOn(&chmod_emacs_wrapper.step);
+        diff_harness.step.dependOn(&diff_ser.step);
+
+        // (b) Compile each .zunit -> .ll -> .zeln (one zeln-compile run per fn).
+        // Each depends on serialize; the harness depends on each.  Independent
+        // of one another (zeln-compile is a leaf invocation).
+        const diff_dir = "zig-out/bin/zeln-diff";
+        for (diff_names) |name| {
+            const zunit_arg = std.fmt.allocPrint(b.allocator, "{s}/{s}.zunit", .{ diff_dir, name }) catch unreachable;
+            const manifest_arg = std.fmt.allocPrint(b.allocator, "{s}/{s}.manifest", .{ diff_dir, name }) catch unreachable;
+            const zeln_arg = std.fmt.allocPrint(b.allocator, "{s}/{s}.zeln", .{ diff_dir, name }) catch unreachable;
+            const dc = b.addRunArtifact(zeln_compile_tool);
+            dc.setCwd(b.path("."));
+            dc.addArg(zunit_arg);
+            dc.addArg(manifest_arg);
+            dc.addArg(zeln_arg);
+            dc.step.dependOn(&diff_ser.step);
+            diff_harness.step.dependOn(&dc.step);
+        }
+
+        // The single handle the M1 gate drives.
+        const zeln_diff_step = b.step(
+            "zeln-diff",
+            "M1 differential test: interpreter vs .zeln on the corpus (N/N identical)",
+        );
+        zeln_diff_step.dependOn(&diff_harness.step);
+    }
     const help_step = b.step("help", "Show build information");
     const help_cmd = b.addSystemCommand(&[_][]const u8{
         "echo",
