@@ -80,8 +80,14 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     std.debug.print("{s}\n", .{trimmed});
     std.debug.print("smoke: dumped emacs version {s}\n", .{trimmed});
 
-    // Exercise the installed emacs wrapper end-to-end.
-    const wrapper_argv = [_][]const u8{"./zig-out/bin/emacs", "--version"};
+    // Exercise the installed emacs wrapper end-to-end.  On Windows the
+    // wrapper is a native emacs.exe (build-aux/emacs-launcher.zig); on
+    // Unix it is the emacs-launcher.sh installed as `emacs`.
+    const wrapper_path = if (@import("builtin").os.tag == .windows)
+        "./zig-out/bin/emacs.exe"
+    else
+        "./zig-out/bin/emacs";
+    const wrapper_argv = [_][]const u8{ wrapper_path, "--version" };
     const wres = std.process.run(gpa, io, .{
         .argv = &wrapper_argv,
         .environ_map = &env_map,
