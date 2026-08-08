@@ -74,12 +74,12 @@ jobs:
 
   # Cross-compile verification.  Windows and musl now link fully (w32
   # console modules; static musl with no system libraries), so their
-  # `zig build -Dtarget=...` runs are hard gates.  Only macOS keeps the
-  # link-only classification: a Linux host cannot find the macOS system
-  # libraries (gnutls/ncurses/...), so a link failure of that shape is
-  # reported as a notice while every Zig package and C source must
-  # compile.  The native Windows runner (full build + temacs.exe smoke
-  # test) lives in build-zig-native.yml.
+  # `zig build -Dtarget=...` runs are hard gates.  The native Windows
+  # runner (full build + temacs.exe smoke test) lives in
+  # build-zig-native.yml.  macOS is verified on native macOS runners
+  # (build-zig-native.yml): a Linux host cannot provide the macOS SDK
+  # headers (sys/endian.h, frameworks, ...) the target compile needs,
+  # so an x86_64-macos cross build is not a meaningful gate here.
   cross-compile:
     name: Compile ${{ matrix.target }}
     runs-on: ubuntu-latest
@@ -87,7 +87,6 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - x86_64-macos
           - aarch64-linux-musl
           - x86_64-windows-gnu
     steps:
@@ -100,11 +99,6 @@ jobs:
         uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.16.0
-
-      - name: Install host headers
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgnutls28-dev
 
       - name: Cross-compile check
         shell: bash
