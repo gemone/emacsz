@@ -27,6 +27,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     var env_map = try std.process.Environ.createMap(minimal.environ, gpa);
     defer env_map.deinit();
+    // rust-analyzer test environment: the isolated HOME below breaks
+    // rustup's toolchain resolution (cargo init fails and rust-analyzer
+    // hangs in "discovering sysroot", timing out the eglot rust suites),
+    // so surface the host toolchain explicitly.  Resolved against the
+    // parent environment before HOME is overridden.
+    try setupRustEnv(io, gpa, &env_map);
     // Mirror the upstream test environment: TERM=dumb for the batch
     // runs.  A missing TERM makes terminal-dependent suites misbehave
     // (tab-bar-tests skips its tty test only when TERM is "dumb" on
@@ -271,4 +277,44 @@ fn firstErrorLine(out: []const u8) ?[]const u8 {
             return trimmed[0..@min(trimmed.len, 80)];
     }
     return null;
+}
+
+/// Point RUSTC/RUSTUP_HOME/RUSTUP_TOOLCHAIN at the host rustup
+/// toolchain so suites that spawn cargo/rust-analyzer work with an
+/// isolated HOME.  No-op when rustup is not installed.
+fn setupRustEnv(io: std.Io, gpa: std.mem.Allocator, env_map: *std.process.Environ.Map) !void {
+    const real_home = env_map.get("HOME") orelse return;
+    const rustup_home = env_map.get("RUSTUP_HOME") orelse
+        try std.fs.path.join(gpa, &.{ real_home, ".rustup" });
+    defer gpa.free(rustup_home);
+
+    const res = std.process.run(gpa, io, .{
+        .argv = &.{ "rustup", "which", "rustc" },
+        .cwd = .{ .path = "." },
+        .environ_map = env_map,
+        .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromSeconds(10), .clock = .awake } },
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .nothing,
+    }) catch return;
+    defer {
+        gpa.free(res.stdout);
+        gpa.free(res.stderr);
+    }
+    if (res.term != .exited or res.term.exited != 0)
+        return;
+
+    const rustc = std.mem.trim(u8, res.stdout, " \t\r\n");
+    if (rustc.len == 0) return;
+
+    // Derive the toolchain name from the rustc path:
+    // <RUSTUP_HOME>/toolchains/<toolchain>/bin/rustc.
+    const tc_marker = "toolchains/";
+    const tc_start = std.mem.indexOf(u8, rustc, tc_marker) orelse return;
+    const tc_rest = rustc[tc_start + tc_marker.len ..];
+    const tc_end = std.mem.indexOfScalar(u8, tc_rest, '/') orelse return;
+    const toolchain = tc_rest[0..tc_end];
+
+    try env_map.put("RUSTUP_HOME", rustup_home);
+    try env_map.put("RUSTUP_TOOLCHAIN", toolchain);
+    try env_map.put("RUSTC", rustc);
 }
