@@ -282,10 +282,22 @@
             .url = "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.13.tar.xz",
             .hash = "N-V-__8AAH0-EAR3RviaBbm3AeH1WBMFsgm_sQIS_InlvfyY",
         },
+        // ncurses: the terminfo/termcap library backing terminal UI on
+        // Unix-likes (src/term.c tiget* + tgetent).  Fetched by zig and
+        // compiled with zig cc into the static libncurses that replaces
+        // the system-installed library on macOS.  The configure-generated
+        // headers (curses.h, term.h, config.h, ...) and the generated
+        // capability tables (codes.c, comp_captab.c, names.c, ...) are
+        // committed under tools/ncurses-config.
+        .ncurses_src = .{
+            .url = "https://ftp.gnu.org/gnu/ncurses/ncurses-6.4.tar.gz",
+            .hash = "N-V-__8AAHWSEwGDuK7Qx8Q-Mx6pjeYBBX9g8I6uJ9r5DZ9L",
+        },
     },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "tools/gnutls-config/**",
+        "tools/ncurses-config/**",
     },
 }

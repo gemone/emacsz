@@ -1135,9 +1135,32 @@ pub fn build(b: *std.Build) void {
         for (base_sources) |src| {
             const flags: []const []const u8 =
                 if (std.mem.eql(u8, src, "src/timefns.c")) &timefns_flags else base_flags;
+            // On macOS the vendored libncurses provides tgetent/tgetstr/
+            // tputs/tgoto/UP/BC/PC from the system terminfo database;
+            // Emacs's own termcap.c only reads /etc/termcap (absent on
+            // macOS) and tparam.c's BC/UP/tgoto would duplicate the
+            // ncurses globals, so both are skipped (terminfo.c supplies
+            // tparam via ncurses tparm; same reasoning as the w32 skip
+            // below - upstream leaves TERMCAP_OBJ empty when a terminfo
+            // library is present).
+            if (target.result.os.tag == .macos and
+                (std.mem.eql(u8, src, "src/termcap.c") or
+                 std.mem.eql(u8, src, "src/tparam.c")))
+                continue;
             exe.root_module.addCSourceFile(.{
                 .file = b.path(src),
                 .flags = flags,
+            });
+        }
+
+        // TERMCAP_OBJ: upstream builds terminfo.o when TERMINFO, else
+        // termcap.o (+ tparam.o on MS-DOS).  macOS uses the vendored
+        // libncurses terminfo, so terminfo.c (tparam via ncurses tparm)
+        // replaces the termcap/tparam pair skipped above.
+        if (target.result.os.tag == .macos) {
+            exe.root_module.addCSourceFile(.{
+                .file = b.path("src/terminfo.c"),
+                .flags = base_flags,
             });
         }
 
@@ -1689,16 +1712,58 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addIncludePath(gnutls_src.path("lib/includes"));
     }
 
-    // System libraries that are not (yet) vendored, or are inherently
-    // platform-specific.  ncurses is a Unix terminal library and the w32
-    // console needs no terminfo, so it stays on non-Windows Unix-likes;
-    // gnutls comes from the vendored dependency above on macOS and from
-    // the system library on the other Unix-likes until their configs are
-    // vendored.  ACL/ALSA/GPM/D-Bus back Linux-only subsystems (POSIX
-    // ACLs, ALSA sound, console mouse, D-Bus).
+    // ncurses (HAVE_NCURSES): terminfo/termcap backing terminal UI.
+    // Built from source as a Zig-managed dependency (build.zig.zon ->
+    // ncurses_src URL dep), replacing the system-installed library on
+    // macOS.  The configure-generated headers (curses.h, term.h,
+    // ncurses_cfg.h, ...) and the generated capability tables (codes.c,
+    // comp_captab.c, names.c, lib_gen.c, ...) are committed in
+    // tools/ncurses-config (macOS aarch64 reference build; see
+    // tools/ncurses-config/README.md).  Terminfo dirs point at the
+    // system /usr/share/terminfo, matching the reference configure.
     if (target.result.os.tag == .macos) {
-        // Terminal support (gnutls is already linked above).
-        exe.root_module.linkSystemLibrary("ncurses", .{});
+        const ncurses_src = b.dependency("ncurses_src", .{});
+        const ncurses_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        // Include order mirrors the reference make (ncurses source dir,
+        // generated include dir, source include dir).
+        ncurses_mod.addIncludePath(ncurses_src.path("ncurses"));
+        ncurses_mod.addIncludePath(b.path("tools/ncurses-config/include"));
+        ncurses_mod.addIncludePath(b.path("tools/ncurses-config/ncurses"));
+        ncurses_mod.addIncludePath(ncurses_src.path("include"));
+        const ncurses_flags = [_][]const u8{
+            "-O2",
+            "-DHAVE_CONFIG_H",
+            "-DBUILDING_NCURSES",
+            "-DNCURSES_STATIC",
+            "-D_DARWIN_C_SOURCE",
+        };
+        for (vendorSourceList(b, "tools/ncurses-config/ncurses-sources.txt")) |src| {
+            ncurses_mod.addCSourceFile(.{ .file = ncurses_src.path(src), .flags = &ncurses_flags });
+        }
+        for (vendorSourceList(b, "tools/ncurses-config/ncurses-generated-sources.txt")) |src| {
+            const gen_path = std.fmt.allocPrint(
+                b.allocator,
+                "tools/ncurses-config/ncurses/{s}",
+                .{src},
+            ) catch @panic("OOM");
+            ncurses_mod.addCSourceFile(.{ .file = b.path(gen_path), .flags = &ncurses_flags });
+        }
+        const ncurses_lib = b.addLibrary(.{ .name = "ncurses", .root_module = ncurses_mod });
+        exe.root_module.linkLibrary(ncurses_lib);
+    }
+
+    // System libraries that are not (yet) vendored, or are inherently
+    // platform-specific.  ncurses and gnutls come from the vendored
+    // dependencies above on macOS and from the system libraries on the
+    // other Unix-likes until their configs are vendored (the w32 console
+    // needs no terminfo).  ACL/ALSA/GPM/D-Bus back Linux-only subsystems
+    // (POSIX ACLs, ALSA sound, console mouse, D-Bus).
+    if (target.result.os.tag == .macos) {
+        // gnutls + ncurses are already linked from the vendored libs above.
     } else if (!is_windows and !is_musl) {
         // Core libraries
         exe.root_module.linkSystemLibrary("gnutls", .{});
