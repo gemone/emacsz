@@ -1350,8 +1350,24 @@ pub fn build(b: *std.Build) void {
         // Color management
         exe.root_module.linkSystemLibrary("lcms2", .{});
 
-        // SQLite database
-        exe.root_module.linkSystemLibrary("sqlite3", .{});
+        // SQLite database: the amalgamation built from source as a
+        // Zig-managed dependency (build.zig.zon -> sqlite_src), replacing
+        // the system libsqlite3.  Own module so Emacs config flags do not
+        // leak in; exported as a static libsqlite3 for the exe.
+        const sqlite_src = b.dependency("sqlite_src", .{});
+        const sqlite_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        sqlite_mod.addIncludePath(sqlite_src.path(""));
+        sqlite_mod.addCSourceFile(.{
+            .file = sqlite_src.path("sqlite3.c"),
+            .flags = &.{ "-O2", "-DHAVE_USLEEP" },
+        });
+        const sqlite_lib = b.addLibrary(.{ .name = "sqlite3", .root_module = sqlite_mod });
+        exe.root_module.linkLibrary(sqlite_lib);
+        exe.root_module.addIncludePath(sqlite_src.path(""));
         // ACL support (Linux only). Link libacl: config.h defines HAVE_ACL_*
         // and the library is installed. Do NOT link libselinux: config.h has
         // HAVE_LIBSELINUX undefined and the library is absent on the host, so

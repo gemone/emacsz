@@ -228,6 +228,13 @@
             .url = "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz",
             .hash = "N-V-__8AAB0eQwD-0MdOEBmz7intriBReIsIDNlukNVoNu6o",
         },
+        // SQLite: the database library, fetched by zig and compiled with
+        // zig cc (amalgamation) into the static libsqlite3 that replaces
+        // the system-installed library.
+        .sqlite_src = .{
+            .url = "https://sqlite.org/2025/sqlite-autoconf-3500200.tar.gz",
+            .hash = "N-V-__8AAOPlvAALuSJh_gqzcnf5pdEL2fLS_zEi8TPxQYDJ",
+        },
     },
     .paths = .{
         "build.zig",

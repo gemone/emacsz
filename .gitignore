@@ -398,3 +398,6 @@ zig-out/
 /test/lisp/**/bc-test-*
 
 /pdumper-crash-backtrace.*
+
+# Zig local package extraction cache
+/zig-pkg/
