@@ -1529,6 +1529,11 @@ pub fn build(b: *std.Build) void {
     });
     const gen_loaddefs = b.addRunArtifact(gen_loaddefs_tool);
     gen_loaddefs.setCwd(b.path("."));
+    // The tool writes the loaddefs/cus-load/finder-inf files directly
+    // into the (gitignored) source tree, so Zig cannot see when an
+    // external clean removes them.  Treat the run as side-effectful so a
+    // cached run can never skip regeneration after the files vanish.
+    gen_loaddefs.has_side_effects = true;
     gen_loaddefs.step.dependOn(&run_dump.step);
     const gen_loaddefs_step = b.step(
         "generate-loaddefs",
@@ -1598,6 +1603,10 @@ pub fn build(b: *std.Build) void {
     });
     const run_loaddefs_final = b.addRunArtifact(run_loaddefs_final_tool);
     run_loaddefs_final.setCwd(b.path("."));
+    // Same direct-to-source-tree writes as gen_loaddefs; rerun even when
+    // the step was cached, otherwise check/check-all reuses the cached
+    // run after an external clean and suites fail to load *-loaddefs.el.
+    run_loaddefs_final.has_side_effects = true;
     run_loaddefs_final.step.dependOn(&run_dump_compiled.step);
 
     // Smoke step (`zig build smoke`): prove the dumped emacs actually starts
