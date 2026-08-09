@@ -142,6 +142,20 @@ const IDX_PUSHHANDLER: u64 = 98;
 const IDX_RESUME: u64 = 99;
 const IDX_POPHANDLER: u64 = 100;
 
+// ---- Tier-1 fixnum-arith inline fast path (USE_LSB_TAG). ----------------
+// Mirrors src/lisp.h for USE_LSB_TAG=true: a fixnum's low 2 bits are
+// Lisp_Int0 (== 2), bit 2 is value, so FIXNUMP(x) = (x & 3) == 2,
+// XFIXNUM(x) = x >> 2 (arithmetic), make_fixnum(n) = (n << 2) | 2.
+// Valid on every Tier-1 target (all 64-bit, so VALMAX/2 < INTPTR_MAX), and
+// the .zeln is built+loaded by the SAME emacs binary (Vzeln_abi_hash + build
+// identity already bind it).  Asserted at .zeln load (zeln_freloc_check_fill).
+// The constant values mirror src/lisp.h byte-for-byte (EMACS_INT_MAX >> 2).
+const FIXNUM_LSB_TAG: i64 = 2; // Lisp_Int0: low 2 bits of a fixnum
+const FIXNUM_LSB_MASK: i64 = 3; // FIXNUMP(x) = (x & 3) == 2
+const FIXNUM_SHIFT: u6 = 2; // INTTYPEBITS = GCTYPEBITS - 1 = 2
+const MOST_POSITIVE_FIXNUM: i64 = 2305843009213693951; // EMACS_INT_MAX >> 2
+const MOST_NEGATIVE_FIXNUM: i64 = -2305843009213693952; // -1 - MOST_POSITIVE_FIXNUM
+
 // M1 opcode subset (values are decimal; mirror src/bytecode.c DEFINE).
 // Any opcode NOT classified here is REJECTed at compile time (no .zeln),
 // bounding the differential test to proven fns.  M2 widens the subset.
@@ -1315,8 +1329,24 @@ fn emitNativeFn(
                 try emitReturn(em);
                 block_open = false;
             },
-            .unary => try emitUnary(em, ins.idx),
-            .binary => try emitBinary(em, ins.idx),
+            .unary => {
+                // Tier-1 fixnum-arith inline fast path for the arithmetic
+                // unary opcodes (IDX_SUB1/ADD1/NEGATE); every other unary
+                // (car/cdr/predicates/list1/...) keeps the Tier-0 freloc call.
+                if (ins.idx == IDX_SUB1 or ins.idx == IDX_ADD1 or ins.idx == IDX_NEGATE)
+                    try emitUnaryArith(em, ins.idx, ins.start)
+                else
+                    try emitUnary(em, ins.idx);
+            },
+            .binary => {
+                // Tier-1 fixnum-arith inline fast path for the arithmetic
+                // binary opcodes (IDX_PLUS/MINUS/TIMES); every other binary
+                // (comparisons/cons/list2/eql/...) keeps the Tier-0 freloc call.
+                if (ins.idx == IDX_PLUS or ins.idx == IDX_MINUS or ins.idx == IDX_TIMES)
+                    try emitBinaryArith(em, ins.idx, ins.start)
+                else
+                    try emitBinary(em, ins.idx);
+            },
             .listn => try emitListN(em, ins.idx, ins.imm),
             .call => try emitCall(em, ins.imm),
             // ---- M2 ----
@@ -1442,7 +1472,14 @@ fn emitFileLLVM(
     // memset intrinsic: zero each native fn's alloca virtual stack at entry
     // (see emitNativeFn) so conservative C-stack GC never marks alloca
     // garbage as a live object.
-    try em.w("declare void @llvm.memset.p0.i64(ptr nocapture writeonly, i8, i64, i1 immarg)\n\n");
+    try em.w("declare void @llvm.memset.p0.i64(ptr nocapture writeonly, i8, i64, i1 immarg)\n");
+    // smul.with.overflow intrinsic: the Bmult inline fast path (emitBinaryArith
+    // IDX_TIMES) uses it to mirror the interpreter's ckd_mul on intmax_t
+    // (bytecode.c:1379; intmax_t is 64-bit on every Tier-1 target, so this is
+    // a signed 64-bit checked multiply — the exact ckd_mul semantic).  Declared
+    // unconditionally (like memset/_setjmp); an unreferenced declare is dropped
+    // by -O2, so fns with no Bmult pay nothing.
+    try em.w("declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)\n\n");
 
     // N native fns.
     for (fns, 0..) |unit, i| {
@@ -1571,6 +1608,193 @@ fn emitBinary(em: *Emitter, idx: u64) !void {
     try em.storeTop(np);
     const r = try em.frelocCallI64(idx, 2, np);
     try em.wif("store i64 %{d}, ptr %{d}\n", .{ r, np });
+}
+
+// ---- Tier-1 fixnum-arith inline fast path (M3a). -------------------------
+// For Bplus/Bdiff/Bmult (IDX_PLUS/MINUS/TIMES) and Bsub1/Badd1/Bnegate
+// (IDX_SUB1/ADD1/NEGATE), emit the inline FIXNUMP + tagged-op + overflow
+// fast path in the .ll, falling back to the EXACT freloc shim call the
+// Tier-0 emitter makes (zeln_plus->Fplus etc.) on overflow or any
+// non-fixnum operand.  This removes, for the common fixnum case, BOTH the
+// 3-instruction freloc indirection AND the full Fplus/Fminus/Ftimes body.
+//
+// Identity holds by construction (gate #2 + zeln-diff enforce it):
+//   * Inline path produces make_fixnum(XFIXNUM(v1) op XFIXNUM(v2)) under
+//     the SAME overflow rule the interpreter uses (bytecode.c:1331 Bplus,
+//     1311 Bdiff, 1373 Bmult, 1244 Bsub1, 1250 Badd1, 1325 Bnegate) —
+//     which is exactly what Fplus/Fminus/Ftimes return for two
+//     non-overflowing fixnums (their own fast path is the same arithmetic).
+//   * Fallback path is the byte-identical freloc shim call taken on
+//     overflow OR any non-fixnum operand (float/bignum/marker), so bignum
+//     arithmetic and the fixnum-overflow edge are unchanged.
+// The POP/stack prefixes REUSE emitBinary/emitUnary's exact IR so the
+// surrounding stack discipline is untouched.  The freloc surface, IDX
+// order, and .zeln layout are UNCHANGED (no ZELN_ABI_VERSION bump).
+//
+// Bmult note: the interpreter uses `intmax_t res; ckd_mul(&res, ...)`.
+// intmax_t is 64-bit on every Tier-1 target, so ckd_mul is a signed 64-bit
+// checked multiply — the exact semantic of llvm.smul.with.overflow.i64.
+// ------------------------------------------------------------------------
+
+// Binary arith (Bplus/Bdiff/Bmult): same POP as emitBinary, then inline.
+// Unique per-instruction block labels are keyed on START (the opcode's byte
+// offset, unique within a fn): bb_ari_<s> (arith), bb_aok_<s> (inline-ok),
+// bb_far_<s> (fallback), bb_adone_<s> (merge / continuation).
+fn emitBinaryArith(em: *Emitter, idx: u64, start: u32) !void {
+    // POP prefix — byte-identical to emitBinary: top -= 1; new top[0] = v1,
+    // new top[1] = v2 (POP only decrements the pointer).
+    const t = try em.loadTop();
+    const np = em.fresh();
+    try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 -1\n", .{ np, t });
+    try em.storeTop(np);
+    // Load v1 = np[0], v2 = np[1] (both pristine for the fallback call).
+    const v1 = em.fresh();
+    try em.wif("%{d} = load i64, ptr %{d}\n", .{ v1, np });
+    const v2slot = em.fresh();
+    try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 1\n", .{ v2slot, np });
+    const v2 = em.fresh();
+    try em.wif("%{d} = load i64, ptr %{d}\n", .{ v2, v2slot });
+    // FIXNUMP(v) = (v & 3) == 2 (USE_LSB_TAG: Lisp_Int0 low 2 bits).
+    const m1 = em.fresh();
+    try em.wif("%{d} = and i64 %{d}, {d}\n", .{ m1, v1, FIXNUM_LSB_MASK });
+    const f1 = em.fresh();
+    try em.wif("%{d} = icmp eq i64 %{d}, {d}\n", .{ f1, m1, FIXNUM_LSB_TAG });
+    const m2 = em.fresh();
+    try em.wif("%{d} = and i64 %{d}, {d}\n", .{ m2, v2, FIXNUM_LSB_MASK });
+    const f2 = em.fresh();
+    try em.wif("%{d} = icmp eq i64 %{d}, {d}\n", .{ f2, m2, FIXNUM_LSB_TAG });
+    const bothfix = em.fresh();
+    try em.wif("%{d} = and i1 %{d}, %{d}\n", .{ bothfix, f1, f2 });
+    // both-fixnum -> inline arith; else -> fallback (freloc call).
+    try em.wif("br i1 %{d}, label %bb_ari_{d}, label %bb_far_{d}\n", .{ bothfix, start, start });
+
+    // Inline arith block: decode operands, compute res, test overflow.
+    try em.wf("bb_ari_{d}:\n", .{start});
+    const a1 = em.fresh();
+    try em.wif("%{d} = ashr i64 %{d}, {d}\n", .{ a1, v1, FIXNUM_SHIFT });
+    const a2 = em.fresh();
+    try em.wif("%{d} = ashr i64 %{d}, {d}\n", .{ a2, v2, FIXNUM_SHIFT });
+
+    // Allocate `res` lazily inside each branch so the TIMES path can allocate
+    // `mul` BEFORE `res` (LLVM textual IR requires `%N` to only reference `%M`
+    // with M < N; the extractvalue `%res = extractvalue %mul` needs mul < res).
+    var res: u32 = 0;
+    const ov_reg: u32 = if (idx == IDX_PLUS) blk: {
+        res = em.fresh();
+        try em.wif("%{d} = add i64 %{d}, %{d}\n", .{ res, a1, a2 });
+        break :blk try emitFixnumRangeCheck(em, res);
+    } else if (idx == IDX_MINUS) blk: {
+        res = em.fresh();
+        try em.wif("%{d} = sub i64 %{d}, %{d}\n", .{ res, a1, a2 });
+        break :blk try emitFixnumRangeCheck(em, res);
+    } else blk: {
+        // IDX_TIMES: ckd_mul (intmax_t==i64) -> smul.with.overflow, then the
+        // same range check (mirrors bytecode.c:1378-1380).  mul is allocated
+        // first so `%res = extractvalue %mul` is well-numbered.
+        const mul = em.fresh();
+        try em.wif("%{d} = call {{ i64, i1 }} @llvm.smul.with.overflow.i64(i64 %{d}, i64 %{d})\n", .{ mul, a1, a2 });
+        res = em.fresh();
+        try em.wif("%{d} = extractvalue {{ i64, i1 }} %{d}, 0\n", .{ res, mul });
+        const mulov = em.fresh();
+        try em.wif("%{d} = extractvalue {{ i64, i1 }} %{d}, 1\n", .{ mulov, mul });
+        const rangeov = try emitFixnumRangeCheck(em, res);
+        const both = em.fresh();
+        try em.wif("%{d} = or i1 %{d}, %{d}\n", .{ both, mulov, rangeov });
+        break :blk both;
+    };
+    // overflow -> fallback (freloc); else -> inline-ok store.
+    try em.wif("br i1 %{d}, label %bb_far_{d}, label %bb_aok_{d}\n", .{ ov_reg, start, start });
+
+    // Inline success: store make_fixnum(res) = (res << 2) | 2 at np[0].
+    try em.wf("bb_aok_{d}:\n", .{start});
+    try emitStoreMakeFixnum(em, res, np);
+    try em.wif("br label %bb_adone_{d}\n", .{start});
+
+    // Fallback: the byte-identical freloc shim call (zeln_plus->Fplus etc.)
+    // the Tier-0 emitter makes — np[0]=v1, np[1]=v2 are still pristine.
+    try em.wf("bb_far_{d}:\n", .{start});
+    const r = try em.frelocCallI64(idx, 2, np);
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ r, np });
+    try em.wif("br label %bb_adone_{d}\n", .{start});
+
+    // Merge: result is at np[0] either way; next instruction attaches here.
+    try em.wf("bb_adone_{d}:\n", .{start});
+}
+
+// Unary arith (Bsub1/Badd1/Bnegate): same stack prefix as emitUnary (TOP in
+// place at t[0]), then inline.  Labels keyed on START (unique per insn).
+fn emitUnaryArith(em: *Emitter, idx: u64, start: u32) !void {
+    const t = try em.loadTop();
+    const v = em.fresh();
+    try em.wif("%{d} = load i64, ptr %{d}\n", .{ v, t }); // TOP
+    // FIXNUMP(v).
+    const m = em.fresh();
+    try em.wif("%{d} = and i64 %{d}, {d}\n", .{ m, v, FIXNUM_LSB_MASK });
+    const fix = em.fresh();
+    try em.wif("%{d} = icmp eq i64 %{d}, {d}\n", .{ fix, m, FIXNUM_LSB_TAG });
+    try em.wif("br i1 %{d}, label %bb_ari_{d}, label %bb_far_{d}\n", .{ fix, start, start });
+
+    // Inline arith block.
+    try em.wf("bb_ari_{d}:\n", .{start});
+    const a = em.fresh();
+    try em.wif("%{d} = ashr i64 %{d}, {d}\n", .{ a, v, FIXNUM_SHIFT });
+    const res = em.fresh();
+    const ov_reg: u32 = if (idx == IDX_SUB1) blk: {
+        // res = a - 1; overflow only at a == MOST_NEGATIVE_FIXNUM.
+        try em.wif("%{d} = sub i64 %{d}, 1\n", .{ res, a });
+        const o = em.fresh();
+        try em.wif("%{d} = icmp eq i64 %{d}, {d}\n", .{ o, a, MOST_NEGATIVE_FIXNUM });
+        break :blk o;
+    } else if (idx == IDX_ADD1) blk: {
+        // res = a + 1; overflow only at a == MOST_POSITIVE_FIXNUM.
+        try em.wif("%{d} = add i64 %{d}, 1\n", .{ res, a });
+        const o = em.fresh();
+        try em.wif("%{d} = icmp eq i64 %{d}, {d}\n", .{ o, a, MOST_POSITIVE_FIXNUM });
+        break :blk o;
+    } else blk: {
+        // IDX_NEGATE: res = 0 - a; overflow only at a == MOST_NEGATIVE_FIXNUM
+        // (negating it would yield MOST_POS+1, out of fixnum range).
+        try em.wif("%{d} = sub i64 0, %{d}\n", .{ res, a });
+        const o = em.fresh();
+        try em.wif("%{d} = icmp eq i64 %{d}, {d}\n", .{ o, a, MOST_NEGATIVE_FIXNUM });
+        break :blk o;
+    };
+    try em.wif("br i1 %{d}, label %bb_far_{d}, label %bb_aok_{d}\n", .{ ov_reg, start, start });
+
+    // Inline success: store make_fixnum(res) at t[0].
+    try em.wf("bb_aok_{d}:\n", .{start});
+    try emitStoreMakeFixnum(em, res, t);
+    try em.wif("br label %bb_adone_{d}\n", .{start});
+
+    // Fallback: byte-identical freloc shim call (zeln_sub1->Fsub1 etc.).
+    try em.wf("bb_far_{d}:\n", .{start});
+    const r = try em.frelocCallI64(idx, 1, t);
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ r, t });
+    try em.wif("br label %bb_adone_{d}\n", .{start});
+
+    try em.wf("bb_adone_{d}:\n", .{start});
+}
+
+// Emit FIXNUM_OVERFLOW_P(res) = (res > MOST_POS) || (res < MOST_NEG) as an
+// i1 (true => take the fallback).  Mirrors src/lisp.h FIXNUM_OVERFLOW_P and
+// bytecode.c's `!FIXNUM_OVERFLOW_P(res)` gate on Bplus/Bdiff/Bmult.
+fn emitFixnumRangeCheck(em: *Emitter, res: u32) !u32 {
+    const hipos = em.fresh();
+    try em.wif("%{d} = icmp sgt i64 %{d}, {d}\n", .{ hipos, res, MOST_POSITIVE_FIXNUM });
+    const hineg = em.fresh();
+    try em.wif("%{d} = icmp slt i64 %{d}, {d}\n", .{ hineg, res, MOST_NEGATIVE_FIXNUM });
+    const ov = em.fresh();
+    try em.wif("%{d} = or i1 %{d}, %{d}\n", .{ ov, hipos, hineg });
+    return ov;
+}
+
+// Store make_fixnum(RES) = (RES << INTTYPEBITS) | Lisp_Int0 at PTR.
+fn emitStoreMakeFixnum(em: *Emitter, res: u32, ptr: u32) !void {
+    const shl = em.fresh();
+    try em.wif("%{d} = shl i64 %{d}, {d}\n", .{ shl, res, FIXNUM_SHIFT });
+    const mf = em.fresh();
+    try em.wif("%{d} = or i64 %{d}, {d}\n", .{ mf, shl, FIXNUM_LSB_TAG });
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ mf, ptr });
 }
 
 // Blist3/Blist4/BlistN: DISCARD n-1; Flist(n, &newtop).  newtop[0..n-1]
