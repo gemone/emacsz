@@ -271,6 +271,11 @@
         .nettle_src = .{
             .url = "https://ftp.gnu.org/gnu/nettle/nettle-3.10.2.tar.gz",
             .hash = "N-V-__8AADwFewBo6OJWkkth2AnOW9eVOt3svhCtS7ga_OQc",
+            // Lazy: built only when target+host are both macOS (build.zig
+            // gates nettle/gnutls/ncurses on that), so don't eagerly fetch
+            // these flaky-host (ftp.gnu.org / gnupg.org) tarballs for
+            // Linux/Windows/musl cross builds that never use them.
+            .lazy = true,
         },
         // gnutls: the TLS library backing `gnutls-*' (src/gnutls.c).
         // Fetched by zig and compiled with zig cc (minitasn1 + vendored
@@ -281,6 +286,7 @@
         .gnutls_src = .{
             .url = "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.13.tar.xz",
             .hash = "N-V-__8AAH0-EAR3RviaBbm3AeH1WBMFsgm_sQIS_InlvfyY",
+            .lazy = true,
         },
         // ncurses: the terminfo/termcap library backing terminal UI on
         // Unix-likes (src/term.c tiget* + tgetent).  Fetched by zig and
@@ -292,6 +298,7 @@
         .ncurses_src = .{
             .url = "https://ftp.gnu.org/gnu/ncurses/ncurses-6.4.tar.gz",
             .hash = "N-V-__8AAHWSEwGDuK7Qx8Q-Mx6pjeYBBX9g8I6uJ9r5DZ9L",
+            .lazy = true,
         },
     },
     .paths = .{
