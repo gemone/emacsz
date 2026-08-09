@@ -4,8 +4,9 @@
 // struct stat. On glibc x86_64 st_atim/st_mtim/st_ctim are struct
 // timespec members and there is no birth-time field, so get_stat_* read
 // the timespecs directly; on Darwin the members are st_*timespec (with
-// birth time); on Windows (mingw) the members are plain time_t seconds
-// with no sub-second precision, so the ns accessors return 0;
+// birth time); on Windows the w32 port uses its own `struct stat`
+// (nt/inc/sys/stat.h) -- NOT mingw's -- with time_t st_*time seconds and
+// int st_*timensec sub-second fields, so get_stat_* read those.
 // get_stat_birthtime returns (-1, -1) where no birth field exists.
 // stat_time_normalize is a passthrough (the macOS/Solaris negative-ns
 // workaround does not apply). Backs `file-attributes' time elements in
@@ -59,7 +60,7 @@ pub export fn get_stat_atime_ns(st: *const Stat) c_long {
     if (comptime isDarwin(builtin.os.tag))
         return @intCast(darwinStat(st).st_atimespec.tv_nsec);
     if (comptime isWindows(builtin.os.tag))
-        return 0; // mingw struct stat has no sub-second fields
+        return @intCast(windowsStat(st).st_atimensec);
     return @intCast(st.st_atim[1]);
 }
 
@@ -67,7 +68,7 @@ pub export fn get_stat_ctime_ns(st: *const Stat) c_long {
     if (comptime isDarwin(builtin.os.tag))
         return @intCast(darwinStat(st).st_ctimespec.tv_nsec);
     if (comptime isWindows(builtin.os.tag))
-        return 0;
+        return @intCast(windowsStat(st).st_ctimensec);
     return @intCast(st.st_ctim[1]);
 }
 
@@ -75,7 +76,7 @@ pub export fn get_stat_mtime_ns(st: *const Stat) c_long {
     if (comptime isDarwin(builtin.os.tag))
         return @intCast(darwinStat(st).st_mtimespec.tv_nsec);
     if (comptime isWindows(builtin.os.tag))
-        return 0;
+        return @intCast(windowsStat(st).st_mtimensec);
     return @intCast(st.st_mtim[1]);
 }
 
@@ -86,7 +87,7 @@ pub export fn get_stat_atime(st: *const Stat) Timespec {
     }
     if (comptime isWindows(builtin.os.tag)) {
         const w = windowsStat(st);
-        return .{ .tv_sec = w.st_atime, .tv_nsec = 0 };
+        return .{ .tv_sec = w.st_atime, .tv_nsec = @intCast(w.st_atimensec) };
     }
     return .{ .tv_sec = st.st_atim[0], .tv_nsec = @intCast(st.st_atim[1]) };
 }
@@ -98,7 +99,7 @@ pub export fn get_stat_ctime(st: *const Stat) Timespec {
     }
     if (comptime isWindows(builtin.os.tag)) {
         const w = windowsStat(st);
-        return .{ .tv_sec = w.st_ctime, .tv_nsec = 0 };
+        return .{ .tv_sec = w.st_ctime, .tv_nsec = @intCast(w.st_ctimensec) };
     }
     return .{ .tv_sec = st.st_ctim[0], .tv_nsec = @intCast(st.st_ctim[1]) };
 }
@@ -110,7 +111,7 @@ pub export fn get_stat_mtime(st: *const Stat) Timespec {
     }
     if (comptime isWindows(builtin.os.tag)) {
         const w = windowsStat(st);
-        return .{ .tv_sec = w.st_mtime, .tv_nsec = 0 };
+        return .{ .tv_sec = w.st_mtime, .tv_nsec = @intCast(w.st_mtimensec) };
     }
     return .{ .tv_sec = st.st_mtim[0], .tv_nsec = @intCast(st.st_mtim[1]) };
 }
@@ -147,27 +148,37 @@ fn darwinStat(st: *const Stat) *const StatDarwin {
     return @ptrCast(st);
 }
 
-// mingw-w64 struct stat (48 bytes, default _FILE_OFFSET_BITS off):
-// time_t is __time64_t (64-bit) but off_t stays 32-bit, so the time
-// members sit at 24/32/40 after the 32-bit st_size at 20.
+// Emacs's own w32 `struct stat` (nt/inc/sys/stat.h, 600 bytes). The w32
+// port does NOT use mingw's 48-byte stat: nt/inc/sys/stat.h replaces it
+// with a larger struct (st_uname/st_gname[260] + st_*timensec). time_t
+// is 64-bit here (mingw ignores the legacy _USE_32BIT_TIME_T), dev_t is
+// 32-bit. Offsets verified by compiling nt/inc/sys/stat.h with the same
+// flags temacs uses.
 const StatWindows = extern struct {
-    st_dev: u32,
-    st_ino: u16,
-    st_mode: u16,
-    st_nlink: i16,
-    st_uid: i16,
-    st_gid: i16,
-    st_rdev: u32,
-    st_size: i32,
-    st_atime: i64,
-    st_mtime: i64,
-    st_ctime: i64,
+    st_ino: u64, // 0
+    st_dev: u32, // 8
+    st_mode: u16, // 12
+    st_nlink: i16, // 14
+    st_uid: u32, // 16
+    st_gid: u32, // 20
+    st_size: u64, // 24
+    st_rdev: u32, // 32
+    // 4 bytes padding at 36 (ABI aligns st_atime to 8).
+    st_atime: i64, // 40
+    st_mtime: i64, // 48
+    st_ctime: i64, // 56
+    st_uname: [260]u8, // 64
+    st_gname: [260]u8, // 324
+    st_atimensec: i32, // 584
+    st_mtimensec: i32, // 588
+    st_ctimensec: i32, // 592
 };
 
 comptime {
-    if (@offsetOf(StatWindows, "st_atime") != 24 or @offsetOf(StatWindows, "st_mtime") != 32 or
-        @offsetOf(StatWindows, "st_ctime") != 40 or @sizeOf(StatWindows) != 48)
-        @compileError("mingw struct stat layout mismatch");
+    if (@offsetOf(StatWindows, "st_atime") != 40 or @offsetOf(StatWindows, "st_mtime") != 48 or
+        @offsetOf(StatWindows, "st_ctime") != 56 or @offsetOf(StatWindows, "st_mtimensec") != 588 or
+        @sizeOf(StatWindows) != 600)
+        @compileError("emacs w32 struct stat layout mismatch (nt/inc/sys/stat.h)");
 }
 
 fn windowsStat(st: *const Stat) *const StatWindows {
