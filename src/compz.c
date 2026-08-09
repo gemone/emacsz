@@ -1596,6 +1596,32 @@ Mirrors `comp-eln-to-el-h'; used so loading a .zeln reports the source
 .elc in `load-file-name' / `load-history'.  */);
   Vzeln_to_el_h = CALLN (Fmake_hash_table, QCtest, Qequal);
 
+  /* M2.5 precedence control.  When both native-comp paths are enabled
+     (HAVE_NATIVE_COMP and HAVE_NATIVE_COMP_ZIG), `openp' runs the two
+     maybe_swap_for_* hooks (src/lread.c).  Each hook gates on the load
+     filename ending in ".elc" and, on a hit, MUTATES it to the native
+     artifact's path -- so the FIRST hook that finds a fresh native file
+     wins; the second then sees a non-.elc name and returns early.  The
+     hook that finds nothing leaves the name untouched, letting the
+     other run (the fallback).  This variable picks the ORDER so the
+     PREFERRED artifact's hook runs FIRST (and wins); the other runs
+     second as a fallback.  nil (default) => prefer .eln: gccjit wins
+     ties, .zeln loads only where no .eln matches (so the both-on `zig
+     build check' suite runs entirely on the gccjit .eln path and stays
+     independent of the .zeln execution gate).  t => prefer .zeln
+     (opt-in; exercises the .zeln path).  No effect unless both
+     native-comp switches are on at build time.  */
+  DEFVAR_BOOL ("native-comp-z-prefer", native_comp_z_prefer,
+    doc: /* Non-nil means prefer the Zig native-comp (.zeln) over the
+gccjit native-comp (.eln) when both are available for a .elc being
+loaded.  nil (default) prefers the .eln (gccjit) and uses the .zeln
+only as a fallback where no .eln exists.
+
+This only has an effect when Emacs was built with both native-comp
+paths enabled (-Dnative-comp=true -Dnative-comp-zig=true); otherwise
+exactly one native path is active and this variable is ignored.  */);
+  native_comp_z_prefer = false;
+
   staticpro (&zeln_loadsearch_re_list);
   zeln_loadsearch_re_list = Qnil;
 

@@ -2181,11 +2181,40 @@ openp (Lisp_Object path, Lisp_Object str, Lisp_Object suffixes,
 		  }
 		else
 		  {
+#ifdef HAVE_NATIVE_COMP_ZIG
+		    /* M2.5 precedence: each maybe_swap_for_* gates on
+		       *string ending in ".elc" (lread.c:1736 / 1860) and, on
+		       success, MUTATES *string/*fd to the native artifact's
+		       path/fd.  So the FIRST swap that finds a fresh native
+		       file wins; the SECOND swap then sees *string no longer
+		       ending in ".elc" and returns early.  The swap that does
+		       NOT find its artifact leaves *string untouched, letting
+		       the other one run -- that is the fallback.  So the
+		       `native-comp-z-prefer' Lisp var (src/compz.c) picks the
+		       ORDER so the PREFERRED artifact runs FIRST (and wins);
+		       the other runs second as a fallback.  Default nil =>
+		       prefer the .eln (gccjit), .zeln fallback; t => prefer
+		       the .zeln, .eln fallback.  maybe_swap_for_eln always
+		       compiles (the gccjit body under HAVE_NATIVE_COMP, else
+		       an empty stub); maybe_swap_for_zeln is exclusive to
+		       HAVE_NATIVE_COMP_ZIG.  */
+		    if (native_comp_z_prefer)
+		      {
+			maybe_swap_for_zeln (no_native, &string, &fd,
+					     get_stat_mtime (&st));
+			maybe_swap_for_eln (no_native, &string, &fd,
+					    get_stat_mtime (&st));
+		      }
+		    else
+		      {
+			maybe_swap_for_eln (no_native, &string, &fd,
+					    get_stat_mtime (&st));
+			maybe_swap_for_zeln (no_native, &string, &fd,
+					     get_stat_mtime (&st));
+		      }
+#else
 		    maybe_swap_for_eln (no_native, &string, &fd,
 					get_stat_mtime (&st));
-#ifdef HAVE_NATIVE_COMP_ZIG
-		    maybe_swap_for_zeln (no_native, &string, &fd,
-					 get_stat_mtime (&st));
 #endif
 		    /* We succeeded; return this descriptor and filename.  */
 		    if (storeptr)
@@ -2198,11 +2227,29 @@ openp (Lisp_Object path, Lisp_Object str, Lisp_Object suffixes,
 	    /* No more suffixes.  Return the newest.  */
 	    if (0 <= save_fd && ! CONSP (XCDR (tail)))
 	      {
+#ifdef HAVE_NATIVE_COMP_ZIG
+		/* M2.5 precedence (save_fd/newest path): mirror the swap
+		   ordering above -- the FIRST swap wins (the second's ".elc"
+		   suffix gate fails after the first mutates *save_string),
+		   so the preferred artifact runs FIRST; native-comp-z-prefer
+		   picks the order (nil => prefer .eln, t => prefer .zeln).  */
+		if (native_comp_z_prefer)
+		  {
+		    maybe_swap_for_zeln (no_native, &save_string, &save_fd,
+					 save_mtime);
+		    maybe_swap_for_eln (no_native, &save_string, &save_fd,
+					save_mtime);
+		  }
+		else
+		  {
+		    maybe_swap_for_eln (no_native, &save_string, &save_fd,
+					save_mtime);
+		    maybe_swap_for_zeln (no_native, &save_string, &save_fd,
+					 save_mtime);
+		  }
+#else
 		maybe_swap_for_eln (no_native, &save_string, &save_fd,
 				    save_mtime);
-#ifdef HAVE_NATIVE_COMP_ZIG
-		maybe_swap_for_zeln (no_native, &save_string, &save_fd,
-				     save_mtime);
 #endif
 		if (storeptr)
 		  *storeptr = save_string;

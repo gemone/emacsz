@@ -41,6 +41,34 @@ compile-lisp → dump-compiled → 最终 loaddefs 生成 → smoke，因此
 
 - `-Doptimize=Debug` - 调试模式（默认，**目前唯一可靠**）
 - `-Dtarget=<triple>` - 交叉编译（例如：x86_64-linux-gnu）
+- `-Dnative-comp=[bool]` - gccjit 原生编译路径（.eln，`HAVE_NATIVE_COMP`，
+  `src/comp.c`）。默认 OFF。仅在本机 glibc-Linux 上生效（libgccjit 是宿主
+  库，不能交叉编译）；非本机/musl/windows/macos 自动关闭。开启需要系统
+  安装 libgccjit（链接 `-lgccjit`），且 `libgccjit.h` 的 include 路径在构建
+  时通过 `cc -print-file-name=include` 推导。
+- `-Dnative-comp-zig=[bool]` - Zig/LLVM 原生编译路径（.zeln，
+  `HAVE_NATIVE_COMP_ZIG`，`src/compz.c`）。默认 OFF。仅在本机 glibc-Linux 上
+  生效。与 `-Dnative-comp` **相互独立**，两者可同时开启（M2.5 共存）。
+
+### 原生编译共存与优先级（M2.5）
+
+两个原生编译路径物理隔离：`comp.c` vs `compz.c`、`.eln-cache` vs
+`.zeln-cache`、不同的 ABI 哈希与版本目录、不同的 el→native 哈希表。两者
+**永不冲突**。当两者同时开启、且某个 `.elc` 同时存在匹配的 `.eln` 和
+`.zeln` 时，Lisp 变量 `native-comp-z-prefer` 决定加载哪一个：
+
+- `nil`（默认）= 优先 `.eln`（gccjit）；`.zeln` 仅在没有 `.eln` 时作为回退。
+  保守默认——同时开启时 `zig build check` 582/582 全程走 gccjit `.eln` 路径，
+  与 gate #2（`.zeln` 执行崩溃）解耦。
+- `t` = 优先 `.zeln`（opt-in；显式测试 `.zeln` 路径，即 gate #2 领域）。
+
+实现：`src/lread.c` 的 `openp` 在两个调用点（普通路径 + newest/save_fd 路径）
+依据 `native_comp_z_prefer` 重排 `maybe_swap_for_eln` / `maybe_swap_for_zeln`
+的顺序——每个 swap 都以文件名以 `.elc` 结尾为前置条件，命中后会把它改写成
+原生构件路径，所以**第一个**找到新鲜原生文件的 swap 胜出（第二个 swap 看到
+非 `.elc` 名便提前返回）；没找到的 swap 不动文件名，让另一个执行（回退）。
+因此优先的构件**先执行**并胜出。仅在 `HAVE_NATIVE_COMP_ZIG` 下生效；关掉该
+宏时 `openp` 与原先逐字节一致（默认 `nil` 分支正是 HEAD 顺序：eln 先、zeln 后）。
 
 注意：`ReleaseFast`/`ReleaseSafe` 目前会让 temacs 在加载转储时崩溃
 （clang -O1+ 暴露了 pdumper 单-delta 重定位的缺陷）。在深层 pdumper

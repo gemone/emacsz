@@ -127,6 +127,30 @@ committed template + values through the `gen-config` Zig tool, and the
 dump/loaddefs/compile/smoke/check/check-all pipeline runs through native
 Zig tools.
 
+### Native-comp switches (opt-in, both default OFF)
+Two independent, coexisting native-compilation paths (M2.5):
+
+- `-Dnative-comp=true` — the **gccjit** path (`.eln`, `HAVE_NATIVE_COMP`,
+  `src/comp.c`). Native glibc-Linux only (libgccjit is a host library and
+  cannot cross-build); requires libgccjit installed. build.zig links
+  `-lgccjit` and derives the `libgccjit.h` include dir at build time via
+  `cc -print-file-name=include`.
+- `-Dnative-comp-zig=true` — the **Zig/LLVM** path (`.zeln`,
+  `HAVE_NATIVE_COMP_ZIG`, `src/compz.c`). Native glibc-Linux only.
+
+Both can be ON at once. The two paths are physically isolated: distinct C
+files, distinct caches (`.eln-cache` vs `.zeln-cache`), distinct ABI hashes
+and version dirs, distinct el→native hash tables — they never collide. When
+both are ON and a `.elc` has both a matching `.eln` and `.zeln`, the Lisp
+variable `native-comp-z-prefer` decides which loads: `nil` (default) prefers
+the `.eln` (gccjit wins ties, `.zeln` is fallback); `t` prefers the `.zeln`
+(opt-in; exercises the `.zeln` path). The default `nil` keeps the both-on
+`zig build check` 582/582 running entirely on the gccjit `.eln` path, so it
+is independent of the queued `.zeln` execution-fix effort. The precedence is
+wired in `src/lread.c:openp` (both call sites) by reordering the two
+`maybe_swap_for_*` swaps under `#ifdef HAVE_NATIVE_COMP_ZIG`; with that macro
+OFF (the default build) `openp` is byte-identical to main.
+
 ### Bootstrap data for `dump`/`check`
 `zig build dump` and `zig build check` need generated charset + unicode
 data (gitignored). Generate once:

@@ -72,6 +72,13 @@ pub fn build(b: *std.Build) void {
     // -DHAVE_* and, for the native-comp Zig path, compiles src/compz.c.
     // See .omc/plans/native-comp-zig-zeln.md (sections 2 and 13).
     const enable_native_comp_zig = b.option(bool, "native-comp-zig", "Enable the Zig/LLVM native-comp path (.zeln)") orelse false;
+    // gccjit native-comp (.eln) — the UPSTREAM path (HAVE_NATIVE_COMP, src/comp.c).
+    // Independent of -Dnative-comp-zig; both default OFF, both can be ON (M2.5
+    // coexistence).  When both are on, the `native-comp-z-prefer' Lisp var
+    // decides which native artifact loads where a .elc has both a .eln and a
+    // .zeln.  libgccjit is host-specific, so the switch is forced OFF for any
+    // non-native / non-glibc-Linux target (see native_comp_target below).
+    const enable_native_comp = b.option(bool, "native-comp", "Enable the gccjit native-comp path (.eln, HAVE_NATIVE_COMP)") orelse false;
     const enable_modules = b.option(bool, "modules", "Enable upstream dynamic modules (HAVE_MODULES)") orelse false;
     const enable_modules_zig = b.option(bool, "modules-zig", "Enable the Zig dynamic-module subsystem (HAVE_MODULES_ZIG)") orelse false;
 
@@ -1124,6 +1131,21 @@ pub fn build(b: *std.Build) void {
     // (dlopen lives in libc since glibc 2.34, so no -ldl is needed), macOS
     // and Windows.  The off-by-default behavior is untouched.
     const modules_enabled = enable_modules and !is_musl;
+    // gccjit native-comp (-Dnative-comp, HAVE_NATIVE_COMP).  libgccjit is a
+    // HOST library: it links against the host's libgccjit.so and cannot be
+    // cross-built (the gccjit path emits a host ELF .eln).  Gate it to a
+    // native glibc-Linux build, mirroring the zeln is_native_target gate at
+    // build.zig:2158/2390; any -Dtarget=... cross, musl, windows or macOS
+    // forces the switch OFF (and the off-by-default behavior is untouched).
+    // Evaluated here (top-level) so both the source-compile block and the
+    // link-library block below can read it.
+    const native_comp_target = enable_native_comp and
+        target.result.cpu.arch == b.graph.host.result.cpu.arch and
+        target.result.os.tag == b.graph.host.result.os.tag and
+        target.result.abi == b.graph.host.result.abi and
+        target.result.os.tag == .linux and !is_musl;
+    if (enable_native_comp and !native_comp_target)
+        std.debug.print("build: -Dnative-comp requested but the target is not native glibc-Linux; forcing the gccjit path OFF (libgccjit is host-only)\n", .{});
     // Host (glibc) include dirs must not leak into the musl compile:
     // -I/usr/include would inject glibc's C23 redirects (__isoc23_*)
     // into a musl build. musl uses zig's bundled headers instead.
@@ -1203,6 +1225,15 @@ pub fn build(b: *std.Build) void {
                 (std.mem.eql(u8, src, "src/termcap.c") or
                  std.mem.eql(u8, src, "src/tparam.c")))
                 continue;
+            // src/comp.c is in base_obj (Makefile.in:459), so the loop compiles
+            // it with base_flags.  When -Dnative-comp is effective, comp.c needs
+            // <libgccjit.h> (NOT on the default include path) and the
+            // HAVE_NATIVE_COMP macro, so SKIP it here and re-add it below with
+            // the gccjit private include dir on its flags (mirrors the
+            // termcap/tparam skip above).  OFF-path: native_comp_target is false
+            // => comp.c is compiled here as today (byte-identical).
+            if (native_comp_target and std.mem.eql(u8, src, "src/comp.c"))
+                continue;
             exe.root_module.addCSourceFile(.{
                 .file = b.path(src),
                 .flags = flags,
@@ -1217,6 +1248,64 @@ pub fn build(b: *std.Build) void {
             exe.root_module.addCMacro("HAVE_NATIVE_COMP_ZIG", "1");
             exe.root_module.addCSourceFile(.{
                 .file = b.path("src/compz.c"),
+                .flags = base_flags,
+            });
+        }
+        // gccjit native-comp (-Dnative-comp, HAVE_NATIVE_COMP).  comp.c was
+        // skipped in the base-source loop above (it needs <libgccjit.h>);
+        // re-add it here with the host gcc private include dir prepended so
+        // the gccjit header is reachable.  The include dir is host/gcc-version
+        // specific, so derive it from the build's C driver via
+        // `cc -print-file-name=include` (honoring LIBGCCJIT_CFLAGS as an
+        // override for distros/packagers), and GATE the whole feature to
+        // native glibc-Linux (native_comp_target).  The LIBGCCJIT_HAVE_*
+        // feature macros (comp.c:186/233/305/...) are intentionally NOT
+        // probed -- the guarded code is optional gccjit optimization and
+        // comp.c links/runs without them.
+        if (native_comp_target) {
+            exe.root_module.addCMacro("HAVE_NATIVE_COMP", "1");
+            // libgccjit lives in gcc's PRIVATE install tree (the header
+            // libgccjit.h and libgccjit.so are under /usr/lib/gcc/<triplet>/
+            // <version>/), which is NOT on zig's default search path.  Discover
+            // that tree by globbing /usr/lib/gcc/*/*/ at build time -- robust
+            // across host triplets and gcc versions, and needs no subprocess
+            // (the single-threaded build Io cannot run `cc -print-file-name=`;
+            // std.fs dir iteration works fine at config time).  Wire in:
+            //   - the include dir -> a -I on comp.c's flags;
+            //   - the lib dir (the version dir itself) -> addLibraryPath so
+            //     linkSystemLibrary("gccjit") can resolve libgccjit.so.
+            var gccjit_inc: []const u8 = "";
+            var gccjit_lib_dir: []const u8 = "";
+            gccDiscoverGccjit(b, io, &gccjit_inc, &gccjit_lib_dir);
+            if (gccjit_lib_dir.len > 0)
+                exe.root_module.addLibraryPath(.{ .cwd_relative = gccjit_lib_dir });
+            if (gccjit_inc.len > 0) {
+                const inc_arg = std.fmt.allocPrint(b.allocator, "-I{s}", .{gccjit_inc}) catch unreachable;
+                // comp.c flags = base_flags ++ .{inc_arg} (build-time slice
+                // on the build allocator; lives for the build graph lifetime).
+                const comp_flags = b.allocator.alloc([]const u8, base_flags.len + 1) catch unreachable;
+                for (base_flags, 0..) |f, i| comp_flags[i] = f;
+                comp_flags[base_flags.len] = inc_arg;
+                exe.root_module.addCSourceFile(.{
+                    .file = b.path("src/comp.c"),
+                    .flags = comp_flags,
+                });
+            } else {
+                // No private include dir resolved: fall back to base_flags and
+                // let the compiler's default search path try to find the header.
+                exe.root_module.addCSourceFile(.{
+                    .file = b.path("src/comp.c"),
+                    .flags = base_flags,
+                });
+            }
+            // comp.c (gccjit) calls md5_stream (src/comp.c:755) to hash the
+            // ABI. lib/md5-stream.c is normally excluded from the libgnu set
+            // (build.zig:3046) because off-path nothing references it; with
+            // HAVE_NATIVE_COMP on, comp.c does, so compile it here.  Its md5_*
+            // calls resolve to the gnulib-hash Zig package (lib/md5.c itself
+            // stays excluded -- the package provides the algorithm).
+            exe.root_module.addCSourceFile(.{
+                .file = b.path("lib/md5-stream.c"),
                 .flags = base_flags,
             });
         }
@@ -1481,6 +1570,10 @@ pub fn build(b: *std.Build) void {
 
     // Link system libraries (phase 2: based on src/Makefile)
     exe.root_module.linkSystemLibrary("m", .{});
+    // gccjit native-comp (-Dnative-comp): libgccjit.so.  ldconfig resolves it
+    // (verified present on the build host).  Gated to native_comp_target so
+    // off-path / cross builds never look for it.
+    if (native_comp_target) exe.root_module.linkSystemLibrary("gccjit", .{});
 
     // -------------------------------------------------------------------
     // Zig-managed third-party libraries.  Every vendored dependency is
@@ -2597,6 +2690,11 @@ pub fn build(b: *std.Build) void {
         \\  zig build populate-zeln-cache - M2b: populate .zeln-cache from lisp/
         \\  zig build check-zeln        - M2b: 582 built-in tests via .zeln
         \\
+        \\Native-comp gccjit path (opt-in: -Dnative-comp=true, native glibc-Linux;
+        \\  requires libgccjit). Coexists with -Dnative-comp-zig: when both are on,
+        \\  `native-comp-z-prefer' (nil=prefer .eln, t=prefer .zeln) picks the
+        \\  artifact loaded where a .elc has both a .eln and a .zeln.
+        \\
         \\Runnable commands (after `zig build dump`):
         \\  zig-out/bin/temacs          - raw temacs (needs --dump-file=...)
         \\  zig-out/bin/emacs           - wrapper that locates temacs+pdmp and
@@ -3002,6 +3100,44 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         }
     }.lt);
     return list.toOwnedSlice(a);
+}
+
+/// Discover gcc's private libgccjit install tree by globbing the standard
+/// `/usr/lib/gcc/<triplet>/<version>/` layout at build-config time.  Sets
+/// `*out_inc` to the directory holding libgccjit.h (the `<version>/include`
+/// subdir) and `*out_lib_dir` to the `<version>` dir itself (where
+/// libgccjit.so lives).  Both are left empty if no tree is found (the caller
+/// then falls back to the compiler's default search path).  This is the
+/// gcc-host equivalent of `cc -print-file-name=include`/`=libgccjit.so`, done
+/// without a subprocess (the single-threaded build Io cannot run one) by
+/// iterating the directory tree directly.
+fn gccDiscoverGccjit(
+    b: *std.Build,
+    io: std.Io,
+    out_inc: *[]const u8,
+    out_lib_dir: *[]const u8,
+) void {
+    const a = b.allocator;
+    var gcc_dir = std.Io.Dir.openDirAbsolute(io, "/usr/lib/gcc", .{ .iterate = true }) catch return;
+    defer gcc_dir.close(io);
+    var triplet_it = gcc_dir.iterate();
+    while (triplet_it.next(io) catch null) |triplet_entry| {
+        if (triplet_entry.kind != .directory) continue;
+        var triplet_dir = gcc_dir.openDir(io, triplet_entry.name, .{ .iterate = true }) catch continue;
+        defer triplet_dir.close(io);
+        var version_it = triplet_dir.iterate();
+        while (version_it.next(io) catch null) |version_entry| {
+            if (version_entry.kind != .directory) continue;
+            // Look for <version>/include/libgccjit.h.
+            const inc_rel = std.fmt.allocPrint(a, "{s}/include/libgccjit.h", .{version_entry.name}) catch continue;
+            if (triplet_dir.access(io, inc_rel, .{})) {
+                // Found it.  Record the absolute include + lib dirs.
+                out_inc.* = std.fmt.allocPrint(a, "/usr/lib/gcc/{s}/{s}/include", .{ triplet_entry.name, version_entry.name }) catch unreachable;
+                out_lib_dir.* = std.fmt.allocPrint(a, "/usr/lib/gcc/{s}/{s}", .{ triplet_entry.name, version_entry.name }) catch unreachable;
+                return;
+            } else |_| {}
+        }
+    }
 }
 
 /// Append one `"<basename>.o",\n` line to `buf`, mirroring Makefile.in:673-679:
