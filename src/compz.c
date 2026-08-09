@@ -695,6 +695,21 @@ zeln_patch_freloc (zeln_entry_t *e)
 /* Fread ONE fn's const blob (a vector in read-syntax) and scatter it
    into fe->d_reloc[0..n_d_reloc).  Mirrors comp.c:5318+5322
    (comp_u->data_vec = load_static_obj (...); data_relocs[i] = AREF).  */
+
+/* GC root: every constant vector reconstructed by zeln_fill_d_reloc_fn is
+   consed onto this list so the constants stay reachable.  Each native fn
+   reads its constants from its .zeln's `d_reloc' array, which lives in the
+   shared object's static (GC-invisible) memory and holds the SAME
+   Lisp_Objects as the vector produced by Fread.  Without this root, a GC
+   after load sweeps any freshly-Fread heap object (cons cells, strings,
+   records) that is referenced ONLY from `d_reloc', leaving the static array
+   pointing at freed memory -> corrupt Lisp_Objects (the M2b gate #2
+   cl-remove->cl-delete SIGABRT).  Emacs GC is non-moving, so the addresses
+   baked into `d_reloc' stay valid as long as the objects are alive -- which
+   rooting the vectors guarantees.  This mirrors how gccjit comp.c GC-traces
+   each native fn's data relocs through its compiled-function vector.
+   staticpro'd in syms_of_compz.  */
+static Lisp_Object zeln_loaded_const_vectors;
 static void
 zeln_fill_d_reloc_fn (zeln_fn_entry_t *fe)
 {
@@ -711,6 +726,11 @@ zeln_fill_d_reloc_fn (zeln_fn_entry_t *fe)
 	      build_string ("zeln: d_reloc count mismatch"));
   for (ptrdiff_t i = 0; i < n; i++)
     fe->d_reloc[i] = AREF (vec, i);
+  /* Root the vector so GC cannot collect the heap objects `d_reloc' now
+     aliases (see zeln_loaded_const_vectors).  `vec' is on the C stack, so
+     it is protected across the Fcons allocation; the returned cons (car =
+     vec) is then held by the static root.  */
+  zeln_loaded_const_vectors = Fcons (vec, zeln_loaded_const_vectors);
 }
 
 /* Verify the .zeln's baked ABI hash matches the running emacs's
@@ -973,7 +993,20 @@ zeln_emit_closure_body (FILE *f, Lisp_Object fun)
      a circular structure, a multibyte string with binary bytes) into a
      signaled error so the per-file fault tolerance logs that .elc as a
      skip and it falls back to the interpreter, instead of baking a
-     corrupted constant into the .zeln that crashes the native fn later.  */
+     corrupted constant into the .zeln that crashes the native fn later.
+
+     Bind the print settings so MORE constants survive the round-trip
+     (the M2b 46.6% coverage gap): print-circle lets shared/circular
+     structure print as #N=/#N# (readable); print-level/print-length =
+     nil stops records and long lists from being truncated (a truncated
+     print never Fequal-s its read-back); print-gensym keeps uninterned
+     symbols readable.  The self-check bar is unchanged -- a constant
+     still must Fequal its read-back, we just let more shapes pass it.  */
+  specpdl_ref print_punct = SPECPDL_INDEX ();
+  specbind (intern_c_string ("print-circle"), Qt);
+  specbind (intern_c_string ("print-level"), Qnil);
+  specbind (intern_c_string ("print-length"), Qnil);
+  specbind (intern_c_string ("print-gensym"), Qt);
   for (ptrdiff_t i = 0; i < nconsts; i++)
     {
       Lisp_Object c = AREF (vector, i);
@@ -988,6 +1021,7 @@ zeln_emit_closure_body (FILE *f, Lisp_Object fun)
       emit_u32 (f, (uint32_t) clen);
       emit_bytes (f, SSDATA (printed), clen);
     }
+  unbind_to (print_punct, Qnil);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1560,6 +1594,11 @@ Mirrors `comp-eln-to-el-h'; used so loading a .zeln reports the source
   zeln_captured_forms = Qnil;
   staticpro (&zeln_capture_target);
   zeln_capture_target = Qnil;
+  /* Root for the loader's reconstructed constant vectors -- see
+     zeln_fill_d_reloc_fn.  Without this the constants a .zeln's static
+     `d_reloc' array aliases would be swept by the first post-load GC.  */
+  staticpro (&zeln_loaded_const_vectors);
+  zeln_loaded_const_vectors = Qnil;
 
   defsubr (&Scomp_z_load_zeln);
   defsubr (&Scomp_z_write_spike_zunit);

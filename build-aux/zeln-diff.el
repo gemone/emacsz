@@ -387,4 +387,101 @@ Exits non-zero on the first mismatch (printing name/input/both values)."
                zeln-diff--n)
       (kill-emacs 1))))
 
+;; ====================================================================
+;; M2b multi-function (zabi=3) differential fixture.
+;;
+;; The per-fn corpus above is SINGLE-FN-per-.zeln (zabi=2): each entry
+;; serializes one closure via `comp-z-write-zunit' and so CANNOT exercise
+;; the zabi=3 multi-fn container's per-fn constant scatter.  This drive
+;; builds ONE .elc with several defuns, serializes it as a single zabi=3
+;; zunit via `comp-z-write-file-zunit', compiles it to ONE .zeln, loads
+;; it, and asserts EACH defun returns ITS OWN constant (not a sibling's).
+;; A per-fn d_reloc mis-scatter (all fns reading @d_reloc_z_0, or an
+;; off-by-one in the entry table) shows up as fn i returning fn j's
+;; constant here.  Not wired into a build step (so it cannot regress
+;; gate #4); invoke manually:
+;;   emacs --batch -l build-aux/zeln-diff.el --eval '(zeln-diff-run-multifn)'
+;; with ZELN_COMPILE pointing at the built zeln-compile tool.
+;; ====================================================================
+
+;; Each entry: (SYM EXPECTED FORM-BODY...).  The defun is (defun SYM () . BODY)
+;; and EVERY body reads at least one constant from the fn's own const vector,
+;; so a cross-fn constant leak is observable.  Distinct constant shapes per fn.
+(defconst zeln-diff-multifn-fixture
+  '((mf-a alpha (quote alpha))             ; 1 const: a symbol
+    (mf-b (beta 2) (list (quote beta) 2))  ; 2 consts: symbol + fixnum
+    (mf-c (gamma 3 4) (cons (quote gamma) (quote (3 4))))) ; symbol + list
+  "Multi-defun fixture for the zabi=3 per-fn scatter differential.
+Each line is (SYM EXPECTED-VALUE BODY...).")
+
+(defun zeln-diff-run-multifn ()
+  "Build/load a zabi=3 multi-fn .zeln and assert each fn returns its own const.
+Exits non-zero if any fn returns a sibling's constant (per-fn d_reloc
+mis-scatter) or if the pipeline signals.  The zeln-compile tool is located
+via the ZELN_COMPILE env var (set by the build), defaulting to a .zig-cache
+probe.  For internal use."
+  (unless (fboundp 'comp-z-write-file-zunit)
+    (message "zeln-diff-multifn: build without -Dnative-comp-zig=true")
+    (kill-emacs 1))
+  (let* ((dir (make-temp-file "zeln-diff-mf-" t))
+         (elfile (expand-file-name "mf.el" dir))
+         (elcfile (expand-file-name "mf.elc" dir))
+         (prefix (expand-file-name "mf" dir))
+         (zelnfile (expand-file-name "mf.zeln" dir))
+         (zc (or (getenv "ZELN_COMPILE")
+                 (car (directory-files-recursively
+                       (expand-file-name ".zig-cache")
+                       "^zeln-compile$" nil))))
+         (fails 0)
+         (ncalled 0)
+         nfuncs rc)
+    (unwind-protect
+        (progn
+          (unless (and zc (file-executable-p zc))
+            (message "zeln-diff-multifn: zeln-compile not found (set ZELN_COMPILE)")
+            (kill-emacs 1))
+          ;; Emit (defun SYM () BODY...) per fixture line under lexical-binding.
+          (let ((lexical-binding t))
+            (with-temp-file elfile
+              (insert ";;; mf.el --- multifn fixture  -*- lexical-binding: t; -*-\n\n")
+              (dolist (e zeln-diff-multifn-fixture)
+                (let ((sym (car e)) (body (cddr e)))
+                  (insert (format "(defun %s () %s)\n" sym
+                                  (mapconcat #'prin1-to-string body " ")))))
+              (insert "\n;;; mf.el ends here\n"))
+            (byte-compile-file elfile))
+          (setq nfuncs (comp-z-write-file-zunit elcfile prefix))
+          (unless (integerp nfuncs)
+            (message "zeln-diff-multifn: write-file-zunit returned %S" nfuncs)
+            (kill-emacs 1))
+          (message "zeln-diff-multifn: serialized %d defuns -> zabi=3 zunit" nfuncs)
+          (setq rc (call-process zc nil (list zelnfile) nil
+                                 (concat prefix ".zunit")
+                                 (concat prefix ".manifest")
+                                 zelnfile))
+          (unless (and (numberp rc) (= rc 0))
+            (message "zeln-diff-multifn: zeln-compile exit %S" rc)
+            (kill-emacs 1))
+          (comp-z-load-zeln zelnfile)
+          ;; Assert each fn returns ITS OWN constant.
+          (dolist (e zeln-diff-multifn-fixture)
+            (let* ((sym (car e))
+                   (expected (cadr e))
+                   (got (condition-case err
+                            (funcall sym)
+                          (error (cons 'error err)))))
+              (setq ncalled (1+ ncalled))
+              (if (equal got expected)
+                  (message "zeln-diff-multifn: OK %S => %S" sym got)
+                (setq fails (1+ fails))
+                (message "zeln-diff-multifn MISMATCH: %S expected %S got %S"
+                         sym expected got))))
+          (if (zerop fails)
+              (message "zeln-diff-multifn: %d/%d fns returned own constant (PASS)"
+                       ncalled ncalled)
+            (message "zeln-diff-multifn: FAILED %d/%d fns" fails ncalled)
+            (kill-emacs 1)))
+      (when (file-directory-p dir)
+        (delete-directory dir t)))))
+
 ;;; zeln-diff.el ends here

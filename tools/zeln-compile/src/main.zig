@@ -1265,9 +1265,25 @@ fn emitNativeFn(
     try em.wf("define internal i64 @{s}(i64 %nargs, ptr %args) {{\n", .{fn_name});
     try em.w("entry:\n");
     try em.wif("%stack = alloca [{d} x i64], align 8\n", .{stack_slots});
+    // Zero the WHOLE virtual stack before use.  Only the slots up to `top'
+    // are ever written by the bytecode; the slots above `top' (out to
+    // stack_depth+2) would otherwise hold alloca garbage.  Emacs GC scans
+    // the C stack conservatively (mark_memory over the thread stack), so a
+    // stray garbage word whose bits land inside a swept heap block makes GC
+    // mark_object it -> PVEC_FREE abort (the M2b gate #2 crash under any
+    // GC-during-native-exec).  Zero words are not valid Lisp_Objects and
+    // are ignored by mark_maybe_pointer, so this makes the conservative
+    // scan safe while still protecting the live slots the bytecode fills.
+    try em.wif("  call void @llvm.memset.p0.i64(ptr align 8 %stack, i8 0, i64 {d}, i1 false)\n", .{stack_slots * 8});
     try em.wif("%stackbase = getelementptr inbounds [{d} x i64], ptr %stack, i64 0, i64 1\n", .{stack_slots});
     try em.w("  %top.slot = alloca ptr, align 8\n");
     try em.w("  %zargs = alloca [3 x i64], align 8\n");
+    // Zero %zargs too: varset/varbind write only [0..1] before the freloc
+    // call (pushhandler writes [0..2]); the unused slot holds alloca garbage
+    // that conservative GC scanning can misread as a freed object (the same
+    // PVEC-FREE class as the virtual stack).  24 bytes; cheaper than a GC
+    // abort on fns with heavy dynamic binding (e.g. cl--parsing-keywords).
+    try em.w("  call void @llvm.memset.p0.i64(ptr align 8 %zargs, i8 0, i64 24, i1 false)\n");
     const rlt = em.fresh();
     try em.wif("%{d} = load ptr, ptr @freloc_link_table_z\n", .{rlt});
     const rslot = em.fresh();
@@ -1422,7 +1438,11 @@ fn emitFileLLVM(
     // the pushhandler trio so longjmp lands in the native frame.
     try em.w("; sys_setjmp == _setjmp on glibc (HAVE__SETJMP first).\n");
     try em.w("declare i32 @_setjmp(ptr) #0\n");
-    try em.w("attributes #0 = { nounwind returns_twice }\n\n");
+    try em.w("attributes #0 = { nounwind returns_twice }\n");
+    // memset intrinsic: zero each native fn's alloca virtual stack at entry
+    // (see emitNativeFn) so conservative C-stack GC never marks alloca
+    // garbage as a live object.
+    try em.w("declare void @llvm.memset.p0.i64(ptr nocapture writeonly, i8, i64, i1 immarg)\n\n");
 
     // N native fns.
     for (fns, 0..) |unit, i| {
