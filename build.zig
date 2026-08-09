@@ -2512,6 +2512,61 @@ pub fn build(b: *std.Build) void {
             "M1 differential test: interpreter vs .zeln on the corpus (N/N identical)",
         );
         zeln_diff_step.dependOn(&diff_harness.step);
+
+        // ---- M2b cache-population step (deliverable 1) --------------------
+        // populate-zeln-cache: walk lisp/**/*.elc, serialize each to a
+        // zabi=3 zunit (comp-z-write-file-zunit), then run zeln-compile per
+        // zunit into .zeln-cache/<ver>/<rel>.zeln.  Per-file fault tolerance:
+        // a zeln-compile non-zero exit (emitter UnsupportedOpcode on
+        // Bswitch/obsolete, or a serializer signal) is caught per-.elc and
+        // recorded in zig-out/zeln-cache/SKIP-LIST; the step exits 0 and
+        // prints the coverage ratio.  Those .elc fall back to the
+        // interpreter via the transparent-load fallthrough.
+        const populate_tool = b.addExecutable(.{
+            .name = "populate-zeln-cache",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("build-aux/populate-zeln-cache.zig"),
+            }),
+        });
+        const run_populate = b.addRunArtifact(populate_tool);
+        run_populate.setCwd(b.path("."));
+        // Pass the built zeln-compile exe as a file arg (tracked dep) so the
+        // driver can spawn one zeln-compile per zunit.
+        run_populate.addFileArg(zeln_compile_tool.getEmittedBin());
+        run_populate.step.dependOn(&zeln_compile_tool.step);
+        run_populate.step.dependOn(&run_compile_lisp.step);
+        run_populate.step.dependOn(&run_dump_compiled.step);
+        run_populate.step.dependOn(&run_loaddefs_final.step);
+        run_populate.step.dependOn(&chmod_emacs_wrapper.step);
+        const populate_step = b.step(
+            "populate-zeln-cache",
+            "M2b: populate .zeln-cache from lisp/**/*.elc (per-file tolerant)",
+        );
+        populate_step.dependOn(&run_populate.step);
+
+        // ---- M2b 582-via-.zeln gate (deliverable 3) -----------------------
+        // check-zeln: a second run of run-check with ZELN_LOAD_PATH set to
+        // the populated cache, so the dumped emacs transparently swaps
+        // .elc -> .zeln where compiled (and falls through to the interpreter
+        // where skipped).  The SAME test list / ert selector as the off-path
+        // `check' run (run-check.zig), so the two ert summaries are directly
+        // comparable -- the behavioral-identity proof.  check-zeln depends
+        // on populate-zeln-cache (build-graph ordering prevents the mtime
+        // race between populating and consuming the cache).
+        const run_check_zeln = b.addRunArtifact(run_check_tool);
+        run_check_zeln.setCwd(b.path("."));
+        run_check_zeln.setEnvironmentVariable("ZELN_LOAD_PATH", "zig-out/zeln-cache");
+        run_check_zeln.step.dependOn(&run_populate.step);
+        run_check_zeln.step.dependOn(&run_dump_compiled.step);
+        run_check_zeln.step.dependOn(&run_loaddefs_final.step);
+        run_check_zeln.step.dependOn(&chmod_emacs_wrapper.step);
+        const check_zeln_step = b.step(
+            "check-zeln",
+            "M2b: run 582 built-in tests with transparent .zeln loading",
+        );
+        check_zeln_step.dependOn(&run_check_zeln.step);
     }
     const help_step = b.step("help", "Show build information");
     const help_cmd = b.addSystemCommand(&[_][]const u8{
@@ -2535,6 +2590,12 @@ pub fn build(b: *std.Build) void {
         \\  zig build generate-loaddefs - Generate autoload files
         \\  zig build generate-cedet-grammars - Generate cedet parser files
         \\  zig build help              - Show this message
+        \\
+        \\Native-comp Zig path (opt-in: -Dnative-comp-zig=true, glibc-Linux):
+        \\  zig build zeln-compile-spike - M0 spike: build test-spike.zeln
+        \\  zig build zeln-diff         - M1/M2 differential test (N/N identical)
+        \\  zig build populate-zeln-cache - M2b: populate .zeln-cache from lisp/
+        \\  zig build check-zeln        - M2b: 582 built-in tests via .zeln
         \\
         \\Runnable commands (after `zig build dump`):
         \\  zig-out/bin/temacs          - raw temacs (needs --dump-file=...)

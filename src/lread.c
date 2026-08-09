@@ -1576,22 +1576,14 @@ Return t if the file exists and loads successfully.  */)
 	 hook (maybe_swap_for_zeln, called from openp) has already
 	 replaced FOUND with the .zeln path; dispatch through the Zig
 	 loader, which dlopens the .zeln, verifies the ABI hash, patches
-	 the freloc table, reconstructs constants, and returns a subr
-	 wrapping the native machine code (Fcomp_z_load_zeln does its own
-	 dynlib_open on FOUND, exactly like Fnative_elisp_load).  */
+	 the freloc table, reconstructs each fn's constants, Ffsets every
+	 defun under its baked symbol, and Fevals the embedded top_level
+	 blob under the load-file-name / load-history Fload already bound
+	 (Fcomp_z_load_zeln does its own dynlib_open on FOUND, exactly
+	 like Fnative_elisp_load).  M2b: the loader owns ALL bindings, so
+	 this branch no longer does the M1 basename Ffset.  */
       loadhist_initialize (hist_file_name);
-      Lisp_Object native = Fcomp_z_load_zeln (found);
-      /* M1 .zeln embodies a single function; bind it under the symbol
-	 named by the source basename, mirroring how loading a single-def
-	 .elc would fset that symbol via its top-level `defun' (so
-	 `(load \"foo\")' leaves `foo' natively callable).  found_eff is
-	 the reconstructed .elc; strip its ".elc" (4 chars) for the name.
-	 M2 will instead carry the defun symbol inside the .zeln format.  */
-      Lisp_Object src_eff = found_eff;
-      Lisp_Object base = Ffile_name_nondirectory
-	(Fsubstring (src_eff, make_fixnum (0), make_fixnum (-4)));
-      Lisp_Object sym = Fintern (base, Qnil);
-      Ffset (sym, native);
+      Fcomp_z_load_zeln (found);
       build_load_history (hist_file_name, true);
     }
 #endif

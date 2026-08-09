@@ -29,53 +29,81 @@ typedef struct
   char data[];
 } zeln_static_obj_t;
 
-/* Returned by the exported zeln_entry() symbol.  All slots are
-   .zeln-static until the loader (compz.c Fcomp_z_load_zeln) patches /
-   writes them.  Mirrors the per-symbol reloc slots comp.c looks up at
-   comp.c:5241-5311, collapsed into ONE struct for the M0 single-fn
-   spike (plan section 5.3).  The LLVM-IR struct emitted by
-   tools/zeln-compile MUST match this layout field-for-field (offsets are
-   all 8-byte aligned on x86-64, so there is no padding to negotiate).  */
+/* M2b multi-function container (zabi=3).  A .zeln now carries N native
+   functions (one per defun in the source .elc) PLUS the .elc's non-defun
+   top-level forms as a read-syntax blob, so loading ONE .zeln is a
+   faithful mirror of loading the whole .elc (defun-fset + top-level
+   replay), exactly like gccjit's .eln (comp.c load_comp_unit +
+   Fnative_elisp_load).  The M0 spike and M1 single-fn .zeln are now
+   simply the N=1 case of this container (empty top_level_blob), so the
+   loader has ONE entry layout for all .zeln.  The LLVM-IR struct types
+   emitted by tools/zeln-compile MUST match these layouts field-for-field
+   (every field is 8-byte aligned on x86-64, so there is no padding).  */
+
+/* One entry in the function table.  All slots are .zeln-static until the
+   loader patches/writes them.  native_fn is the MANY-convention machine
+   code; the loader wraps it into a struct Lisp_Subr and Ffsets it under
+   intern(symbol_name).  d_reloc/d_reloc_blob are this fn's OWN constants
+   (each closure has its own const vector); the loader Freads the blob
+   once and scatters it into d_reloc[0..n_d_reloc).  Mirrors the
+   per-symbol reloc slots comp.c looks up at comp.c:5241-5311.  */
 typedef struct
 {
-  /* The actual machine code (M1: the MANY-convention native fn emitted
-     by tools/zeln-compile).  The loader wraps it into a struct
-     Lisp_Subr with min/max decoded from the embedded args_template (see
-     Fcomp_z_load_zeln).  M0's spike also used MANY (the @zeln_spike_native
-     fn was (i64,ptr)->i64 with min=max=0).  Lisp_Object is EMACS_INT /
-     i64 in the IR; matches struct Lisp_Subr's aMANY slot (lisp.h:2188).  */
+  /* The native machine code: i64 (i64 nargs, ptr args), matching struct
+     Lisp_Subr's aMANY slot (lisp.h:2188).  */
   Lisp_Object (*native_fn) (ptrdiff_t, Lisp_Object *);
 
-  /* &@freloc_link_table_z_slot: the loader writes the live
-     zeln_freloc.link_table base address into this slot (mirrors
-     comp.c:5295 *freloc_link_table = freloc.link_table).  Native code
-     then dereferences slot -> base -> &Fmessage.  The slot itself is a
-     single void* (the base); the indirection through this field lets
-     M1 generalize to a real multi-entry link table without changing
-     the entry contract.  */
-  void **freloc_link_table_z;
+  /* The fn's args_template (15-bit lexical-arity encoding).  Embedded
+     here for reference; the native fn's prologue (zeln_setup_args) is
+     the real arity enforcer, so the loader sets subr min=0/max=MANY.  */
+  ptrdiff_t args_template;
 
-  /* &@freloc_hash_z: a NUL-terminated 8-hex ABI-hash string, baked into
-     the .zeln by Zig from the manifest (plan section 5.2).  The loader
-     Fstring_equal-compares it against Vzeln_abi_hash and rejects on
-     mismatch (mirrors comp.c:5303-5305 over LINK_TABLE_HASH_SYM).  */
-  const char *freloc_hash_z;
+  /* &@sym_name_<i>: NUL-terminated C string, the defun symbol name.  The
+     loader interns it and Ffsets the native subr under it.  */
+  const char *symbol_name;
 
-  /* &@d_reloc_z[0]: the loader Freads the const blob and writes
-     d_reloc_z[0] = the string "zeln-spike alive", d_reloc_z[1] =
-     make_fixnum (42).  The native fn reads these slots; the .ll never
-     computes Lisp_Object tag bits.  */
-  Lisp_Object *d_reloc_z;
+  /* &@d_reloc_z_<i>[0]: the loader Freads d_reloc_blob and writes the
+     live Lisp_Object constants here.  The native fn reads these slots;
+     the .ll never computes Lisp_Object tag bits.  */
+  Lisp_Object *d_reloc;
 
-  /* == nconsts == 2 for the spike.  */
+  /* == nconsts for this fn.  */
   ptrdiff_t n_d_reloc;
 
-  /* &@d_reloc_z_blob: the read-syntax blob (a vector) the loader Freads
-     once and splits into d_reloc_z[0..n_d_reloc).  Pointed at by the
-     entry struct so the loader needs no second dlsym beyond zeln_entry
-     (an M0 simplification; mirrors comp.c load_static_obj (DATA_RELOC_SYM)
-     but reached through the single entry handle).  */
+  /* &@d_reloc_blob_<i>: this fn's read-syntax const vector blob ({ len,
+     data[] }).  Loader Freads it once.  */
   zeln_static_obj_t *d_reloc_blob;
+} zeln_fn_entry_t;
+
+/* The file-level entry returned by the exported zeln_entry() symbol.
+   freloc_link_table_z / freloc_hash_z are shared across all fns in the
+   file (the freloc surface is global; plan section 5.2).  top_level_blob
+   is the .elc's non-defun top-level forms as a (progn ...) read-syntax
+   blob; the loader Freads + Fevals it under the load-file-name /
+   load-history Fload already bound.  */
+typedef struct
+{
+  /* &@freloc_link_table_z: the loader writes the live
+     zeln_freloc.link_table base into this slot (mirrors comp.c:5295
+     *freloc_link_table = freloc.link_table).  Native code dereferences
+     *slot -> base -> base[IDX_*].  */
+  void **freloc_link_table_z;
+
+  /* &@freloc_hash_z: NUL-terminated 8-hex ABI-hash string baked into the
+     .zeln by Zig.  The loader Fstring_equal-compares it against
+     Vzeln_abi_hash and rejects on mismatch (mirrors comp.c:5303-5305).  */
+  const char *freloc_hash_z;
+
+  /* Function-table count (1 for the M0 spike / M1 zeln-diff .zeln).  */
+  ptrdiff_t n_fns;
+
+  /* &@zeln_fn_table: the [n_fns]-element function table.  */
+  zeln_fn_entry_t *fns;
+
+  /* &@top_level_blob: { len, data[] } read-syntax of (progn ...) of the
+     .elc's non-defun top-level forms; zero-len for the M0/M1 single-fn
+     .zeln (no top-level replay needed).  */
+  zeln_static_obj_t *top_level_blob;
 } zeln_entry_t;
 
 /* The exported entry: a .zeln-global function returning &zeln_entry_global
@@ -97,6 +125,13 @@ zeln_entry_t *zeln_entry (void);
    args_template from a real compiled closure and writes the M1 zunit +
    manifest.  Defined in compz.c.  */
 extern Lisp_Object Fcomp_z_write_zunit (Lisp_Object fun, Lisp_Object out_prefix);
+
+/* M2b file-level serializer: loads a .elc, walks its defun closures +
+   collects its non-defun top-level forms (via a load-read-function
+   capture), and writes ONE zabi=3 multi-function zunit + the manifest
+   (plan M2b deliverable 1).  Defined in compz.c.  */
+extern Lisp_Object Fcomp_z_write_file_zunit (Lisp_Object file,
+					     Lisp_Object out_prefix);
 
 /* M1.5 cache layout.  Self-contained mirror of comp.c's
    Fcomp_el_to_eln_rel_filename (comp.c:4306) — it CANNOT reuse the gccjit

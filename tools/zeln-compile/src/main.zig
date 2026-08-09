@@ -345,8 +345,19 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             std.debug.print("zeln-compile: M1 emit failed: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
+    } else if (zabi == 3) {
+        // M2b path: multi-function file zunit (N defuns + top_level_blob).
+        const file_unit = parseFileZunit(gpa, zunit) catch |err| {
+            std.debug.print("zeln-compile: file zunit parse failed: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+        defer freeFileUnit(gpa, file_unit);
+        ll_body = emitFileLLVM(gpa, file_unit.fns, abi_hash, file_unit.top_blob) catch |err| {
+            std.debug.print("zeln-compile: file emit failed: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
     } else {
-        std.debug.print("zeln-compile: unsupported zabi_version {d} (want 1 or 2)\n", .{zabi});
+        std.debug.print("zeln-compile: unsupported zabi_version {d} (want 1, 2, or 3)\n", .{zabi});
         std.process.exit(1);
     }
     defer gpa.free(ll_body);
@@ -487,13 +498,17 @@ fn emitSpikeLLVM(gpa: std.mem.Allocator, consts: []Const, abi_hash: []const u8) 
     try A.addf(&out, gpa, "@d_reloc_z_blob = internal constant {{ i64, [{d} x i8] }} {{ i64 {d}, [{d} x i8] c\"{s}\" }}\n\n", .{ blob_bytes.len, blob_bytes.len, blob_bytes.len, blob_lit.items });
     try A.addf(&out, gpa, "@freloc_hash_z_data = internal constant [9 x i8] c\"{s}\"\n\n", .{hash_lit.items});
     try A.add(&out, gpa,
-        \\@zeln_entry_global = internal global { ptr, ptr, ptr, ptr, i64, ptr } {
-        \\  ptr @zeln_spike_native,
+        \\@sym_name_0 = internal constant [11 x i8] c"zeln-spike\00"
+        \\@zeln_fn_table = private constant [1 x { ptr, i64, ptr, ptr, i64, ptr }] [
+        \\  { ptr, i64, ptr, ptr, i64, ptr } { ptr @zeln_spike_native, i64 0, ptr @sym_name_0, ptr @d_reloc_z, i64 2, ptr @d_reloc_z_blob }
+        \\]
+        \\@top_level_blob_data = internal constant { i64, [0 x i8] } { i64 0, [0 x i8] c"" }
+        \\@zeln_entry_global = internal global { ptr, ptr, i64, ptr, ptr } {
         \\  ptr @freloc_link_table_z,
         \\  ptr @freloc_hash_z_data,
-        \\  ptr @d_reloc_z,
-        \\  i64 2,
-        \\  ptr @d_reloc_z_blob
+        \\  i64 1,
+        \\  ptr @zeln_fn_table,
+        \\  ptr @top_level_blob_data
         \\}
         \\
         \\; Spike native body (MANY convention).  INTERNAL linkage so it does
@@ -573,6 +588,86 @@ fn parseM1Zunit(gpa: std.mem.Allocator, zunit: []const u8) !M1Unit {
 
 fn freeM1Unit(gpa: std.mem.Allocator, u: M1Unit) void {
     gpa.free(u.consts);
+}
+
+// =====================================================================
+// M2b multi-function zunit (zabi=3).  N function blocks (one per defun)
+// + one top_level_blob.  Each block carries the defun symbol name + the
+// SAME closure-body shape as zabi=2 (args_template, stack_depth, opcodes,
+// consts).  Parsed into a []FnUnit (names owned by this function's
+// arena-allocated slices, pointing into the zunit buffer) + the raw
+// top_blob bytes (also aliased into the zunit buffer).
+// =====================================================================
+const FileUnit = struct {
+    fns: []FnUnit,
+    top_blob: []const u8,
+};
+
+fn parseFileZunit(gpa: std.mem.Allocator, zunit: []const u8) !FileUnit {
+    // u32 magic; u8 zabi=3; u32 nfuncs; then nfuncs × { u32 sym_name_len;
+    //   u8 sym_name[len]; <closure body>; ... }; u32 top_blob_len; u8[].
+    if (zunit.len < 5 + 4) return error.ZunitTooShort;
+    var off: usize = 5; // past magic+zabi
+    const nfuncs = std.mem.readInt(u32, zunit[off..][0..4], .little);
+    off += 4;
+    if (nfuncs == 0) return error.EmptyBytecode;
+
+    var fns = try gpa.alloc(FnUnit, nfuncs);
+    errdefer gpa.free(fns);
+    var fn_i: usize = 0;
+    while (fn_i < nfuncs) : (fn_i += 1) {
+        if (off + 4 > zunit.len) return error.NameLenOverflow;
+        const namelen = std.mem.readInt(u32, zunit[off..][0..4], .little);
+        off += 4;
+        if (off + namelen > zunit.len) return error.NameOverflow;
+        const name = zunit[off .. off + namelen];
+        off += namelen;
+
+        // closure body: u32 args_template; u16 stack_depth; u32 opcode_len;
+        //   u8 opcodes[]; u32 nconsts; consts.
+        if (off + 4 + 2 + 4 > zunit.len) return error.ZunitTooShort;
+        const args_template = std.mem.readInt(u32, zunit[off..][0..4], .little);
+        off += 4;
+        const stack_depth = std.mem.readInt(u16, zunit[off..][0..2], .little);
+        off += 2;
+        const opcode_len = std.mem.readInt(u32, zunit[off..][0..4], .little);
+        off += 4;
+        if (off + opcode_len + 4 > zunit.len) return error.OpcodeOverflow;
+        const opcodes = zunit[off .. off + opcode_len];
+        off += opcode_len;
+        const nconsts = std.mem.readInt(u32, zunit[off..][0..4], .little);
+        off += 4;
+
+        const consts = try gpa.alloc([]const u8, @intCast(nconsts));
+        for (0..nconsts) |i| {
+            if (off + 5 > zunit.len) return error.ConstHeaderOverflow;
+            off += 1; // tag_advisory (loader ignores)
+            const len = std.mem.readInt(u32, zunit[off..][0..4], .little);
+            off += 4;
+            if (off + len > zunit.len) return error.ConstDataOverflow;
+            consts[i] = zunit[off .. off + len];
+            off += len;
+        }
+        fns[fn_i] = .{
+            .name = name,
+            .args_template = args_template,
+            .stack_depth = stack_depth,
+            .opcodes = opcodes,
+            .consts = consts,
+        };
+    }
+
+    if (off + 4 > zunit.len) return error.ZunitTooShort;
+    const top_blob_len = std.mem.readInt(u32, zunit[off..][0..4], .little);
+    off += 4;
+    if (off + top_blob_len > zunit.len) return error.BlobOverflow;
+    const top_blob = zunit[off .. off + top_blob_len];
+    return .{ .fns = fns, .top_blob = top_blob };
+}
+
+fn freeFileUnit(gpa: std.mem.Allocator, u: FileUnit) void {
+    for (u.fns) |f| gpa.free(f.consts);
+    gpa.free(u.fns);
 }
 
 // ---- Decode (interpreter FETCH/FETCH2 semantics; bytecode.c:278) ----
@@ -1015,6 +1110,11 @@ const Emitter = struct {
     gpa: std.mem.Allocator,
     out: *std.ArrayList(u8),
     next_reg: u32 = 1, // LLVM temporaries start at %1 (params occupy %0-ish names; we use numeric %N)
+    // Per-fn d_reloc global name + const count. Set by emitNativeFn before
+    // emitting each fn's body, so loadConst / emitVarref reference THIS fn's
+    // @d_reloc_z_<i> (each closure has its own constants vector).
+    d_reloc_global: []const u8 = "d_reloc_z",
+    nconsts: u64 = 0,
 
     fn fresh(self: *Emitter) u32 {
         const r = self.next_reg;
@@ -1062,9 +1162,9 @@ const Emitter = struct {
     }
 
     // Load d_reloc_z[const_idx] into a fresh register and return it.
-    fn loadConst(self: *Emitter, nconsts: usize, const_idx: u64) !u32 {
+    fn loadConst(self: *Emitter, const_idx: u64) !u32 {
         const cslot = self.fresh();
-        try self.wif("%{d} = getelementptr inbounds [{d} x i64], ptr @d_reloc_z, i64 0, i64 {d}\n", .{ cslot, nconsts, const_idx });
+        try self.wif("%{d} = getelementptr inbounds [{d} x i64], ptr @{s}, i64 0, i64 {d}\n", .{ cslot, self.nconsts, self.d_reloc_global, const_idx });
         const cval = self.fresh();
         try self.wif("%{d} = load i64, ptr %{d}\n", .{ cval, cslot });
         return cval;
@@ -1085,13 +1185,48 @@ const Emitter = struct {
     }
 };
 
-fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8) ![]u8 {
+// =====================================================================
+// M2b multi-function container.  A FnUnit is ONE decoded closure (a
+// defun from the source .elc); a .zeln carries N of them plus a
+// top_level_blob.  emitFileLLVM emits the shared freloc/hash globals,
+// per-fn d_reloc + sym_name globals, the function-table global, the
+// top_level_blob global, N native fns (via emitNativeFn), and the
+// zeln_entry global in the zeln_entry_t / zeln_fn_entry_t shape that
+// matches src/compz.h field-for-field.  zabi=2 (M1) is the N=1 case
+// with an empty top_level_blob, so ONE emitter serves both.
+// =====================================================================
+const FnUnit = struct {
+    name: []const u8, // defun symbol name (placeholder "zeln-m1" for zabi=2)
+    args_template: u32,
+    stack_depth: u32,
+    opcodes: []const u8,
+    consts: [][]const u8,
+};
+
+// Emit ONE native fn: `define internal i64 @FN_NAME(i64 %nargs, ptr
+// %args) { prologue + per-opcode body }`.  Pass 1 (decode + block
+// pre-scan) + Pass 2 (per-opcode IR) are per-fn.  References @D_RELOC
+// (THIS fn's const array) via em.d_reloc_global and the shared
+// @freloc_link_table_z.  INTERNAL linkage so symbols do not interpose
+// across concurrently loaded .zeln (RTLD_GLOBAL); only @zeln_entry is
+// exported.
+fn emitNativeFn(
+    gpa: std.mem.Allocator,
+    em: *Emitter,
+    fn_name: []const u8,
+    d_reloc_name: []const u8,
+    unit: FnUnit,
+) !void {
     const opcodes = unit.opcodes;
     if (opcodes.len == 0) return error.EmptyBytecode;
     if (unit.stack_depth > 0xFFFE) return error.StackDepthTooLarge;
-    // maxdepth+2: +1 for the pre-base slot (so `top = frame_base - 1` stays
-    // inbounds), +1 because interpreter guarantees <=maxdepth live values.
     const stack_slots: u64 = @as(u64, unit.stack_depth) + 2;
+
+    // Point the emitter at THIS fn's d_reloc global + const count, and
+    // reset the temp register counter for a clean, readable trace.
+    em.d_reloc_global = d_reloc_name;
+    em.nconsts = unit.consts.len;
+    em.next_reg = 1;
 
     // ---- Pass 1: decode + pre-scan branch targets / block starts. ----
     const n = opcodes.len;
@@ -1112,9 +1247,6 @@ fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8) ![]u8 
         try instrs.append(gpa, ins);
         pc = ins.end;
     }
-    // Validate every branch target lands on an instruction boundary
-    // (bytecomp guarantees this; reject malformed zunits defensively) and
-    // record block starts at each target + each branch/return fallthrough.
     for (instrs.items) |ins| {
         switch (ins.op) {
             .goto_, .goto_if_nil, .goto_if_nonnil, .goto_if_nil_else_pop, .goto_if_nonnil_else_pop, .pushhandler => {
@@ -1130,81 +1262,12 @@ fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8) ![]u8 
         }
     }
 
-    // ---- Build the d_reloc read-syntax blob: `[<c0> <c1> ...]`. ----
-    var blob: std.ArrayList(u8) = .empty;
-    defer blob.deinit(gpa);
-    try blob.append(gpa, '[');
-    for (unit.consts, 0..) |c, i| {
-        if (i > 0) try blob.append(gpa, ' ');
-        try blob.appendSlice(gpa, c);
-    }
-    try blob.append(gpa, ']');
-    const blob_bytes = blob.items;
-
-    var blob_lit: std.ArrayList(u8) = .empty;
-    defer blob_lit.deinit(gpa);
-    try appendCStringLiteral(gpa, &blob_lit, blob_bytes);
-
-    var hash_lit: std.ArrayList(u8) = .empty;
-    defer hash_lit.deinit(gpa);
-    try appendCStringLiteral(gpa, &hash_lit, abi_hash);
-    try hash_lit.appendSlice(gpa, "\\00");
-
-    // ---- Emit. ----
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(gpa);
-    var em = Emitter{ .gpa = gpa, .out = &out };
-
-    try em.w("; zeln-m1.ll — Tier-0 emission of an M1 compiled closure.\n");
-    try em.w("; Generated by tools/zeln-compile from the zabi=2 zunit.  Every\n");
-    try em.w("; opcode is decoded at COMPILE time (no runtime fetch/dispatch);\n");
-    try em.w("; branch targets become LLVM basic blocks.  The virtual stack is an\n");
-    try em.w("; alloca (C stack memory -> conservatively GC-rooted by mark_c_stack,\n");
-    try em.w("; the same guarantee gccjit's .eln relies on).  The IR never computes\n");
-    try em.w("; Lisp_Object tag bits: every value is a raw i64 from loader-filled\n");
-    try em.w("; slots, so USE_LSB_TAG never leaks into IR.\n\n");
-
-    try em.w("@freloc_link_table_z = internal global ptr null\n");
-    try em.wf("@d_reloc_z = internal global [{d} x i64] zeroinitializer\n\n", .{unit.consts.len});
-    try em.wf("@d_reloc_z_blob = internal constant {{ i64, [{d} x i8] }} {{ i64 {d}, [{d} x i8] c\"{s}\" }}\n\n", .{ blob_bytes.len, blob_bytes.len, blob_bytes.len, blob_lit.items });
-    try em.wf("@freloc_hash_z_data = internal constant [9 x i8] c\"{s}\"\n\n", .{hash_lit.items});
-
-    try em.w("@zeln_entry_global = internal global { ptr, ptr, ptr, ptr, i64, ptr } {\n");
-    try em.w("  ptr @zeln_m1_native,\n");
-    try em.w("  ptr @freloc_link_table_z,\n");
-    try em.w("  ptr @freloc_hash_z_data,\n");
-    try em.w("  ptr @d_reloc_z,\n");
-    try em.wf("  i64 {d},\n", .{unit.consts.len});
-    try em.w("  ptr @d_reloc_z_blob\n}\n\n");
-
-    // _setjmp is sys_setjmp on this glibc target (HAVE__SETJMP is checked
-    // first in lisp.h, so sys_setjmp(j) == _setjmp(j)).  Called DIRECTLY in
-    // the native fn for the pushhandler trio so longjmp lands in the native
-    // frame (its alloca virtual stack survives).  `returns_twice` is
-    // mandatory: without it the optimizer assumes a single return and
-    // misoptimizes the longjmp-resume block.  Attribute group #0 is unused
-    // by the rest of this module.
-    try em.w("; sys_setjmp == _setjmp on glibc (HAVE__SETJMP first).\n");
-    try em.w("declare i32 @_setjmp(ptr) #0\n");
-    try em.w("attributes #0 = { nounwind returns_twice }\n\n");
-
-    // Native fn: MANY convention `i64 (i64 %nargs, ptr %args)`.  INTERNAL
-    // linkage so the symbol does not interpose across multiple concurrently
-    // loaded .zeln (dynlib_open uses RTLD_GLOBAL): each .zeln's
-    // zeln_entry_global resolves to ITS OWN @zeln_m1_native at link time.
-    // Only @zeln_entry is exported (the loader's dlsym target).
-    try em.w("define internal i64 @zeln_m1_native(i64 %nargs, ptr %args) {\n");
+    try em.wf("define internal i64 @{s}(i64 %nargs, ptr %args) {{\n", .{fn_name});
     try em.w("entry:\n");
-    // Virtual stack alloca + top.slot.
     try em.wif("%stack = alloca [{d} x i64], align 8\n", .{stack_slots});
     try em.wif("%stackbase = getelementptr inbounds [{d} x i64], ptr %stack, i64 0, i64 1\n", .{stack_slots});
     try em.w("  %top.slot = alloca ptr, align 8\n");
-    // 3-slot scratch for the const-arg opcodes (varset/varbind) and the
-    // pushhandler trio ([tag, type_raw, &top.slot]). Lives in the native
-    // frame so it survives the pushhandler setjmp/longjmp (the longjmp
-    // lands in the shim THIS fn called, so this frame is preserved).
     try em.w("  %zargs = alloca [3 x i64], align 8\n");
-    // Prologue: zeln_setup_args(args_template, nargs, args, stackbase) -> top.
     const rlt = em.fresh();
     try em.wif("%{d} = load ptr, ptr @freloc_link_table_z\n", .{rlt});
     const rslot = em.fresh();
@@ -1219,9 +1282,6 @@ fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8) ![]u8 
     // ---- Pass 2: per-opcode emission. ----
     var block_open: bool = false;
     for (instrs.items) |ins| {
-        // Open a basic block at every block start. If the prior block is
-        // still open (straight-line fallthrough into a label), close it with
-        // an explicit `br` to this label first.
         if (is_block_start[ins.start]) {
             if (block_open)
                 try em.wf("  br label %bb_{d}\n", .{ins.start});
@@ -1230,30 +1290,30 @@ fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8) ![]u8 
         }
 
         switch (ins.op) {
-            .constant => try emitConstant(&em, unit.consts.len, ins.idx),
-            .stack_ref => try emitStackRef(&em, ins.imm),
-            .dup => try emitDup(&em),
-            .discard => try emitDiscard(&em),
-            .stack_set => try emitStackSet(&em, ins.imm),
+            .constant => try emitConstant(em, ins.idx),
+            .stack_ref => try emitStackRef(em, ins.imm),
+            .dup => try emitDup(em),
+            .discard => try emitDiscard(em),
+            .stack_set => try emitStackSet(em, ins.imm),
             .ret => {
-                try emitReturn(&em);
+                try emitReturn(em);
                 block_open = false;
             },
-            .unary => try emitUnary(&em, ins.idx),
-            .binary => try emitBinary(&em, ins.idx),
-            .listn => try emitListN(&em, ins.idx, ins.imm),
-            .call => try emitCall(&em, ins.imm),
+            .unary => try emitUnary(em, ins.idx),
+            .binary => try emitBinary(em, ins.idx),
+            .listn => try emitListN(em, ins.idx, ins.imm),
+            .call => try emitCall(em, ins.imm),
             // ---- M2 ----
-            .varref => try emitVarref(&em, unit.consts.len, ins.idx),
-            .varset => try emitVarset(&em, unit.consts.len, ins.idx),
-            .varbind => try emitVarbind(&em, unit.consts.len, ins.idx),
-            .unbind => try emitUnbind(&em, ins.imm),
-            .discard_n => try emitDiscardN(&em, ins.imm),
-            .push0 => try emitPush0(&em, ins.idx),
-            .noarg => try emitNoArg(&em, ins.idx),
-            .unary_pop => try emitUnaryPop(&em, ins.idx),
+            .varref => try emitVarref(em, ins.idx),
+            .varset => try emitVarset(em, ins.idx),
+            .varbind => try emitVarbind(em, ins.idx),
+            .unbind => try emitUnbind(em, ins.imm),
+            .discard_n => try emitDiscardN(em, ins.imm),
+            .push0 => try emitPush0(em, ins.idx),
+            .noarg => try emitNoArg(em, ins.idx),
+            .unary_pop => try emitUnaryPop(em, ins.idx),
             .pushhandler => {
-                try emitPushHandler(&em, ins.idx, ins.target, ins.end);
+                try emitPushHandler(em, ins.idx, ins.target, ins.end);
                 block_open = false;
             },
             .goto_ => {
@@ -1261,31 +1321,127 @@ fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8) ![]u8 
                 block_open = false;
             },
             .goto_if_nil => {
-                try emitCondPop(&em, ins.target, ins.end, .eq_nil);
+                try emitCondPop(em, ins.target, ins.end, .eq_nil);
                 block_open = false;
             },
             .goto_if_nonnil => {
-                try emitCondPop(&em, ins.target, ins.end, .eq_nonnil);
+                try emitCondPop(em, ins.target, ins.end, .eq_nonnil);
                 block_open = false;
             },
             .goto_if_nil_else_pop => {
-                try emitCondElsePop(&em, ins.start, ins.target, ins.end, .eq_nil);
+                try emitCondElsePop(em, ins.start, ins.target, ins.end, .eq_nil);
                 block_open = false;
             },
             .goto_if_nonnil_else_pop => {
-                try emitCondElsePop(&em, ins.start, ins.target, ins.end, .eq_nonnil);
+                try emitCondElsePop(em, ins.start, ins.target, ins.end, .eq_nonnil);
                 block_open = false;
             },
         }
     }
 
-    // If the final block fell through without a terminator (bytecomp always
-    // ends lexical closures with Breturn, so this is defensive), close it.
     if (block_open) {
         try em.w("  ret i64 0\n");
     }
-
     try em.w("}\n\n");
+}
+
+// Emit the whole .ll for a multi-function .zeln: shared globals + per-fn
+// globals + fn table + top_level_blob + N native fns + entry.  FNS is
+// non-empty (zabi=2 passes 1; zabi=3 passes N).  TOP_BLOB is the raw
+// (progn ...) read-syntax ("" for the M1 single-fn case).
+fn emitFileLLVM(
+    gpa: std.mem.Allocator,
+    fns: []const FnUnit,
+    abi_hash: []const u8,
+    top_blob: []const u8,
+) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    var em = Emitter{ .gpa = gpa, .out = &out };
+
+    try em.w("; zeln.ll — Tier-0 emission of a multi-function .zeln (M2b).\n");
+    try em.w("; Generated by tools/zeln-compile. N native fns (one per defun)\n");
+    try em.w("; plus a top_level_blob replaying the .elc's non-defun forms.\n\n");
+
+    // Shared freloc link-table slot (loader-patched) + ABI hash string.
+    try em.w("@freloc_link_table_z = internal global ptr null\n");
+    var hash_lit: std.ArrayList(u8) = .empty;
+    defer hash_lit.deinit(gpa);
+    try appendCStringLiteral(gpa, &hash_lit, abi_hash);
+    try hash_lit.appendSlice(gpa, "\\00");
+    try em.wf("@freloc_hash_z_data = internal constant [9 x i8] c\"{s}\"\n\n", .{hash_lit.items});
+
+    // Per-fn globals: d_reloc slot array + d_reloc read-syntax blob +
+    // the NUL-terminated defun symbol name.
+    for (fns, 0..) |unit, i| {
+        var blob: std.ArrayList(u8) = .empty;
+        defer blob.deinit(gpa);
+        try blob.append(gpa, '[');
+        for (unit.consts, 0..) |c, j| {
+            if (j > 0) try blob.append(gpa, ' ');
+            try blob.appendSlice(gpa, c);
+        }
+        try blob.append(gpa, ']');
+        const blob_bytes = blob.items;
+        var blob_lit: std.ArrayList(u8) = .empty;
+        defer blob_lit.deinit(gpa);
+        try appendCStringLiteral(gpa, &blob_lit, blob_bytes);
+        try em.wf("@d_reloc_z_{d} = internal global [{d} x i64] zeroinitializer\n", .{ i, unit.consts.len });
+        try em.wf("@d_reloc_blob_{d} = internal constant {{ i64, [{d} x i8] }} {{ i64 {d}, [{d} x i8] c\"{s}\" }}\n", .{ i, blob_bytes.len, blob_bytes.len, blob_bytes.len, blob_lit.items });
+
+        var name_lit: std.ArrayList(u8) = .empty;
+        defer name_lit.deinit(gpa);
+        try appendCStringLiteral(gpa, &name_lit, unit.name);
+        try name_lit.appendSlice(gpa, "\\00");
+        try em.wf("@sym_name_{d} = internal constant [{d} x i8] c\"{s}\"\n", .{ i, unit.name.len + 1, name_lit.items });
+    }
+    try em.w("\n");
+
+    // Function table: [N x { ptr native_fn, i64 args_template, ptr
+    // symbol_name, ptr d_reloc, i64 n_d_reloc, ptr d_reloc_blob }]
+    // matching zeln_fn_entry_t (compz.h).
+    try em.wf("@zeln_fn_table = private constant [{d} x {{ ptr, i64, ptr, ptr, i64, ptr }}] [\n", .{fns.len});
+    for (fns, 0..) |unit, i| {
+        // Each array element needs an explicit struct-type prefix (LLVM
+        // rejects a bare struct value as an array element).
+        try em.wf("  {{ ptr, i64, ptr, ptr, i64, ptr }} {{ ptr @zeln_fn_{d}, i64 {d}, ptr @sym_name_{d}, ptr @d_reloc_z_{d}, i64 {d}, ptr @d_reloc_blob_{d} }}{s}\n", .{
+            i,         unit.args_template, i,                 i,                unit.consts.len, i,
+            if (i + 1 < fns.len) "," else "",
+        });
+    }
+    try em.w("]\n\n");
+
+    // top_level_blob: { i64 len, [len x i8] data }.  Zero-len for the M1
+    // single-fn case; the loader skips a zero-len blob.
+    var top_lit: std.ArrayList(u8) = .empty;
+    defer top_lit.deinit(gpa);
+    try appendCStringLiteral(gpa, &top_lit, top_blob);
+    try em.wf("@top_level_blob_data = internal constant {{ i64, [{d} x i8] }} {{ i64 {d}, [{d} x i8] c\"{s}\" }}\n\n", .{ top_blob.len, top_blob.len, top_blob.len, top_lit.items });
+
+    // _setjmp (sys_setjmp on glibc) declared DIRECTLY in the native fn for
+    // the pushhandler trio so longjmp lands in the native frame.
+    try em.w("; sys_setjmp == _setjmp on glibc (HAVE__SETJMP first).\n");
+    try em.w("declare i32 @_setjmp(ptr) #0\n");
+    try em.w("attributes #0 = { nounwind returns_twice }\n\n");
+
+    // N native fns.
+    for (fns, 0..) |unit, i| {
+        const fn_name = try std.fmt.allocPrint(gpa, "zeln_fn_{d}", .{i});
+        defer gpa.free(fn_name);
+        const drr = try std.fmt.allocPrint(gpa, "d_reloc_z_{d}", .{i});
+        defer gpa.free(drr);
+        try emitNativeFn(gpa, &em, fn_name, drr, unit);
+    }
+
+    // File entry: { ptr freloc_link_table_z, ptr freloc_hash_z, i64 n_fns,
+    // ptr fns, ptr top_level_blob } matching zeln_entry_t (compz.h).
+    try em.w("@zeln_entry_global = internal global { ptr, ptr, i64, ptr, ptr } {\n");
+    try em.w("  ptr @freloc_link_table_z,\n");
+    try em.w("  ptr @freloc_hash_z_data,\n");
+    try em.wf("  i64 {d},\n", .{fns.len});
+    try em.w("  ptr @zeln_fn_table,\n");
+    try em.w("  ptr @top_level_blob_data\n}\n\n");
+
     try em.w("define dso_local ptr @zeln_entry() {\n");
     try em.w("entry:\n");
     try em.w("  ret ptr @zeln_entry_global\n");
@@ -1294,20 +1450,32 @@ fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8) ![]u8 
     return out.toOwnedSlice(gpa);
 }
 
+// zabi=2 (M1 single-fn): the N=1 case of the multi-function container,
+// with a placeholder symbol name and an empty top_level_blob.
+fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8) ![]u8 {
+    var fns = try gpa.alloc(FnUnit, 1);
+    defer gpa.free(fns);
+    fns[0] = .{
+        .name = "zeln-m1",
+        .args_template = unit.args_template,
+        .stack_depth = unit.stack_depth,
+        .opcodes = unit.opcodes,
+        .consts = unit.consts,
+    };
+    return emitFileLLVM(gpa, fns, abi_hash, "");
+}
+
 // ---- Per-opcode IR fragments.  Each assumes a block is currently open
 //      and %top.slot holds the current `top`; PUSH/POP mirror the
 //      interpreter exactly (`*++top = x`; bytecode.c:283).  All values are
 //      raw i64 Lisp_Objects; tag bits are never computed in IR. ----
 
 // Bconstant: PUSH d_reloc_z[idx].
-fn emitConstant(em: *Emitter, nconsts: usize, idx: u64) !void {
+fn emitConstant(em: *Emitter, idx: u64) !void {
     const t = try em.loadTop();
     const np = em.fresh();
     try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 1\n", .{ np, t });
-    const cslot = em.fresh();
-    try em.wif("%{d} = getelementptr inbounds [{d} x i64], ptr @d_reloc_z, i64 0, i64 {d}\n", .{ cslot, nconsts, idx });
-    const cval = em.fresh();
-    try em.wif("%{d} = load i64, ptr %{d}\n", .{ cval, cslot });
+    const cval = try em.loadConst(idx);
     try em.wif("store i64 %{d}, ptr %{d}\n", .{ cval, np });
     try em.storeTop(np);
 }
@@ -1461,9 +1629,9 @@ fn emitCondElsePop(em: *Emitter, start: u32, target: u32, fall_off: u32, sense: 
 // Fsymbol_value directly is result-identical to the interpreter's
 // SYMBOL_PLAINVAL fast path (the fast path only short-circuits the call;
 // Fsymbol_value returns the same value and signals void-variable the same).
-fn emitVarref(em: *Emitter, nconsts: usize, const_idx: u64) !void {
+fn emitVarref(em: *Emitter, const_idx: u64) !void {
     const cslot = em.fresh();
-    try em.wif("%{d} = getelementptr inbounds [{d} x i64], ptr @d_reloc_z, i64 0, i64 {d}\n", .{ cslot, nconsts, const_idx });
+    try em.wif("%{d} = getelementptr inbounds [{d} x i64], ptr @{s}, i64 0, i64 {d}\n", .{ cslot, em.nconsts, em.d_reloc_global, const_idx });
     const r = try em.frelocCallI64(IDX_SYMBOL_VALUE, 1, cslot);
     const t = try em.loadTop();
     const np = em.fresh();
@@ -1474,11 +1642,11 @@ fn emitVarref(em: *Emitter, nconsts: usize, const_idx: u64) !void {
 
 // Bvarset family: set_internal(vectorp[arg], POP).  POP the TOS, scatter
 // [sym, val] into %zargs, call IDX_VARSET(2, &zargs); net stack effect -1.
-fn emitVarset(em: *Emitter, nconsts: usize, const_idx: u64) !void {
+fn emitVarset(em: *Emitter, const_idx: u64) !void {
     const t = try em.loadTop();
     const val = em.fresh();
     try em.wif("%{d} = load i64, ptr %{d}\n", .{ val, t }); // popped value
-    const sym = try em.loadConst(nconsts, const_idx);
+    const sym = try em.loadConst(const_idx);
     const z0 = try em.zargsSlot(0);
     try em.wif("store i64 %{d}, ptr %{d}\n", .{ sym, z0 });
     const z1 = try em.zargsSlot(1);
@@ -1491,11 +1659,11 @@ fn emitVarset(em: *Emitter, nconsts: usize, const_idx: u64) !void {
 }
 
 // Bvarbind family: specbind(vectorp[arg], POP).  Same shape as varset.
-fn emitVarbind(em: *Emitter, nconsts: usize, const_idx: u64) !void {
+fn emitVarbind(em: *Emitter, const_idx: u64) !void {
     const t = try em.loadTop();
     const val = em.fresh();
     try em.wif("%{d} = load i64, ptr %{d}\n", .{ val, t });
-    const sym = try em.loadConst(nconsts, const_idx);
+    const sym = try em.loadConst(const_idx);
     const z0 = try em.zargsSlot(0);
     try em.wif("store i64 %{d}, ptr %{d}\n", .{ sym, z0 });
     const z1 = try em.zargsSlot(1);

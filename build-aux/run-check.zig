@@ -47,7 +47,20 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     var eval: std.ArrayList(u8) = .empty;
     defer eval.deinit(gpa);
-    try eval.appendSlice(gpa, "(progn (load \"cl-macs\") (load \"cl-seq\") (load \"cl-extra\") (require (quote ert)) ");
+    try eval.appendSlice(gpa, "(progn ");
+    // M2b check-zeln gate: if ZELN_LOAD_PATH is set, point the .zeln cache
+    // at it so the dumped emacs transparently swaps .elc -> .zeln where
+    // compiled (and falls through to the interpreter where skipped).  The
+    // SAME test list / ert selector as the off-path `check' run, so the
+    // two summaries are directly comparable (behavioral-identity proof).
+    if (env_map.get("ZELN_LOAD_PATH")) |zp| {
+        if (zp.len > 0) {
+            try eval.appendSlice(gpa, "(setq native-comp-zeln-load-path (list (expand-file-name \"");
+            try eval.appendSlice(gpa, zp);
+            try eval.appendSlice(gpa, "\"))) ");
+        }
+    }
+    try eval.appendSlice(gpa, "(load \"cl-macs\") (load \"cl-seq\") (load \"cl-extra\") (require (quote ert)) ");
     for (test_files) |f| {
         if (std.mem.eql(u8, f, "cl-macs") or std.mem.eql(u8, f, "cl-seq") or std.mem.eql(u8, f, "cl-extra"))
             continue;

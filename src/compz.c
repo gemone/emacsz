@@ -92,8 +92,12 @@ static zeln_f_reloc_t zeln_freloc;
        (the uniform MANY convention matching struct Lisp_Subr aMANY).
 
    ZELN_ABI_VERSION was bumped Z1 -> Z2 for the M1 layout + surface,
-   then Z2 -> Z3 for the M2 freloc-surface growth, so a stale M0/M1
-   .zeln is rejected by the hash gate before any native code runs.  */
+   then Z2 -> Z3 for the M2 freloc-surface growth, then Z3 -> Z4 for the
+   M2b multi-function .zeln container (the entry struct gained a
+   function table + top_level_blob), so a stale M0/M1/M2 .zeln is
+   rejected by the hash gate before any native code runs.  The IDX_*
+   freloc surface itself is UNCHANGED across Z3 -> Z4 (no per-fn drift),
+   so the differential gate's per-opcode contract still holds.  */
 
 /* Prologue helper: replicates exec_byte_code setup_frame arg binding
    (bytecode.c:535-549) into the caller-provided virtual stack.  ARGS
@@ -649,8 +653,8 @@ hash_zeln_abi (void)
   Lisp_Object sig = zeln_signature_string ();
 
   /* Key = ABI_VERSION ++ version ++ config ++ config-options ++ sig,
-     mirroring comp.c:787-793.  ZELN_ABI_VERSION ("Z3" for M2; "Z2"
-     covered M1, "Z1" M0) is the
+     mirroring comp.c:787-793.  ZELN_ABI_VERSION ("Z4" for M2b; "Z3"
+     covered M2, "Z2" M1, "Z1" M0) is the
      ZELN-native analogue of gccjit's ABI_VERSION ("13"); it comes from
      config.h (config_values.txt + tools/gen-config), not a #define
      here, so the serializer, the gate, and the Zig tool compute it from
@@ -688,23 +692,25 @@ zeln_patch_freloc (zeln_entry_t *e)
   *e->freloc_link_table_z = zeln_freloc.link_table;
 }
 
-/* Fread the const blob (a vector in read-syntax) and scatter it into
-   e->d_reloc_z[0..n_d_reloc).  Mirrors comp.c:5318+5322
+/* Fread ONE fn's const blob (a vector in read-syntax) and scatter it
+   into fe->d_reloc[0..n_d_reloc).  Mirrors comp.c:5318+5322
    (comp_u->data_vec = load_static_obj (...); data_relocs[i] = AREF).  */
 static void
-zeln_fill_d_reloc (zeln_entry_t *e)
+zeln_fill_d_reloc_fn (zeln_fn_entry_t *fe)
 {
-  zeln_static_obj_t *blob = e->d_reloc_blob;
-  eassert (blob);
-  /* Fread the read-syntax vector.  The spike blob is plain
-     `["zeln-spike alive" 42]' with no #$ placeholder, so load-file-name
-     need not be bound (comp.c:5173 binds it for #$ substitution only).  */
+  zeln_static_obj_t *blob = fe->d_reloc_blob;
+  if (!blob || blob->len == 0)
+    return;
   Lisp_Object vec = Fread (make_string (blob->data, blob->len));
-  eassert (VECTORP (vec));
+  if (NILP (vec) || NILP (Fvectorp (vec)))
+    xsignal1 (Qnative_lisp_file_inconsistent,
+	      build_string ("zeln: malformed d_reloc blob"));
   ptrdiff_t n = XFIXNUM (Flength (vec));
-  eassert (n == e->n_d_reloc);
+  if (n != fe->n_d_reloc)
+    xsignal1 (Qnative_lisp_file_inconsistent,
+	      build_string ("zeln: d_reloc count mismatch"));
   for (ptrdiff_t i = 0; i < n; i++)
-    e->d_reloc_z[i] = AREF (vec, i);
+    fe->d_reloc[i] = AREF (vec, i);
 }
 
 /* Verify the .zeln's baked ABI hash matches the running emacs's
@@ -719,18 +725,21 @@ zeln_verify_hash (zeln_entry_t *e)
 }
 
 DEFUN ("comp-z-load-zeln", Fcomp_z_load_zeln, Scomp_z_load_zeln, 1, 1, 0,
-       doc: /* Load a .zeln native-comp unit (Zig path) and return its entry fn.
-FILE is the .zeln path.  M0 spike: the unit holds one 0-arg fn whose
-native body is `(message "zeln-spike alive") 42'.  The returned value is
-a subr wrapping the .zeln's native_fn; funcall it to run the native code.
+       doc: /* Load a .zeln native-comp unit (Zig path).
+FILE is the .zeln path.  The unit holds N native functions (one per
+defun in the source .elc) plus the .elc's non-defun top-level forms as a
+read-syntax blob.  This loader dlopens the .zeln, verifies the ABI hash,
+patches the freloc table, reconstructs each fn's constants, Ffsets each
+native fn under its baked defun symbol, and Fread+Feval the top-level
+blob under the load-file-name / load-history Fload already bound.  The
+returned value is the LAST fset subr (the zeln-diff harness funcalls it
+for its single-fn .zeln; the transparent Fload path ignores the return).
 For internal use.  */)
   (Lisp_Object file)
 {
   CHECK_STRING (file);
-  /* M0 is glibc-Linux only; ASCII paths need no file-name encoding, so
-     dynlib_open gets the raw SSDATA bytes.  (ENCODE_FILE is a no-op on
-     POSIX but is conditionally defined in lisp.h; SSDATA is sufficient
-     and always available.)  */
+  /* glibc-Linux only; ASCII paths need no file-name encoding, so
+     dynlib_open gets the raw SSDATA bytes.  */
   dynlib_handle_ptr handle = dynlib_open (SSDATA (file));
   if (!handle)
     xsignal1 (Qnative_lisp_file_inconsistent,
@@ -752,37 +761,54 @@ For internal use.  */)
   hash_zeln_abi ();
   zeln_verify_hash (e);
   zeln_patch_freloc (e);
-  zeln_fill_d_reloc (e);
 
-  /* Wrap the native machine code into a freshly-allocated MANY subr so
-     the caller can funcall it.  M1 native fns use the MANY convention
-     (i64 (i64 nargs, ptr args)) matching the aMANY slot (lisp.h:2188);
-     the M0 spike's @zeln_spike_native was moved to the same convention
-     so one loader path serves both.  funcall_subr dispatches aMANY when
-     max_args == MANY (eval.c:3301), passing the raw (nargs, args) — the
-     native fn's prologue (zeln_setup_args) is the real arity enforcer
-     (it bakes args_template and signals wrong_number_of_arguments), so
-     min=0/max=MANY here is correct without embedding arity in the entry
-     struct (which stays field-for-field identical to M0).  Mirrors how
-     comp.c exposes a native fn as a callable Lisp_Object; we use a
-     plain C subr (gccjit uses a closure) because M1 closures carry no
-     captured lexvars across the C<->Zig boundary (constants live in
-     d_reloc_z).  ALLOCATE_PLAIN_PSEUDOVECTOR sets lisplen=0, so GC
-     traces none of the subr's Lisp_Object slots — we still zero the
-     non-header fields defensively (backtrace / doc lookup may read
-     symbol_name / intspec / doc).  */
-  struct Lisp_Subr *subr =
-    ALLOCATE_PLAIN_PSEUDOVECTOR (struct Lisp_Subr, PVEC_SUBR);
-  memclear (&subr->function,
-	    sizeof (*subr) - offsetof (struct Lisp_Subr, function));
-  subr->function.aMANY = e->native_fn;
-  subr->min_args = 0;
-  subr->max_args = MANY;
-  subr->symbol_name = "zeln-native";
+  /* Wrap each native fn into a freshly-allocated MANY subr and Ffset it
+     under its baked defun symbol.  M1/M2b native fns use the MANY
+     convention (i64 (i64 nargs, ptr args)) matching the aMANY slot
+     (lisp.h:2188); the native fn's prologue (zeln_setup_args) is the
+     real arity enforcer (it bakes args_template and signals
+     wrong_number_of_arguments), so min=0/max=MANY here is correct.
+     ALLOCATE_PLAIN_PSEUDOVECTOR sets lisplen=0, so GC traces none of the
+     subr's Lisp_Object slots; memclear zeroes the non-header fields
+     defensively (backtrace / doc lookup may read symbol_name / doc).  */
+  Lisp_Object last_subr = Qnil;
+  for (ptrdiff_t i = 0; i < e->n_fns; i++)
+    {
+      zeln_fn_entry_t *fe = &e->fns[i];
+      zeln_fill_d_reloc_fn (fe);
+      struct Lisp_Subr *subr =
+	ALLOCATE_PLAIN_PSEUDOVECTOR (struct Lisp_Subr, PVEC_SUBR);
+      memclear (&subr->function,
+		sizeof (*subr) - offsetof (struct Lisp_Subr, function));
+      subr->function.aMANY = fe->native_fn;
+      subr->min_args = 0;
+      subr->max_args = MANY;
+      subr->symbol_name = fe->symbol_name;
+      Lisp_Object subr_obj;
+      XSETSUBR (subr_obj, subr);
+      /* Ffset the native fn under its baked defun symbol so loading the
+	 .zeln leaves every defun natively callable, mirroring how loading
+	 the .elc would fset each via its top-level `defalias'.  */
+      Lisp_Object sym = Fintern (build_string (fe->symbol_name), Qnil);
+      Ffset (sym, subr_obj);
+      last_subr = subr_obj;
+    }
 
-  Lisp_Object subr_obj;
-  XSETSUBR (subr_obj, subr);
-  return subr_obj;
+  /* Replay the .elc's non-defun top-level forms (provide / defvar /
+     require / autoload / defcustom / ...).  Vload_file_name and
+     Vcurrent_load_list are already bound by Fload (specbind at
+     lread.c:1544/1057) to the reconstructed .elc, so load-file-name /
+     load-history report the .elc, not the .zeln.  The blob is a single
+     (progn ...) form (empty/zero-len for the M0/M1 single-fn .zeln).  */
+  zeln_static_obj_t *tb = e->top_level_blob;
+  if (tb && tb->len > 0)
+    {
+      Lisp_Object form = Fread (make_string (tb->data, tb->len));
+      if (!NILP (form))
+	Feval (form, Qnil);
+    }
+
+  return last_subr;
 }
 
 /* ------------------------------------------------------------------ */
@@ -899,6 +925,111 @@ that tools/zeln-compile bakes into the .zeln.  For internal use.  */)
   return Qt;
 }
 
+/* Forward decl: zeln_const_tag is defined below comp-z-write-zunit, but
+   zeln_emit_closure_body (which immediately follows) references it.  */
+static uint8_t zeln_const_tag (Lisp_Object);
+
+/* ------------------------------------------------------------------ */
+/* (d-m1-shared) closure-body serializer.  Validates FUN is a lexical
+   compiled closure (the exact shape exec_byte_code consumes) and emits
+   ONE function body — args_template / stack_depth / opcodes / consts —
+   into F (the zunit being written).  Used by BOTH comp-z-write-zunit
+   (zabi=2, single-fn header) and comp-z-write-file-zunit (zabi=3, one
+   body per defun).  Signals wrong-type-argument / error on anything that
+   is not a serializable lexical closure; the caller's per-file fault
+   tolerance (condition-case in the Elisp populate helper) turns a signal
+   into a logged skip.  Extracted verbatim from the former
+   comp-z-write-zunit body.  */
+static void
+zeln_emit_closure_body (FILE *f, Lisp_Object fun)
+{
+  CHECK_TYPE (CLOSUREP (fun), Qcompiled_function_p, fun);
+  CHECK_TYPE (FIXNUMP (AREF (fun, CLOSURE_ARGLIST)),
+	      Qcompiled_function_p, fun);
+
+  Lisp_Object bytestr   = AREF (fun, CLOSURE_CODE);		/* slot 1 */
+  Lisp_Object vector    = AREF (fun, CLOSURE_CONSTANTS);	/* slot 2 */
+  Lisp_Object maxdepth  = AREF (fun, CLOSURE_STACK_DEPTH);	/* slot 3 */
+  ptrdiff_t args_tmpl   = XFIXNUM (AREF (fun, CLOSURE_ARGLIST)); /* slot 0 */
+  CHECK_TYPE (STRINGP (bytestr), Qstringp, bytestr);
+  CHECK_TYPE (VECTORP (vector), Qvectorp, vector);
+  CHECK_TYPE (FIXNATP (maxdepth), Qwholenump, maxdepth);
+
+  ptrdiff_t opcode_len = SBYTES (bytestr);
+  ptrdiff_t nconsts    = ASIZE (vector);
+  if (opcode_len > 0xFFFFFFFFu || nconsts > 0xFFFFFFFFu)
+    error ("zeln: bytecode/constants too large");
+
+  emit_u32 (f, (uint32_t) args_tmpl);		/* 15-bit args_template */
+  emit_u16 (f, (uint16_t) XFIXNAT (maxdepth));
+  emit_u32 (f, (uint32_t) opcode_len);
+  emit_bytes (f, SSDATA (bytestr), opcode_len);	/* raw opcodes */
+  emit_u32 (f, (uint32_t) nconsts);
+
+  /* Each constant serialized Lisp-aware via Fprin1_to_string (print.c:795)
+     -> its read-syntax bytes; the loader Freads them back.  A round-trip
+     self-check (RISK 5 mitigation) turns SILENT corruption (a constant
+     whose Fread(Fprin1(c)) differs from c -- a bytecode object, a record,
+     a circular structure, a multibyte string with binary bytes) into a
+     signaled error so the per-file fault tolerance logs that .elc as a
+     skip and it falls back to the interpreter, instead of baking a
+     corrupted constant into the .zeln that crashes the native fn later.  */
+  for (ptrdiff_t i = 0; i < nconsts; i++)
+    {
+      Lisp_Object c = AREF (vector, i);
+      Lisp_Object printed = Fprin1_to_string (c, Qnil, Qnil);
+      ptrdiff_t clen = SBYTES (printed);
+      if (clen > 0xFFFFFFFFu)
+	error ("zeln: constant read-syntax too large");
+      Lisp_Object roundtripped = Fread (printed);
+      if (NILP (Fequal (c, roundtripped)))
+	error ("zeln: constant does not round-trip (skip file)");
+      emit_u8  (f, zeln_const_tag (c));		/* advisory; loader ignores */
+      emit_u32 (f, (uint32_t) clen);
+      emit_bytes (f, SSDATA (printed), clen);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* (d-m2b) M2b file-level capture state.  comp-z-write-file-zunit Floads
+   the .elc with Vload_read_function bound to `zeln--capturing-read' so
+   every top-level form the interpreter would eval is recorded (in
+   reverse) into zeln_captured_forms, with `#$' doc substitution already
+   resolved by Fload's machinery.  After Fload returns, the defun
+   closures are fset on their symbols (so Fsymbol_function yields the
+   live closure) and the captured list lets us classify defun vs non-defun
+   forms.  Reset to Qnil before each file; staticpro'd in syms_of_compz.  */
+static Lisp_Object zeln_captured_forms;
+/* The file whose TOP-LEVEL forms we want to capture (the .elc arg to
+   comp-z-write-file-zunit).  capturing-read records a form only when
+   Vload_file_name names THIS file, so a nested (require ...) inside the
+   .elc -- which runs within the same load-read-function binding -- does
+   not pollute zeln_captured_forms with another file's forms.  */
+static Lisp_Object zeln_capture_target;
+
+DEFUN ("zeln--capturing-read", Fzeln_capturing_read, Szeln_capturing_read,
+       1, 1, 0,
+       doc: /* Internal: read one form from READCHARFUN and record it.
+Bound as `load-read-function' while `comp-z-write-file-zunit' Floads a
+.elc, so every top-level form is captured (in reverse) onto
+`zeln-captured-forms' for later defun/non-defun classification.  A form
+is recorded only when `load-file-name' is the file being captured, so a
+nested (require ...) does not pollute the capture.  For internal use.  */)
+  (Lisp_Object readcharfun)
+{
+  /* Mirror the default `read' the load loop calls (lread.c:2513-2516):
+     Fload has already set up the stream + #$ doc machinery, so Fread
+     handles `#$' / coding exactly as the interpreter sees them.  */
+  Lisp_Object form = Fread (readcharfun);
+  /* Record only forms of the file we are directly capturing (not forms
+     pulled in by a nested require, which shares this binding).  */
+  if (!NILP (form)
+      && STRINGP (zeln_capture_target)
+      && !NILP (Fstring_equal (Vload_file_name, zeln_capture_target)))
+    zeln_captured_forms = Fcons (form, zeln_captured_forms);
+  return form;
+}
+
 /* ------------------------------------------------------------------ */
 /* (d-m1) serializer.  comp-z-write-zunit (FUNCTION OUT-PREFIX): takes
    a REAL compiled closure and writes the M1 zunit + manifest.  Extracts
@@ -932,29 +1063,10 @@ suffix; this writes <OUT-PREFIX>.zunit and <OUT-PREFIX>.manifest.
 For internal use.  */)
   (Lisp_Object fun, Lisp_Object out_prefix)
 {
-  /* INPUT VALIDATION: CLOSUREP (PVEC_COMPILED) AND a fixnum args-template
-     (a lexical closure; slot 0 holds args_template — lisp.h:3208).  This
-     is the exact shape exec_byte_code consumes (bytecode.c:494-505,
-     531-549).  Reject everything else (interpreted functions, &rest-only
-     lambdas, subrs) with wrong-type-argument.  */
-  CHECK_TYPE (CLOSUREP (fun), Qcompiled_function_p, fun);
+  /* INPUT VALIDATION + extraction + emit are in zeln_emit_closure_body
+     (shared with comp-z-write-file-zunit).  Here we write only the
+     zabi=2 single-fn header around it.  */
   CHECK_STRING (out_prefix);
-  CHECK_TYPE (FIXNUMP (AREF (fun, CLOSURE_ARGLIST)),
-	      Qcompiled_function_p, fun);
-
-  /* EXTRACT via the CLOSURE_ slots the interpreter uses.  */
-  Lisp_Object bytestr   = AREF (fun, CLOSURE_CODE);	/* slot 1 */
-  Lisp_Object vector    = AREF (fun, CLOSURE_CONSTANTS);	/* slot 2 */
-  Lisp_Object maxdepth  = AREF (fun, CLOSURE_STACK_DEPTH);	/* slot 3 */
-  ptrdiff_t args_tmpl   = XFIXNUM (AREF (fun, CLOSURE_ARGLIST)); /* slot 0 */
-  CHECK_TYPE (STRINGP (bytestr), Qstringp, bytestr);
-  CHECK_TYPE (VECTORP (vector), Qvectorp, vector);
-  CHECK_TYPE (FIXNATP (maxdepth), Qwholenump, maxdepth);
-
-  ptrdiff_t opcode_len = SBYTES (bytestr);
-  ptrdiff_t nconsts    = ASIZE (vector);
-  if (opcode_len > 0xFFFFFFFFu || nconsts > 0xFFFFFFFFu)
-    error ("comp-z-write-zunit: bytecode/constants too large");
 
   hash_zeln_abi ();
   eassert (!NILP (Vzeln_abi_hash));
@@ -966,9 +1078,10 @@ For internal use.  */)
   memcpy (prefix, SSDATA (out_prefix), plen);
   prefix[plen] = '\0';
 
-  /* --- .zunit (M1, zabi=2): u32 magic; u8 zabi=2; u32 args_template;
-     u16 stack_depth; u32 opcode_len; u8 opcodes[opcode_len]; u32 nconsts;
-     then nconsts × { u8 tag_advisory; u32 len; u8 read_syntax[len] }.  */
+  /* --- .zunit (M1, zabi=2): u32 magic; u8 zabi=2; then one fn body via
+     zeln_emit_closure_body ({ u32 args_template; u16 stack_depth;
+     u32 opcode_len; u8 opcodes[opcode_len]; u32 nconsts; nconsts ×
+     { u8 tag_advisory; u32 len; u8 read_syntax[len] } }).  */
   char path[4096 + 16];
   snprintf (path, sizeof path, "%s.zunit", prefix);
   FILE *zout = emacs_fopen (path, "wb");
@@ -977,26 +1090,7 @@ For internal use.  */)
 
   emit_u32 (zout, ZUNIT_MAGIC);
   emit_u8  (zout, 2);				/* zabi_version (M1) */
-  emit_u32 (zout, (uint32_t) args_tmpl);	/* 15-bit args_template */
-  emit_u16 (zout, (uint16_t) XFIXNAT (maxdepth));
-  emit_u32 (zout, (uint32_t) opcode_len);
-  emit_bytes (zout, SSDATA (bytestr), opcode_len);	/* raw opcodes */
-  emit_u32 (zout, (uint32_t) nconsts);
-
-  /* Each constant serialized Lisp-aware via Fprin1_to_string (print.c:795)
-     → its read-syntax bytes; the loader Freads them back (M0 mechanism,
-     just N≥2).  */
-  for (ptrdiff_t i = 0; i < nconsts; i++)
-    {
-      Lisp_Object c = AREF (vector, i);
-      Lisp_Object printed = Fprin1_to_string (c, Qnil, Qnil);
-      ptrdiff_t clen = SBYTES (printed);
-      if (clen > 0xFFFFFFFFu)
-	error ("comp-z-write-zunit: constant read-syntax too large");
-      emit_u8  (zout, zeln_const_tag (c));	/* advisory; loader ignores */
-      emit_u32 (zout, (uint32_t) clen);
-      emit_bytes (zout, SSDATA (printed), clen);
-    }
+  zeln_emit_closure_body (zout, fun);
 
   if (emacs_fclose (zout) != 0)
     report_file_error ("Closing zunit", build_string (path));
@@ -1014,6 +1108,170 @@ For internal use.  */)
   emacs_fclose (mout);
 
   return Qt;
+}
+
+/* ------------------------------------------------------------------ */
+/* (d-m2b) file-level serializer.  comp-z-write-file-zunit (FILE
+   OUT-PREFIX): Floads a .elc, walks its defun closures + collects its
+   non-defun top-level forms (via the load-read-function capture above),
+   and writes ONE zabi=3 multi-function zunit + the manifest (plan M2b
+   deliverable 1).  The zabi=3 zunit mirrors the whole .elc (N defuns +
+   top-level replay), so loading ONE .zeln is a faithful substitute for
+   loading the .elc -- the foundation of transparent load + the 582-via-
+   .zeln gate.  Signals on any unserializable closure / load error; the
+   Elisp populate helper's per-file condition-case turns a signal into a
+   logged skip (deliverable 1 fault tolerance).  Returns the defun count
+   (a fixnum), or nil if the file defines zero defuns (nothing to native-
+   compile; the caller skips emitting a .zeln for it).  */
+DEFUN ("comp-z-write-file-zunit", Fcomp_z_write_file_zunit,
+       Scomp_z_write_file_zunit, 2, 2, 0,
+       doc: /* Write a zabi=3 multi-function zunit + manifest for the .elc FILE.
+FILE is a .elc path.  Loads it, walks its defun closures + collects its
+non-defun top-level forms, and writes <OUT-PREFIX>.zunit + .manifest.
+Returns the defun count, or nil if the file defines no defuns.  Signals
+on an unserializable closure or a load error.  For internal use.  */)
+  (Lisp_Object file, Lisp_Object out_prefix)
+{
+  CHECK_STRING (file);
+  CHECK_STRING (out_prefix);
+  hash_zeln_abi ();
+
+  char prefix[4096];
+  ptrdiff_t plen = SBYTES (out_prefix);
+  if (plen >= (ptrdiff_t) sizeof (prefix) - 16)
+    error ("comp-z-write-file-zunit: prefix too long");
+  memcpy (prefix, SSDATA (out_prefix), plen);
+  prefix[plen] = '\0';
+
+  /* Capture every top-level form by Floading the .elc with
+     load-read-function = zeln--capturing-read and load-no-native = t.
+     The latter is CRITICAL: without it, maybe_swap_for_zeln would try to
+     swap the .elc for a (possibly stale) .zeln and dispatch through the
+     native loader instead of interpreting the .elc for capture.  Fload
+     signals on a bad .elc; the caller's condition-case turns that into a
+     logged skip.
+
+     zeln_capture_target (the absolute .elc path) gates capturing-read so a
+     nested (require ...) -- which shares this load-read-function binding --
+     cannot pollute the capture with another file's forms.  */
+  Lisp_Object absfile = Fexpand_file_name (file, Qnil);
+  specpdl_ref count = SPECPDL_INDEX ();
+  zeln_captured_forms = Qnil;
+  zeln_capture_target = absfile;
+  specbind (intern_c_string ("load-read-function"),
+	    intern_c_string ("zeln--capturing-read"));
+  specbind (intern_c_string ("load-no-native"), Qt);
+  Fload (absfile, Qnil /*noerror*/, Qt /*nomessage*/,
+	 Qnil /*nosuffix*/, Qt /*mustsuffix*/);
+  unbind_to (count, Qnil);
+  zeln_capture_target = Qnil;
+
+  Lisp_Object forms = Fnreverse (zeln_captured_forms);
+  zeln_captured_forms = Qnil;
+
+  /* Classify: defalias forms -> defuns (serialize the LIVE closure under
+     the symbol's name -- Fload just fset it); everything else -> the
+     top_level_blob.  bytecomp emits one top-level `(defalias 'NAME
+     CLOSURE ...)' per defun/defmacro/defsubst.  */
+  Lisp_Object Qdefalias = intern_c_string ("defalias");
+  Lisp_Object defun_list = Qnil;	/* (sym-name-string . closure), reversed */
+  Lisp_Object blob_forms = Qnil;	/* non-defun forms, reversed */
+  Lisp_Object ftail = forms;
+  FOR_EACH_TAIL (ftail)
+    {
+      Lisp_Object form = XCAR (ftail);
+      if (CONSP (form) && EQ (XCAR (form), Qdefalias))
+	{
+	  Lisp_Object sym_arg = Fcar (Fcdr (form));
+	  /* sym_arg is usually (quote NAME); accept a bare symbol too.  */
+	  Lisp_Object sym =
+	    (CONSP (sym_arg) && EQ (XCAR (sym_arg), Qquote))
+	      ? Fcar (Fcdr (sym_arg))
+	      : sym_arg;
+	  if (SYMBOLP (sym))
+	    {
+	      Lisp_Object closure = Fsymbol_function (sym);
+	      if (CLOSUREP (closure)
+		  && FIXNUMP (AREF (closure, CLOSURE_ARGLIST)))
+		{
+		  defun_list = Fcons (Fcons (SYMBOL_NAME (sym), closure),
+				      defun_list);
+		  continue;
+		}
+	    }
+	  /* A defalias we could not classify -> replay it verbatim so the
+	     interpreter re-fsets it (no native fn for that symbol).  */
+	}
+      blob_forms = Fcons (form, blob_forms);
+    }
+
+  defun_list = Fnreverse (defun_list);
+  blob_forms = Fnreverse (blob_forms);
+  ptrdiff_t nfuncs = 0;
+  for (Lisp_Object t2 = defun_list; !NILP (t2); t2 = XCDR (t2))
+    nfuncs++;
+
+  /* A .elc with no defuns gains nothing from native comp (its whole
+     effect is top-level).  Skip it: return nil so the caller records a
+     "no-defuns" skip and does not emit a vacuous .zeln.  */
+  if (nfuncs == 0)
+    return Qnil;
+
+  if (nfuncs > 0xFFFFFFFFu)
+    error ("comp-z-write-file-zunit: too many defuns");
+
+  /* --- .zunit (M2b, zabi=3): u32 magic; u8 zabi=3; u32 nfuncs;
+     then nfuncs × { u32 sym_name_len; u8 sym_name[len]; <closure body> };
+     then u32 top_blob_len; u8 top_blob[len].  The <closure body> is the
+     SAME shape zeln_emit_closure_body writes (args_template, stack_depth,
+     opcodes, consts).  */
+  char path[4096 + 16];
+  snprintf (path, sizeof path, "%s.zunit", prefix);
+  FILE *zout = emacs_fopen (path, "wb");
+  if (!zout)
+    report_file_error ("Opening zunit", build_string (path));
+
+  emit_u32 (zout, ZUNIT_MAGIC);
+  emit_u8  (zout, 3);			/* zabi_version (M2b multi-function) */
+  emit_u32 (zout, (uint32_t) nfuncs);
+
+  for (Lisp_Object t2 = defun_list; !NILP (t2); t2 = XCDR (t2))
+    {
+      Lisp_Object pair = XCAR (t2);
+      Lisp_Object namestr = XCAR (pair);	/* the symbol's name string */
+      Lisp_Object closure = XCDR (pair);
+      ptrdiff_t namelen = SBYTES (namestr);
+      if (namelen > 0xFFFFFFFFu)
+	error ("comp-z-write-file-zunit: symbol name too long");
+      emit_u32 (zout, (uint32_t) namelen);
+      emit_bytes (zout, SSDATA (namestr), namelen);
+      zeln_emit_closure_body (zout, closure);
+    }
+
+  /* Top-level blob: (progn ,@blob_forms) as read-syntax.  Empty (zero
+     forms) -> a zero-len blob (the loader skips a zero-len blob).  */
+  Lisp_Object blob_form = Fcons (Qprogn, blob_forms);
+  Lisp_Object blob_printed = Fprin1_to_string (blob_form, Qnil, Qnil);
+  ptrdiff_t blob_len = SBYTES (blob_printed);
+  if (blob_len > 0xFFFFFFFFu)
+    error ("comp-z-write-file-zunit: top-level blob too large");
+  emit_u32 (zout, (uint32_t) blob_len);
+  emit_bytes (zout, SSDATA (blob_printed), blob_len);
+
+  if (emacs_fclose (zout) != 0)
+    report_file_error ("Closing zunit", build_string (path));
+
+  /* --- .manifest: identical shape to M1 (ZELN_ABI_VERSION + sig + hash).  */
+  snprintf (path, sizeof path, "%s.manifest", prefix);
+  FILE *mout = emacs_fopen (path, "w");
+  if (!mout)
+    report_file_error ("Opening manifest", build_string (path));
+  fprintf (mout, "%s\n", ZELN_ABI_VERSION);
+  fprintf (mout, "%s\n", SSDATA (zeln_signature_string ()));
+  fprintf (mout, "%s\n", SSDATA (Vzeln_abi_hash));
+  emacs_fclose (mout);
+
+  return make_fixnum (nfuncs);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1220,6 +1478,22 @@ compute_z_version_dir (void)
     concat3 (version, build_string ("-"), Vzeln_abi_hash);
 }
 
+/* Elisp-callable wrapper around compute_z_version_dir: forces the lazy
+   computation (needs Vemacs_version + coding systems post-dump) and
+   returns `comp-z-native-version-dir'.  Used by the populate driver to
+   place .zeln under the SAME <ver> dir the load side (maybe_swap_for_zeln)
+   reads from, so write/read agree by construction.  */
+DEFUN ("comp-z-compute-version-dir", Fcomp_z_compute_version_dir,
+       Scomp_z_compute_version_dir, 0, 0, 0,
+       doc: /* Return the .zeln-cache version directory for this build.
+Computes it lazily (from `emacs-version' + `zeln-abi-hash') and caches it
+in `comp-z-native-version-dir'.  For internal use.  */)
+  (void)
+{
+  compute_z_version_dir ();
+  return Vcomp_z_native_version_dir;
+}
+
 /* ------------------------------------------------------------------ */
 /* syms_of_compz — called from src/emacs.c under HAVE_NATIVE_COMP_ZIG.  */
 
@@ -1279,9 +1553,20 @@ Mirrors `comp-eln-to-el-h'; used so loading a .zeln reports the source
   staticpro (&zeln_loadsearch_re_list);
   zeln_loadsearch_re_list = Qnil;
 
+  /* M2b capture state (comp-z-write-file-zunit).  GC-invisible across a
+     capture (the list is transitory), but staticpro'd defensively so a GC
+     during Fload cannot collect the cons cells before classification.  */
+  staticpro (&zeln_captured_forms);
+  zeln_captured_forms = Qnil;
+  staticpro (&zeln_capture_target);
+  zeln_capture_target = Qnil;
+
   defsubr (&Scomp_z_load_zeln);
   defsubr (&Scomp_z_write_spike_zunit);
   defsubr (&Scomp_z_write_zunit);
+  defsubr (&Scomp_z_write_file_zunit);
+  defsubr (&Szeln_capturing_read);
+  defsubr (&Scomp_z_compute_version_dir);
   defsubr (&Scomp_z_el_to_zeln_rel_filename);
 
   /* Fill the freloc table early (pure pointer copy, no Lisp): the .zeln
