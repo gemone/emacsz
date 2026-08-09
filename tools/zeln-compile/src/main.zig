@@ -37,7 +37,7 @@ const ZUNIT_MAGIC: u32 = 0x5A554E54;
 // The freloc surface size — MUST match src/compz.c's ZELN_F_RELOC_COUNT.
 // The IR's getelementptr type is `[SURFACE x ptr]` over the loader-patched
 // link-table base.  Frozen order: the IDX_* below mirror the compz.c enum.
-const SURFACE: u64 = 33;
+const SURFACE: u64 = 101;
 
 const IDX_SETUP_ARGS: u64 = 0;
 const IDX_FUNCALL: u64 = 1;
@@ -72,6 +72,75 @@ const IDX_STRINGP: u64 = 29;
 const IDX_LISTP: u64 = 30;
 const IDX_NUMBERP: u64 = 31;
 const IDX_INTEGERP: u64 = 32;
+// ---- M2 surface (must mirror the appended tail of compz.c's IDX enum). ----
+const IDX_NTH: u64 = 33;
+const IDX_MEMQ: u64 = 34;
+const IDX_LENGTH: u64 = 35;
+const IDX_AREF: u64 = 36;
+const IDX_ASET: u64 = 37;
+const IDX_SYMBOL_VALUE: u64 = 38;
+const IDX_SYMBOL_FUNCTION: u64 = 39;
+const IDX_SET: u64 = 40;
+const IDX_FSET: u64 = 41;
+const IDX_GET: u64 = 42;
+const IDX_SUBSTRING: u64 = 43;
+const IDX_CONCAT: u64 = 44;
+const IDX_STRING_EQUAL: u64 = 45;
+const IDX_STRING_LESSP: u64 = 46;
+const IDX_NTHCDR: u64 = 47;
+const IDX_ELT: u64 = 48;
+const IDX_MEMBER: u64 = 49;
+const IDX_ASSQ: u64 = 50;
+const IDX_NREVERSE: u64 = 51;
+const IDX_SETCAR: u64 = 52;
+const IDX_SETCDR: u64 = 53;
+const IDX_CAR_SAFE: u64 = 54;
+const IDX_CDR_SAFE: u64 = 55;
+const IDX_NCONC: u64 = 56;
+const IDX_QUO: u64 = 57;
+const IDX_REM: u64 = 58;
+const IDX_GOTO_CHAR: u64 = 59;
+const IDX_INSERT: u64 = 60;
+const IDX_CHAR_AFTER: u64 = 61;
+const IDX_INDENT_TO: u64 = 62;
+const IDX_FORWARD_CHAR: u64 = 63;
+const IDX_FORWARD_WORD: u64 = 64;
+const IDX_FORWARD_LINE: u64 = 65;
+const IDX_CHAR_SYNTAX: u64 = 66;
+const IDX_END_OF_LINE: u64 = 67;
+const IDX_MATCH_BEGINNING: u64 = 68;
+const IDX_MATCH_END: u64 = 69;
+const IDX_UPCASE: u64 = 70;
+const IDX_DOWNCASE: u64 = 71;
+const IDX_POINT: u64 = 72;
+const IDX_POINT_MAX: u64 = 73;
+const IDX_POINT_MIN: u64 = 74;
+const IDX_FOLLOWING_CHAR: u64 = 75;
+const IDX_PRECEDING_CHAR: u64 = 76;
+const IDX_CURRENT_COLUMN: u64 = 77;
+const IDX_EOLP: u64 = 78;
+const IDX_EOBP: u64 = 79;
+const IDX_BOLP: u64 = 80;
+const IDX_BOBP: u64 = 81;
+const IDX_CURRENT_BUFFER: u64 = 82;
+const IDX_SET_BUFFER: u64 = 83;
+const IDX_SKIP_CHARS_FORWARD: u64 = 84;
+const IDX_SKIP_CHARS_BACKWARD: u64 = 85;
+const IDX_BUFFER_SUBSTRING: u64 = 86;
+const IDX_DELETE_REGION: u64 = 87;
+const IDX_NARROW_TO_REGION: u64 = 88;
+const IDX_WIDEN: u64 = 89;
+const IDX_SET_MARKER: u64 = 90;
+const IDX_VARSET: u64 = 91;
+const IDX_VARBIND: u64 = 92;
+const IDX_UNBIND: u64 = 93;
+const IDX_SAVE_EXCURSION: u64 = 94;
+const IDX_SAVE_CURRENT_BUFFER: u64 = 95;
+const IDX_SAVE_RESTRICTION: u64 = 96;
+const IDX_UNWIND_PROTECT: u64 = 97;
+const IDX_PUSHHANDLER: u64 = 98;
+const IDX_RESUME: u64 = 99;
+const IDX_POPHANDLER: u64 = 100;
 
 // M1 opcode subset (values are decimal; mirror src/bytecode.c DEFINE).
 // Any opcode NOT classified here is REJECTed at compile time (no .zeln),
@@ -126,6 +195,100 @@ const OPCODE_BINTEGERP: u8 = 168;
 const OPCODE_BLISTN: u8 = 175;
 const OPCODE_BSTACK_SET: u8 = 178; // arg = FETCH: ptr=top[-arg]; *ptr = POP
 const OPCODE_BSTACK_SET2: u8 = 179; // arg = FETCH2
+
+// ---- M2 opcode subset (values are decimal; mirror src/bytecode.c DEFINE,
+// which uses OCTAL — converted here).  Ranges are decoded as families. ----
+const OPCODE_BVARREF: u8 = 8; // Bvarref..Bvarref5 = 8..13 (arg = op-Bvarref)
+const OPCODE_BVARREF5: u8 = 13;
+const OPCODE_BVARREF6: u8 = 14; // arg = FETCH
+const OPCODE_BVARREF7: u8 = 15; // arg = FETCH2
+
+const OPCODE_BVARSET: u8 = 16; // Bvarset..Bvarset5 = 16..21 (arg = op-Bvarset)
+const OPCODE_BVARSET5: u8 = 21;
+const OPCODE_BVARSET6: u8 = 22; // arg = FETCH
+const OPCODE_BVARSET7: u8 = 23; // arg = FETCH2
+
+const OPCODE_BVARBIND: u8 = 24; // Bvarbind..Bvarbind5 = 24..29 (arg = op-Bvarbind)
+const OPCODE_BVARBIND5: u8 = 29;
+const OPCODE_BVARBIND6: u8 = 30; // arg = FETCH
+const OPCODE_BVARBIND7: u8 = 31; // arg = FETCH2
+
+const OPCODE_BUNBIND: u8 = 40; // Bunbind..Bunbind5 = 40..45 (arg = op-Bunbind)
+const OPCODE_BUNBIND5: u8 = 45;
+const OPCODE_BUNBIND6: u8 = 46; // arg = FETCH
+const OPCODE_BUNBIND7: u8 = 47; // arg = FETCH2
+
+const OPCODE_BPOPHANDLER: u8 = 48;
+const OPCODE_BPUSHCONDITIONCASE: u8 = 49; // FETCH2 = handler-body offset
+const OPCODE_BPUSHCATCH: u8 = 50; // FETCH2 = handler-body offset
+
+const OPCODE_BNTH: u8 = 56;
+const OPCODE_BMEMQ: u8 = 62;
+const OPCODE_BLENGTH: u8 = 71;
+const OPCODE_BAREF: u8 = 72;
+const OPCODE_BASET: u8 = 73;
+const OPCODE_BSYMBOL_VALUE: u8 = 74;
+const OPCODE_BSYMBOL_FUNCTION: u8 = 75;
+const OPCODE_BSET: u8 = 76;
+const OPCODE_BFSET: u8 = 77;
+const OPCODE_BGET: u8 = 78;
+const OPCODE_BSUBSTRING: u8 = 79;
+const OPCODE_BCONCAT2: u8 = 80;
+const OPCODE_BCONCAT3: u8 = 81;
+const OPCODE_BCONCAT4: u8 = 82;
+const OPCODE_BPOINT: u8 = 96;
+const OPCODE_BGOTO_CHAR: u8 = 98;
+const OPCODE_BINSERT: u8 = 99;
+const OPCODE_BPOINT_MAX: u8 = 100;
+const OPCODE_BPOINT_MIN: u8 = 101;
+const OPCODE_BCHAR_AFTER: u8 = 102;
+const OPCODE_BFOLLOWING_CHAR: u8 = 103;
+const OPCODE_BPRECEDING_CHAR: u8 = 104;
+const OPCODE_BCURRENT_COLUMN: u8 = 105;
+const OPCODE_BINDENT_TO: u8 = 106;
+const OPCODE_BEOLP: u8 = 108;
+const OPCODE_BEOBP: u8 = 109;
+const OPCODE_BBOLP: u8 = 110;
+const OPCODE_BBOBP: u8 = 111;
+const OPCODE_BCURRENT_BUFFER: u8 = 112;
+const OPCODE_BSET_BUFFER: u8 = 113;
+const OPCODE_BSAVE_CURRENT_BUFFER: u8 = 114;
+const OPCODE_BFORWARD_CHAR: u8 = 117;
+const OPCODE_BFORWARD_WORD: u8 = 118;
+const OPCODE_BSKIP_CHARS_FORWARD: u8 = 119;
+const OPCODE_BSKIP_CHARS_BACKWARD: u8 = 120;
+const OPCODE_BFORWARD_LINE: u8 = 121;
+const OPCODE_BCHAR_SYNTAX: u8 = 122;
+const OPCODE_BBUFFER_SUBSTRING: u8 = 123;
+const OPCODE_BDELETE_REGION: u8 = 124;
+const OPCODE_BNARROW_TO_REGION: u8 = 125;
+const OPCODE_BWIDEN: u8 = 126;
+const OPCODE_BEND_OF_LINE: u8 = 127;
+const OPCODE_BSAVE_EXCURSION: u8 = 138;
+const OPCODE_BSAVE_RESTRICTION: u8 = 140;
+const OPCODE_BUNWIND_PROTECT: u8 = 142;
+const OPCODE_BSET_MARKER: u8 = 147;
+const OPCODE_BMATCH_BEGINNING: u8 = 148;
+const OPCODE_BMATCH_END: u8 = 149;
+const OPCODE_BUPCASE: u8 = 150;
+const OPCODE_BDOWNCASE: u8 = 151;
+const OPCODE_BSTRINGEQLSIGN: u8 = 152;
+const OPCODE_BSTRINGLSS: u8 = 153;
+const OPCODE_BNTHCDR: u8 = 155;
+const OPCODE_BELT: u8 = 156;
+const OPCODE_BMEMBER: u8 = 157;
+const OPCODE_BASSQ: u8 = 158;
+const OPCODE_BNREVERSE: u8 = 159;
+const OPCODE_BSETCAR: u8 = 160;
+const OPCODE_BSETCDR: u8 = 161;
+const OPCODE_BCAR_SAFE: u8 = 162;
+const OPCODE_BCDR_SAFE: u8 = 163;
+const OPCODE_BNCONC: u8 = 164;
+const OPCODE_BQUO: u8 = 165;
+const OPCODE_BREM: u8 = 166;
+const OPCODE_BCONCATN: u8 = 176; // arg = FETCH
+const OPCODE_BINSERTN: u8 = 177; // arg = FETCH
+const OPCODE_BDISCARDN: u8 = 182; // arg = FETCH (0x80 bit = preserve-TOS)
 
 pub fn main(minimal: std.process.Init.Minimal) !void {
     const gpa = std.heap.smp_allocator;
@@ -339,7 +502,7 @@ fn emitSpikeLLVM(gpa: std.mem.Allocator, consts: []Const, abi_hash: []const u8) 
         \\define internal i64 @zeln_spike_native(i64 %nargs, ptr %args) {
         \\entry:
         \\  %lt = load ptr, ptr @freloc_link_table_z
-        \\  %slot = getelementptr inbounds [33 x ptr], ptr %lt, i64 0, i64 2
+        \\  %slot = getelementptr inbounds [SURFACE x ptr], ptr %lt, i64 0, i64 2
         \\  %fn = load ptr, ptr %slot
         \\  %nilret = call i64 %fn(i64 1, ptr @d_reloc_z)
         \\  %rv = load i64, ptr getelementptr inbounds ([2 x i64], ptr @d_reloc_z, i64 0, i64 1)
@@ -352,6 +515,14 @@ fn emitSpikeLLVM(gpa: std.mem.Allocator, consts: []Const, abi_hash: []const u8) 
         \\}
         \\
     );
+    // Substitute the SURFACE placeholder (kept literal above so the raw
+    // multiline string stays readable; the surface grows with the IDX enum).
+    const surface_type = try std.fmt.allocPrint(gpa, "[{d} x ptr]", .{SURFACE});
+    defer gpa.free(surface_type);
+    var tmp = try out.toOwnedSlice(gpa);
+    tmp = try std.mem.replaceOwned(u8, gpa, tmp, "[SURFACE x ptr]", surface_type);
+    try out.appendSlice(gpa, tmp);
+    gpa.free(tmp);
     return out.toOwnedSlice(gpa);
 }
 
@@ -422,6 +593,16 @@ const Op = enum {
     unary, // imm = IDX (operate on TOP, replace in place)
     binary, // imm = IDX (POP v2, TOP=v1, call(2, &newtop))
     listn, // imm = n (DISCARD n-1, Flist(n, &newtop))
+    // ---- M2 ----
+    varref, // idx = const idx (PUSH Fsymbol_value(const))
+    varset, // idx = const idx (set_internal(const, POP))
+    varbind, // idx = const idx (specbind(const, POP))
+    unbind, // imm = count (unbind_to(SPECPDL_INDEX()-count))
+    discard_n, // imm = byte (0x80 set => preserve TOS first; pure stack op)
+    push0, // idx = IDX (PUSH fn()) — 0-arg primitive
+    noarg, // idx = IDX (call fn(0), discard) — save_*/pophandler
+    pushhandler, // idx = type (0=CATCHER,1=CONDITION_CASE); target = handler-body off
+    unary_pop, // idx = IDX (POP one, call fn(1,&oldtop), discard) — Bunwind_protect
 };
 
 const Instr = struct {
@@ -629,6 +810,156 @@ fn decode(opcodes: []const u8, pc0: u32) !Instr {
             ins.imm = fetch1(opcodes, &pc);
             ins.idx = IDX_LIST;
         },
+        // ---- M2: varref / varset / varbind / unbind families ----
+        OPCODE_BVARREF...OPCODE_BVARREF5 => {
+            ins.op = .varref;
+            ins.idx = @as(u64, b - OPCODE_BVARREF);
+        },
+        OPCODE_BVARREF6 => {
+            ins.op = .varref;
+            ins.idx = fetch1(opcodes, &pc);
+        },
+        OPCODE_BVARREF7 => {
+            ins.op = .varref;
+            ins.idx = fetch2(opcodes, &pc);
+        },
+        OPCODE_BVARSET...OPCODE_BVARSET5 => {
+            ins.op = .varset;
+            ins.idx = @as(u64, b - OPCODE_BVARSET);
+        },
+        OPCODE_BVARSET6 => {
+            ins.op = .varset;
+            ins.idx = fetch1(opcodes, &pc);
+        },
+        OPCODE_BVARSET7 => {
+            ins.op = .varset;
+            ins.idx = fetch2(opcodes, &pc);
+        },
+        OPCODE_BVARBIND...OPCODE_BVARBIND5 => {
+            ins.op = .varbind;
+            ins.idx = @as(u64, b - OPCODE_BVARBIND);
+        },
+        OPCODE_BVARBIND6 => {
+            ins.op = .varbind;
+            ins.idx = fetch1(opcodes, &pc);
+        },
+        OPCODE_BVARBIND7 => {
+            ins.op = .varbind;
+            ins.idx = fetch2(opcodes, &pc);
+        },
+        OPCODE_BUNBIND...OPCODE_BUNBIND5 => {
+            ins.op = .unbind;
+            ins.imm = b - OPCODE_BUNBIND;
+        },
+        OPCODE_BUNBIND6 => {
+            ins.op = .unbind;
+            ins.imm = fetch1(opcodes, &pc);
+        },
+        OPCODE_BUNBIND7 => {
+            ins.op = .unbind;
+            ins.imm = fetch2(opcodes, &pc);
+        },
+        OPCODE_BDISCARDN => {
+            ins.op = .discard_n;
+            ins.imm = fetch1(opcodes, &pc);
+        },
+        // ---- handler trio (Tier 2) ----
+        OPCODE_BPUSHCATCH => {
+            ins.op = .pushhandler;
+            ins.idx = 0; // CATCHER
+            ins.target = fetch2(opcodes, &pc);
+        },
+        OPCODE_BPUSHCONDITIONCASE => {
+            ins.op = .pushhandler;
+            ins.idx = 1; // CONDITION_CASE
+            ins.target = fetch2(opcodes, &pc);
+        },
+        OPCODE_BPOPHANDLER => {
+            ins.op = .noarg;
+            ins.idx = IDX_POPHANDLER;
+        },
+        // ---- list / seq primitives (binary: POP v2; fn(a[0],a[1])) ----
+        OPCODE_BNTH => binaryOp(&ins, IDX_NTH),
+        OPCODE_BELT => binaryOp(&ins, IDX_ELT),
+        OPCODE_BMEMQ => binaryOp(&ins, IDX_MEMQ),
+        OPCODE_BMEMBER => binaryOp(&ins, IDX_MEMBER),
+        OPCODE_BASSQ => binaryOp(&ins, IDX_ASSQ),
+        OPCODE_BSET => binaryOp(&ins, IDX_SET),
+        OPCODE_BFSET => binaryOp(&ins, IDX_FSET),
+        OPCODE_BGET => binaryOp(&ins, IDX_GET),
+        OPCODE_BAREF => binaryOp(&ins, IDX_AREF),
+        OPCODE_BSTRINGEQLSIGN => binaryOp(&ins, IDX_STRING_EQUAL),
+        OPCODE_BSTRINGLSS => binaryOp(&ins, IDX_STRING_LESSP),
+        OPCODE_BNTHCDR => binaryOp(&ins, IDX_NTHCDR),
+        OPCODE_BSETCAR => binaryOp(&ins, IDX_SETCAR),
+        OPCODE_BSETCDR => binaryOp(&ins, IDX_SETCDR),
+        OPCODE_BQUO => binaryOp(&ins, IDX_QUO),
+        OPCODE_BREM => binaryOp(&ins, IDX_REM),
+        OPCODE_BSKIP_CHARS_FORWARD => binaryOp(&ins, IDX_SKIP_CHARS_FORWARD),
+        OPCODE_BSKIP_CHARS_BACKWARD => binaryOp(&ins, IDX_SKIP_CHARS_BACKWARD),
+        OPCODE_BBUFFER_SUBSTRING => binaryOp(&ins, IDX_BUFFER_SUBSTRING),
+        OPCODE_BDELETE_REGION => binaryOp(&ins, IDX_DELETE_REGION),
+        OPCODE_BNARROW_TO_REGION => binaryOp(&ins, IDX_NARROW_TO_REGION),
+        // ---- unary-on-TOP (TOP = fn(a[0]); net 0) ----
+        OPCODE_BLENGTH => unaryOp(&ins, IDX_LENGTH),
+        OPCODE_BSYMBOL_VALUE => unaryOp(&ins, IDX_SYMBOL_VALUE),
+        OPCODE_BSYMBOL_FUNCTION => unaryOp(&ins, IDX_SYMBOL_FUNCTION),
+        OPCODE_BGOTO_CHAR => unaryOp(&ins, IDX_GOTO_CHAR),
+        OPCODE_BINSERT => unaryOp(&ins, IDX_INSERT),
+        OPCODE_BCHAR_AFTER => unaryOp(&ins, IDX_CHAR_AFTER),
+        OPCODE_BINDENT_TO => unaryOp(&ins, IDX_INDENT_TO),
+        OPCODE_BSET_BUFFER => unaryOp(&ins, IDX_SET_BUFFER),
+        OPCODE_BFORWARD_CHAR => unaryOp(&ins, IDX_FORWARD_CHAR),
+        OPCODE_BFORWARD_WORD => unaryOp(&ins, IDX_FORWARD_WORD),
+        OPCODE_BFORWARD_LINE => unaryOp(&ins, IDX_FORWARD_LINE),
+        OPCODE_BCHAR_SYNTAX => unaryOp(&ins, IDX_CHAR_SYNTAX),
+        OPCODE_BEND_OF_LINE => unaryOp(&ins, IDX_END_OF_LINE),
+        OPCODE_BMATCH_BEGINNING => unaryOp(&ins, IDX_MATCH_BEGINNING),
+        OPCODE_BMATCH_END => unaryOp(&ins, IDX_MATCH_END),
+        OPCODE_BUPCASE => unaryOp(&ins, IDX_UPCASE),
+        OPCODE_BDOWNCASE => unaryOp(&ins, IDX_DOWNCASE),
+        OPCODE_BNREVERSE => unaryOp(&ins, IDX_NREVERSE),
+        OPCODE_BCAR_SAFE => unaryOp(&ins, IDX_CAR_SAFE),
+        OPCODE_BCDR_SAFE => unaryOp(&ins, IDX_CDR_SAFE),
+        // ---- 0-arg PUSH (PUSH fn()) ----
+        OPCODE_BPOINT => push0Op(&ins, IDX_POINT),
+        OPCODE_BPOINT_MAX => push0Op(&ins, IDX_POINT_MAX),
+        OPCODE_BPOINT_MIN => push0Op(&ins, IDX_POINT_MIN),
+        OPCODE_BFOLLOWING_CHAR => push0Op(&ins, IDX_FOLLOWING_CHAR),
+        OPCODE_BPRECEDING_CHAR => push0Op(&ins, IDX_PRECEDING_CHAR),
+        OPCODE_BCURRENT_COLUMN => push0Op(&ins, IDX_CURRENT_COLUMN),
+        OPCODE_BEOLP => push0Op(&ins, IDX_EOLP),
+        OPCODE_BEOBP => push0Op(&ins, IDX_EOBP),
+        OPCODE_BBOLP => push0Op(&ins, IDX_BOLP),
+        OPCODE_BBOBP => push0Op(&ins, IDX_BOBP),
+        OPCODE_BCURRENT_BUFFER => push0Op(&ins, IDX_CURRENT_BUFFER),
+        OPCODE_BWIDEN => push0Op(&ins, IDX_WIDEN),
+        // ---- no-arg, no-stack-effect (specpdl push / pophandler) ----
+        OPCODE_BSAVE_EXCURSION => noargOp(&ins, IDX_SAVE_EXCURSION),
+        OPCODE_BSAVE_CURRENT_BUFFER => noargOp(&ins, IDX_SAVE_CURRENT_BUFFER),
+        OPCODE_BSAVE_RESTRICTION => noargOp(&ins, IDX_SAVE_RESTRICTION),
+        OPCODE_BUNWIND_PROTECT => {
+            ins.op = .unary_pop;
+            ins.idx = IDX_UNWIND_PROTECT;
+        },
+        // ---- variadic / ternary (DISCARD n-1; fn(n, &newtop)) ----
+        OPCODE_BASET => listnOp(&ins, IDX_ASET, 3),
+        OPCODE_BSUBSTRING => listnOp(&ins, IDX_SUBSTRING, 3),
+        OPCODE_BSET_MARKER => listnOp(&ins, IDX_SET_MARKER, 3),
+        OPCODE_BCONCAT2 => listnOp(&ins, IDX_CONCAT, 2),
+        OPCODE_BCONCAT3 => listnOp(&ins, IDX_CONCAT, 3),
+        OPCODE_BCONCAT4 => listnOp(&ins, IDX_CONCAT, 4),
+        OPCODE_BCONCATN => {
+            ins.op = .listn;
+            ins.imm = fetch1(opcodes, &pc);
+            ins.idx = IDX_CONCAT;
+        },
+        OPCODE_BNCONC => listnOp(&ins, IDX_NCONC, 2),
+        OPCODE_BINSERTN => {
+            ins.op = .listn;
+            ins.imm = fetch1(opcodes, &pc);
+            ins.idx = IDX_INSERT;
+        },
         else => {
             std.debug.print("zeln-compile: unsupported opcode 0x{X} at offset {d} (outside M1 subset)\n", .{ b, pc0 });
             return error.UnsupportedOpcode;
@@ -651,6 +982,30 @@ fn fetch2(opcodes: []const u8, pc: *u32) u32 {
     const hi = @as(u32, opcodes[pc.* + 1]);
     pc.* += 2;
     return lo | (hi << 8);
+}
+
+// Tiny decode helpers: set the Instr's op + idx (and imm for listn) without
+// touching pc/end (the caller's `ins.end = pc` after the switch still applies).
+fn unaryOp(ins: *Instr, idx: u64) void {
+    ins.op = .unary;
+    ins.idx = idx;
+}
+fn binaryOp(ins: *Instr, idx: u64) void {
+    ins.op = .binary;
+    ins.idx = idx;
+}
+fn listnOp(ins: *Instr, idx: u64, n: u32) void {
+    ins.op = .listn;
+    ins.idx = idx;
+    ins.imm = n;
+}
+fn push0Op(ins: *Instr, idx: u64) void {
+    ins.op = .push0;
+    ins.idx = idx;
+}
+fn noargOp(ins: *Instr, idx: u64) void {
+    ins.op = .noarg;
+    ins.idx = idx;
 }
 
 // =====================================================================
@@ -697,6 +1052,22 @@ const Emitter = struct {
     }
     fn storeTop(self: *Emitter, reg: u32) !void {
         try self.wif("store ptr %{d}, ptr %top.slot\n", .{reg});
+    }
+
+    // Return a register pointing at %zargs[i] (the 3-slot scratch alloca).
+    fn zargsSlot(self: *Emitter, i: u64) !u32 {
+        const r = self.fresh();
+        try self.wif("%{d} = getelementptr inbounds [3 x i64], ptr %zargs, i64 0, i64 {d}\n", .{ r, i });
+        return r;
+    }
+
+    // Load d_reloc_z[const_idx] into a fresh register and return it.
+    fn loadConst(self: *Emitter, nconsts: usize, const_idx: u64) !u32 {
+        const cslot = self.fresh();
+        try self.wif("%{d} = getelementptr inbounds [{d} x i64], ptr @d_reloc_z, i64 0, i64 {d}\n", .{ cslot, nconsts, const_idx });
+        const cval = self.fresh();
+        try self.wif("%{d} = load i64, ptr %{d}\n", .{ cval, cslot });
+        return cval;
     }
 
     // Emit a uniform MANY freloc call (i64 return) and return the result reg.
@@ -746,7 +1117,7 @@ fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8) ![]u8 
     // record block starts at each target + each branch/return fallthrough.
     for (instrs.items) |ins| {
         switch (ins.op) {
-            .goto_, .goto_if_nil, .goto_if_nonnil, .goto_if_nil_else_pop, .goto_if_nonnil_else_pop => {
+            .goto_, .goto_if_nil, .goto_if_nonnil, .goto_if_nil_else_pop, .goto_if_nonnil_else_pop, .pushhandler => {
                 if (ins.target >= n or !is_instr_start[ins.target])
                     return error.BranchTargetNotAligned;
                 is_block_start[ins.target] = true;
@@ -806,6 +1177,17 @@ fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8) ![]u8 
     try em.wf("  i64 {d},\n", .{unit.consts.len});
     try em.w("  ptr @d_reloc_z_blob\n}\n\n");
 
+    // _setjmp is sys_setjmp on this glibc target (HAVE__SETJMP is checked
+    // first in lisp.h, so sys_setjmp(j) == _setjmp(j)).  Called DIRECTLY in
+    // the native fn for the pushhandler trio so longjmp lands in the native
+    // frame (its alloca virtual stack survives).  `returns_twice` is
+    // mandatory: without it the optimizer assumes a single return and
+    // misoptimizes the longjmp-resume block.  Attribute group #0 is unused
+    // by the rest of this module.
+    try em.w("; sys_setjmp == _setjmp on glibc (HAVE__SETJMP first).\n");
+    try em.w("declare i32 @_setjmp(ptr) #0\n");
+    try em.w("attributes #0 = { nounwind returns_twice }\n\n");
+
     // Native fn: MANY convention `i64 (i64 %nargs, ptr %args)`.  INTERNAL
     // linkage so the symbol does not interpose across multiple concurrently
     // loaded .zeln (dynlib_open uses RTLD_GLOBAL): each .zeln's
@@ -817,6 +1199,11 @@ fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8) ![]u8 
     try em.wif("%stack = alloca [{d} x i64], align 8\n", .{stack_slots});
     try em.wif("%stackbase = getelementptr inbounds [{d} x i64], ptr %stack, i64 0, i64 1\n", .{stack_slots});
     try em.w("  %top.slot = alloca ptr, align 8\n");
+    // 3-slot scratch for the const-arg opcodes (varset/varbind) and the
+    // pushhandler trio ([tag, type_raw, &top.slot]). Lives in the native
+    // frame so it survives the pushhandler setjmp/longjmp (the longjmp
+    // lands in the shim THIS fn called, so this frame is preserved).
+    try em.w("  %zargs = alloca [3 x i64], align 8\n");
     // Prologue: zeln_setup_args(args_template, nargs, args, stackbase) -> top.
     const rlt = em.fresh();
     try em.wif("%{d} = load ptr, ptr @freloc_link_table_z\n", .{rlt});
@@ -856,6 +1243,19 @@ fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8) ![]u8 
             .binary => try emitBinary(&em, ins.idx),
             .listn => try emitListN(&em, ins.idx, ins.imm),
             .call => try emitCall(&em, ins.imm),
+            // ---- M2 ----
+            .varref => try emitVarref(&em, unit.consts.len, ins.idx),
+            .varset => try emitVarset(&em, unit.consts.len, ins.idx),
+            .varbind => try emitVarbind(&em, unit.consts.len, ins.idx),
+            .unbind => try emitUnbind(&em, ins.imm),
+            .discard_n => try emitDiscardN(&em, ins.imm),
+            .push0 => try emitPush0(&em, ins.idx),
+            .noarg => try emitNoArg(&em, ins.idx),
+            .unary_pop => try emitUnaryPop(&em, ins.idx),
+            .pushhandler => {
+                try emitPushHandler(&em, ins.idx, ins.target, ins.end);
+                block_open = false;
+            },
             .goto_ => {
                 try em.wf("  br label %bb_{d}\n", .{ins.target});
                 block_open = false;
@@ -1050,6 +1450,167 @@ fn emitCondElsePop(em: *Emitter, start: u32, target: u32, fall_off: u32, sense: 
     try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 -1\n", .{ fnp, ft });
     try em.storeTop(fnp);
     try em.wif("br label %bb_{d}\n", .{fall_off});
+}
+
+// =====================================================================
+// M2 per-opcode IR fragments.
+// =====================================================================
+
+// Bvarref family: PUSH Fsymbol_value(vectorp[arg]).  The symbol's home slot
+// in d_reloc_z[arg] IS the args base (the shim reads a[0] = sym).  Calling
+// Fsymbol_value directly is result-identical to the interpreter's
+// SYMBOL_PLAINVAL fast path (the fast path only short-circuits the call;
+// Fsymbol_value returns the same value and signals void-variable the same).
+fn emitVarref(em: *Emitter, nconsts: usize, const_idx: u64) !void {
+    const cslot = em.fresh();
+    try em.wif("%{d} = getelementptr inbounds [{d} x i64], ptr @d_reloc_z, i64 0, i64 {d}\n", .{ cslot, nconsts, const_idx });
+    const r = try em.frelocCallI64(IDX_SYMBOL_VALUE, 1, cslot);
+    const t = try em.loadTop();
+    const np = em.fresh();
+    try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 1\n", .{ np, t });
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ r, np });
+    try em.storeTop(np);
+}
+
+// Bvarset family: set_internal(vectorp[arg], POP).  POP the TOS, scatter
+// [sym, val] into %zargs, call IDX_VARSET(2, &zargs); net stack effect -1.
+fn emitVarset(em: *Emitter, nconsts: usize, const_idx: u64) !void {
+    const t = try em.loadTop();
+    const val = em.fresh();
+    try em.wif("%{d} = load i64, ptr %{d}\n", .{ val, t }); // popped value
+    const sym = try em.loadConst(nconsts, const_idx);
+    const z0 = try em.zargsSlot(0);
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ sym, z0 });
+    const z1 = try em.zargsSlot(1);
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ val, z1 });
+    const zbase = try em.zargsSlot(0);
+    _ = try em.frelocCallI64(IDX_VARSET, 2, zbase);
+    const np = em.fresh();
+    try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 -1\n", .{ np, t });
+    try em.storeTop(np);
+}
+
+// Bvarbind family: specbind(vectorp[arg], POP).  Same shape as varset.
+fn emitVarbind(em: *Emitter, nconsts: usize, const_idx: u64) !void {
+    const t = try em.loadTop();
+    const val = em.fresh();
+    try em.wif("%{d} = load i64, ptr %{d}\n", .{ val, t });
+    const sym = try em.loadConst(nconsts, const_idx);
+    const z0 = try em.zargsSlot(0);
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ sym, z0 });
+    const z1 = try em.zargsSlot(1);
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ val, z1 });
+    const zbase = try em.zargsSlot(0);
+    _ = try em.frelocCallI64(IDX_VARBIND, 2, zbase);
+    const np = em.fresh();
+    try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 -1\n", .{ np, t });
+    try em.storeTop(np);
+}
+
+// Bunbind family: unbind_to(SPECPDL_INDEX()-arg, Qnil).  The count rides in
+// nargs (the shim reads `n'); the args ptr is unused.
+fn emitUnbind(em: *Emitter, count: u32) !void {
+    const zbase = try em.zargsSlot(0);
+    _ = try em.frelocCallI64(IDX_UNBIND, count, zbase);
+}
+
+// BdiscardN: pure stack op.  n=FETCH; if 0x80 set, top[-(n&0x7f)]=TOP first,
+// then DISCARD(n&0x7f).  n is a compile-time constant, so the preserve
+// store is emitted conditionally (no runtime branch).
+fn emitDiscardN(em: *Emitter, n_byte: u32) !void {
+    const n = n_byte & 0x7f;
+    const preserve = (n_byte & 0x80) != 0;
+    const t = try em.loadTop();
+    if (preserve) {
+        const tos = em.fresh();
+        try em.wif("%{d} = load i64, ptr %{d}\n", .{ tos, t });
+        const di: i64 = -@as(i64, n);
+        const dst = em.fresh();
+        try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 {d}\n", .{ dst, t, di });
+        try em.wif("store i64 %{d}, ptr %{d}\n", .{ tos, dst });
+    }
+    const di2: i64 = -@as(i64, n);
+    const np = em.fresh();
+    try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 {d}\n", .{ np, t, di2 });
+    try em.storeTop(np);
+}
+
+// 0-arg PUSH primitives (Bpoint/Beolp/...): PUSH fn().  Shim ignores args.
+fn emitPush0(em: *Emitter, idx: u64) !void {
+    const zbase = try em.zargsSlot(0);
+    const r = try em.frelocCallI64(idx, 0, zbase);
+    const t = try em.loadTop();
+    const np = em.fresh();
+    try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 1\n", .{ np, t });
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ r, np });
+    try em.storeTop(np);
+}
+
+// No-arg, no-stack-effect (Bsave_excursion/Bsave_*/Bpophandler): call
+// fn(0), discard result.  These push/pop the C specpdl (Tier 1).
+fn emitNoArg(em: *Emitter, idx: u64) !void {
+    const zbase = try em.zargsSlot(0);
+    _ = try em.frelocCallI64(idx, 0, zbase);
+}
+
+// Bunwind_protect: POP handler; record_unwind_protect(bcall0|prog_ignore,
+// handler).  POP one, call fn(1, &oldtop), discard; net stack effect -1.
+fn emitUnaryPop(em: *Emitter, idx: u64) !void {
+    const t = try em.loadTop();
+    const np = em.fresh();
+    try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 -1\n", .{ np, t });
+    try em.storeTop(np);
+    _ = try em.frelocCallI64(idx, 1, t); // t[0] still holds the popped handler
+}
+
+// Bpushcatch / Bpushconditioncase (Tier 2).  POP the tag, call
+// IDX_PUSHHANDLER (which push_handler's + returns the jmpbuf ptr), then call
+// _setjmp ON THE JMPBUF DIRECTLY HERE (the native fn — so longjmp lands in
+// this frame, whose alloca virtual stack survives).  0 -> guarded body (next
+// insn); nonzero -> resume block: call IDX_RESUME (restores %top + PUSHes the
+// caught value) then br to the handler block (FETCH2 dest).
+fn emitPushHandler(em: *Emitter, type_raw: u64, target: u32, fall_off: u32) !void {
+    // POP the tag.
+    const t = try em.loadTop();
+    const tag = em.fresh();
+    try em.wif("%{d} = load i64, ptr %{d}\n", .{ tag, t });
+    const np = em.fresh();
+    try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 -1\n", .{ np, t });
+    try em.storeTop(np);
+    // %zargs[0] = tag, [1] = type (raw 0/1), [2] = ptrtoint(%top.slot).
+    const z0 = try em.zargsSlot(0);
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ tag, z0 });
+    const z1 = try em.zargsSlot(1);
+    try em.wif("store i64 {d}, ptr %{d}\n", .{ type_raw, z1 });
+    const z2 = try em.zargsSlot(2);
+    const tsi = em.fresh();
+    try em.wif("%{d} = ptrtoint ptr %top.slot to i64\n", .{tsi});
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ tsi, z2 });
+    const zbase = try em.zargsSlot(0);
+    // push_handler + field setup; returns the sys_jmp_buf* as a raw i64.
+    const jmpbuf_i64 = try em.frelocCallI64(IDX_PUSHHANDLER, 3, zbase);
+    // _setjmp DIRECTLY in the native fn (NOT in the shim): the longjmp
+    // resumes here, in this preserved frame.  inttoptr the raw i64 -> ptr.
+    const jbptr = em.fresh();
+    try em.wif("%{d} = inttoptr i64 %{d} to ptr\n", .{ jbptr, jmpbuf_i64 });
+    const sj = em.fresh();
+    try em.wif("%{d} = call i32 @_setjmp(ptr %{d})\n", .{ sj, jbptr });
+    const cond = em.fresh();
+    try em.wif("%{d} = icmp eq i32 %{d}, 0\n", .{ cond, sj });
+    // 0 => guarded body; nonzero => resume block (a throw/signal was caught).
+    // The resume label is emitted as its own basic block below.
+    try em.wif("br i1 %{d}, label %bb_{d}, label %bb_resume_{d}\n", .{ cond, fall_off, fall_off });
+    // Resume block: a longjmp was caught.  IDX_RESUME restores %top to the
+    // pushtime value and PUSHes h->val (the caught value), so the handler
+    // block (FETCH2 dest) just continues with caught value at TOS.
+    try em.wf("bb_resume_{d}:\n", .{fall_off});
+    const rz0 = try em.zargsSlot(0);
+    const rtsi = em.fresh();
+    try em.wif("%{d} = ptrtoint ptr %top.slot to i64\n", .{rtsi});
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ rtsi, rz0 });
+    const rzbase = try em.zargsSlot(0);
+    _ = try em.frelocCallI64(IDX_RESUME, 1, rzbase);
+    try em.wif("br label %bb_{d}\n", .{target});
 }
 
 // =====================================================================

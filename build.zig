@@ -2453,6 +2453,12 @@ pub fn build(b: *std.Build) void {
         const diff_names = [_][]const u8{
             "inc", "arith", "abs", "cadr", "conslist", "loop",
             "rec", "fmt", "list3", "strpred", "rest", "list6", "list7", "const2",
+            // ---- M2 corpus (one+ per new opcode group) ----
+            "dynvar", "saveex", "saverest", "savebuf", "unwind",
+            "condcase", "catchself", "catchcross",
+            "vecstr", "asetop", "concatn", "listops", "consmut", "nconcop",
+            "bufrange", "bufmove", "matchops", "strcase", "arith2",
+            "symfns", "fnsym", "markerop", "bufpred",
         };
 
         // (a) Serialize: emacs --batch -l zeln-diff.el --eval run-serialize.

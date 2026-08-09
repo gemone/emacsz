@@ -20,18 +20,32 @@
 (defvar zeln-diff-dir "zig-out/bin/zeln-diff/"
   "Where .zunit/.manifest/.zeln artifacts land (under the build root).")
 
-;; Each entry: (NAME FORM INPUTS BIND)
+;; Each entry: (NAME FORM INPUTS BIND [HELPERS])
 ;;   NAME    symbol naming the fn (-> <dir>/<name>.zunit etc.)
-;;   FORM    the lambda form to byte-compile (the reference closure)
+;;   FORM    the lambda form to byte-compile (the reference closure), OR a
+;;           symbol whose `symbol-function' is an already-compiled closure
 ;;   INPUTS  list of strings; each is an Elisp list of args to `apply'
 ;;   BIND    nil, or a symbol whose function slot is fset to the closure
 ;;           under test before each call (for self-recursive fns whose
 ;;           recursive call resolves through the symbol's function slot).
+;;   HELPERS optional alist of (SYM . LAMBDA-FORM); each is byte-compiled
+;;           and fset to SYM before the entry runs, so the fn under test
+;;           can funcall a separately-compiled closure (e.g. a thrower
+;;           that crosses a native catch frame).  (nth 4 entry) -> nil.
 ;;
 ;; Edge cases the corpus MUST include (plan M1 DIFF TEST): fixnum-overflow
 ;; (-> bignum), &rest args, nil/empty-list, nested recursion, backward-
 ;; branch loops (stack-depth-at-loop-header), constant indices >=64
 ;; (Bconstant2), and a fn with >5 args (Bcall6/Bcall7 FETCH2).
+;;
+;; M2 coverage (plan M2): the appended entries exercise every new opcode
+;; group — dynamic var bind/set/ref/unbind, save-excursion/restriction/
+;; current-buffer, unwind-protect (normal + error paths), condition-case
+;; catching a signaled error, catch/throw (same-frame AND cross-frame via
+;; a helper), aref/aset/substring/concat, the list primitives, and the
+;; buffer/point primitive families.  Any fn whose bytecode leaves the
+;; supported subset is REJECTed by the emitter at compile time (failing
+;; the build), so coverage is honestly bounded to proven fns.
 (defvar zeln-diff-corpus
   '((inc
      (lambda (x) (+ x 1))
@@ -95,8 +109,192 @@
                      37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53
                      54 55 56 57 58 59 60 61 62 63 64))
      ("()")
-     nil))
-  "The M1 differential-test corpus.  See plan M1 DIFF TEST for the edges.")
+     nil)
+    ;; ===== M2: real constructs, one+ fn per new opcode group. =====
+    ;; (a) dynamic special-var let -> Bvarbind / Bvarset / Bvarref / Bunbind.
+    (dynvar
+     (lambda (x)
+       (let ((inhibit-read-only t))
+         (setq case-fold-search nil)
+         (cons x inhibit-read-only)))
+     ("(3)" "(0)")
+     nil nil)
+    ;; (b1) Bsave_excursion + Bgoto_char + Binsert + Bpoint + Bbuffer_substring.
+    (saveex
+     (lambda ()
+       (with-temp-buffer
+         (insert "hello")
+         (save-excursion
+           (goto-char 2)
+           (point))
+         (cons (point) (buffer-substring 1 4))))
+     ("()") nil nil)
+    ;; (b2) Bsave_restriction + Bnarrow_to_region + Bpoint_min/max.
+    (saverest
+     (lambda ()
+       (with-temp-buffer
+         (insert "abcdef")
+         (save-restriction
+           (narrow-to-region 2 5)
+           (cons (point-min) (point-max)))
+         (point-max)))
+     ("()") nil nil)
+    ;; (b3) Bsave_current_buffer + Bset_buffer (point-max is deterministic).
+    (savebuf
+     (lambda ()
+       (with-temp-buffer
+         (insert "abc")
+         (save-current-buffer (set-buffer (other-buffer)))
+         (point-max)))
+     ("()") nil nil)
+    ;; (c) Bunwind_protect cleanup runs on BOTH normal and error paths.
+    (unwind
+     (lambda (x)
+       (let ((flag 'clean))
+         (unwind-protect
+             (if x (error "boom") 'ok)
+           (setq flag 'ran))
+         flag))
+     ("(nil)" "(t)") nil nil)
+    ;; (d1) Bpushconditioncase catching args-out-of-range signaled by Baref.
+    (condcase
+     (lambda (vec)
+       (condition-case err
+           (aref vec 10)
+         (args-out-of-range (cdr err))))
+     ("([1 2 3])" "(\"ab\")") nil nil)
+    ;; (d2) Bpushcatch + throw landing in the SAME native frame.
+    (catchself
+     (lambda (x)
+       (catch 'done
+         (if x (throw 'done 'caught) 'not-thrown)))
+     ("(nil)" "(t)") nil nil)
+    ;; (d3) Bpushcatch + throw originating in a CALLED closure (cross-frame).
+    (catchcross
+     (lambda ()
+       (catch 'done
+         (zeln-diff-thrower)      ; fset to a compiled thrower by HELPERS
+         'not-thrown))
+     ("()") nil
+     ((zeln-diff-thrower . (lambda () (throw 'done 'cross-caught)))))
+    ;; (e1) Baref / Bsubstring.
+    (vecstr
+     (lambda (v s)
+       (cons (aref v 1) (substring s 0 2)))
+     ("([10 20 30] \"hello\")" "(\"abc\" \"xyz\")") nil nil)
+    ;; (e2) Baset.
+    (asetop
+     (lambda (v)
+       (aset v 0 99)
+       (aref v 0))
+     ("([1 2 3])") nil nil)
+    ;; (e3) Bconcat3 / BconcatN.
+    (concatn
+     (lambda (a b c d e)
+       (concat (concat a b c) (concat a b c d e)))
+     ("(\"a\" \"b\" \"c\" \"d\" \"e\")") nil nil)
+    ;; (f1) Bnth / Bnthcdr / Bmember / Bassq / Blength / BlistN.
+    (listops
+     (lambda (lst)
+       (list (nth 1 lst) (nthcdr 2 lst)
+             (member 3 lst) (assq 'a lst) (length lst)))
+     ("((1 2 3 4))" "((a . 1) (b . 2))") nil nil)
+    ;; (f2) Bnreverse / Bsetcar / Bcar_safe / Bcdr_safe.
+    (consmut
+     (lambda (lst)
+       (let ((c (nreverse (copy-sequence lst))))
+         (setcar c 99)
+         (cons (car-safe c) (cdr-safe c))))
+     ("((1 2 3))") nil nil)
+    ;; (f3) Bnconc / Bsetcdr.
+    (nconcop
+     (lambda (lst)
+       (let ((x (nconc (copy-sequence lst) '(9))))
+         (setcdr x 7)
+         x))
+     ("((1 2))") nil nil)
+    ;; (g1) buffer range primitives in a temp buffer.
+    (bufrange
+     (lambda ()
+       (with-temp-buffer
+         (insert "ab\nc")
+         (goto-char 2)
+         (list (point) (point-min) (point-max)
+               (following-char) (preceding-char)
+               (char-after (point)) (current-column))))
+     ("()") nil nil)
+    ;; (g2) buffer movement: Bforward_line, Bbuffer_substring, Bend_of_line,
+    ;; Bskip_chars_forward, Bdelete_region.
+    (bufmove
+     (lambda ()
+       (with-temp-buffer
+         (insert "hello\nworld")
+         (goto-char 1)
+         (forward-line 1)            ; point -> 6 (start of "world")
+         (prog1 (buffer-substring 1 5)   ; "hell"
+           (end-of-line)             ; point -> 11
+           (skip-chars-forward "wo") ; point -> 8
+           (delete-region 6 8))))    ; delete "wo" -> "hello\nrld"
+     ("()") nil nil)
+    ;; (g3) Bmatch_beginning/end + Bchar_syntax after a (funcall) re-search.
+    (matchops
+     (lambda ()
+       (with-temp-buffer
+         (insert "(foo)")
+         (goto-char 1)
+         (if (re-search-forward "[a-z]+" nil t)
+             (list (match-beginning 0) (match-end 0)
+                   (char-syntax (char-after 2)))
+           'no-match)))
+     ("()") nil nil)
+    ;; (g4) Bstring= / Bstring-lessp / Bupcase / Bdowncase.
+    (strcase
+     (lambda (a b)
+       (list (string-equal a b) (string-lessp a b)
+             (upcase a) (downcase b)))
+     ("(\"abc\" \"abd\")" "(\"xyz\" \"abc\")") nil nil)
+    ;; (g5) Bquo / Brem.
+    (arith2
+     (lambda (x y)
+       (list (/ x y) (% x y)))
+     ("(20 6)" "(100 7)") nil nil)
+    ;; (g6) Bset / Bsymbol_value / Bget (self-contained, value cell).
+    (symfns
+     (lambda ()
+       (set 'zeln-diff-vg 7)
+       (cons (symbol-value 'zeln-diff-vg)
+             (get 'zeln-diff-vg 'zeln-diff-prop)))
+     ("()") nil nil)
+    ;; (g7) Bfset / Bsymbol_function (function cell, returns 5).
+    (fnsym
+     (lambda ()
+       (fset 'zeln-diff-fs (lambda (x) x))
+       (funcall (symbol-function 'zeln-diff-fs) 5))
+     ("()") nil nil)
+    ;; (g8) Bset_marker (3-ary) + marker ops.
+    (markerop
+     (lambda ()
+       (with-temp-buffer
+         (let ((m (make-marker)))
+           (set-marker m 3 (current-buffer))
+           (set-marker m 5 (current-buffer))
+           (marker-position m))))
+     ("()") nil nil)
+    ;; (g9) Beolp/Beobp/Bbolp/Bbobp + Bskip_chars_backward + Bwiden
+    ;; (the remaining 0-arg PUSH predicates + skip-backward + widen).
+    (bufpred
+     (lambda ()
+       (with-temp-buffer
+         (insert "line1\nline2")
+         (goto-char 1)
+         (prog1
+             (list (bolp) (eolp) (bobp) (eobp))
+           (skip-chars-backward "l")
+           (widen))))
+     ("()") nil nil))
+  "The differential-test corpus (M1 edges + M2 opcode-group coverage).
+See plan M1 DIFF TEST and M2 for the edges/groups.  Any fn whose
+bytecode leaves the supported opcode subset is REJECTed by the emitter.")
 
 (defun zeln-diff-byte-compile (form)
   "Byte-compile FORM under `lexical-binding' so it yields a real lexical
@@ -104,6 +302,14 @@ closure (CLOSUREP with a fixnum args-template), the exact shape
 `comp-z-write-zunit' accepts and `exec_byte_code' consumes."
   (let ((lexical-binding t))
     (byte-compile form)))
+
+(defun zeln-diff-closure (form)
+  "Resolve a corpus FORM into the closure to test.
+FORM is either a lambda form (byte-compiled here) or a symbol whose
+`symbol-function' is an already-compiled closure (real built-in fn)."
+  (if (symbolp form)
+      (symbol-function form)
+    (zeln-diff-byte-compile form)))
 
 ;; ---- Serialize phase: write <dir>/<name>.zunit + .manifest per fn. ----
 (defun zeln-diff-run-serialize ()
@@ -116,7 +322,7 @@ closure (CLOSUREP with a fixnum args-template), the exact shape
   (dolist (entry zeln-diff-corpus)
     (let* ((name (car entry))
            (form (cadr entry))
-           (closure (zeln-diff-byte-compile form)))
+           (closure (zeln-diff-closure form)))
       (unless (closurep closure)
         (message "zeln-diff: %s did not compile to a lexical closure" name)
         (kill-emacs 1))
@@ -147,7 +353,15 @@ Exits non-zero on the first mismatch (printing name/input/both values)."
              (form (cadr entry))
              (inputs (nth 2 entry))
              (bind (nth 3 entry))
-             (baseline (zeln-diff-byte-compile form))
+             (helpers (nth 4 entry))
+             ;; Byte-compile + fset any helpers so the fn under test can
+             ;; funcall a separately-compiled closure (e.g. a thrower).
+             ;; Done once here; both baseline and native runs see the same
+             ;; helper closures (the helpers are NOT the fn under test).
+             (baseline (progn
+                         (dolist (h helpers)
+                           (fset (car h) (zeln-diff-byte-compile (cdr h))))
+                         (zeln-diff-closure form)))
              (zeln-path (expand-file-name
                          (concat (symbol-name name) ".zeln") zeln-diff-dir))
              (native (comp-z-load-zeln zeln-path))
@@ -165,9 +379,9 @@ Exits non-zero on the first mismatch (printing name/input/both values)."
             (setq n-fns (1+ n-fns))
           (push (cons name fn-failed) zeln-diff--fails))))
     (if (null zeln-diff--fails)
-        (message "M1 differential: %d/%d functions identical (%d/%d calls)"
-                 n-fns n-fns zeln-diff--n zeln-diff--n)
-      (message "M1 differential: FAILED %d function(s), %d/%d calls ok"
+        (message "zeln differential: %d/%d functions identical (%d/%d calls)"
+                 n-fns (length zeln-diff-corpus) zeln-diff--n zeln-diff--n)
+      (message "zeln differential: FAILED %d function(s), %d/%d calls ok"
                (length zeln-diff--fails) (- zeln-diff--n
                                             (apply #'+ (mapcar #'cdr zeln-diff--fails)))
                zeln-diff--n)

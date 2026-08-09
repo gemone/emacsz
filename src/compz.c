@@ -45,10 +45,11 @@
 
 #ifdef HAVE_NATIVE_COMP_ZIG
 
-#include <stdlib.h>		/* realpath */
+#include <stdlib.h>		/* realpath, intptr_t */
 #include "dynlib.h"
 #include "sysstdio.h"		/* FILE, fseeko, ftello, fread, rewind */
 #include "coding.h"		/* ENCODE_FILE / DECODE_FILE */
+#include "buffer.h"		/* record_unwind_current_buffer + buffer primitives */
 #include <epaths.h>		/* PATH_DUMPLOADSEARCH / PATH_REL_LOADSEARCH */
 
 /* ------------------------------------------------------------------ */
@@ -59,7 +60,7 @@
    symbol and the main executable needs no -rdynamic — exactly like
    gccjit's .eln (comp.c:5311).  */
 
-#define ZELN_F_RELOC_MAX 64
+#define ZELN_F_RELOC_MAX 128
 
 typedef struct
 {
@@ -90,9 +91,9 @@ static zeln_f_reloc_t zeln_freloc;
      - every other IDX: Lisp_Object (*)(ptrdiff_t, Lisp_Object *)
        (the uniform MANY convention matching struct Lisp_Subr aMANY).
 
-   ZELN_ABI_VERSION was bumped Z1 -> Z2 for this layout + surface, so a
-   stale M0 .zeln (whose freloc surface was just &Fmessage) is rejected
-   by the hash gate before any native code runs.  */
+   ZELN_ABI_VERSION was bumped Z1 -> Z2 for the M1 layout + surface,
+   then Z2 -> Z3 for the M2 freloc-surface growth, so a stale M0/M1
+   .zeln is rejected by the hash gate before any native code runs.  */
 
 /* Prologue helper: replicates exec_byte_code setup_frame arg binding
    (bytecode.c:535-549) into the caller-provided virtual stack.  ARGS
@@ -185,6 +186,196 @@ static Lisp_Object zeln_listp    (ptrdiff_t n, Lisp_Object *a) { return Flistp  
 static Lisp_Object zeln_numberp  (ptrdiff_t n, Lisp_Object *a) { return Fnumberp  (a[0]); }
 static Lisp_Object zeln_integerp (ptrdiff_t n, Lisp_Object *a) { return Fintegerp (a[0]); }
 
+/* bcall0 equivalent: bytecode.c:323 declares it `static`, so it is not
+   visible here.  Replicate it — this is the EXACT unwind fn the
+   interpreter passes to record_unwind_protect for a function-typed
+   Bunwind_protect handler (bytecode.c:1017).  */
+static void
+zeln_bcall0 (Lisp_Object f)
+{
+  CALLN (Ffuncall, f);
+}
+
+/* ------------------------------------------------------------------ */
+/* M2 per-opcode primitive shims.  Each wraps the SAME C primitive the
+   interpreter's inline fast path falls back to (bytecode.c), behind the
+   uniform MANY signature.  The fast path only short-circuits the common
+   case and signals the SAME condition on failure, so calling the
+   primitive directly is behaviorally identical (the differential gate
+   proves it, including the error / throw inputs that cross a native
+   frame).  */
+
+/* Unary-on-TOP primitives (TOP = fn (a[0]); net stack effect 0).  */
+static Lisp_Object zeln_symbol_value    (ptrdiff_t n, Lisp_Object *a) { return Fsymbol_value (a[0]); }
+static Lisp_Object zeln_symbol_function (ptrdiff_t n, Lisp_Object *a) { return Fsymbol_function (a[0]); }
+static Lisp_Object zeln_length          (ptrdiff_t n, Lisp_Object *a) { return Flength (a[0]); }
+static Lisp_Object zeln_goto_char       (ptrdiff_t n, Lisp_Object *a) { return Fgoto_char (a[0]); }
+static Lisp_Object zeln_char_after      (ptrdiff_t n, Lisp_Object *a) { return Fchar_after (a[0]); }
+static Lisp_Object zeln_indent_to       (ptrdiff_t n, Lisp_Object *a) { return Findent_to (a[0], Qnil); }
+static Lisp_Object zeln_forward_char    (ptrdiff_t n, Lisp_Object *a) { return Fforward_char (a[0]); }
+static Lisp_Object zeln_forward_word    (ptrdiff_t n, Lisp_Object *a) { return Fforward_word (a[0]); }
+static Lisp_Object zeln_forward_line    (ptrdiff_t n, Lisp_Object *a) { return Fforward_line (a[0]); }
+static Lisp_Object zeln_char_syntax     (ptrdiff_t n, Lisp_Object *a) { return Fchar_syntax (a[0]); }
+static Lisp_Object zeln_set_buffer      (ptrdiff_t n, Lisp_Object *a) { return Fset_buffer (a[0]); }
+static Lisp_Object zeln_end_of_line     (ptrdiff_t n, Lisp_Object *a) { return Fend_of_line (a[0]); }
+static Lisp_Object zeln_match_beginning (ptrdiff_t n, Lisp_Object *a) { return Fmatch_beginning (a[0]); }
+static Lisp_Object zeln_match_end       (ptrdiff_t n, Lisp_Object *a) { return Fmatch_end (a[0]); }
+static Lisp_Object zeln_upcase          (ptrdiff_t n, Lisp_Object *a) { return Fupcase (a[0]); }
+static Lisp_Object zeln_downcase        (ptrdiff_t n, Lisp_Object *a) { return Fdowncase (a[0]); }
+static Lisp_Object zeln_nreverse        (ptrdiff_t n, Lisp_Object *a) { return Fnreverse (a[0]); }
+static Lisp_Object zeln_car_safe        (ptrdiff_t n, Lisp_Object *a) { return Fcar_safe (a[0]); }
+static Lisp_Object zeln_cdr_safe        (ptrdiff_t n, Lisp_Object *a) { return Fcdr_safe (a[0]); }
+/* Binsert (1-ary) and BinsertN (variadic) share this MANY shim.  */
+static Lisp_Object zeln_insert          (ptrdiff_t n, Lisp_Object *a) { return Finsert (n, a); }
+
+/* Binary primitives (POP v2; TOP = fn (a[0], a[1]); net stack effect -1).
+   a[0] is the former TOS-1, a[1] the former TOS — the IR's emitBinary
+   lays them out in that order so each shim's arg order matches the
+   interpreter's `fn (TOP_after_pop, popped)`.  */
+static Lisp_Object zeln_nth            (ptrdiff_t n, Lisp_Object *a) { return Fnth (a[0], a[1]); }
+/* Belt: Felt (sequence, index) — arg order is the REVERSE of Fnth, so it
+   needs its own shim even though both are binary.  */
+static Lisp_Object zeln_elt            (ptrdiff_t n, Lisp_Object *a) { return Felt (a[0], a[1]); }
+static Lisp_Object zeln_memq           (ptrdiff_t n, Lisp_Object *a) { return Fmemq (a[0], a[1]); }
+static Lisp_Object zeln_string_equal   (ptrdiff_t n, Lisp_Object *a) { return Fstring_equal (a[0], a[1]); }
+static Lisp_Object zeln_string_lessp   (ptrdiff_t n, Lisp_Object *a) { return Fstring_lessp (a[0], a[1]); }
+static Lisp_Object zeln_nthcdr         (ptrdiff_t n, Lisp_Object *a) { return Fnthcdr (a[0], a[1]); }
+static Lisp_Object zeln_member         (ptrdiff_t n, Lisp_Object *a) { return Fmember (a[0], a[1]); }
+static Lisp_Object zeln_assq           (ptrdiff_t n, Lisp_Object *a) { return Fassq (a[0], a[1]); }
+static Lisp_Object zeln_set            (ptrdiff_t n, Lisp_Object *a) { return Fset (a[0], a[1]); }
+static Lisp_Object zeln_fset           (ptrdiff_t n, Lisp_Object *a) { return Ffset (a[0], a[1]); }
+static Lisp_Object zeln_get            (ptrdiff_t n, Lisp_Object *a) { return Fget (a[0], a[1]); }
+static Lisp_Object zeln_quo            (ptrdiff_t n, Lisp_Object *a) { return Fquo (n, a); }
+static Lisp_Object zeln_rem            (ptrdiff_t n, Lisp_Object *a) { return Frem (a[0], a[1]); }
+static Lisp_Object zeln_setcar         (ptrdiff_t n, Lisp_Object *a) { return Fsetcar (a[0], a[1]); }
+static Lisp_Object zeln_setcdr         (ptrdiff_t n, Lisp_Object *a) { return Fsetcdr (a[0], a[1]); }
+static Lisp_Object zeln_aref           (ptrdiff_t n, Lisp_Object *a) { return Faref (a[0], a[1]); }
+static Lisp_Object zeln_skip_fwd      (ptrdiff_t n, Lisp_Object *a) { return Fskip_chars_forward (a[0], a[1]); }
+static Lisp_Object zeln_skip_back     (ptrdiff_t n, Lisp_Object *a) { return Fskip_chars_backward (a[0], a[1]); }
+static Lisp_Object zeln_buffer_substr (ptrdiff_t n, Lisp_Object *a) { return Fbuffer_substring (a[0], a[1]); }
+static Lisp_Object zeln_delete_region (ptrdiff_t n, Lisp_Object *a) { return Fdelete_region (a[0], a[1]); }
+static Lisp_Object zeln_narrow        (ptrdiff_t n, Lisp_Object *a) { return Fnarrow_to_region (a[0], a[1]); }
+
+/* Variadic / ternary primitives (DISCARD n-1; fn called on &newtop).  */
+static Lisp_Object zeln_concat        (ptrdiff_t n, Lisp_Object *a) { return Fconcat (n, a); }
+static Lisp_Object zeln_nconc         (ptrdiff_t n, Lisp_Object *a) { return Fnconc (n, a); }
+static Lisp_Object zeln_aset          (ptrdiff_t n, Lisp_Object *a) { return Faset (a[0], a[1], a[2]); }
+static Lisp_Object zeln_substring     (ptrdiff_t n, Lisp_Object *a) { return Fsubstring (a[0], a[1], a[2]); }
+static Lisp_Object zeln_set_marker    (ptrdiff_t n, Lisp_Object *a) { return Fset_marker (a[0], a[1], a[2]); }
+
+/* 0-arg PUSH primitives (PUSH fn (); net stack effect +1).  The shim
+   ignores its args; the IR passes nargs=0 and a dummy ptr.  Calling the
+   F-primitive is result-identical to the interpreter's raw-macro form
+   (e.g. Fpoint returns XSETFASTINT(PT) == make_fixed_natnum (PT)).  */
+static Lisp_Object zeln_point           (ptrdiff_t n, Lisp_Object *a) { return Fpoint (); }
+static Lisp_Object zeln_point_max       (ptrdiff_t n, Lisp_Object *a) { return Fpoint_max (); }
+static Lisp_Object zeln_point_min       (ptrdiff_t n, Lisp_Object *a) { return Fpoint_min (); }
+static Lisp_Object zeln_following_char  (ptrdiff_t n, Lisp_Object *a) { return Ffollowing_char (); }
+static Lisp_Object zeln_preceding_char  (ptrdiff_t n, Lisp_Object *a) { return Fprevious_char (); }
+static Lisp_Object zeln_current_column  (ptrdiff_t n, Lisp_Object *a) { return Fcurrent_column (); }
+static Lisp_Object zeln_eolp            (ptrdiff_t n, Lisp_Object *a) { return Feolp (); }
+static Lisp_Object zeln_eobp            (ptrdiff_t n, Lisp_Object *a) { return Feobp (); }
+static Lisp_Object zeln_bolp            (ptrdiff_t n, Lisp_Object *a) { return Fbolp (); }
+static Lisp_Object zeln_bobp            (ptrdiff_t n, Lisp_Object *a) { return Fbobp (); }
+static Lisp_Object zeln_current_buffer  (ptrdiff_t n, Lisp_Object *a) { return Fcurrent_buffer (); }
+static Lisp_Object zeln_widen           (ptrdiff_t n, Lisp_Object *a) { return Fwiden (); }
+
+/* ------------------------------------------------------------------ */
+/* specpdl-pure constructs (Tier 1 hard cases).  These do NOT transfer
+   control; they only push/pop the global C specpdl, calling the SAME C
+   helper the interpreter calls (set_internal / specbind / unbind_to /
+   record_unwind_protect_excursion / record_unwind_current_buffer /
+   save_restriction_save + record_unwind_protect / record_unwind_protect).
+   Behavioral identity holds by construction.  Balance is guaranteed by
+   bytecomp always emitting a matching Bunbind; Breturn does NOT touch
+   specpdl, so the native Breturn just returns.  The native fn's alloca
+   virtual stack means these helpers' effect is independent of where
+   `top' lives.  */
+static Lisp_Object zeln_varset  (ptrdiff_t n, Lisp_Object *a)
+{ set_internal (a[0], a[1], Qnil, SET_INTERNAL_SET); return Qnil; }
+static Lisp_Object zeln_varbind (ptrdiff_t n, Lisp_Object *a)
+{ specbind (a[0], a[1]); return Qnil; }
+/* Bunbind: the count comes in as `nargs' (the IR calls with nargs=arg).
+   Mirror bytecode.c:851 unbind_to (specpdl_ref_add (SPECPDL_INDEX (),
+   -arg), Qnil).  */
+static Lisp_Object zeln_unbind  (ptrdiff_t n, Lisp_Object *a)
+{ unbind_to (specpdl_ref_add (SPECPDL_INDEX (), -n), Qnil); return Qnil; }
+static Lisp_Object zeln_save_excursion (ptrdiff_t n, Lisp_Object *a)
+{ record_unwind_protect_excursion (); return Qnil; }
+static Lisp_Object zeln_save_current_buffer (ptrdiff_t n, Lisp_Object *a)
+{ record_unwind_current_buffer (); return Qnil; }
+static Lisp_Object zeln_save_restriction (ptrdiff_t n, Lisp_Object *a)
+{ record_unwind_protect (save_restriction_restore, save_restriction_save ()); return Qnil; }
+/* Bunwind_protect: POP handler; record_unwind_protect (bcall0|prog_ignore,
+   handler) — bytecode.c:1013-1019.  */
+static Lisp_Object zeln_unwind_protect (ptrdiff_t n, Lisp_Object *a)
+{ record_unwind_protect (FUNCTIONP (a[0]) ? zeln_bcall0 : prog_ignore, a[0]); return Qnil; }
+
+/* ------------------------------------------------------------------ */
+/* Tier 2 hard cases: catch / condition-case.  These resume via
+   setjmp/longjmp.  The PROVEN-correct native translation is exactly
+   what gccjit does (src/comp.c:2196 emit_limple_push_handler): the
+   native fn calls push_handler, then sys_setjmp (&c->jmp) DIRECTLY IN
+   THE NATIVE FN (not in this helper), and branches on the result.
+   Because longjmp lands INSIDE the native fn's own setjmp call, the
+   native stack frame and its alloca virtual stack survive (only C
+   frames above are unwound) — this is why the virtual stack MUST be
+   alloca'd in the native frame (M1 already does this), and why setjmp
+   CANNOT live in this returning helper (its frame would be gone by the
+   time a throw longjmps back).  unwind_to_catch (eval.c) has ALREADY
+   restored the specpdl (unbind_to pdlcount) and the saved globals
+   (lisp_eval_depth, ...) and set h->val BEFORE longjmp.
+
+   zeln_pushhandler (the "setup" half):
+     args[0] = tag       Lisp_Object: the catch tag / condition list
+     args[1] = type      raw i64: 0 = CATCHER, 1 = CONDITION_CASE
+     args[2] = top_slot  raw i64: &native fn's %top.slot alloca
+   Returns the address of c->jmp (a sys_jmp_buf*) as a RAW i64 (XIL, so
+   the bits pass straight through).  The native fn then calls _setjmp on
+   it (sys_setjmp == _setjmp on this glibc target, HAVE__SETJMP first).
+
+   zeln_resume (the "longjmp-caught" half, called by the native fn on the
+   _setjmp-nonzero path): pops the handler, restores *top_slot to the
+   pushtime top, and PUSHes the caught value — mirror bytecode.c:983-
+   1003.  After it returns, the native fn's handler block runs with the
+   caught value at TOS.  args[0] = top_slot (raw i64).  */
+static Lisp_Object
+zeln_pushhandler (ptrdiff_t nargs, Lisp_Object *args)
+{
+  Lisp_Object tag = args[0];
+  enum handlertype type = (XLI (args[1]) != 0) ? CONDITION_CASE : CATCHER;
+  Lisp_Object **top_slot = (Lisp_Object **) (intptr_t) XLI (args[2]);
+  struct handler *c = push_handler (tag, type);
+  c->bytecode_dest = 0;		/* sentinel: native resume, never the
+				   interpreter's dest path.  */
+  c->bytecode_top = *top_slot;	/* save current top VALUE */
+  /* Hand the jmpbuf address back as a raw i64; the native fn calls
+     _setjmp on it directly so longjmp lands in the native frame.  */
+  return XIL ((EMACS_INT) (intptr_t) &c->jmp);
+}
+
+static Lisp_Object
+zeln_resume (ptrdiff_t nargs, Lisp_Object *args)
+{
+  Lisp_Object **top_slot = (Lisp_Object **) (intptr_t) XLI (args[0]);
+  struct handler *h = handlerlist;
+  handlerlist = h->next;
+  Lisp_Object caught = h->val;
+  Lisp_Object *saved_top = h->bytecode_top;
+  *top_slot = saved_top;	/* restore top to pushtime state */
+  *++saved_top = caught;	/* PUSH caught value */
+  *top_slot = saved_top;	/* top now points past the pushed value */
+  return Qnil;
+}
+
+static Lisp_Object
+zeln_pophandler (ptrdiff_t nargs, Lisp_Object *args)
+{
+  /* bytecode.c:1009-1011: normal-exit cleanup of the handler.  */
+  handlerlist = handlerlist->next;
+  return Qnil;
+}
+
 /* The IDX_* enum: stable indices referenced by the emitter's IR
    (`getelementptr [SURFACE x ptr], %lt, 0, IDX_*').  Order is frozen:
    adding an entry appends; never reorder (the hash fingerprints the
@@ -223,6 +414,76 @@ enum {
   IDX_LISTP,
   IDX_NUMBERP,
   IDX_INTEGERP,
+  /* ---- M2 surface (appended; order frozen — the hash fingerprints the
+     ordered name list, so appending is safe but reordering is not). ---- */
+  IDX_NTH,
+  IDX_MEMQ,
+  IDX_LENGTH,
+  IDX_AREF,
+  IDX_ASET,
+  IDX_SYMBOL_VALUE,		/* Bvarref family AND Bsymbol_value */
+  IDX_SYMBOL_FUNCTION,
+  IDX_SET,
+  IDX_FSET,
+  IDX_GET,
+  IDX_SUBSTRING,
+  IDX_CONCAT,			/* Bconcat2/3/4/N */
+  IDX_STRING_EQUAL,
+  IDX_STRING_LESSP,
+  IDX_NTHCDR,
+  IDX_ELT,
+  IDX_MEMBER,
+  IDX_ASSQ,
+  IDX_NREVERSE,
+  IDX_SETCAR,
+  IDX_SETCDR,
+  IDX_CAR_SAFE,
+  IDX_CDR_SAFE,
+  IDX_NCONC,
+  IDX_QUO,
+  IDX_REM,
+  IDX_GOTO_CHAR,
+  IDX_INSERT,			/* Binsert (1-ary) AND BinsertN */
+  IDX_CHAR_AFTER,
+  IDX_INDENT_TO,
+  IDX_FORWARD_CHAR,
+  IDX_FORWARD_WORD,
+  IDX_FORWARD_LINE,
+  IDX_CHAR_SYNTAX,
+  IDX_END_OF_LINE,
+  IDX_MATCH_BEGINNING,
+  IDX_MATCH_END,
+  IDX_UPCASE,
+  IDX_DOWNCASE,
+  IDX_POINT,
+  IDX_POINT_MAX,
+  IDX_POINT_MIN,
+  IDX_FOLLOWING_CHAR,
+  IDX_PRECEDING_CHAR,
+  IDX_CURRENT_COLUMN,
+  IDX_EOLP,
+  IDX_EOBP,
+  IDX_BOLP,
+  IDX_BOBP,
+  IDX_CURRENT_BUFFER,
+  IDX_SET_BUFFER,
+  IDX_SKIP_CHARS_FORWARD,
+  IDX_SKIP_CHARS_BACKWARD,
+  IDX_BUFFER_SUBSTRING,
+  IDX_DELETE_REGION,
+  IDX_NARROW_TO_REGION,
+  IDX_WIDEN,
+  IDX_SET_MARKER,
+  IDX_VARSET,			/* Bvarset family */
+  IDX_VARBIND,			/* Bvarbind family */
+  IDX_UNBIND,			/* Bunbind family (count in nargs) */
+  IDX_SAVE_EXCURSION,
+  IDX_SAVE_CURRENT_BUFFER,
+  IDX_SAVE_RESTRICTION,
+  IDX_UNWIND_PROTECT,
+  IDX_PUSHHANDLER,		/* Bpushcatch + Bpushconditioncase (returns jmpbuf) */
+  IDX_RESUME,			/* longjmp-caught path: restore top + push val */
+  IDX_POPHANDLER,		/* Bpophandler */
   ZELN_F_RELOC_COUNT
 };
 
@@ -265,6 +526,76 @@ static const struct
   [IDX_LISTP]      = { "listp",           "1",          (void *) &zeln_listp },
   [IDX_NUMBERP]    = { "numberp",         "1",          (void *) &zeln_numberp },
   [IDX_INTEGERP]   = { "integerp",        "1",          (void *) &zeln_integerp },
+  /* ---- M2 surface (appended; arity is prin1-style like comp.c's
+     comp--subr-signature, so the ABI hash is self-consistent). ---- */
+  [IDX_NTH]              = { "nth",               "2",          (void *) &zeln_nth },
+  [IDX_MEMQ]             = { "memq",              "2",          (void *) &zeln_memq },
+  [IDX_LENGTH]           = { "length",            "1",          (void *) &zeln_length },
+  [IDX_AREF]             = { "aref",              "2",          (void *) &zeln_aref },
+  [IDX_ASET]             = { "aset",              "3",          (void *) &zeln_aset },
+  [IDX_SYMBOL_VALUE]     = { "symbol-value",      "1",          (void *) &zeln_symbol_value },
+  [IDX_SYMBOL_FUNCTION]  = { "symbol-function",   "1",          (void *) &zeln_symbol_function },
+  [IDX_SET]              = { "set",               "2",          (void *) &zeln_set },
+  [IDX_FSET]             = { "fset",              "2",          (void *) &zeln_fset },
+  [IDX_GET]              = { "get",               "2",          (void *) &zeln_get },
+  [IDX_SUBSTRING]        = { "substring",         "3",          (void *) &zeln_substring },
+  [IDX_CONCAT]           = { "concat",            "(0 . many)", (void *) &zeln_concat },
+  [IDX_STRING_EQUAL]     = { "string=",           "2",          (void *) &zeln_string_equal },
+  [IDX_STRING_LESSP]     = { "string-lessp",      "2",          (void *) &zeln_string_lessp },
+  [IDX_NTHCDR]           = { "nthcdr",            "2",          (void *) &zeln_nthcdr },
+  [IDX_ELT]              = { "elt",               "2",          (void *) &zeln_elt },
+  [IDX_MEMBER]           = { "member",            "2",          (void *) &zeln_member },
+  [IDX_ASSQ]             = { "assq",              "2",          (void *) &zeln_assq },
+  [IDX_NREVERSE]         = { "nreverse",          "1",          (void *) &zeln_nreverse },
+  [IDX_SETCAR]           = { "setcar",            "2",          (void *) &zeln_setcar },
+  [IDX_SETCDR]           = { "setcdr",            "2",          (void *) &zeln_setcdr },
+  [IDX_CAR_SAFE]         = { "car-safe",          "1",          (void *) &zeln_car_safe },
+  [IDX_CDR_SAFE]         = { "cdr-safe",          "1",          (void *) &zeln_cdr_safe },
+  [IDX_NCONC]            = { "nconc",             "(0 . many)", (void *) &zeln_nconc },
+  [IDX_QUO]              = { "/",                 "(0 . many)", (void *) &zeln_quo },
+  [IDX_REM]              = { "%",                 "2",          (void *) &zeln_rem },
+  [IDX_GOTO_CHAR]        = { "goto-char",         "1",          (void *) &zeln_goto_char },
+  [IDX_INSERT]           = { "insert",            "(0 . many)", (void *) &zeln_insert },
+  [IDX_CHAR_AFTER]       = { "char-after",        "1",          (void *) &zeln_char_after },
+  [IDX_INDENT_TO]        = { "indent-to",         "1",          (void *) &zeln_indent_to },
+  [IDX_FORWARD_CHAR]     = { "forward-char",      "1",          (void *) &zeln_forward_char },
+  [IDX_FORWARD_WORD]     = { "forward-word",      "1",          (void *) &zeln_forward_word },
+  [IDX_FORWARD_LINE]     = { "forward-line",      "1",          (void *) &zeln_forward_line },
+  [IDX_CHAR_SYNTAX]      = { "char-syntax",       "1",          (void *) &zeln_char_syntax },
+  [IDX_END_OF_LINE]      = { "end-of-line",       "1",          (void *) &zeln_end_of_line },
+  [IDX_MATCH_BEGINNING]  = { "match-beginning",   "1",          (void *) &zeln_match_beginning },
+  [IDX_MATCH_END]        = { "match-end",         "1",          (void *) &zeln_match_end },
+  [IDX_UPCASE]           = { "upcase",            "1",          (void *) &zeln_upcase },
+  [IDX_DOWNCASE]         = { "downcase",          "1",          (void *) &zeln_downcase },
+  [IDX_POINT]            = { "point",             "0",          (void *) &zeln_point },
+  [IDX_POINT_MAX]        = { "point-max",         "0",          (void *) &zeln_point_max },
+  [IDX_POINT_MIN]        = { "point-min",         "0",          (void *) &zeln_point_min },
+  [IDX_FOLLOWING_CHAR]   = { "following-char",    "0",          (void *) &zeln_following_char },
+  [IDX_PRECEDING_CHAR]   = { "previous-char",     "0",          (void *) &zeln_preceding_char },
+  [IDX_CURRENT_COLUMN]   = { "current-column",    "0",          (void *) &zeln_current_column },
+  [IDX_EOLP]             = { "eolp",              "0",          (void *) &zeln_eolp },
+  [IDX_EOBP]             = { "eobp",              "0",          (void *) &zeln_eobp },
+  [IDX_BOLP]             = { "bolp",              "0",          (void *) &zeln_bolp },
+  [IDX_BOBP]             = { "bobp",              "0",          (void *) &zeln_bobp },
+  [IDX_CURRENT_BUFFER]   = { "current-buffer",    "0",          (void *) &zeln_current_buffer },
+  [IDX_SET_BUFFER]       = { "set-buffer",        "1",          (void *) &zeln_set_buffer },
+  [IDX_SKIP_CHARS_FORWARD]  = { "skip-chars-forward",  "2",     (void *) &zeln_skip_fwd },
+  [IDX_SKIP_CHARS_BACKWARD] = { "skip-chars-backward", "2",     (void *) &zeln_skip_back },
+  [IDX_BUFFER_SUBSTRING]    = { "buffer-substring",     "2",     (void *) &zeln_buffer_substr },
+  [IDX_DELETE_REGION]       = { "delete-region",        "2",     (void *) &zeln_delete_region },
+  [IDX_NARROW_TO_REGION]    = { "narrow-to-region",     "2",     (void *) &zeln_narrow },
+  [IDX_WIDEN]               = { "widen",                "0",     (void *) &zeln_widen },
+  [IDX_SET_MARKER]          = { "set-marker",           "3",     (void *) &zeln_set_marker },
+  [IDX_VARSET]              = { "zeln-varset",          "(2 . many)", (void *) &zeln_varset },
+  [IDX_VARBIND]             = { "zeln-varbind",         "(2 . many)", (void *) &zeln_varbind },
+  [IDX_UNBIND]              = { "zeln-unbind",          "(1 . many)", (void *) &zeln_unbind },
+  [IDX_SAVE_EXCURSION]      = { "zeln-save-excursion",  "(0 . many)", (void *) &zeln_save_excursion },
+  [IDX_SAVE_CURRENT_BUFFER] = { "zeln-save-current-buffer", "(0 . many)", (void *) &zeln_save_current_buffer },
+  [IDX_SAVE_RESTRICTION]    = { "zeln-save-restriction",   "(0 . many)", (void *) &zeln_save_restriction },
+  [IDX_UNWIND_PROTECT]      = { "zeln-unwind-protect",     "(1 . many)", (void *) &zeln_unwind_protect },
+  [IDX_PUSHHANDLER]         = { "zeln-pushhandler",        "(3 . many)", (void *) &zeln_pushhandler },
+  [IDX_RESUME]              = { "zeln-resume",             "(1 . many)", (void *) &zeln_resume },
+  [IDX_POPHANDLER]          = { "zeln-pophandler",         "(0 . many)", (void *) &zeln_pophandler },
 };
 
 static void
@@ -318,7 +649,8 @@ hash_zeln_abi (void)
   Lisp_Object sig = zeln_signature_string ();
 
   /* Key = ABI_VERSION ++ version ++ config ++ config-options ++ sig,
-     mirroring comp.c:787-793.  ZELN_ABI_VERSION ("Z2" for M1) is the
+     mirroring comp.c:787-793.  ZELN_ABI_VERSION ("Z3" for M2; "Z2"
+     covered M1, "Z1" M0) is the
      ZELN-native analogue of gccjit's ABI_VERSION ("13"); it comes from
      config.h (config_values.txt + tools/gen-config), not a #define
      here, so the serializer, the gate, and the Zig tool compute it from
