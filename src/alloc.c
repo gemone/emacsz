@@ -6627,22 +6627,20 @@ process_mark_stack (ptrdiff_t base_sp)
 		break;
 
 	      case PVEC_SUBR:
-		/* Mark the subr itself unconditionally.  Static/dumped
-		   subrs are already marked and skipped by the
-		   vector_marked_p guard above, so this only runs for
-		   HEAP-allocated subrs -- notably the .zeln loader's
-		   native fns (HAVE_NATIVE_COMP_ZIG, compz.c), which are
-		   ALLOCATE_PLAIN_PSEUDOVECTOR'd on the GC heap.  Without
-		   this, such a subr reached through a symbol's function
-		   cell is traced but never marked, so GC sweep frees it
-		   while the symbol still references it -> PVEC_FREE abort
-		   on the next GC (the M2b.4 cl-print.zeln crash).  The
-		   gccjit path marks via NATIVE_COMP_FUNCTIONP below; the
-		   zeln path has no such predicate, so mark here for all. */
-		set_vector_marked (ptr);
+		/* Mark HEAP-allocated subrs (notably the .zeln loader's native
+		   fns, HAVE_NATIVE_COMP_ZIG) so GC doesn't sweep them while a
+		   symbol's function cell still references them -> use-after-free
+		   (the M2b.4 cl-print.zeln crash).  GUARD: skip static (.rodata,
+		   mem_find==MEM_NIL) and dumped (pdumper_object_p) subrs --
+		   writing their mark bit would fault (read-only) / is handled by
+		   the pdumper mark.  gccjit native subrs are marked via
+		   NATIVE_COMP_FUNCTIONP below.  */
+		if (!pdumper_object_p (ptr) && mem_find (ptr) != MEM_NIL)
+		  set_vector_marked (ptr);
 #ifdef HAVE_NATIVE_COMP
 		if (NATIVE_COMP_FUNCTIONP (obj))
 		  {
+		    set_vector_marked (ptr);
 		    struct Lisp_Subr *subr = XSUBR (obj);
 		    mark_stack_push_value (subr->intspec.native);
 		    mark_stack_push_value (subr->command_modes);
