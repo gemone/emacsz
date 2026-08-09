@@ -1283,9 +1283,21 @@ on an unserializable closure or a load error.  For internal use.  */)
     }
 
   /* Top-level blob: (progn ,@blob_forms) as read-syntax.  Empty (zero
-     forms) -> a zero-len blob (the loader skips a zero-len blob).  */
+     forms) -> a zero-len blob (the loader skips a zero-len blob).  Print
+     with the SAME relaxed bindings as the per-fn constants (print-circle so
+     shared/circular structure prints as readable #N=/#N#; print-gensym for
+     uninterned symbols; print-level/print-length unbounded).  Without
+     print-circle a shared/circular top-level form Freads back as corrupt
+     data, and Feval of that at load corrupts the heap (the M2b.3 gate #2
+     cl-print.zeln crash).  */
   Lisp_Object blob_form = Fcons (Qprogn, blob_forms);
+  specpdl_ref blob_print_punct = SPECPDL_INDEX ();
+  specbind (intern_c_string ("print-circle"), Qt);
+  specbind (intern_c_string ("print-level"), Qnil);
+  specbind (intern_c_string ("print-length"), Qnil);
+  specbind (intern_c_string ("print-gensym"), Qt);
   Lisp_Object blob_printed = Fprin1_to_string (blob_form, Qnil, Qnil);
+  unbind_to (blob_print_punct, Qnil);
   ptrdiff_t blob_len = SBYTES (blob_printed);
   if (blob_len > 0xFFFFFFFFu)
     error ("comp-z-write-file-zunit: top-level blob too large");
