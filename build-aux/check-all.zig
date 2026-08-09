@@ -154,11 +154,17 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         const rel = suite[0 .. suite.len - 3]; // strip ".el"
         const loadtarget = try std.fs.path.join(gpa, &.{ root, "test", rel });
         defer gpa.free(loadtarget);
+        // The load path is read inside an --eval'd lisp form, where a
+        // backslash starts an escape (D:\11Poj -> D:<TAB>Poj via the \11
+        // octal escape).  Forward slashes are accepted by emacs everywhere;
+        // the other paths below are raw argv / OS paths and stay as-is.
+        const loadtarget_lisp = try std.mem.replaceOwned(u8, gpa, loadtarget, "\\", "/");
+        defer gpa.free(loadtarget_lisp);
         const dirname = std.fs.path.dirname(rel) orelse ".";
         const suitedir = try std.fs.path.join(gpa, &.{ root, "test", dirname });
         defer gpa.free(suitedir);
 
-        const form = try std.fmt.allocPrint(gpa, "(progn {s} (load \"{s}\") (let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit (quote (not (or (tag :expensive-test) (tag :unstable) (tag :nativecomp)))))))", .{ preload, loadtarget });
+        const form = try std.fmt.allocPrint(gpa, "(progn {s} (load \"{s}\") (let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit (quote (not (or (tag :expensive-test) (tag :unstable) (tag :nativecomp)))))))", .{ preload, loadtarget_lisp });
         defer gpa.free(form);
         const dump_arg = try std.fmt.allocPrint(gpa, "--dump-file={s}", .{pdmp_snap});
         defer gpa.free(dump_arg);
