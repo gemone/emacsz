@@ -21,7 +21,7 @@ on:
       - 'lisp/loadup.el'
       - '.github/workflows/build-zig-native.yml'
   pull_request:
-    branches: [ master, main ]
+    branches: [ master, main, zig-build-* ]
     paths:
       - 'build.zig'
       - 'build.zig.zon'
