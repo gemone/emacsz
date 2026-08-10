@@ -74,6 +74,17 @@
 (dolist (v '(libpng-version libgif-version libjpeg-version libgnutls-version))
   (unless (boundp v) (ignore-errors (set v -1))))
 
+;; file-system-info lives in w32fns.c (GetDiskFreeSpaceEx), which
+;; console-only builds do not compile, so dired's free-space display
+;; hits void-function.  Provide a stub returning a (TOTAL FREE AVAIL)
+;; list; the real C definition overrides it on GUI builds (this only
+;; defines when fboundp is nil).
+(unless (fboundp 'file-system-info)
+  (defun file-system-info (filename)
+    "Return (TOTAL FREE AVAIL) bytes for FILENAME's file system.
+Console-only-w32 stub (no GetDiskFreeSpaceEx); returns zeros."
+    (list 0.0 0.0 0.0)))
+
 
 (defvar dynamic-library-alist)
 (defvar libpng-version)                 ; image.c #ifdef HAVE_NTGUI
