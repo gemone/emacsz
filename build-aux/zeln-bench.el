@@ -9,11 +9,15 @@
 ;;
 ;; Ratio convention: native_time / interp_time.  LOWER is better
 ;; (native is faster).  < 1.0 means the .zeln beats the interpreter.
+;; With a non-nil arg, `zeln-bench-run' also compiles each workload to
+;; an .eln (gccjit native-comp) and reports native/eln — the M3+ perf
+;; gate (zeln must beat gccjit).
 ;;
 ;; Invoked from the build root (a -Dnative-comp-zig=true emacs):
 ;;   ZELN_COMPILE=<path-to-zeln-compile> \
 ;;     ./zig-out/bin/emacs --batch -l build-aux/zeln-bench.el \
-;;     --eval '(zeln-bench-run)'
+;;     --eval '(zeln-bench-run)'          ; zeln vs interpreter
+;;     --eval '(zeln-bench-run t)'        ; + zeln vs eln (gccjit)
 ;;
 ;; The workloads use ONLY the M2 opcode subset (any out-of-subset opcode
 ;; is REJECTed by the emitter at compile time, failing the run).  They
@@ -114,8 +118,22 @@ runs."
       (let ((dt (zeln-bench--time fn args iters bind target)))
         (setq best (if (or (null best) (< dt best)) dt best))))))
 
-(defun zeln-bench-run ()
-  "Run every workload, print per-workload native/interp ratio + geomean.
+(defun zeln-bench-native-compile-eln (form)
+  "Native-compile (gccjit) the lambda FORM to an .eln subr.
+`native-compile' on a lambda FORM dispatches comp--spill-lap-function
+((form list)) in this tree (no byte-code-function method), so pass the
+raw form, not a byte-compiled closure."
+  (require 'comp)
+  (native-compile form))
+
+(defun zeln-bench-run (&optional with-eln)
+  "Run every workload; WITH-ELN non-nil also compiles .eln (gccjit) and
+reports the zeln/eln ratio (THE M3+ perf gate: lower = zeln faster).
+
+Always prints per-workload native/interp ratio + geomean.  With WITH-ELN
+it additionally prints eln/interp (gccjit reference) and native/eln
+(zeln vs gccjit), the objective metric.
+
 Exits non-zero if the tool/serialization/load fails or if any native
 result mismatches the interpreter on the spot-check inputs.  Returns
 the geomean ratio (also printed)."
@@ -127,8 +145,21 @@ the geomean ratio (also printed)."
     (setq zeln-bench-zc
           (if (and envzc (not (string= envzc "")))
               envzc
-            (car (directory-files-recursively
-                  (expand-file-name ".zig-cache") "^zeln-compile$" nil)))))
+            ;; Auto-discover: pick the NEWEST zeln-compile under .zig-cache by
+            ;; mtime.  directory-files-recursively returns traversal (not mtime)
+            ;; order, and .zig-cache accumulates stale pre-inline binaries from
+            ;; prior builds -- picking by traversal order silently measured a
+            ;; no-inline binary and reported a false baseline.  Sort newest-first
+            ;; so the just-built binary (with the current inline fast paths) wins.
+            (let* ((cands (directory-files-recursively
+                           (expand-file-name ".zig-cache") "^zeln-compile$" nil))
+                   (sorted (sort cands
+                                 (lambda (a b)
+                                   (> (float-time (file-attribute-modification-time
+                                                   (file-attributes a)))
+                                      (float-time (file-attribute-modification-time
+                                                   (file-attributes b))))))))
+              (car sorted)))))
   (unless (and zeln-bench-zc (stringp zeln-bench-zc)
                (not (string= zeln-bench-zc ""))
                (file-executable-p zeln-bench-zc))
@@ -137,10 +168,15 @@ the geomean ratio (also printed)."
   (let* ((dir (make-temp-file "zeln-bench-" t))
          (gc-cons-threshold most-positive-fixnum) ; suppress GC during timing
          (log-ration 0.0)
+         (log-eln 0.0)
+         (log-zeln-eln 0.0)
          (nwork 0)
          (failures 0))
     (unwind-protect
-        (progn
+        ;; `dolist' without a result form does NOT establish a cl-block, so
+        ;; abort via catch/throw (a cl-return-from nil would signal
+        ;; void-variable --cl-block-nil-- on the failure path).
+        (catch 'zeln-bench-abort
           (dolist (entry zeln-bench-workloads)
             (let* ((name (car entry))
                    (form (cadr entry))
@@ -150,8 +186,8 @@ the geomean ratio (also printed)."
                    (baseline (zeln-bench-byte-compile form))
                    (prefix (expand-file-name (symbol-name name) dir))
                    (zelnfile (concat prefix ".zeln"))
-                   rc native)
-              ;; Serialize + compile + load.
+                   rc native eln)
+              ;; Serialize + compile + load (.zeln).
               (comp-z-write-zunit baseline prefix)
               (setq rc (call-process zeln-bench-zc nil (list (concat prefix ".log")) nil
                                      (concat prefix ".zunit")
@@ -160,42 +196,68 @@ the geomean ratio (also printed)."
               (unless (and (numberp rc) (= rc 0))
                 (message "zeln-bench: %s zeln-compile exit %S" name rc)
                 (setq failures (1+ failures))
-                (cl-return-from nil nil))
+                (throw 'zeln-bench-abort nil))
               (setq native (comp-z-load-zeln zelnfile))
-              ;; Correctness spot-check on every input (native == interpreter).
+              ;; Optional .eln (gccjit) reference: native-compile the RAW form.
+              (when with-eln
+                (setq eln (condition-case e (zeln-bench-native-compile-eln form)
+                            (error (message "zeln-bench: %s eln compile failed: %S" name e)
+                                   (setq failures (1+ failures))
+                                   nil)))
+                (when (and eln (not (functionp eln))) (setq eln nil)))
+              ;; Correctness spot-check on every input (zeln == eln == interp).
               (dolist (in inputs)
                 (let* ((args (read in))
                        (r0 (condition-case e (apply baseline args) (error (cons 'error e))))
-                       (r1 (condition-case e (apply native args) (error (cons 'error e)))))
+                       (r1 (condition-case e (apply native args) (error (cons 'error e))))
+                       (r2 (when eln (condition-case e (apply eln args) (error (cons 'error e))))))
                   ;; fset bind for recursive resolution during spot-check.
                   (when bind (fset bind baseline)
                     (let ((rb (condition-case e (apply baseline args) (error (cons 'error e))))
                           (rn (condition-case e
                                  (progn (fset bind native) (apply native args))
-                               (error (cons 'error e)))))
-                      (setq r0 rb r1 rn)))
+                               (error (cons 'error e))))
+                          (re (when eln
+                                (condition-case e
+                                    (progn (fset bind eln) (apply eln args))
+                                  (error (cons 'error e))))))
+                      (setq r0 rb r1 rn r2 re)))
                   (unless (equal r0 r1)
-                    (message "zeln-bench MISMATCH: %s input=%S baseline=%S native=%S"
+                    (message "zeln-bench MISMATCH: %s input=%S interp=%S native=%S"
                              name args r0 r1)
+                    (setq failures (1+ failures)))
+                  (when (and eln (not (equal r0 r2)))
+                    (message "zeln-bench ELN-MISMATCH: %s input=%S interp=%S eln=%S"
+                             name args r0 r2)
                     (setq failures (1+ failures)))))
-              (when (> failures 0) (cl-return-from nil nil))
-              ;; Time both on the FIRST input.
+              (when (> failures 0) (throw 'zeln-bench-abort nil))
+              ;; Time all three on the FIRST input.
               (let* ((args (read (car inputs)))
                      (t-int (zeln-bench--best-of-3 baseline args iters bind baseline))
                      (t-nat (zeln-bench--best-of-3 native    args iters bind native))
+                     (t-eln (when eln (zeln-bench--best-of-3 eln args iters bind eln)))
                      (ration (if (> t-int 0) (/ t-nat t-int) 0.0)))
                 (setq log-ration (+ log-ration (log ration))
                       nwork (1+ nwork))
+                (when t-eln
+                  (setq log-eln (+ log-eln (log (/ t-eln t-int)))
+                        log-zeln-eln (+ log-zeln-eln (log (/ t-nat t-eln))))
+                  (message "zeln-bench: %-14s interp=%7.4fs native=%7.4fs eln=%7.4fs  native/interp=%.3f  eln/interp=%.3f  native/eln=%.3f"
+                           name t-int t-nat t-eln ration (/ t-eln t-int) (/ t-nat t-eln)))
                 (message "zeln-bench: %-14s interp=%7.4fs native=%7.4fs  native/interp=%.3f"
                          name t-int t-nat ration))))
+          ;; Summary -- still inside the catch; a throw aborts here.
           (if (> nwork 0)
               (let ((geo (exp (/ log-ration nwork))))
                 (message "zeln-bench: GEOMEAN native/interp = %.3f across %d workloads (lower=faster)"
                          geo nwork)
+                (when (and with-eln (> nwork 0))
+                  (message "zeln-bench: GEOMEAN eln/interp = %.3f (gccjit reference)" (exp (/ log-eln nwork)))
+                  (message "zeln-bench: GEOMEAN native/eln = %.3f across %d workloads (zeln vs gccjit; <1 = zeln faster)"
+                           (exp (/ log-zeln-eln nwork)) nwork))
                 geo)
             (message "zeln-bench: no workloads measured")
             (kill-emacs 1)))
       (when (and dir (file-directory-p dir))
         (delete-directory dir t)))))
-
 ;;; zeln-bench.el ends here

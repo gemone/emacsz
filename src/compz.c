@@ -607,13 +607,15 @@ zeln_freloc_check_fill (void)
 {
   if (zeln_freloc.size)
     return;
-  /* The Tier-1 .zeln fixnum-arith inline fast path (emitBinaryArith /
-     emitUnaryArith in tools/zeln-compile/src/main.zig) bakes the
-     USE_LSB_TAG fixnum representation (Lisp_Int0 low-2-bits tagging,
-     XFIXNUM = ashift by INTTYPEBITS) directly into the emitted .ll.
-     A non-LSB build would miscompute those tags, so fail loud at the
-     first .zeln load rather than misbehave.  Assert-only (no-op in a
-     non-ENABLE_CHECKING build); no ABI impact, no freloc-surface change.  */
+  /* The Tier-1 .zeln inline fast paths (emitBinaryArith / emitUnaryArith
+     for fixnum-arith, emitConsSlot for Bcar/Bcdr in
+     tools/zeln-compile/src/main.zig) bake the USE_LSB_TAG representation
+     directly into the emitted .ll: Lisp_Int0 low-2-bits tagging + XFIXNUM
+     ashift (fixnum-arith), and CONSP = (x & 7) == 3 + XCONS = x & -8 +
+     car@0/cdr@8 slot reads (cons-slot).  A non-LSB build would miscompute
+     those tags, so fail loud at the first .zeln load rather than misbehave.
+     Assert-only (no-op in a non-ENABLE_CHECKING build); no ABI impact, no
+     freloc-surface change.  */
   eassert (USE_LSB_TAG);
   eassert (ZELN_F_RELOC_COUNT <= ZELN_F_RELOC_MAX);
   for (ptrdiff_t i = 0; i < ZELN_F_RELOC_COUNT; i++)

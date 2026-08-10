@@ -156,6 +156,23 @@ const FIXNUM_SHIFT: u6 = 2; // INTTYPEBITS = GCTYPEBITS - 1 = 2
 const MOST_POSITIVE_FIXNUM: i64 = 2305843009213693951; // EMACS_INT_MAX >> 2
 const MOST_NEGATIVE_FIXNUM: i64 = -2305843009213693952; // -1 - MOST_POSITIVE_FIXNUM
 
+// ---- Tier-1 cons-slot inline fast path (M3b). ---------------------------
+// CONSP / XCONS under USE_LSB_TAG (lisp.h:492,519): Lisp_Cons = 3,
+// XTYPE(x) = x & 7 (VALMASK = -(1 << GCTYPEBITS) = -8), so CONSP(x) is
+// (x & 7) == 3 and XCONS(x) = XUNTAG = clear the low GCTYPEBITS tag bits
+// = x & -8 (conses are GCALIGNMENT = 1 << GCTYPEBITS = 8-byte aligned, so
+// the cleared bits are exactly the tag).  Valid on every Tier-1 target
+// (all 64-bit + LSB_TAG, same as the M3a fixnum inline) and bound to the
+// build by Vzeln_abi_hash; the USE_LSB_TAG assumption is asserted at .zeln
+// load (compz.c zeln_freloc_check_fill eassert(USE_LSB_TAG)).  Cons slot
+// layout is fixed by struct Lisp_Cons (lisp.h:1425): car @ 0, cdr @ 8
+// (each a Lisp_Object = EMACS_INT = i64), GCALIGNED.
+const CONSP_TAG: i64 = 3; // Lisp_Cons (USE_LSB_TAG ? 3 : 6)
+const CONSP_MASK: i64 = 7; // CONSP(x) = (x & 7) == 3  (= ~VALMASK)
+const XCONS_UNTAG_MASK: i64 = -8; // XCONS(x) = x & -8  (clear low GCTYPEBITS)
+const XCAR_OFFSET: u6 = 0; // struct Lisp_Cons u.s.car (i64 index 0)
+const XCDR_OFFSET: u6 = 1; // struct Lisp_Cons u.s.u.cdr (i64 index 1, byte 8)
+
 // M1 opcode subset (values are decimal; mirror src/bytecode.c DEFINE).
 // Any opcode NOT classified here is REJECTed at compile time (no .zeln),
 // bounding the differential test to proven fns.  M2 widens the subset.
@@ -1129,6 +1146,12 @@ const Emitter = struct {
     // @d_reloc_z_<i> (each closure has its own constants vector).
     d_reloc_global: []const u8 = "d_reloc_z",
     nconsts: u64 = 0,
+    // M3c: every fn's constant vector gets a synthesized `t' (Qt) appended
+    // at index unit.consts.len (the last slot) by emitFileLLVM, so the
+    // inline predicates / comparisons (emitUnaryPredicate,
+    // emitBinaryCompare) can load the LIVE Qt value through d_reloc — the
+    // exact pattern gccjit uses (comp.c emit_lisp_obj_reloc_lval).
+    qt_const_idx: u64 = 0,
 
     fn fresh(self: *Emitter) u32 {
         const r = self.next_reg;
@@ -1239,7 +1262,11 @@ fn emitNativeFn(
     // Point the emitter at THIS fn's d_reloc global + const count, and
     // reset the temp register counter for a clean, readable trace.
     em.d_reloc_global = d_reloc_name;
-    em.nconsts = unit.consts.len;
+    // nconsts includes the synthesized Qt slot (unit.consts.len is its
+    // index); emitFileLLVM appended `t' to the blob + sized the array +
+    // fn-table n_d_reloc consistently.
+    em.nconsts = unit.consts.len + 1;
+    em.qt_const_idx = unit.consts.len;
     em.next_reg = 1;
 
     // ---- Pass 1: decode + pre-scan branch targets / block starts. ----
@@ -1330,20 +1357,31 @@ fn emitNativeFn(
                 block_open = false;
             },
             .unary => {
-                // Tier-1 fixnum-arith inline fast path for the arithmetic
-                // unary opcodes (IDX_SUB1/ADD1/NEGATE); every other unary
-                // (car/cdr/predicates/list1/...) keeps the Tier-0 freloc call.
+                // Tier-1 inline fast paths for a subset of unary opcodes:
+                //   * IDX_SUB1/ADD1/NEGATE -> fixnum-arith inline (M3a).
+                //   * IDX_CAR/CDR          -> cons-slot inline (M3b).
+                //   * IDX_CONSP/NULL       -> full inline type test (M3c).
+                // Every other unary (predicates/list1/car-safe/cdr-safe/...)
+                // keeps the Tier-0 freloc call.
                 if (ins.idx == IDX_SUB1 or ins.idx == IDX_ADD1 or ins.idx == IDX_NEGATE)
                     try emitUnaryArith(em, ins.idx, ins.start)
+                else if (ins.idx == IDX_CAR or ins.idx == IDX_CDR)
+                    try emitConsSlot(em, ins.idx, ins.start)
+                else if (ins.idx == IDX_CONSP or ins.idx == IDX_NULL)
+                    try emitUnaryPredicate(em, ins.idx)
                 else
                     try emitUnary(em, ins.idx);
             },
             .binary => {
-                // Tier-1 fixnum-arith inline fast path for the arithmetic
-                // binary opcodes (IDX_PLUS/MINUS/TIMES); every other binary
-                // (comparisons/cons/list2/eql/...) keeps the Tier-0 freloc call.
+                // Tier-1 fixnum inline fast paths for the arithmetic binary
+                // opcodes (IDX_PLUS/MINUS/TIMES) and the comparisons
+                // (IDX_EQLSIGN/GTR/LSS/LEQ/GEQ, M3c); every other binary
+                // (cons/list2/eql/...) keeps the Tier-0 freloc call.
                 if (ins.idx == IDX_PLUS or ins.idx == IDX_MINUS or ins.idx == IDX_TIMES)
                     try emitBinaryArith(em, ins.idx, ins.start)
+                else if (ins.idx == IDX_EQLSIGN or ins.idx == IDX_GTR or ins.idx == IDX_LSS
+                    or ins.idx == IDX_LEQ or ins.idx == IDX_GEQ)
+                    try emitBinaryCompare(em, ins.idx, ins.start)
                 else
                     try emitBinary(em, ins.idx);
             },
@@ -1418,7 +1456,12 @@ fn emitFileLLVM(
     try em.wf("@freloc_hash_z_data = internal constant [9 x i8] c\"{s}\"\n\n", .{hash_lit.items});
 
     // Per-fn globals: d_reloc slot array + d_reloc read-syntax blob +
-    // the NUL-terminated defun symbol name.
+    // the NUL-terminated defun symbol name.  EVERY fn gets a synthesized
+    // trailing `t' constant (the Qt slot, index unit.consts.len) so the
+    // M3c inline predicates/comparisons can load the LIVE Qt through
+    // d_reloc (gccjit's pattern: emit_lisp_obj_reloc_lval).  The loader
+    // Freads the blob and checks its length against n_d_reloc, so the
+    // array size, blob, and fn-table n_d_reloc must all count N+1.
     for (fns, 0..) |unit, i| {
         var blob: std.ArrayList(u8) = .empty;
         defer blob.deinit(gpa);
@@ -1427,12 +1470,13 @@ fn emitFileLLVM(
             if (j > 0) try blob.append(gpa, ' ');
             try blob.appendSlice(gpa, c);
         }
+        try blob.appendSlice(gpa, " t");
         try blob.append(gpa, ']');
         const blob_bytes = blob.items;
         var blob_lit: std.ArrayList(u8) = .empty;
         defer blob_lit.deinit(gpa);
         try appendCStringLiteral(gpa, &blob_lit, blob_bytes);
-        try em.wf("@d_reloc_z_{d} = internal global [{d} x i64] zeroinitializer\n", .{ i, unit.consts.len });
+        try em.wf("@d_reloc_z_{d} = internal global [{d} x i64] zeroinitializer\n", .{ i, unit.consts.len + 1 });
         try em.wf("@d_reloc_blob_{d} = internal constant {{ i64, [{d} x i8] }} {{ i64 {d}, [{d} x i8] c\"{s}\" }}\n", .{ i, blob_bytes.len, blob_bytes.len, blob_bytes.len, blob_lit.items });
 
         var name_lit: std.ArrayList(u8) = .empty;
@@ -1451,7 +1495,7 @@ fn emitFileLLVM(
         // Each array element needs an explicit struct-type prefix (LLVM
         // rejects a bare struct value as an array element).
         try em.wf("  {{ ptr, i64, ptr, ptr, i64, ptr }} {{ ptr @zeln_fn_{d}, i64 {d}, ptr @sym_name_{d}, ptr @d_reloc_z_{d}, i64 {d}, ptr @d_reloc_blob_{d} }}{s}\n", .{
-            i,         unit.args_template, i,                 i,                unit.consts.len, i,
+            i, unit.args_template, i, i, unit.consts.len + 1, i,
             if (i + 1 < fns.len) "," else "",
         });
     }
@@ -1773,6 +1817,215 @@ fn emitUnaryArith(em: *Emitter, idx: u64, start: u32) !void {
     try em.wif("br label %bb_adone_{d}\n", .{start});
 
     try em.wf("bb_adone_{d}:\n", .{start});
+}
+
+// ---- Tier-1 cons-slot inline fast path (M3b). ---------------------------
+// For Bcar/Bcdr (IDX_CAR/IDX_CDR), emit the inline CONSP-guarded XCAR/XCDR
+// read mirroring the interpreter's own Bcar/Bcdr fast path (bytecode.c:658,
+// 682: `if (CONSP (TOP)) TOP = XCAR (TOP)`), falling back to the EXACT
+// freloc shim call the Tier-0 emitter makes (zeln_car -> Fcar -> CAR,
+// zeln_cdr -> Fcdr -> CDR) for nil or any non-cons.  This removes, for the
+// common cons case, BOTH the 3-instruction freloc indirection AND the full
+// Fcar/Fcdr type-dispatch body, replacing it with a mask test + slot load.
+//
+// Identity holds by construction (gate #2 + zeln-diff enforce it):
+//   * Inline path is taken ONLY when CONSP(v) is true, producing XCAR/XCDR
+//     (v) == CAR/CDR (v) == Fcar/Fcdr (v) for every cons (data.c:659,677;
+//     lisp.h:1521,1530: CAR/CDR return XCAR/XCDR for conses).  This is the
+//     exact same value the interpreter's Bcar/Bcdr stores in the same case.
+//   * Fallback path is the byte-identical freloc shim call, taken for nil
+//     (Fcar(nil) = CAR(nil) = Qnil, matching the interpreter's fall-through)
+//     and for non-list non-nil (Fcar -> CAR -> wrong_type_argument(Qlistp),
+//     matching the interpreter's else-branch).  So inline+fallback == the
+//     current freloc shim == the interpreter, for all inputs.
+//   * The USE_LSB_TAG + cons-layout assumptions are the same ones M3a's
+//     fixnum inline makes and are asserted at .zeln load; the freloc
+//     surface, IDX order, and .zeln layout are UNCHANGED (no ABI bump).
+// -------------------------------------------------------------------------
+// Labels keyed on START (the opcode's byte offset, unique within a fn):
+// bb_csl_<s> (cons-slot inline), bb_cfr_<s> (fallback), bb_cdone_<s> (merge).
+fn emitConsSlot(em: *Emitter, idx: u64, start: u32) !void {
+    const t = try em.loadTop();
+    const v = em.fresh();
+    try em.wif("%{d} = load i64, ptr %{d}\n", .{ v, t }); // TOP (pristine for fallback)
+    // CONSP(v) = (v & 7) == 3 (USE_LSB_TAG: Lisp_Cons = 3, ~VALMASK = 7).
+    const m = em.fresh();
+    try em.wif("%{d} = and i64 %{d}, {d}\n", .{ m, v, CONSP_MASK });
+    const consp = em.fresh();
+    try em.wif("%{d} = icmp eq i64 %{d}, {d}\n", .{ consp, m, CONSP_TAG });
+    try em.wif("br i1 %{d}, label %bb_csl_{d}, label %bb_cfr_{d}\n", .{ consp, start, start });
+
+    // Inline cons-slot block: XCONS(v) = v & -8 (clear the low tag bits);
+    // then load the car (offset 0) or cdr (offset 8, i64 index 1) slot.
+    try em.wf("bb_csl_{d}:\n", .{start});
+    const cptr_int = em.fresh();
+    try em.wif("%{d} = and i64 %{d}, {d}\n", .{ cptr_int, v, XCONS_UNTAG_MASK });
+    const cptr = em.fresh();
+    try em.wif("%{d} = inttoptr i64 %{d} to ptr\n", .{ cptr, cptr_int });
+    const slot_idx: u6 = if (idx == IDX_CAR) XCAR_OFFSET else XCDR_OFFSET;
+    const slot = em.fresh();
+    try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 {d}\n", .{ slot, cptr, slot_idx });
+    const res = em.fresh();
+    try em.wif("%{d} = load i64, ptr %{d}\n", .{ res, slot });
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ res, t });
+    try em.wif("br label %bb_cdone_{d}\n", .{start});
+
+    // Fallback: byte-identical freloc shim call (zeln_car -> Fcar etc.) the
+    // Tier-0 emitter makes — t[0] = v is still pristine.
+    try em.wf("bb_cfr_{d}:\n", .{start});
+    const r = try em.frelocCallI64(idx, 1, t);
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ r, t });
+    try em.wif("br label %bb_cdone_{d}\n", .{start});
+
+    // Merge: result is at t[0] either way; next instruction attaches here.
+    try em.wf("bb_cdone_{d}:\n", .{start});
+}
+
+// ---- Tier-1 inline predicates (M3c). ------------------------------------
+// For Bconsp/Bnot (IDX_CONSP/IDX_NULL), emit the FULL inline type test +
+// Qt/Qnil select, mirroring the interpreter's own fast paths
+// (bytecode.c:1071 `TOP = CONSP (TOP) ? Qt : Qnil`, 1083 `TOP = NILP
+// (TOP) ? Qt : Qnil`).  CONSP/NILP are total pure tests (no type errors,
+// no side effects, defined for EVERY Lisp_Object), so the inline IS the
+// complete semantics — no fallback is needed and none exists.  Identity
+// holds by construction:
+//   * CONSP(v) = (v & 7) == 3 under USE_LSB_TAG (lisp.h:492,519; same
+//     assumption as the M3b cons-slot inline, asserted at .zeln load).
+//     Fconsp (data.c) = CONSP (x) ? Qt : Qnil — identical.
+//   * NILP(v) = BASE_EQ(v, Qnil) = (v == 0) under USE_LSB_TAG
+//     (lisp.h:374 lisp_h_Qnil 0; lisp.h:397 lisp_h_NILP BASE_EQ).
+//     Fnull (data.c) = NILP (x) ? Qt : Qnil — identical.
+//   * Qt is loaded from the fn's d_reloc synthesized-`t' slot
+//     (em.qt_const_idx) — the live value, same mechanism gccjit uses for
+//     its Qt relocs.  Qnil = 0 is baked directly.
+// The freloc surface, IDX order, and .zeln layout are UNCHANGED (no ABI
+// bump); the freloc shim call this replaces is simply never emitted.
+fn emitUnaryPredicate(em: *Emitter, idx: u64) !void {
+    const t = try em.loadTop();
+    const v = em.fresh();
+    try em.wif("%{d} = load i64, ptr %{d}\n", .{ v, t }); // TOP
+    const pred: u32 = if (idx == IDX_CONSP) blk: {
+        const m = em.fresh();
+        try em.wif("%{d} = and i64 %{d}, {d}\n", .{ m, v, CONSP_MASK });
+        const p = em.fresh();
+        try em.wif("%{d} = icmp eq i64 %{d}, {d}\n", .{ p, m, CONSP_TAG });
+        break :blk p;
+    } else blk: {
+        // IDX_NULL: NILP(v) = (v == 0) (Qnil = 0 under USE_LSB_TAG).
+        const p = em.fresh();
+        try em.wif("%{d} = icmp eq i64 %{d}, 0\n", .{ p, v });
+        break :blk p;
+    };
+    // pred ? Qt : Qnil at t[0] (Qt = d_reloc[qt_const_idx], Qnil = 0).
+    const qt = try em.loadConst(em.qt_const_idx);
+    const res = em.fresh();
+    try em.wif("%{d} = select i1 %{d}, i64 %{d}, i64 0\n", .{ res, pred, qt });
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ res, t });
+}
+
+// ---- Tier-1 fixnum-comparison inline fast path (M3c). -------------------
+// For Bgtr/Blss/Bleq/Bgeq/Beqlsign (IDX_GTR/LSS/LEQ/GEQ/EQLSIGN), emit
+// the inline FIXNUMP-guarded signed compare, falling back to the EXACT
+// freloc shim call the Tier-0 emitter makes (zeln_gtr->Fgtr etc.) when
+// either operand is a non-fixnum (float/bignum/marker).  This mirrors
+// BOTH the interpreter's own fast path (bytecode.c:1256-1310: `if
+// (FIXNUMP (v1) && FIXNUMP (v2)) TOP = XFIXNUM (v1) OP XFIXNUM (v2) ?
+// Qt : Qnil`) AND arithcompare's fixnum-fixnum branch (data.c:2786-2790:
+// i1 OP i2, with coerce_marker excluded because markers are never
+// FIXNUMP).  For the common all-fixnum case it removes BOTH the 3-
+// instruction freloc indirection AND the full Fgtr/Flss/arithcompare
+// type-dispatch body, replacing them with a mask test + signed icmp +
+// select.
+//
+// Identity holds by construction (gate #2 + zeln-diff enforce it):
+//   * Inline path is taken ONLY when FIXNUMP(v1) && FIXNUMP(v2), producing
+//     exactly arithcompare's fixnum-fixnum result for the op:
+//       Bgtr  (Cmp_GT)             -> i1 >  i2
+//       Blss  (Cmp_LT)             -> i1 <  i2
+//       Bleq  (Cmp_LT|Cmp_EQ)      -> i1 <= i2
+//       Bgeq  (Cmp_GT|Cmp_EQ)      -> i1 >= i2
+//       Beqlsign (Cmp_EQ)          -> i1 == i2
+//     == the interpreter's own inline result for the same case.
+//   * Fallback path is the byte-identical freloc shim call, taken for
+//     any non-fixnum operand (floats/bignums/markers go through
+//     coerce_marker + full arithcompare — unchanged).  So inline+fallback
+//     == the current freloc shim == the interpreter, for all inputs.
+//   * USE_LSB_TAG assumptions are the same ones M3a makes and are
+//     asserted at .zeln load; the freloc surface, IDX order, and .zeln
+//     layout are UNCHANGED (no ABI bump).
+// -------------------------------------------------------------------------
+// Labels keyed on START (the opcode's byte offset, unique within a fn):
+// bb_cmp_<s> (compare), bb_cfc_<s> (fallback), bb_cdn_<s> (merge).
+fn emitBinaryCompare(em: *Emitter, idx: u64, start: u32) !void {
+    // POP prefix — byte-identical to emitBinary/emitBinaryArith.
+    const t = try em.loadTop();
+    const np = em.fresh();
+    try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 -1\n", .{ np, t });
+    try em.storeTop(np);
+    // Load v1 = np[0], v2 = np[1] (both pristine for the fallback call).
+    const v1 = em.fresh();
+    try em.wif("%{d} = load i64, ptr %{d}\n", .{ v1, np });
+    const v2slot = em.fresh();
+    try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 1\n", .{ v2slot, np });
+    const v2 = em.fresh();
+    try em.wif("%{d} = load i64, ptr %{d}\n", .{ v2, v2slot });
+    // FIXNUMP(v) = (v & 3) == 2 (USE_LSB_TAG: Lisp_Int0 low 2 bits).
+    const m1 = em.fresh();
+    try em.wif("%{d} = and i64 %{d}, {d}\n", .{ m1, v1, FIXNUM_LSB_MASK });
+    const f1 = em.fresh();
+    try em.wif("%{d} = icmp eq i64 %{d}, {d}\n", .{ f1, m1, FIXNUM_LSB_TAG });
+    const m2 = em.fresh();
+    try em.wif("%{d} = and i64 %{d}, {d}\n", .{ m2, v2, FIXNUM_LSB_MASK });
+    const f2 = em.fresh();
+    try em.wif("%{d} = icmp eq i64 %{d}, {d}\n", .{ f2, m2, FIXNUM_LSB_TAG });
+    const bothfix = em.fresh();
+    try em.wif("%{d} = and i1 %{d}, %{d}\n", .{ bothfix, f1, f2 });
+    // both-fixnum -> inline compare; else -> fallback (freloc call).
+    try em.wif("br i1 %{d}, label %bb_cmp_{d}, label %bb_cfc_{d}\n", .{ bothfix, start, start });
+
+    // Inline compare block: decode operands, signed-compare, Qt/Qnil select.
+    try em.wf("bb_cmp_{d}:\n", .{start});
+    const a1 = em.fresh();
+    try em.wif("%{d} = ashr i64 %{d}, {d}\n", .{ a1, v1, FIXNUM_SHIFT });
+    const a2 = em.fresh();
+    try em.wif("%{d} = ashr i64 %{d}, {d}\n", .{ a2, v2, FIXNUM_SHIFT });
+    const cc: u32 = if (idx == IDX_GTR) blk: {
+        const c = em.fresh();
+        try em.wif("%{d} = icmp sgt i64 %{d}, %{d}\n", .{ c, a1, a2 });
+        break :blk c;
+    } else if (idx == IDX_LSS) blk: {
+        const c = em.fresh();
+        try em.wif("%{d} = icmp slt i64 %{d}, %{d}\n", .{ c, a1, a2 });
+        break :blk c;
+    } else if (idx == IDX_LEQ) blk: {
+        const c = em.fresh();
+        try em.wif("%{d} = icmp sle i64 %{d}, %{d}\n", .{ c, a1, a2 });
+        break :blk c;
+    } else if (idx == IDX_GEQ) blk: {
+        const c = em.fresh();
+        try em.wif("%{d} = icmp sge i64 %{d}, %{d}\n", .{ c, a1, a2 });
+        break :blk c;
+    } else blk: {
+        // IDX_EQLSIGN: i1 == i2 (BASE_EQ on two fixnums).
+        const c = em.fresh();
+        try em.wif("%{d} = icmp eq i64 %{d}, %{d}\n", .{ c, a1, a2 });
+        break :blk c;
+    };
+    const qt = try em.loadConst(em.qt_const_idx);
+    const res = em.fresh();
+    try em.wif("%{d} = select i1 %{d}, i64 %{d}, i64 0\n", .{ res, cc, qt });
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ res, np });
+    try em.wif("br label %bb_cdn_{d}\n", .{start});
+
+    // Fallback: byte-identical freloc shim call (zeln_gtr->Fgtr etc.) —
+    // np[0]=v1, np[1]=v2 are still pristine.
+    try em.wf("bb_cfc_{d}:\n", .{start});
+    const r = try em.frelocCallI64(idx, 2, np);
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ r, np });
+    try em.wif("br label %bb_cdn_{d}\n", .{start});
+
+    // Merge: result is at np[0] either way; next instruction attaches here.
+    try em.wf("bb_cdn_{d}:\n", .{start});
 }
 
 // Emit FIXNUM_OVERFLOW_P(res) = (res > MOST_POS) || (res < MOST_NEG) as an
