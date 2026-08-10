@@ -287,6 +287,11 @@ const windows_overrides: []const Override = &.{
     // Windows path-list separator is ';' (the Linux ':' would split
     // every drive letter off "D:/..." paths during startup).
     .{ .name = "SEPCHAR", .value = "';'" },
+    // Windows has no /dev/null; its null device is NUL.  The committed
+    // Linux value ("/dev/null") made every subprocess's null stdin/stdout
+    // (call-process, make-process, ...) fail to open with "No such file or
+    // directory", breaking dired's grep/find-based tests (17 failures).
+    .{ .name = "NULL_DEVICE", .value = "\"NUL\"" },
 };
 
 pub fn main(minimal: std.process.Init.Minimal) !void {
