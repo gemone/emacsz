@@ -333,9 +333,36 @@ comparator.
 
 ---
 
-## 11. Open Issue — Gate #2 cl-print.zeln Heap Corruption (M2b.3)
+## 11. Gate #2 — RESOLVED ✅ (M2b.4 + M3a–M3e)
 
-The sole remaining blocker for M2b acceptance.
+**Gate #2 is GREEN**: 582 built-in ert tests run via `.zeln`, 0 unexpected.
+The `cl-print.zeln` heap-corruption crash was the session's defining chase
+(M2b.1→M2b.4, 6+ hypotheses, extensive gdb). **Root cause (finally pinned):**
+the `.zeln` loader allocates native subrs on the GC heap
+(`ALLOCATE_PLAIN_PSEUDOVECTOR`), but GC's `PVEC_SUBR` case only marked gccjit
+native subrs → the `.zeln` native subrs were traced-but-unmarked → GC swept
+them while symbols still referenced them → use-after-free → crash. **Fix
+(`deca709247f`):** mark heap subrs in `PVEC_SUBR`, guarded by
+`!pdumper_object_p(ptr) && mem_find(ptr) != MEM_NIL` (skip static `.rodata` +
+dumped subrs → no read-only write → gate #3 stays green).
+
+### M3 Performance (Tier-1 inline specialization) — SURPASSES gccjit
+
+The Tier-0 emitter already beat the interpreter (~1.9× at baseline, because
+the unfolded IR eliminates per-opcode dispatch + `-O2 mem2reg` promotes
+`%top.slot` to SSA). M3a–M3e added inline fast paths:
+
+| Milestone | Specialization | Result |
+|---|---|---|
+| M3a | fixnum arith inline (Bplus/Bdiff/Bmult + sub1/add1/negate) | 0.54→0.41× interp |
+| M3b+M3c | cons/car/cdr slot + comparisons/predicates inline | 0.41→0.27× interp, **0.66× eln** |
+| M3d | NILP inline in conditional branches | further |
+| M3e | fixed-arity prologue arg-copy inline | further |
+
+**Final perf**: geomean native/interp **0.265×** (3.77× faster than the
+interpreter); geomean native/eln **0.662×** (1.51× faster than gccjit `.eln`);
+**every one of the 10 benchmark workloads beats gccjit individually**.
+Behavioral identity preserved throughout (gate #2 582/582 + zeln-diff 37/37).
 
 **Symptom:** `check-zeln` SIGSEGV/SIGABRT during GC. `cl-print.zeln`'s
 load-time top-level writes a **pure-garbage** `Lisp_Object`
