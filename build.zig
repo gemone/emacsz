@@ -2244,6 +2244,7 @@ pub fn build(b: *std.Build) void {
     run_check_all.setCwd(b.path("."));
     run_check_all.step.dependOn(&run_smoke.step);
     run_check_all.step.dependOn(&run_loaddefs_final.step);
+    run_check_all.step.dependOn(&gen_cedet.step); // cedet suites require the generated wisent grammars (srecode/srt-wy.el, ...)
     const check_all_step = b.step("check-all", "Run ALL ert suites (no skip; per-suite isolation + timeout) and classify failures");
     check_all_step.dependOn(&run_check_all.step);
 
