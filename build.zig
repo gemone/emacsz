@@ -2666,6 +2666,10 @@ pub fn build(b: *std.Build) void {
 
         // Step 2: run zeln-compile over the zunit -> .ll -> .zeln.
         const spike_compile = b.addRunArtifact(zeln_compile_tool);
+        // The zeln-compile child spawns `zig cc`; pass the build's own zig
+        // executable explicitly (absolute path) so the child never depends
+        // on PATH lookup (which CI runners can lose in the child chain).
+        spike_compile.setEnvironmentVariable("ZELN_ZIG_CC", b.graph.zig_exe);
         spike_compile.setCwd(b.path("."));
         spike_compile.addArg("zig-out/bin/zeln-spike.zunit");
         spike_compile.addArg("zig-out/bin/zeln-spike.manifest");
@@ -2741,6 +2745,7 @@ pub fn build(b: *std.Build) void {
             const manifest_arg = std.fmt.allocPrint(b.allocator, "{s}/{s}.manifest", .{ diff_dir, name }) catch unreachable;
             const zeln_arg = std.fmt.allocPrint(b.allocator, "{s}/{s}.zeln", .{ diff_dir, name }) catch unreachable;
             const dc = b.addRunArtifact(zeln_compile_tool);
+            dc.setEnvironmentVariable("ZELN_ZIG_CC", b.graph.zig_exe);
             dc.setCwd(b.path("."));
             dc.addArg(zunit_arg);
             dc.addArg(manifest_arg);
@@ -2774,6 +2779,9 @@ pub fn build(b: *std.Build) void {
             }),
         });
         const run_populate = b.addRunArtifact(populate_tool);
+        // The populate driver spawns zeln-compile itself, which spawns
+        // `zig cc`; the explicit zig path propagates through env.inherit.
+        run_populate.setEnvironmentVariable("ZELN_ZIG_CC", b.graph.zig_exe);
         run_populate.setCwd(b.path("."));
         // Pass the built zeln-compile exe as a file arg (tracked dep) so the
         // driver can spawn one zeln-compile per zunit.

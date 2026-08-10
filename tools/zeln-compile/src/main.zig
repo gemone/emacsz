@@ -402,9 +402,16 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // <fn>.ll -o <name>.zeln`. -fvisibility=default ensures `zeln_entry`
     // is exported in the .so's dynamic symbol table so the loader's dlsym
     // finds it.  The link driver is identical for the M0 spike and M1.
+    // Spawn `zig cc` with an EXPLICIT zig executable path when the caller
+    // provides one.  argv[0] resolution for a bare "zig" uses the PARENT
+    // environment's PATH (std.process.ReplaceOptions: "resolved ... based on
+    // every zeln-compile invocation, so the child never needs PATH lookup.
+    const zig_cc = env_map.get("ZELN_ZIG_CC");
+
     const cc_argv = [_][]const u8{
-        "zig",       "cc",          "-shared",   "-fPIC",
-        "-O2",       "-fvisibility=default", ll_path, "-o",
+        if (zig_cc) |z| z else "zig",
+        "cc",       "-shared",  "-fPIC",
+        "-O2",      "-fvisibility=default", ll_path, "-o",
         out_zeln_path,
     };
     const res = std.process.run(gpa, io, .{
