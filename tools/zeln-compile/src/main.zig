@@ -2080,18 +2080,27 @@ fn emitCall(em: *Emitter, nargs: u32) !void {
 
 const CondSense = enum { eq_nil, eq_nonnil };
 
-// Bgotoifnil / Bgotoifnonnil: POP v1; test via zeln_isnil (returns raw 0/1);
-// branch.  The POP is unconditional (interpreter pops regardless).
+// Bgotoifnil / Bgotoifnonnil: POP v1; test NILP inline; branch.  The POP
+// is unconditional (interpreter pops regardless).
+//
+// NILP(v) is inlined as `v == 0`: under USE_LSB_TAG, Qnil = 0
+// (lisp.h:374 lisp_h_Qnil 0; lisp.h:397 lisp_h_NILP BASE_EQ(x, Qnil)),
+// so the C shim zeln_isnil (compz.c:150, `return NILP (args[0]) ? 1 :
+// 0`) is EXACTLY `v == 0`.  NILP is a total pure test, so this is a FULL
+// inline (no fallback, no freloc indirection) replacing a 3-instruction
+// freloc call + shim body on every conditional branch.  Identity holds
+// by construction: the branch condition is bit-identical to the shim's.
 fn emitCondPop(em: *Emitter, target: u32, fall_off: u32, sense: CondSense) !void {
     const t = try em.loadTop();
     const np = em.fresh();
     try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 -1\n", .{ np, t }); // POP
     try em.storeTop(np);
-    const r = try em.frelocCallI64(IDX_NILP, 1, t); // test popped v1 (still at t[0])
+    const v = em.fresh();
+    try em.wif("%{d} = load i64, ptr %{d}\n", .{ v, t }); // popped v1 (still at t[0])
     const cond = em.fresh();
     switch (sense) {
-        .eq_nil => try em.wif("%{d} = icmp eq i64 %{d}, 1\n", .{ cond, r }), // 1 = nil
-        .eq_nonnil => try em.wif("%{d} = icmp eq i64 %{d}, 0\n", .{ cond, r }), // 0 = nonnil
+        .eq_nil => try em.wif("%{d} = icmp eq i64 %{d}, 0\n", .{ cond, v }), // 1 = nil
+        .eq_nonnil => try em.wif("%{d} = icmp ne i64 %{d}, 0\n", .{ cond, v }), // 0 = nonnil
     }
     try em.wif("br i1 %{d}, label %bb_{d}, label %bb_{d}\n", .{ cond, target, fall_off });
 }
@@ -2101,11 +2110,12 @@ fn emitCondPop(em: *Emitter, target: u32, fall_off: u32, sense: CondSense) !void
 // discard happens only on the not-taken path, so it lands in its own block.
 fn emitCondElsePop(em: *Emitter, start: u32, target: u32, fall_off: u32, sense: CondSense) !void {
     const t = try em.loadTop();
-    const r = try em.frelocCallI64(IDX_NILP, 1, t); // test TOP in place
+    const v = em.fresh();
+    try em.wif("%{d} = load i64, ptr %{d}\n", .{ v, t }); // test TOP in place
     const cond = em.fresh();
     switch (sense) {
-        .eq_nil => try em.wif("%{d} = icmp eq i64 %{d}, 1\n", .{ cond, r }),
-        .eq_nonnil => try em.wif("%{d} = icmp eq i64 %{d}, 0\n", .{ cond, r }),
+        .eq_nil => try em.wif("%{d} = icmp eq i64 %{d}, 0\n", .{ cond, v }),
+        .eq_nonnil => try em.wif("%{d} = icmp ne i64 %{d}, 0\n", .{ cond, v }),
     }
     try em.wif("br i1 %{d}, label %bb_{d}, label %bb_fall_{d}\n", .{ cond, target, start });
     // Not-taken fallthrough block: discard TOS, then continue.
