@@ -102,7 +102,9 @@ jobs:
         run: zig build
 
       - name: Built-in ert tests
-        timeout-minutes: 45
+        # Cold runs (no cache restore) need the full dump chain + the 582
+        # suite; allow up to 90 minutes.
+        timeout-minutes: 90
         run: zig build check
 
   # .zeln native-comp gate: verify the HAVE_NATIVE_COMP_ZIG path end-to-end.
@@ -159,11 +161,15 @@ jobs:
             zigbuild-zeln-
             zigbuild-Linux-native-
 
+      # Gate #2: 582-via-.zeln.  The populate now also byte-compiles + zeln-
+      # compiles the whole test tree, and a COLD run (no cache restore)
+      # needs the full dump chain on top, so allow up to 90 minutes.
       - name: Gate #2 (582-via-.zeln)
-        timeout-minutes: 45
+        timeout-minutes: 90
         run: zig build -Dnative-comp-zig=true populate-zeln-cache check-zeln
 
       - name: Gate #4 (zeln-diff 37/37)
+        timeout-minutes: 30
         run: zig build -Dnative-comp-zig=true zeln-diff
 
   # Module validation gate: full dynamic-module validation on the Zig module
