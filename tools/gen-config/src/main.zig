@@ -191,6 +191,15 @@ const windows_overrides: []const Override = &.{
     .{ .name = "HAVE_DBUS" },
     .{ .name = "WINDOWSNT", .value = "1" },
     .{ .name = "DOS_NT", .value = "1" },
+    // system-type drives every Lisp platform branch (files.el, dired,
+    // ls-lisp, ...).  Without this the committed "gnu/linux" leaks into
+    // the Windows image, so emacs believes it is on Linux and no
+    // windows-nt code path runs -- e.g. ls-lisp then defaults to the
+    // external `ls` (absent without msys2) and dired cannot list a dir.
+    // (Console-only builds also need term/w32-nt.el to default the w32
+    // GUI/image version vars that w32fns.c et al. define only under
+    // HAVE_NTGUI.)
+    .{ .name = "SYSTEM_TYPE", .value = "\"windows-nt\"" },
     .{ .name = "HAVE_BCRYPT_H", .value = "1" },
     .{ .name = "HAVE_LIB_BCRYPT", .value = "1" },
     .{ .name = "USE_UNLOCKED_IO" },

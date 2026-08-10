@@ -30,6 +30,50 @@
 
 (eval-when-compile (require 'cl-lib))
 
+;; Console-only w32 builds (no HAVE_NTGUI) do not compile the w32 GUI C
+;; files (w32fns.c and friends), and a build without PNG/GIF/JPEG/GNUTLS
+;; does not initialize the image/gnutls version variables, so the symbols
+;; below are void here.  loadup loads this file (term/w32-nt, the console
+;; w32 terminal) before w32-fns and cus-start, which reference them, so
+;; bind the still-unbound ones to safe defaults now.  On a GUI build they
+;; are already bound and this is a no-op.
+(dolist (v '(w32-ansi-code-page w32-mouse-button-tolerance
+             w32-mouse-move-interval w32-multibyte-code-page
+             w32-num-mouse-buttons w32-pipe-buffer-size
+             w32-pipe-read-delay w32-quit-key))
+  (unless (boundp v) (ignore-errors (set v 0))))
+(dolist (v '(next-selection-coding-system selection-coding-system
+             w32--terminal-is-conhost w32-add-wrapped-menu-bar-lines
+             w32-alt-is-meta w32-apps-modifier w32-capslock-is-shiftlock
+             w32-charset-info-alist w32-collate-ignore-punctuation
+             w32-color-map w32-disable-abort-dialog
+             w32-disable-double-buffering w32-disable-new-uniscribe-apis
+             w32-downcase-file-names w32-enable-caps-lock w32-enable-num-lock
+             w32-enable-palette w32-enable-synthesized-fonts
+             w32-follow-system-dark-mode w32-generate-fake-inodes
+             w32-get-true-file-attributes w32-grab-focus-on-raise
+             w32-ignore-modifiers-on-IME-input w32-inhibit-dwrite
+             w32-lwindow-modifier w32-pass-alt-to-system
+             w32-pass-extra-mouse-buttons-to-system w32-pass-lwindow-to-system
+             w32-pass-multimedia-buttons-to-system w32-pass-rwindow-to-system
+             w32-phantom-key-code w32-quote-process-args w32-recognize-altgr
+             w32-rwindow-modifier w32-scroll-lock-modifier
+             w32-start-process-inherit-error-mode w32-start-process-share-console
+             w32-start-process-show-window w32-strict-painting
+             w32-swap-mouse-buttons w32-tooltip-extra-pixels
+             w32-unicode-filenames w32-use-fallback-wm-chars-method
+             w32-use-full-screen-buffer w32-use-native-image-API
+             w32-use-visible-system-caret w32-yes-no-dialog-show-cancel
+             x-cursor-fore-pixel x-hourglass-pointer-shape x-max-tooltip-size
+             x-no-window-manager x-pixel-size-width-font-regexp x-pointer-shape
+             x-sensitive-text-pointer-shape x-toolkit-scroll-bars
+             x-underline-at-descent-line x-use-underline-position-properties
+             x-wait-for-event-timeout x-window-horizontal-drag-cursor
+             x-window-vertical-drag-cursor))
+  (unless (boundp v) (ignore-errors (set v nil))))
+(dolist (v '(libpng-version libgif-version libjpeg-version libgnutls-version))
+  (unless (boundp v) (ignore-errors (set v -1))))
+
 
 (defvar dynamic-library-alist)
 (defvar libpng-version)                 ; image.c #ifdef HAVE_NTGUI
