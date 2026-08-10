@@ -53,8 +53,14 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // compiled (and falls through to the interpreter where skipped).  The
     // SAME test list / ert selector as the off-path `check' run, so the
     // two summaries are directly comparable (behavioral-identity proof).
+    // Gate-#2 genuine-run instrumentation: the run FAILS when
+    // `zeln-load-count' is still 0 after the suite, so a cache with zero
+    // usable .zeln (e.g. every link failed) can no longer pass this gate
+    // via silent interpreter fallback.
+    var zeln_gate = false;
     if (env_map.get("ZELN_LOAD_PATH")) |zp| {
         if (zp.len > 0) {
+            zeln_gate = true;
             try eval.appendSlice(gpa, "(setq native-comp-zeln-load-path (list (expand-file-name \"");
             try eval.appendSlice(gpa, zp);
             try eval.appendSlice(gpa, "\"))) ");
@@ -68,7 +74,18 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         try eval.appendSlice(gpa, f);
         try eval.appendSlice(gpa, "\") ");
     }
-    try eval.appendSlice(gpa, "(let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit (quote (not (or (tag :expensive-test) (tag :unstable) (tag :nativecomp)))))))");
+    // ert-run-tests-batch-and-exit calls kill-emacs itself, so when the
+    // zeln gate is on we use ert-run-tests-batch and compute the exit code
+    // manually: 0 = suite passed AND at least one .zeln was genuinely
+    // loaded; 1 = unexpected results OR a silent interpreter fallback
+    // (zeln-load-count still 0, e.g. every cache link failed).
+    if (zeln_gate) {
+        try eval.appendSlice(gpa, " (let ((stats (ert-run-tests-batch (quote (not (or (tag :expensive-test) (tag :unstable) (tag :nativecomp)))))))");
+        try eval.appendSlice(gpa, " (princ (format \"\\nzeln-load-count: %d\\n\" zeln-load-count))");
+        try eval.appendSlice(gpa, " (if (zerop (ert-stats-completed-unexpected stats)) (if (zerop zeln-load-count) (progn (princ \"check-zeln: FAIL - no .zeln loaded (silent interpreter fallback); populate-zeln-cache produced no usable artifacts\\n\") (kill-emacs 1)) (kill-emacs 0)) (kill-emacs 1))))");
+    } else {
+        try eval.appendSlice(gpa, " (ert-run-tests-batch-and-exit (quote (not (or (tag :expensive-test) (tag :unstable) (tag :nativecomp))))))");
+    }
 
     const argv = [_][]const u8{
         "./zig-out/bin/" ++ temacs_path.name,

@@ -2580,14 +2580,30 @@ pub fn build(b: *std.Build) void {
         // mod-test.c compile's -Isrc; the gen-emacs-module-h run step must
         // have produced it first.
         mod_test_lib.step.dependOn(&run_gen_emh.step);
-        // Install as mod-test.so (NOT libmod-test.so): the suite resolves the
-        // load path with the bare module base name, no lib prefix.  .prefix is
-        // the zig-out root, so the full dest_rel_path lands the .so exactly
-        // where emacs-module-tests.el's mod-test-file points.
+        // Install as mod-test.<suffix> (NOT libmod-test.<suffix>): the suite
+        // resolves the load path with the bare module base name, no lib
+        // prefix.  .prefix is the zig-out root, so the full dest_rel_path
+        // lands the module exactly where emacs-module-tests.el's mod-test-file
+        // points.  The suffix must match the platform's MODULES_SUFFIX (the
+        // PRIMARY module suffix): ".dylib" on darwin, ".dll" on Windows,
+        // ".so" on ELF hosts -- emacs-module-tests' darwin-secondary-suffix
+        // test asserts the primary file exists and manufactures the secondary
+        // (.so) via add-name-to-file, and describe-function-1 compares against
+        // module-file-suffix.  Installing the wrong name fails those on macOS.
+        const mod_suffix: []const u8 = switch (target.result.os.tag) {
+            .macos => ".dylib",
+            .windows => ".dll",
+            else => ".so",
+        };
+        const mod_install_path = std.fmt.allocPrint(
+            b.allocator,
+            "test/src/emacs-module-resources/mod-test{s}",
+            .{mod_suffix},
+        ) catch @panic("OOM");
         const install_mod_test = b.addInstallFileWithDir(
             mod_test_lib.getEmittedBin(),
             .prefix,
-            "test/src/emacs-module-resources/mod-test.so",
+            mod_install_path,
         );
         install_mod_test.step.dependOn(&mod_test_lib.step);
         b.getInstallStep().dependOn(&install_mod_test.step);

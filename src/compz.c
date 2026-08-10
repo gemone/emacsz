@@ -720,6 +720,16 @@ zeln_patch_freloc (zeln_entry_t *e)
    each native fn's data relocs through its compiled-function vector.
    staticpro'd in syms_of_compz.  */
 static Lisp_Object zeln_loaded_const_vectors;
+
+/* M2b.5 gate-#2 instrumentation: how many .zeln units were genuinely
+   loaded (Fcomp_z_load_zeln ran to completion, i.e. at least one native
+   fn was Ffset).  check-zeln (run-check.zig with ZELN_LOAD_PATH set)
+   fails the run when this stays 0, so a silent interpreter fallback
+   (e.g. a cache populated with zero .zeln because every link failed)
+   can no longer pass the 582-via-.zeln gate trivially.  Declared by
+   globals.h from the DEFVAR_INT below (make-docfile), like
+   native_comp_z_prefer; no manual declaration here.  */
+
 static void
 zeln_fill_d_reloc_fn (zeln_fn_entry_t *fe)
 {
@@ -837,6 +847,8 @@ For internal use.  */)
       if (!NILP (form))
 	Feval (form, Qnil);
     }
+
+  zeln_load_count++;
 
   return last_subr;
 }
@@ -1599,6 +1611,14 @@ If a directory name is not absolute, it is relative to
 Built lazily from `emacs-version' and `zeln-abi-hash' (distinct from
 `comp-native-version-dir' so the two caches never collide).  */);
   Vcomp_z_native_version_dir = Qnil;
+
+  DEFVAR_INT ("zeln-load-count", zeln_load_count,
+    doc: /* Number of .zeln units loaded to completion in this session.
+Instrumentation for the check-zeln gate: the harness (run-check.zig with
+ZELN_LOAD_PATH set) fails when this stays 0, proving the 582-via-.zeln
+run genuinely executed native code rather than silently falling back to
+the interpreter.  */);
+  zeln_load_count = 0;
 
   DEFVAR_LISP ("comp-zeln-to-el-h", Vzeln_to_el_h,
 	       doc: /* Hash table zeln-filename -> el-filename.
