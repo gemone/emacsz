@@ -1331,10 +1331,54 @@ fn emitNativeFn(
     try em.wif("%{d} = getelementptr inbounds [{d} x ptr], ptr %{d}, i64 0, i64 {d}\n", .{ rslot, SURFACE, rlt, IDX_SETUP_ARGS });
     const rfn = em.fresh();
     try em.wif("%{d} = load ptr, ptr %{d}\n", .{ rfn, rslot });
-    const rtop0 = em.fresh();
-    try em.wif("%{d} = call ptr %{d}(i64 {d}, i64 %nargs, ptr %args, ptr %stackbase)\n", .{ rtop0, rfn, unit.args_template });
-    try em.wif("store ptr %{d}, ptr %top.slot\n", .{rtop0});
-    try em.wf("  br label %bb_{d}\n", .{0});
+
+    // ---- M3e: fixed-arity prologue inline (mirrors exec_byte_code's own
+    // arg setup, bytecode.c:531-545).  When args_template is a fixed arity
+    // (no &rest bit, mandatory == nonrest == k), copy the k args from %args
+    // into the virtual stack inline when nargs == k, falling back to the
+    // EXACT zeln_setup_args freloc call only on wrong arity (which signals
+    // Qwrong_number_of_arguments identically).  Removes the per-call freloc
+    // indirection + C loop for the common exact-arity call; the fallback
+    // preserves the setup_args semantics bit-for-bit (same signal, same
+    // rest/optional paths, same top computation stackbase + k - 1).
+    const rest_bit = (unit.args_template & 128) != 0;
+    const mandatory: u32 = unit.args_template & 127;
+    const nonrest: u32 = unit.args_template >> 8;
+    if (!rest_bit and mandatory == nonrest) {
+        const k: i64 = mandatory;
+        // Guard: nargs == k -> inline; else -> setup_args freloc call.
+        const ok = em.fresh();
+        try em.wif("%{d} = icmp eq i64 %nargs, {d}\n", .{ ok, k });
+        try em.wif("br i1 %{d}, label %bb_sup_inl, label %bb_sup_fb\n", .{ok});
+        // Inline copy: stackbase[i] = args[i] for i in 0..k-1.
+        try em.w("bb_sup_inl:\n");
+        for (0..@as(usize, @intCast(k))) |i| {
+            const aslot = em.fresh();
+            try em.wif("%{d} = getelementptr inbounds i64, ptr %args, i64 {d}\n", .{ aslot, i });
+            const aval = em.fresh();
+            try em.wif("%{d} = load i64, ptr %{d}\n", .{ aval, aslot });
+            const sslot = em.fresh();
+            try em.wif("%{d} = getelementptr inbounds i64, ptr %stackbase, i64 {d}\n", .{ sslot, i });
+            try em.wif("store i64 %{d}, ptr %{d}\n", .{ aval, sslot });
+        }
+        // top = stackbase + k - 1 (stackbase - 1 for k = 0, mirroring
+        // `top = stack - 1` before the k PUSHes).
+        const rtop_inl = em.fresh();
+        try em.wif("%{d} = getelementptr inbounds i64, ptr %stackbase, i64 {d}\n", .{ rtop_inl, k - 1 });
+        try em.wif("store ptr %{d}, ptr %top.slot\n", .{rtop_inl});
+        try em.wf("  br label %bb_{d}\n", .{0});
+        // Fallback: the byte-identical setup_args freloc call.
+        try em.w("bb_sup_fb:\n");
+        const rtop0 = em.fresh();
+        try em.wif("%{d} = call ptr %{d}(i64 {d}, i64 %nargs, ptr %args, ptr %stackbase)\n", .{ rtop0, rfn, unit.args_template });
+        try em.wif("store ptr %{d}, ptr %top.slot\n", .{rtop0});
+        try em.wf("  br label %bb_{d}\n", .{0});
+    } else {
+        const rtop0 = em.fresh();
+        try em.wif("%{d} = call ptr %{d}(i64 {d}, i64 %nargs, ptr %args, ptr %stackbase)\n", .{ rtop0, rfn, unit.args_template });
+        try em.wif("store ptr %{d}, ptr %top.slot\n", .{rtop0});
+        try em.wf("  br label %bb_{d}\n", .{0});
+    }
 
     // ---- Pass 2: per-opcode emission. ----
     var block_open: bool = false;
