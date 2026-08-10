@@ -212,6 +212,12 @@
         .emacs_dynlib = .{
             .path = "tools/emacs-dynlib",
         },
+        // gen-emacs-module-h: generates the gitignored src/emacs-module.h
+        // from the committed src/emacs-module.in.h + module-env-* snippets
+        // (upstream's AC_CONFIG_FILES), needed by the dynamic-module build.
+        .gen_emacs_module_h = .{
+            .path = "tools/gen-emacs-module-h",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw

@@ -1213,6 +1213,49 @@ pub fn build(b: *std.Build) void {
     // into a musl build. musl uses zig's bundled headers instead.
 
     // Add base C sources with proper flags
+    //
+    // emacs-module.h is GENERATED (upstream: configure.ac:5163
+    // AC_CONFIG_FILES from src/emacs-module.in.h + the module-env-*
+    // snippets); it is gitignored, so a fresh checkout has no
+    // src/emacs-module.h and the dynamic-module compiles would fail.  The
+    // gen-emacs-module-h step writes it into the source tree (mirroring
+    // upstream's configure) and must precede both the emacs-module.c
+    // compile and the mod-test sample module compile.  Defined at build()
+    // top level (platform-independent) so both the exe compile loop below
+    // and the modules-test step can depend on it.
+    const gen_emh_dep = b.dependency("gen_emacs_module_h", .{});
+    const gen_emh_tool = b.addExecutable(.{
+        .name = "gen-emacs-module-h",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = gen_emh_dep.path("src/main.zig"),
+        }),
+    });
+    const run_gen_emh = b.addRunArtifact(gen_emh_tool);
+    run_gen_emh.setCwd(b.path("."));
+    // Track the template + snippet inputs so the run cache invalidates on
+    // their content; the major version rides in as a literal arg.  The
+    // tool's 4th arg is the snippet DIRECTORY; the 8 snippet files follow
+    // as extra tracked args (ignored by the tool, but they keep the run
+    // cache invalidating on snippet edits).
+    run_gen_emh.addFileArg(b.path("src/emacs-module.in.h"));
+    run_gen_emh.addArg("src/emacs-module.h");
+    run_gen_emh.addArg("32");
+    run_gen_emh.addArg("src");
+    run_gen_emh.addFileArg(b.path("src/module-env-25.h"));
+    run_gen_emh.addFileArg(b.path("src/module-env-26.h"));
+    run_gen_emh.addFileArg(b.path("src/module-env-27.h"));
+    run_gen_emh.addFileArg(b.path("src/module-env-28.h"));
+    run_gen_emh.addFileArg(b.path("src/module-env-29.h"));
+    run_gen_emh.addFileArg(b.path("src/module-env-30.h"));
+    run_gen_emh.addFileArg(b.path("src/module-env-31.h"));
+    run_gen_emh.addFileArg(b.path("src/module-env-32.h"));
+    // Writes into the source tree (src/emacs-module.h, gitignored); the
+    // run cache cannot track the output file, so always re-run (cheap).
+    run_gen_emh.has_side_effects = true;
+    exe.step.dependOn(&run_gen_emh.step);
+
     if (!is_windows) {
         // Unix-like systems (macOS, Linux) - with libxml2 include path
         const base_flags_core = [_][]const u8{
@@ -2533,6 +2576,10 @@ pub fn build(b: *std.Build) void {
         // addIncludePath LazyPath carries the file dependency; this adds the
         // ordering edge to the generator step, mirroring exe at line 616).
         mod_test_lib.step.dependOn(target_config_h_file.step);
+        // emacs-module.h (generated into the source tree) is found via the
+        // mod-test.c compile's -Isrc; the gen-emacs-module-h run step must
+        // have produced it first.
+        mod_test_lib.step.dependOn(&run_gen_emh.step);
         // Install as mod-test.so (NOT libmod-test.so): the suite resolves the
         // load path with the bare module base name, no lib prefix.  .prefix is
         // the zig-out root, so the full dest_rel_path lands the .so exactly

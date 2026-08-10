@@ -1,0 +1,11 @@
+.{
+    .name = .gen_emacs_module_h,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .fingerprint = 0x7b73936adc5b353e,
+    .dependencies = .{},
+    .paths = .{
+        "build.zig.zon",
+        "src/main.zig",
+    },
+}
