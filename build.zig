@@ -82,6 +82,35 @@ pub fn build(b: *std.Build) void {
     const enable_modules = b.option(bool, "modules", "Enable upstream dynamic modules (HAVE_MODULES)") orelse false;
     const enable_modules_zig = b.option(bool, "modules-zig", "Enable the Zig dynamic-module subsystem (HAVE_MODULES_ZIG)") orelse false;
 
+    // Target-derived flags.  `target` is resolved at line 64, so target.result
+    // is in scope here; computing these early lets the make-docfile / doc-scan
+    // / buildobj gates below read them (they run before the source-compile
+    // block).  musl targets get a minimal config (gen-config "musl" tag undefs
+    // the optional system-lib features), so skip the corresponding -l flags
+    // there too; only libm and ncurses (terminal support) remain.
+    const is_windows = target.result.os.tag == .windows;
+    const is_musl = target.result.os.tag == .linux and target.result.abi == .musl;
+    // modules_runtime: the SHARED module runtime turns on once when EITHER
+    // module switch is on AND the target can actually dlopen.  Gates the
+    // shared runtime -- HAVE_MODULES macro, emacs-module.c compile,
+    // make-docfile / doc-scan / buildobj.h entries and the modules-test step
+    // -- so -Dmodules and -Dmodules-zig both light it up.  Dynamic modules
+    // need dlopen, which requires dynamic linking -- impossible in a
+    // fully-static musl build (plan 13.1.6 / B4); force it off there.  Stays
+    // on for glibc-Linux (dlopen lives in libc since glibc 2.34, no -ldl),
+    // macOS and Windows.  Off-by-default behaviour is untouched (both switches
+    // off => false, byte-identical build).
+    const modules_runtime = (enable_modules or enable_modules_zig) and !is_musl;
+    // modules_zig_provider: when on, src/dynlib.c is dropped from the compile
+    // and the tools/emacs-dynlib Zig package provides the dynlib_* ABI instead
+    // (Track-B B-Z, HAVE_MODULES_ZIG).  POSIX-only this cycle (the package
+    // wraps libc dlopen/dlsym/dlclose/dlerror/dladdr; the w32 LoadLibrary
+    // branch of dynlib.c is not ported), so it is forced OFF on Windows and
+    // static musl -- the switch silently does nothing there (V6).  When off
+    // (default), dynlib.c compiles at all sites exactly as today -- zero
+    // footprint.
+    const modules_zig_provider = enable_modules_zig and !is_musl and !is_windows;
+
     // Build-time file interface (single-threaded, synchronous). Used to parse
     // src/Makefile.in and glob lib/*.c so that `zig build` no longer requires a
     // pre-generated build-config/ directory (kills the comptime @import
@@ -430,9 +459,11 @@ pub fn build(b: *std.Build) void {
     // carries those declarations, otherwise src/emacs-module.c and the
     // lread.c #ifdef HAVE_MODULES blocks fail with "undeclared identifier".
     // Mirrors the platform re-adds above.  (For a musl+modules build
-    // modules_enabled is false, so emacs-module.c is not compiled; the
-    // resulting globals.h externs are then unused-but-harmless.)
-    if (enable_modules) run_mdf.addArg("emacs-module.c");
+    // modules_runtime is false, so emacs-module.c is not compiled; the
+    // resulting globals.h externs are then unused-but-harmless.)  Track-B
+    // B-Z: widened from enable_modules to modules_runtime so the Zig module
+    // subsystem (-Dmodules-zig) also pulls in the shared runtime here.
+    if (modules_runtime) run_mdf.addArg("emacs-module.c");
     // compz.c (when -Dnative-comp-zig=true) carries the ZELN DEFUNs
     // (Scomp_z_load_zeln, Scomp_z_write_spike_zunit, ...) and the DEFVAR_LISP
     // slots (Vzeln_abi_hash, Vnative_comp_zeln_load_path,
@@ -512,7 +543,9 @@ pub fn build(b: *std.Build) void {
     // DEFUN primitives (Fmodule_load etc.) carry doc strings in etc/DOC --
     // mirrors the globals.h re-add above.  Passed as the .o name upstream's
     // doc_obj uses (make-docfile rewrites to .c after the -d src chdir).
-    if (enable_modules) run_doc.addArg("emacs-module.o");
+    // Track-B B-Z: widened to modules_runtime so the doc strings are scanned
+    // under the Zig module subsystem too.
+    if (modules_runtime) run_doc.addArg("emacs-module.o");
     const doc_capture = run_doc.captureStdOut(.{ .basename = "DOC" });
     // Install etc/DOC into the source tree with the native
     // UpdateSourceFiles step (no shell; etc/DOC is a gitignored
@@ -535,7 +568,9 @@ pub fn build(b: *std.Build) void {
         for (libgnu_sources) |src| appendBuildobjEntry(a, &buf, src) catch @panic("build.zig: OOM building buildobj.h");
         // emacs-module.o is MODULES_OBJ (not base_obj); upstream's $(obj)
         // folds it into buildobj when modules are on, so mirror that here.
-        if (enable_modules) appendBuildobjEntry(a, &buf, "src/emacs-module.c") catch @panic("build.zig: OOM building buildobj.h");
+        // Track-B B-Z: widened to modules_runtime so the entry is present
+        // under the Zig module subsystem too.
+        if (modules_runtime) appendBuildobjEntry(a, &buf, "src/emacs-module.c") catch @panic("build.zig: OOM building buildobj.h");
         break :blk buf.toOwnedSlice(a) catch @panic("build.zig: OOM building buildobj.h");
     };
     const buildobj_wf = b.addWriteFiles();
@@ -1119,18 +1154,42 @@ pub fn build(b: *std.Build) void {
         zig_packages_step.dependOn(&lib.step);
     }
 
-    // Determine if we're building for Unix-like systems
-    const is_windows = target.result.os.tag == .windows;
-    // musl targets get a minimal config (gen-config "musl" tag undefs the
-    // optional system-lib features), so skip the corresponding -l flags
-    // here as well; only libm and ncurses (terminal support) remain.
-    const is_musl = target.result.os.tag == .linux and target.result.abi == .musl;
-    // Dynamic modules (-Dmodules=true) need dlopen, which requires dynamic
-    // linking -- impossible in a fully-static musl build (plan section
-    // 13.1.6 / B4).  Force the switch off there; it stays on for glibc-Linux
-    // (dlopen lives in libc since glibc 2.34, so no -ldl is needed), macOS
-    // and Windows.  The off-by-default behavior is untouched.
-    const modules_enabled = enable_modules and !is_musl;
+    // is_windows / is_musl / modules_runtime / modules_zig_provider are
+    // computed early (right after the option declarations above) so the
+    // make-docfile / doc-scan / buildobj gates can read them; the source-
+    // compile and link blocks here reuse the same consts.
+
+    // emacs-dynlib (Track-B B-Z, HAVE_MODULES_ZIG): the independent Zig
+    // dynamic-module LOADER, the native-linking parallel to the upstream
+    // HAVE_MODULES subsystem (which compiles src/dynlib.c).  When
+    // modules_zig_provider is on, src/dynlib.c is NOT compiled (the three
+    // dynlib.c addCSourceFile sites above are gated on its inverse) and this
+    // package satisfies the identical dynlib_* ABI at link time -- the swap
+    // is purely build/link-level, mirroring the gnulib-* replacements (the
+    // package's `export fn` symbols replace what dynlib.c would emit).  α
+    // slice: the package wraps libc dlopen/dlsym/dlclose/dlerror/dladdr
+    // (RTLD_LAZY|RTLD_GLOBAL on open, matching dynlib.c:279), so the load
+    // still routes through ld.so; the raw-syscall ELF loader (Option γ)
+    // replaces ONLY the extern "c" fn dlopen bodies here later, without
+    // touching C.  POSIX-only this cycle (modules_zig_provider is already
+    // false on Windows/musl, so the package is never built there).  Gating
+    // the whole block on modules_zig_provider guarantees the off-path
+    // default never even resolves the dependency -- zero footprint.
+    if (modules_zig_provider) {
+        const emacs_dynlib_mod = b.createModule(.{
+            .root_source_file = b.dependency("emacs_dynlib", .{}).path("src/dynlib.zig"),
+            .target = target,
+            // ReleaseFast (leaf libc-call wrappers) so it pulls in no Zig
+            // runtime/panic handler the C executable would have to satisfy.
+            .optimize = .ReleaseFast,
+            .link_libc = true, // wraps libc dlopen/dlsym/dlclose/dlerror/dladdr
+        });
+        const emacs_dynlib_lib =
+            b.addLibrary(.{ .name = "emacs-dynlib", .root_module = emacs_dynlib_mod });
+        exe.root_module.linkLibrary(emacs_dynlib_lib);
+        zig_packages_step.dependOn(&emacs_dynlib_lib.step);
+    }
+
     // gccjit native-comp (-Dnative-comp, HAVE_NATIVE_COMP).  libgccjit is a
     // HOST library: it links against the host's libgccjit.so and cannot be
     // cross-built (the gccjit path emits a host ELF .eln).  Gate it to a
@@ -1319,17 +1378,21 @@ pub fn build(b: *std.Build) void {
         // implementation -- it is src/Makefile.in's MODULES_OBJ, a separate
         // @MODULES_OBJ@ var (comment at Makefile.in:270), so it is NOT in
         // parseBaseSources's base_obj and must be compiled here exactly like
-        // compz.c above.  musl is forced off (modules_enabled) since static
+        // compz.c above.  musl is forced off (modules_runtime) since static
         // musl cannot dlopen; on glibc 2.34+ no -ldl is needed (dlopen et al.
-        // live in libc).
-        if (modules_enabled) {
+        // live in libc).  Track-B B-Z: widened from enable_modules to
+        // modules_runtime so the Zig module subsystem (-Dmodules-zig) also
+        // activates the shared runtime (HAVE_MODULES macro + emacs-module.c);
+        // HAVE_MODULES_ZIG is then emitted only when the Zig dynlib provider
+        // is actually selected (modules_zig_provider -- POSIX this cycle).
+        if (modules_runtime) {
             exe.root_module.addCMacro("HAVE_MODULES", "1");
             exe.root_module.addCSourceFile(.{
                 .file = b.path("src/emacs-module.c"),
                 .flags = base_flags,
             });
         }
-        if (enable_modules_zig) exe.root_module.addCMacro("HAVE_MODULES_ZIG", "1");
+        if (modules_zig_provider) exe.root_module.addCMacro("HAVE_MODULES_ZIG", "1");
 
         // TERMCAP_OBJ: upstream builds terminfo.o when TERMINFO, else
         // termcap.o (+ tparam.o on MS-DOS).  Every ncurses/terminfo
@@ -1370,26 +1433,37 @@ pub fn build(b: *std.Build) void {
             });
             // dynlib.c (dlopen wrapper) backs treesit language loading and
             // module support on POSIX systems; the POSIX branch is selected
-            // by HAVE_UNISTD_H and uses dlopen/dlsym from libc.
-            exe.root_module.addCSourceFile(.{
-                .file = b.path("src/dynlib.c"),
-                .flags = base_flags,
-            });
+            // by HAVE_UNISTD_H and uses dlopen/dlsym from libc.  Track-B B-Z
+            // (-Dmodules-zig): when the Zig emacs-dynlib package supplies the
+            // dynlib_* ABI, dynlib.c is dropped here to avoid duplicate symbol
+            // definitions at link -- the package's `export fn` names satisfy
+            // the identical dynlib.h contract.
+            if (!modules_zig_provider) {
+                exe.root_module.addCSourceFile(.{
+                    .file = b.path("src/dynlib.c"),
+                    .flags = base_flags,
+                });
+            }
         }
 
         // Linux-only sources. Mirrors the kqueue gate above but keyed on
         // .linux, inside the !is_windows branch.
         //   - src/dynlib.c:HAVE_MODULES is undef in config.h, but treesit.c
         //     calls dynlib_{error,open,sym,addr} unconditionally; the POSIX
-        //     branch uses dlopen/dlsym (in libc on glibc).
+        //     branch uses dlopen/dlsym (in libc on glibc).  Track-B B-Z
+        //     (-Dmodules-zig): when the Zig emacs-dynlib package supplies the
+        //     dynlib_* ABI, dynlib.c is dropped here to avoid duplicate symbol
+        //     definitions at link.
         //   - src/inotify.c:HAVE_INOTIFY=1 in config.h; inotify_init1 in libc.
         //   - src/dbusbind.c:HAVE_DBUS=1 in config.h; needs the two dbus
         //     include dirs `pkg-config --cflags dbus-1` reports on this host.
         if (target.result.os.tag == .linux) {
-            exe.root_module.addCSourceFile(.{
-                .file = b.path("src/dynlib.c"),
-                .flags = base_flags,
-            });
+            if (!modules_zig_provider) {
+                exe.root_module.addCSourceFile(.{
+                    .file = b.path("src/dynlib.c"),
+                    .flags = base_flags,
+                });
+            }
             exe.root_module.addCSourceFile(.{
                 .file = b.path("src/inotify.c"),
                 .flags = base_flags,
@@ -2415,7 +2489,10 @@ pub fn build(b: *std.Build) void {
     // invocation (see the modules-test invocation in the plan):
     //   ./zig-out/bin/emacs --batch -L test -L test/src -l ert \
     //     -l test/src/emacs-module-tests.el -f ert-run-tests-batch-and-exit
-    if (modules_enabled) {
+    // Track-B B-Z: widened from modules_enabled to modules_runtime so the
+    // sample module builds under -Dmodules-zig too (the dumped emacs then
+    // loads it through the Zig-provided dynlib_* surface).
+    if (modules_runtime) {
         const mod_test_mod = b.createModule(.{
             .target = target,
             // ReleaseFast (not the build's Debug default): mod-test.c calls

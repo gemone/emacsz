@@ -198,6 +198,20 @@
         .gnulib_io = .{
             .path = "tools/gnulib-io",
         },
+        // emacs-dynlib: the Track-B B-Z dynamic-module LOADER
+        // (HAVE_MODULES_ZIG), the native-linking parallel to the upstream
+        // HAVE_MODULES subsystem (which compiles src/dynlib.c).  An
+        // independent Zig package exporting the exact 7 dynlib_* names from
+        // src/dynlib.h as C-ABI `export fn`, backed by libc
+        // dlopen/dlsym/dlclose/dlerror/dladdr (α slice; routes the load
+        // through ld.so, NOT a raw-syscall ELF loader -- that is γ).  Linked
+        // into temacs ONLY under -Dmodules-zig on a POSIX target; when it
+        // supplies the provider, src/dynlib.c is dropped from the compile
+        // (the package's export symbols satisfy the identical dynlib.h
+        // contract at link time).  Off by default => zero footprint.
+        .emacs_dynlib = .{
+            .path = "tools/emacs-dynlib",
+        },
         // emacs-time: gnulib's realtime-clock read (gettime /
         // current_timespec, lib/gettime.c) provided by an independent
         // Zig package with per-platform NATIVE backends (Linux raw

@@ -1,0 +1,12 @@
+.{
+    .name = .emacs_dynlib,
+    .fingerprint = 0x16fd7656ac756a1f,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/dynlib.zig",
+    },
+}
