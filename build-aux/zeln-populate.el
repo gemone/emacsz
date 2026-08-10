@@ -1,8 +1,12 @@
-;;; zeln-populate.el --- walk lisp/**/*.elc, serialize zabi=3 zunits. -*- lexical-binding: t; -*-
+;;; zeln-populate.el --- walk lisp+test .elc, serialize zabi=3 zunits. -*- lexical-binding: t; -*-
 
 ;; The serialize half of the M2b cache-population step (plan M2b
-;; deliverable 1).  Runs in the dumped emacs (built with
-;; -Dnative-comp-zig=true).  For each lisp/**/*.elc:
+;; deliverable 1; extended to the full test surface).  Runs in the dumped
+;; emacs (built with -Dnative-comp-zig=true).  For each lisp/**/*.elc AND
+;; test/**/*.elc (the whole tree the check / check-all harnesses load):
+;;   - ensure the test tree is byte-compiled first (byte-recompile-directory
+;;     over test/ with the test load paths, per-file tolerant) so every test
+;;     case has an .elc to serialize;
 ;;   - derive the .el source (strip 'c', fallback .gz); skip if absent
 ;;     (no content_hash possible, matching maybe_swap_for_zeln);
 ;;   - compute the .zeln rel-filename via `comp-z-el-to-zeln-rel-filename'
@@ -26,6 +30,13 @@
 (defvar zeln-pop--skips nil
   "Accumulated serialize-phase SKIP lines (reversed): \"elc\treason\".")
 (defvar zeln-pop--nfiles 0)
+
+;; The two trees the built-in check / check-all harnesses load from:
+;; lisp/ (the library tree) and test/ (the ert test cases).  Walking test/
+;; is what makes EVERY test case load via .zeln under check-zeln (the
+;; "compile all test cases to zeln" deliverable).
+(defconst zeln-pop--walk-dirs '("lisp" "test")
+  "Directories (relative to the repo root) to walk for .elc files.")
 
 (defun zeln-pop--source (elc)
   "Return the .el (or .el.gz) source path for ELC, or nil if absent."
@@ -60,8 +71,29 @@
 	(error
 	 (push (format "%s\tserialize-error: %S" elc err) zeln-pop--skips))))))
 
+(defun zeln-pop--byte-compile-tests ()
+  "Byte-compile the whole test tree (test/**/*.el -> .elc), per-file tolerant.
+The dumped emacs's load-path already has lisp/; the test dirs are added
+the same way the check harness does (run-check.zig) so `require'd
+dependencies resolve.  A file that fails to compile (missing dependency,
+read error) is skipped, NOT fatal: its .el source still loads fine in the
+harness, and without an .elc it simply has no .zeln (interpreter path)."
+  (let ((load-path (append '("test/src" "test/lisp" "test/lisp/emacs-lisp"
+			     "test/lisp/calendar")
+			   load-path))
+	(n 0) (nfail 0))
+    (dolist (el (directory-files-recursively "test" "\\.el\\'"))
+      (unless (file-exists-p (concat el "c"))
+	(setq n (1+ n))
+	(condition-case err
+	    (byte-compile-file el)
+	  (error (setq nfail (1+ nfail))
+		 (message "zeln-populate: test compile skip %s: %S" el err)))))
+    (message "zeln-populate: byte-compiled %d test files, %d skipped"
+	     n nfail)))
+
 (defun zeln-populate-run ()
-  "Walk lisp/**/*.elc and serialize each to a zabi=3 zunit.
+  "Walk lisp/** + test/** .elc and serialize each to a zabi=3 zunit.
 Writes <cache-root>/JOBS and <cache-root>/SKIPS-LISP.  Exits 0."
   (unless (fboundp 'comp-z-write-file-zunit)
     (message "zeln-populate: comp-z-write-file-zunit not bound \
@@ -70,10 +102,14 @@ Writes <cache-root>/JOBS and <cache-root>/SKIPS-LISP.  Exits 0."
   (setq zeln-pop--cache-root (expand-file-name "zig-out/zeln-cache")
 	zeln-pop--staging (expand-file-name "staging" "zig-out/zeln-cache"))
   (make-directory zeln-pop--staging t)
+  ;; The test tree is not byte-compiled by compile-lisp (it covers lisp/
+  ;; only); compile it here so every test case gets an .elc -> .zeln.
+  (zeln-pop--byte-compile-tests)
   (let ((n 0))
-    (dolist (elc (directory-files-recursively "lisp" "\\.elc\\'"))
-      (zeln-pop--handle elc)
-      (setq n (1+ n)))
+    (dolist (dir zeln-pop--walk-dirs)
+      (dolist (elc (directory-files-recursively dir "\\.elc\\'"))
+	(zeln-pop--handle elc)
+	(setq n (1+ n))))
     (with-temp-file (expand-file-name "JOBS" zeln-pop--cache-root)
       (insert (mapconcat #'identity (nreverse zeln-pop--jobs) "\n"))
       (unless (null zeln-pop--jobs) (insert "\n")))

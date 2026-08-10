@@ -2549,6 +2549,29 @@ pub fn build(b: *std.Build) void {
             "Build the sample dynamic module (mod-test.so) for emacs-module-tests",
         );
         modules_test_step.dependOn(&install_mod_test.step);
+
+        // ---- modules-test-run: full module validation (plan B2).  Runs the
+        // UPSTREAM emacs-module-tests suite against the dumped emacs with the
+        // sample module installed; mod-test-file resolves relative to
+        // invocation-directory (zig-out/bin) to the installed mod-test.so.
+        // The same ert batch entry as upstream `make check` uses for the
+        // module API (env functions, user-ptr, finalizers, signal / non-local
+        // exit, threadsafety).  Requires the mod-test build above.
+        const run_module_tests = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs", "--batch",
+            "-L", "test/src",
+            "-l", "test/src/emacs-module-tests.el",
+            "-f", "ert-run-tests-batch-and-exit",
+        });
+        run_module_tests.setCwd(b.path("."));
+        run_module_tests.step.dependOn(&run_dump_compiled.step);
+        run_module_tests.step.dependOn(&run_loaddefs_final.step);
+        run_module_tests.step.dependOn(&install_mod_test.step);
+        const modules_test_run_step = b.step(
+            "modules-test-run",
+            "Run the upstream emacs-module-tests suite (full module validation)",
+        );
+        modules_test_run_step.dependOn(&run_module_tests.step);
     }
 
     // Phase-2.1 native-comp Zig path (M0 spike, plan §6).  Opt-in: only
@@ -2737,6 +2760,35 @@ pub fn build(b: *std.Build) void {
             "M2b: run 582 built-in tests with transparent .zeln loading",
         );
         check_zeln_step.dependOn(&run_check_zeln.step);
+
+        // ---- bench-check: real-suite perf comparison (interpreter vs
+        // .zeln) over the SAME 582 built-in tests.  bench-tests runs the
+        // run-check harness in both modes (ZELN_LOAD_PATH unset vs the
+        // populated cache) best-of-3 and reports the wall-clock ratio — the
+        // complete performance comparison on the real test/ suites, with the
+        // original interpreter as baseline.  Depends on populate (mtime
+        // ordering) + the dump chain, mirroring check-zeln.
+        const bench_tool = b.addExecutable(.{
+            .name = "bench-tests",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("build-aux/bench-tests.zig"),
+            }),
+        });
+        const run_bench = b.addRunArtifact(bench_tool);
+        run_bench.setCwd(b.path("."));
+        run_bench.addFileArg(run_check_tool.getEmittedBin());
+        run_bench.addArg("zig-out/zeln-cache");
+        run_bench.step.dependOn(&run_populate.step);
+        run_bench.step.dependOn(&run_dump_compiled.step);
+        run_bench.step.dependOn(&run_loaddefs_final.step);
+        run_bench.step.dependOn(&chmod_emacs_wrapper.step);
+        const bench_step = b.step(
+            "bench-check",
+            "Real-suite perf: interpreter vs .zeln on the 582 built-in tests (best-of-3)",
+        );
+        bench_step.dependOn(&run_bench.step);
     }
     const help_step = b.step("help", "Show build information");
     const help_cmd = b.addSystemCommand(&[_][]const u8{
