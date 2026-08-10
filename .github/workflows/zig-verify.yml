@@ -233,6 +233,22 @@ jobs:
           echo "::error::zig build -Dtarget=${{ matrix.target }} failed"
           exit 1
 
+      - name: Cross-compile .zeln check (musl)
+        if: matrix.target == 'aarch64-linux-musl'
+        shell: bash
+        run: |
+          set +e
+          out="$(zig build -Dnative-comp-zig=true -Dtarget="${{ matrix.target }}" 2>&1)"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "::notice::.zeln path cross-compiled for ${{ matrix.target }}"
+            exit 0
+          fi
+          printf '%s\n' "$out"
+          echo "::error::.zeln cross-compile for ${{ matrix.target }} failed"
+          exit 1
+
   # Full suite sweep (all 484 discovered suites, per-suite timeout) is
   # long; run it on demand or nightly rather than on every push.
   check-all:
