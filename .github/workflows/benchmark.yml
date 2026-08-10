@@ -1,16 +1,12 @@
-name: Zeln Benchmark (3-platform)
+name: Zeln Benchmark (3-platform, identical content)
 
-# Complete performance comparison on the REAL test/ ert suites across all
-# three platforms simultaneously (Linux + macOS + Windows matrix):
-#   * Linux  — the full .zeln benchmark: the same 582 built-in tests run
-#     under the original interpreter (baseline) vs transparent .zeln
-#     loading; bench-tests reports the best-of-3 wall-clock ratio.  (The
-#     .zeln path is glibc-Linux only — build.zig gates it to
-#     target.os == linux — so the native-comp comparison runs here.)
-#   * macOS / Windows — platform build + the full 582 ert suite as the
-#     validation baseline (the .zeln benchmark is not available on
-#     non-glibc-Linux targets; the platform correctness gate is the
-#     equivalent deliverable).
+# Complete performance comparison on the REAL test/ ert suites, running the
+# SAME content on all three platforms simultaneously: the same 582 built-in
+# tests run under the original interpreter (baseline) vs transparent .zeln
+# loading; bench-tests reports the best-of-3 wall-clock ratio.  The .zeln
+# pipeline (compz.c + zeln-compile + populate + bench-check) is enabled on
+# every native OS since the gate lift (build.zig: native, non-musl), so
+# Linux / macOS / Windows all run the identical steps.
 # Runs when a version is merged (push to the default branch = the merge
 # event) and on demand via workflow_dispatch.
 
@@ -51,6 +47,9 @@ jobs:
         with:
           version: 0.16.0
 
+      # System libraries are a platform necessity, not benchmark content:
+      # Linux needs the apt dev packages; macOS/Windows runners carry what
+      # the build needs already.
       - name: Install system libraries (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -92,63 +91,39 @@ jobs:
             zigbuild-bench-
             zigbuild-Linux-native-
 
-      # Full build first (the default install puts the flag-correct temacs
-      # into zig-out/bin; step-specific builds do not reinstall it).  Linux
-      # builds the .zeln + module features; macOS/Windows build the plain
-      # platform binary (the .zeln path is gated to glibc-Linux).
-      - name: Build
+      # ---- The IDENTICAL benchmark content on all three platforms. ----
+      # 1. Full build (the default install puts the flag-correct temacs into
+      #    zig-out/bin; step-specific builds do not reinstall it).
+      - name: Build (.zeln path)
         shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            zig build -Dnative-comp-zig=true -Dmodules-zig=true
-          else
-            zig build
-          fi
+        run: zig build -Dnative-comp-zig=true
 
-      # ---- Linux: the real-suite .zeln benchmark. ----
+      # 2. Populate the .zeln cache over BOTH the lisp and test trees.
       - name: Populate .zeln cache (lisp + test tree)
-        if: runner.os == 'Linux'
+        shell: bash
         timeout-minutes: 45
-        run: zig build -Dnative-comp-zig=true -Dmodules-zig=true populate-zeln-cache
+        run: zig build -Dnative-comp-zig=true populate-zeln-cache
 
-      # The complete performance comparison: real 582-test suite, original
-      # interpreter as baseline vs .zeln loading, best-of-3 each.  Tee the
-      # summary line to a log for the job summary step.
+      # 3. The complete performance comparison: real 582-test suite, original
+      #    interpreter as baseline vs .zeln loading, best-of-3 each.  Tee the
+      #    summary line to a log for the job summary step.
       - name: Benchmark (real suite, interpreter baseline vs .zeln)
-        if: runner.os == 'Linux'
+        shell: bash
         timeout-minutes: 60
         run: |
-          zig build -Dnative-comp-zig=true -Dmodules-zig=true bench-check 2>&1 | \
+          zig build -Dnative-comp-zig=true bench-check 2>&1 | \
             tee "${{ runner.temp }}/bench.log"
 
-      # ---- macOS / Windows: platform validation baseline (full 582). ----
-      - name: Full 582-test suite (platform baseline)
-        if: runner.os != 'Linux'
-        timeout-minutes: 60
-        env:
-          ZIG_COMPILE_LISP_PROBE: ${{ matrix.os == 'windows-latest' && '1' || '' }}
-        shell: bash
-        run: |
-          # GitHub macOS runners sandbox the step process: writing to an
-          # existing file is denied in /tmp and RUNNER_TEMP; the workspace
-          # (zig-out is gitignored) is writable, so point TMPDIR there.
-          mkdir -p "${PWD}/zig-out/tmp"
-          export TMPDIR="${PWD}/zig-out/tmp"
-          zig build test 2>&1 | tee "${{ runner.temp }}/bench.log"
-
+      # 4. Report the same ratio from every platform.
       - name: Summarize
         shell: bash
         run: |
-          LINE=$(grep -a "bench-tests: ert suite\|Ran [0-9]* tests" "${{ runner.temp }}/bench.log" | tail -1 || true)
+          LINE=$(grep -a "bench-tests: ert suite" "${{ runner.temp }}/bench.log" | tail -1 || true)
           echo "bench_line=$LINE" >> "$GITHUB_OUTPUT"
           {
-            echo "## ${{ matrix.os }} — Zeln Benchmark / platform validation"
+            echo "## ${{ matrix.os }} — Zeln Benchmark (real 582-test suite)"
             echo ""
-            if [ "$RUNNER_OS" = "Linux" ]; then
-              echo "Real 582-test suite, interpreter baseline vs .zeln (best-of-3):"
-            else
-              echo "Platform build + full 582-test suite baseline (.zeln is glibc-Linux only):"
-            fi
+            echo "Interpreter baseline vs .zeln loading, best-of-3:"
             echo ""
             if [ -n "$LINE" ]; then
               echo "\`$LINE\`"
@@ -156,6 +131,6 @@ jobs:
               echo "Ratio convention: zeln/interp < 1 means the .zeln path is faster"
               echo "than the original interpreter on the full real test suite."
             else
-              echo "run failed — see job logs."
+              echo "benchmark run failed — see job logs."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

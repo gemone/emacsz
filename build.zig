@@ -2579,9 +2579,12 @@ pub fn build(b: *std.Build) void {
     // glibc-Linux only; the .zeln is a Linux ELF .so).  Produces
     // zig-out/bin/test-spike.zeln via zunit -> .ll -> `zig cc -shared`,
     // and proves the full C<->Zig contract (plan §8).  OFF by default =>
-    // zero footprint (compz.c is not even compiled; see line 1198).
-    if (enable_native_comp_zig and is_native_target and
-        target.result.os.tag == .linux and !is_musl)
+    // zero footprint (compz.c is not even compiled; see line 1198).  The
+    // .zeln is a native shared object (ELF .so on glibc, Mach-O .dylib on
+    // macOS, PE .dll on Windows) produced by `zig cc -shared`, so the
+    // whole pipeline runs on every native OS; static-musl stays excluded
+    // (it cannot dlopen).
+    if (enable_native_comp_zig and is_native_target and !is_musl)
     {
         // The zeln-compile tool: a host Zig executable that parses a
         // zunit, emits the Tier-0 .ll, and drives `zig cc -shared`.
