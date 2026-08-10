@@ -3282,6 +3282,11 @@ sys_select (int nfds, SELECT_TYPE *rfds, SELECT_TYPE *wfds, SELECT_TYPE *efds,
 count_children:
   /* Add handles of child processes.  */
   nc = 0;
+  /* child_proc_count can be 0 (no live children), in which case
+     child_procs + (child_proc_count - 1) forms a pointer before the
+     array -- undefined behavior that zig cc traps as an out-of-bounds
+     index (autorevert-tests panics here).  Skip the scan then.  */
+  if (child_proc_count > 0)
   for (cp = child_procs + (child_proc_count-1); cp >= child_procs; cp--)
     /* Some child_procs might be sockets; ignore them.  Also some
        children may have died already, but we haven't finished reading
