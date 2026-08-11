@@ -1626,8 +1626,8 @@ pub fn build(b: *std.Build) void {
     // from another host falls through to the system-library link below
     // (which fails at link time on a non-macOS host, as before the
     // vendoring).
-    if (target.result.os.tag == .macos and b.graph.host.result.os.tag == .macos) {
-        const nettle_src = b.dependency("nettle_src", .{});
+    if (target.result.os.tag == .macos and b.graph.host.result.os.tag == .macos) vendored_gnutls: {
+        const nettle_src = b.lazyDependency("nettle_src", .{}) orelse break :vendored_gnutls;
         const nettle_mod = b.createModule(.{
             .target = target,
             .optimize = optimize,
@@ -1650,7 +1650,7 @@ pub fn build(b: *std.Build) void {
         }
         const nettle_lib = b.addLibrary(.{ .name = "nettle", .root_module = nettle_mod });
 
-        const gnutls_src = b.dependency("gnutls_src", .{});
+        const gnutls_src = b.lazyDependency("gnutls_src", .{}) orelse break :vendored_gnutls;
         // Vendored libunistring (NFC/NFKC normalization + Unicode category
         // tables used by str-unicode.c/str-iconv.c); a separate module
         // mirroring GnuTLS's own lib/unistring subbuild, whose sources must
@@ -1735,8 +1735,8 @@ pub fn build(b: *std.Build) void {
     // tools/ncurses-config (macOS aarch64 reference build; see
     // tools/ncurses-config/README.md).  Terminfo dirs point at the
     // system /usr/share/terminfo, matching the reference configure.
-    if (target.result.os.tag == .macos and b.graph.host.result.os.tag == .macos) {
-        const ncurses_src = b.dependency("ncurses_src", .{});
+    if (target.result.os.tag == .macos and b.graph.host.result.os.tag == .macos) vendored_ncurses: {
+        const ncurses_src = b.lazyDependency("ncurses_src", .{}) orelse break :vendored_ncurses;
         const ncurses_mod = b.createModule(.{
             .target = target,
             .optimize = optimize,
