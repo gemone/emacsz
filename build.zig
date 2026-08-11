@@ -2376,7 +2376,13 @@ pub fn build(b: *std.Build) void {
     // open load file srecode/srt-wy") unless generate-cedet-grammars had
     // run first.  gen_cedet depends on run_dump only (grammars run
     // against the source bootstrap dump), so this edge is cycle-free.
-    run_compile_lisp.step.dependOn(&gen_cedet.step);
+    // POSIX-only edge: the batch grammar generators (bovine/wisent)
+    // do not run on the w32 console build (they exit non-zero there),
+    // so on Windows the grammars are never generated and compile-lisp
+    // falls back to its per-file skip (cedet .elc simply absent), the
+    // pre-existing behavior before this wiring.
+    if (!is_windows)
+        run_compile_lisp.step.dependOn(&gen_cedet.step);
     const compile_lisp_step = b.step("compile-lisp", "Byte-compile lisp/ with the bootstrap emacs");
     compile_lisp_step.dependOn(&run_compile_lisp.step);
 
