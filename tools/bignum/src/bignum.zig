@@ -947,7 +947,7 @@ pub export fn mpz_init_set_ui(z: *mpz_t, u: c_ulong) void {
     mpz_set_ui(z, u);
 }
 
-pub export fn mpz_init_set_si(z: *mpz_t, i: i64) void {
+pub export fn mpz_init_set_si(z: *mpz_t, i: c_long) void {
     mpz_init(z);
     mpz_set_si(z, i);
 }
