@@ -121,11 +121,18 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // Snapshot the temacs binary and its dump: a concurrent rebuild can
     // replace them mid-run, and every suite then dies with "not a dump
     // file".  Spawning from the copies keeps the run self-consistent.
-    const temacs_snap = try std.fs.path.join(gpa, &.{ out_dir, "temacs-snapshot" });
+    // Windows installs temacs.exe; NTFS won't append .exe on a file open,
+    // so the source path and the snapshot name (also argv[0]) need the suffix.
+    const exe_suffix: []const u8 = if (builtin.os.tag == .windows) ".exe" else "";
+    const temacs_name = try std.fmt.allocPrint(gpa, "temacs{s}", .{exe_suffix});
+    defer gpa.free(temacs_name);
+    const snap_name = try std.fmt.allocPrint(gpa, "temacs-snapshot{s}", .{exe_suffix});
+    defer gpa.free(snap_name);
+    const temacs_snap = try std.fs.path.join(gpa, &.{ out_dir, snap_name });
     defer gpa.free(temacs_snap);
     const pdmp_snap = try std.fs.path.join(gpa, &.{ out_dir, "temacs-snapshot.pdmp" });
     defer gpa.free(pdmp_snap);
-    const temacs_src = try std.fs.path.join(gpa, &.{ root, "zig-out", "bin", "temacs" });
+    const temacs_src = try std.fs.path.join(gpa, &.{ root, "zig-out", "bin", temacs_name });
     defer gpa.free(temacs_src);
     const pdmp_src = try std.fs.path.join(gpa, &.{ root, "zig-out", "bin", "bootstrap-emacs.pdmp" });
     defer gpa.free(pdmp_src);
@@ -147,11 +154,17 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         const rel = suite[0 .. suite.len - 3]; // strip ".el"
         const loadtarget = try std.fs.path.join(gpa, &.{ root, "test", rel });
         defer gpa.free(loadtarget);
+        // The load path is read inside an --eval'd lisp form, where a
+        // backslash starts an escape (D:\11Poj -> D:<TAB>Poj via the \11
+        // octal escape).  Forward slashes are accepted by emacs everywhere;
+        // the other paths below are raw argv / OS paths and stay as-is.
+        const loadtarget_lisp = try std.mem.replaceOwned(u8, gpa, loadtarget, "\\", "/");
+        defer gpa.free(loadtarget_lisp);
         const dirname = std.fs.path.dirname(rel) orelse ".";
         const suitedir = try std.fs.path.join(gpa, &.{ root, "test", dirname });
         defer gpa.free(suitedir);
 
-        const form = try std.fmt.allocPrint(gpa, "(progn {s} (load \"{s}\") (let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit (quote (not (or (tag :expensive-test) (tag :unstable) (tag :nativecomp)))))))", .{ preload, loadtarget });
+        const form = try std.fmt.allocPrint(gpa, "(progn {s} (load \"{s}\") (let ((ert-batch-print-lines 0)) (ert-run-tests-batch-and-exit (quote (not (or (tag :expensive-test) (tag :unstable) (tag :nativecomp)))))))", .{ preload, loadtarget_lisp });
         defer gpa.free(form);
         const dump_arg = try std.fmt.allocPrint(gpa, "--dump-file={s}", .{pdmp_snap});
         defer gpa.free(dump_arg);

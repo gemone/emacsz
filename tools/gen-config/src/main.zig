@@ -197,6 +197,15 @@ const windows_overrides: []const Override = &.{
     .{ .name = "HAVE_DBUS" },
     .{ .name = "WINDOWSNT", .value = "1" },
     .{ .name = "DOS_NT", .value = "1" },
+    // system-type drives every Lisp platform branch (files.el, dired,
+    // ls-lisp, ...).  Without this the committed "gnu/linux" leaks into
+    // the Windows image, so emacs believes it is on Linux and no
+    // windows-nt code path runs -- e.g. ls-lisp then defaults to the
+    // external `ls` (absent without msys2) and dired cannot list a dir.
+    // (Console-only builds also need term/w32-nt.el to default the w32
+    // GUI/image version vars that w32fns.c et al. define only under
+    // HAVE_NTGUI.)
+    .{ .name = "SYSTEM_TYPE", .value = "\"windows-nt\"" },
     .{ .name = "HAVE_BCRYPT_H", .value = "1" },
     .{ .name = "HAVE_LIB_BCRYPT", .value = "1" },
     .{ .name = "USE_UNLOCKED_IO" },
@@ -297,6 +306,11 @@ const windows_overrides: []const Override = &.{
     // (MODULES_SUFFIX follows DYNAMIC_LIB_SUFFIX = ".dll"). See
     // configure.ac:5093-5116.
     .{ .name = "MODULES_SUFFIX", .value = "\".dll\"" },
+    // Windows has no /dev/null; its null device is NUL.  The committed
+    // Linux value ("/dev/null") made every subprocess's null stdin/stdout
+    // (call-process, make-process, ...) fail to open with "No such file or
+    // directory", breaking dired's grep/find-based tests (17 failures).
+    .{ .name = "NULL_DEVICE", .value = "\"NUL\"" },
 };
 
 pub fn main(minimal: std.process.Init.Minimal) !void {

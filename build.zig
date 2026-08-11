@@ -1919,8 +1919,8 @@ pub fn build(b: *std.Build) void {
     // from another host falls through to the system-library link below
     // (which fails at link time on a non-macOS host, as before the
     // vendoring).
-    if (target.result.os.tag == .macos and b.graph.host.result.os.tag == .macos) {
-        const nettle_src = b.dependency("nettle_src", .{});
+    if (target.result.os.tag == .macos and b.graph.host.result.os.tag == .macos) vendored_gnutls: {
+        const nettle_src = b.lazyDependency("nettle_src", .{}) orelse break :vendored_gnutls;
         const nettle_mod = b.createModule(.{
             .target = target,
             .optimize = optimize,
@@ -1943,7 +1943,7 @@ pub fn build(b: *std.Build) void {
         }
         const nettle_lib = b.addLibrary(.{ .name = "nettle", .root_module = nettle_mod });
 
-        const gnutls_src = b.dependency("gnutls_src", .{});
+        const gnutls_src = b.lazyDependency("gnutls_src", .{}) orelse break :vendored_gnutls;
         // Vendored libunistring (NFC/NFKC normalization + Unicode category
         // tables used by str-unicode.c/str-iconv.c); a separate module
         // mirroring GnuTLS's own lib/unistring subbuild, whose sources must
@@ -2028,8 +2028,8 @@ pub fn build(b: *std.Build) void {
     // tools/ncurses-config (macOS aarch64 reference build; see
     // tools/ncurses-config/README.md).  Terminfo dirs point at the
     // system /usr/share/terminfo, matching the reference configure.
-    if (target.result.os.tag == .macos and b.graph.host.result.os.tag == .macos) {
-        const ncurses_src = b.dependency("ncurses_src", .{});
+    if (target.result.os.tag == .macos and b.graph.host.result.os.tag == .macos) vendored_ncurses: {
+        const ncurses_src = b.lazyDependency("ncurses_src", .{}) orelse break :vendored_ncurses;
         const ncurses_mod = b.createModule(.{
             .target = target,
             .optimize = optimize,
@@ -2148,24 +2148,45 @@ pub fn build(b: *std.Build) void {
     // source mode). The source file is committed +x, but to be robust against
     // filesystems/checkouts that drop the bit, run chmod +x after install so
     // acceptance `test -x zig-out/bin/emacs` holds unconditionally.
-    const install_emacs_wrapper = b.addInstallFileWithDir(
-        b.path("build-aux/emacs-launcher.sh"),
-        .bin,
-        "emacs",
-    );
-    b.getInstallStep().dependOn(&install_emacs_wrapper.step);
-    const chmod_tool = b.addExecutable(.{
-        .name = "chmod-x",
-        .root_module = b.createModule(.{
-            .target = b.graph.host,
-            .optimize = .Debug,
-            .root_source_file = b.path("build-aux/chmod-x.zig"),
-        }),
-    });
-    const chmod_emacs_wrapper = b.addRunArtifact(chmod_tool);
-    chmod_emacs_wrapper.addArg(b.pathJoin(&.{ b.install_path, "bin", "emacs" }));
-    chmod_emacs_wrapper.step.dependOn(&install_emacs_wrapper.step);
-    b.getInstallStep().dependOn(&chmod_emacs_wrapper.step);
+    // `emacs` launcher install: on Windows a native emacs.exe (there is no
+    // #!/bin/sh, so a .sh wrapper is not a runnable exe -- the smoke step
+    // died with InvalidExe); on Unix the emacs-launcher.sh, which also
+    // disables ASLR via setarch for reliable pdumper relocation.
+    // emacs_wrapper_step is whichever step produces the runnable `emacs`, so
+    // the smoke step below can depend on it uniformly.
+    const emacs_wrapper_step: *std.Build.Step = if (is_windows) blk: {
+        const emacs_launcher = b.addExecutable(.{
+            .name = "emacs",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("build-aux/emacs-launcher.zig"),
+            }),
+        });
+        const install_emacs_launcher = b.addInstallArtifact(emacs_launcher, .{});
+        b.getInstallStep().dependOn(&install_emacs_launcher.step);
+        break :blk &install_emacs_launcher.step;
+    } else blk: {
+        const install_emacs_wrapper = b.addInstallFileWithDir(
+            b.path("build-aux/emacs-launcher.sh"),
+            .bin,
+            "emacs",
+        );
+        b.getInstallStep().dependOn(&install_emacs_wrapper.step);
+        const chmod_tool = b.addExecutable(.{
+            .name = "chmod-x",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("build-aux/chmod-x.zig"),
+            }),
+        });
+        const chmod_emacs_wrapper = b.addRunArtifact(chmod_tool);
+        chmod_emacs_wrapper.addArg(b.pathJoin(&.{ b.install_path, "bin", "emacs" }));
+        chmod_emacs_wrapper.step.dependOn(&install_emacs_wrapper.step);
+        b.getInstallStep().dependOn(&chmod_emacs_wrapper.step);
+        break :blk &chmod_emacs_wrapper.step;
+    };
 
     // Make the executable compilation depend on header generation
     exe.step.dependOn(&generate_headers.step);
@@ -2426,9 +2447,10 @@ pub fn build(b: *std.Build) void {
     run_smoke.setCwd(b.path("."));
     run_smoke.step.dependOn(&run_dump_compiled.step);
     run_smoke.step.dependOn(&run_loaddefs_final.step);
-    // Depend on chmod_emacs_wrapper (which depends on install_emacs_wrapper)
-    // so the +x bit is set before smoke runs ./zig-out/bin/emacs.
-    run_smoke.step.dependOn(&chmod_emacs_wrapper.step);
+    // Depend on the emacs-wrapper install step (chmod +x on Unix; the
+    // native emacs.exe build on Windows) so the runnable `emacs` exists
+    // before smoke invokes ./zig-out/bin/emacs(.exe).
+    run_smoke.step.dependOn(emacs_wrapper_step);
     const smoke_step = b.step("smoke", "Verify the dumped emacs starts and evaluates Lisp");
     smoke_step.dependOn(&run_smoke.step);
 
@@ -2515,6 +2537,7 @@ pub fn build(b: *std.Build) void {
     run_check_all.setCwd(b.path("."));
     run_check_all.step.dependOn(&run_smoke.step);
     run_check_all.step.dependOn(&run_loaddefs_final.step);
+    run_check_all.step.dependOn(&gen_cedet.step); // cedet suites require the generated wisent grammars (srecode/srt-wy.el, ...)
     const check_all_step = b.step("check-all", "Run ALL ert suites (no skip; per-suite isolation + timeout) and classify failures");
     check_all_step.dependOn(&run_check_all.step);
 

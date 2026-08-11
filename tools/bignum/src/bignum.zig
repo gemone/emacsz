@@ -246,7 +246,11 @@ fn ensureCapacity(z: *mpz_t, need: usize) void {
     z._mp_alloc = @intCast(new_alloc);
 }
 
-pub export fn mpz_set_ui(z: *mpz_t, u: u64) void {
+// 64-bit setter for internal use.  The exported mpz_set_ui is GMP's
+// `unsigned long` (only 32-bit on LLP64/Windows), so it cannot carry a full
+// 64-bit limb; bignum.zig's own >32-bit constants -- e.g. the 53-bit double
+// mantissa assembled in mpf_set_d -- go through this helper instead.
+fn mpz_set_u64(z: *mpz_t, u: u64) void {
     ensureCapacity(z, 1);
     if (u == 0) {
         z._mp_size = 0;
@@ -256,12 +260,19 @@ pub export fn mpz_set_ui(z: *mpz_t, u: u64) void {
     z._mp_size = 1;
 }
 
-pub export fn mpz_set_si(z: *mpz_t, i: i64) void {
-    if (i < 0) {
-        mpz_set_ui(z, @as(u64, @bitCast(0 -% i)));
+pub export fn mpz_set_ui(z: *mpz_t, u: c_ulong) void {
+    mpz_set_u64(z, @intCast(u));
+}
+
+pub export fn mpz_set_si(z: *mpz_t, i: c_long) void {
+    // GMP ABI: the operand is `signed long` (32-bit on LLP64/Windows).
+    // Widen to i64 before the magnitude work.
+    const ii: i64 = @intCast(i);
+    if (ii < 0) {
+        mpz_set_ui(z, @intCast(@as(u64, @bitCast(0 -% ii))));
         z._mp_size = -z._mp_size;
     } else {
-        mpz_set_ui(z, @intCast(i));
+        mpz_set_ui(z, @intCast(ii));
     }
 }
 
@@ -350,7 +361,7 @@ pub export fn mpz_cmpabs(a: *const mpz_t, b: *const mpz_t) c_int {
     return magCmp(a, b);
 }
 
-pub export fn mpz_cmp_ui(a: *const mpz_t, u: u64) c_int {
+pub export fn mpz_cmp_ui(a: *const mpz_t, u: c_ulong) c_int {
     var b: mpz_t = undefined;
     mpz_init(&b);
     defer mpz_clear(&b);
@@ -358,7 +369,7 @@ pub export fn mpz_cmp_ui(a: *const mpz_t, u: u64) c_int {
     return mpz_cmp(a, &b);
 }
 
-pub export fn mpz_cmp_si(a: *const mpz_t, i: i64) c_int {
+pub export fn mpz_cmp_si(a: *const mpz_t, i: c_long) c_int {
     var b: mpz_t = undefined;
     mpz_init(&b);
     defer mpz_clear(&b);
@@ -430,7 +441,7 @@ pub export fn mpz_sub(z: *mpz_t, a: *const mpz_t, b: *const mpz_t) void {
     }
 }
 
-pub export fn mpz_add_ui(z: *mpz_t, a: *const mpz_t, u: u64) void {
+pub export fn mpz_add_ui(z: *mpz_t, a: *const mpz_t, u: c_ulong) void {
     var b: mpz_t = undefined;
     mpz_init(&b);
     defer mpz_clear(&b);
@@ -438,7 +449,7 @@ pub export fn mpz_add_ui(z: *mpz_t, a: *const mpz_t, u: u64) void {
     mpz_add(z, a, &b);
 }
 
-pub export fn mpz_sub_ui(z: *mpz_t, a: *const mpz_t, u: u64) void {
+pub export fn mpz_sub_ui(z: *mpz_t, a: *const mpz_t, u: c_ulong) void {
     var b: mpz_t = undefined;
     mpz_init(&b);
     defer mpz_clear(&b);
@@ -480,9 +491,10 @@ pub export fn mpz_mul(z: *mpz_t, a: *const mpz_t, b: *const mpz_t) void {
     commit(z, res, an + bn, used, sign);
 }
 
-pub export fn mpz_mul_ui(z: *mpz_t, a: *const mpz_t, u: u64) void {
+pub export fn mpz_mul_ui(z: *mpz_t, a: *const mpz_t, u: c_ulong) void {
+    const uu: u64 = @intCast(u);
     const an = limbCount(a);
-    if (an == 0 or u == 0) {
+    if (an == 0 or uu == 0) {
         ensureCapacity(z, 1);
         z._mp_size = 0;
         return;
@@ -491,7 +503,7 @@ pub export fn mpz_mul_ui(z: *mpz_t, a: *const mpz_t, u: u64) void {
     var carry: u64 = 0;
     var i: usize = 0;
     while (i < an) : (i += 1) {
-        const r = mulAddLimbs(a._mp_d.?[i], u, 0, carry);
+        const r = mulAddLimbs(a._mp_d.?[i], uu, 0, carry);
         res[i] = r[0];
         carry = r[1];
     }
@@ -797,9 +809,10 @@ pub export fn mpz_tdiv_r(r: *mpz_t, n: *const mpz_t, d: *const mpz_t) void {
 
 // GMP returns the nonnegative remainder |n| mod d here (truncated
 // division by a positive single-limb divisor).
-pub export fn mpz_tdiv_ui(n: *const mpz_t, d: u64) u64 {
-    if (d == 0) @panic("mpz division by zero");
-    return singleLimbDivMod(n, d, null);
+pub export fn mpz_tdiv_ui(n: *const mpz_t, d: c_ulong) u64 {
+    const dd: u64 = @intCast(d);
+    if (dd == 0) @panic("mpz division by zero");
+    return singleLimbDivMod(n, dd, null);
 }
 
 pub export fn mpz_fdiv_q(q: *mpz_t, n: *const mpz_t, d: *const mpz_t) void {
@@ -889,8 +902,9 @@ pub export fn mpz_cdiv_q(q: *mpz_t, n: *const mpz_t, d: *const mpz_t) void {
 
 // Floor division by a positive single-limb divisor; returns the
 // nonnegative remainder (as GMP does).
-pub export fn mpz_fdiv_q_ui(q: *mpz_t, n: *const mpz_t, d: u64) u64 {
-    if (d == 0) @panic("mpz division by zero");
+pub export fn mpz_fdiv_q_ui(q: *mpz_t, n: *const mpz_t, d: c_ulong) u64 {
+    const dd: u64 = @intCast(d);
+    if (dd == 0) @panic("mpz division by zero");
     const an = limbCount(n);
     if (an == 0) {
         ensureCapacity(q, 1);
@@ -898,14 +912,14 @@ pub export fn mpz_fdiv_q_ui(q: *mpz_t, n: *const mpz_t, d: u64) u64 {
         return 0;
     }
     const qbuf = allocLimbs(an + 1) orelse oom();
-    const rem = singleLimbDivMod(n, d, qbuf);
+    const rem = singleLimbDivMod(n, dd, qbuf);
     var used = an;
     while (used > 0 and qbuf[used - 1] == 0) used -= 1;
     const neg = signOf(n) < 0;
     if (neg and rem != 0) {
         commit(q, qbuf, an + 1, used, -1);
         mpz_sub_ui(q, q, 1); // floor rounds the negative quotient down
-        return d - rem;
+        return dd - rem;
     }
     commit(q, qbuf, an + 1, used, if (neg) -1 else 1);
     return rem;
@@ -928,7 +942,7 @@ pub export fn mpz_divexact(q: *mpz_t, n: *const mpz_t, d: *const mpz_t) void {
 
 // ---------- powers and gcd ----------
 
-pub export fn mpz_init_set_ui(z: *mpz_t, u: u64) void {
+pub export fn mpz_init_set_ui(z: *mpz_t, u: c_ulong) void {
     mpz_init(z);
     mpz_set_ui(z, u);
 }
@@ -947,7 +961,7 @@ pub export fn mpz_addmul(rop: *mpz_t, a: *const mpz_t, b: *const mpz_t) void {
     mpz_add(rop, rop, &t);
 }
 
-pub export fn mpz_addmul_ui(rop: *mpz_t, a: *const mpz_t, u: u64) void {
+pub export fn mpz_addmul_ui(rop: *mpz_t, a: *const mpz_t, u: c_ulong) void {
     var t: mpz_t = undefined;
     mpz_init(&t);
     defer mpz_clear(&t);
@@ -1407,8 +1421,8 @@ pub export fn mpz_set_str(rop: *mpz_t, str: [*:0]const u8, base_in: c_int) c_int
         }
         const v = digitToVal(c, base) orelse return -1;
         have_digit = true;
-        mpz_mul_ui(&acc, &acc, base);
-        mpz_add_ui(&acc, &acc, v);
+        mpz_mul_ui(&acc, &acc, @intCast(base));
+        mpz_add_ui(&acc, &acc, @intCast(v));
         p += 1;
     }
     if (!have_digit and !prefix) return -1;
@@ -1442,7 +1456,7 @@ pub export fn mpz_get_str(str: ?[*]u8, base_in: c_int, op: *const mpz_t) ?[*]u8 
     defer mpz_clear(&t);
     mpz_abs(&t, op);
     while (limbCount(&t) != 0) {
-        const v: u8 = @intCast(mpz_fdiv_q_ui(&t, &t, base));
+        const v: u8 = @intCast(mpz_fdiv_q_ui(&t, &t, @intCast(base)));
         p -= 1;
         p[0] = digitToChar(v, base, upper);
     }
@@ -1515,11 +1529,11 @@ pub export fn mpz_set_d(rop: *mpz_t, d: f64) void {
     mpz_init(&t);
     defer mpz_clear(&t);
     if (e >= 52) {
-        mpz_set_ui(&t, frac);
+        mpz_set_u64(&t, frac);
         if (e > 52) mpz_mul_2exp(&t, &t, @intCast(e - 52));
     } else {
         const sh: u6 = @intCast(52 - e);
-        mpz_set_ui(&t, frac >> sh);
+        mpz_set_u64(&t, frac >> sh);
     }
     if (neg) mpz_neg(&t, &t);
     mpz_swap(rop, &t);
@@ -1556,13 +1570,13 @@ pub export fn mpz_cmp_d(op: *const mpz_t, d: f64) c_int {
 fn fitsSigned(z: *const mpz_t, lo: i64, hi: i64) bool {
     const sgn = signOf(z);
     if (sgn == 0) return true;
-    if (sgn < 0) return mpz_cmp_si(z, lo) >= 0;
-    return mpz_cmp_si(z, hi) <= 0;
+    if (sgn < 0) return mpz_cmp_si(z, @intCast(lo)) >= 0;
+    return mpz_cmp_si(z, @intCast(hi)) <= 0;
 }
 
 fn fitsUnsigned(z: *const mpz_t, hi: u64) bool {
     if (signOf(z) < 0) return false;
-    return mpz_cmp_ui(z, hi) <= 0;
+    return mpz_cmp_ui(z, @intCast(hi)) <= 0;
 }
 
 pub export fn mpz_fits_sint_p(z: *const mpz_t) c_int {

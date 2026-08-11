@@ -49,9 +49,21 @@ extern "c" fn timegm(tm: *Tm) time_t;
 
 const time_t = i64;
 
-// struct tm as defined by the platform C library (glibc / mingw-w64).
-// tm_gmtoff is `long`, whose width follows the target ABI (c_long).
-pub const Tm = extern struct {
+// struct tm as defined by the platform C library.  glibc and the BSDs
+// (including macOS) extend C99's struct tm with `tm_gmtoff` and `tm_zone`;
+// mingw-w64 (Windows) does NOT -- its struct tm is the bare C99 9-int
+// layout.  The 56-byte glibc layout must not be assumed on Windows, or
+// mktime_z/localtime_rz write tm_gmtoff/tm_zone past the end of a mingw
+// caller's struct tm -- a real stack-buffer overflow that trips
+// __stack_chk_fail during encode-time (e.g. while loading org-element-ast
+// / icalendar-ast during byte-compilation).
+const have_tm_zone = switch (builtin.os.tag) {
+    .linux, .macos, .ios, .tvos, .watchos,
+    .freebsd, .openbsd, .netbsd, .dragonfly,
+    => true,
+    else => false, // Windows (mingw-w64), WASI, ...: C99 struct tm, no extensions
+};
+pub const Tm = if (have_tm_zone) extern struct {
     tm_sec: c_int,
     tm_min: c_int,
     tm_hour: c_int,
@@ -61,8 +73,19 @@ pub const Tm = extern struct {
     tm_wday: c_int,
     tm_yday: c_int,
     tm_isdst: c_int,
+    // tm_gmtoff is `long`, whose width follows the target ABI (c_long).
     tm_gmtoff: c_long,
     tm_zone: ?[*:0]const u8,
+} else extern struct {
+    tm_sec: c_int,
+    tm_min: c_int,
+    tm_hour: c_int,
+    tm_mday: c_int,
+    tm_mon: c_int,
+    tm_year: c_int,
+    tm_wday: c_int,
+    tm_yday: c_int,
+    tm_isdst: c_int,
 };
 
 comptime {
@@ -210,6 +233,11 @@ pub export fn revert_tz(tz: ?*TmZone) bool {
 /// abbreviation used by TM into TZ's cache so the tm_zone pointer stays
 /// valid after the TZ environment is restored.
 fn saveAbbr(tz: *TmZone, tm: *Tm) bool {
+    // mingw-w64's struct tm has no tm_zone field (C99 layout), so there is
+    // no abbreviation pointer to keep alive: this cache is a no-op there.
+    // The guard makes the tm.tm_zone accesses below analyzed only on the
+    // glibc/BSD/macOS targets that actually have the field.
+    if (have_tm_zone) {
     const zone = tm.tm_zone orelse return true;
     const tm_addr = @intFromPtr(tm);
     const zone_addr = @intFromPtr(zone);
@@ -250,6 +278,7 @@ fn saveAbbr(tz: *TmZone, tm: *Tm) bool {
 
     // Replace the zone name so that its lifetime matches that of TZ.
     tm.tm_zone = @ptrCast(zone_copy);
+    } // end if (have_tm_zone)
     return true;
 }
 

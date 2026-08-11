@@ -56,6 +56,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     cwd.deleteFile(io, "zig-out/etc") catch {};
     cwd.symLink(io, "../etc", "zig-out/etc", .{ .is_directory = true }) catch |err| switch (err) {
         error.PathAlreadyExists => {}, // parallel build already linked it
+        // Non-privileged Windows hosts can't create symlinks
+        // (PRIVILEGE_NOT_HELD; needs Developer Mode or admin). EMACSDATA
+        // below already points the bootstrap emacs at the source-tree etc,
+        // so the relative ../etc resolution is not required there.
+        error.PermissionDenied => {},
         else => return err,
     };
 
@@ -104,7 +109,17 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     const pdmp_link = try std.fs.path.join(gpa, &.{ bin_dir, "temacs.pdmp" });
     defer gpa.free(pdmp_link);
     std.Io.Dir.deleteFileAbsolute(io, pdmp_link) catch {};
-    try cwd.symLink(io, "bootstrap-emacs.pdmp", pdmp_link, .{});
+    cwd.symLink(io, "bootstrap-emacs.pdmp", pdmp_link, .{}) catch |err| switch (err) {
+        // Non-privileged Windows hosts can't symlink (PRIVILEGE_NOT_HELD);
+        // copy the pdmp so load_pdump still resolves "<argv0>.pdmp" for
+        // subprocess re-invocations of the dumped emacs.
+        error.PermissionDenied => {
+            const pdmp_src_abs = try std.fs.path.join(gpa, &.{ bin_dir, "bootstrap-emacs.pdmp" });
+            defer gpa.free(pdmp_src_abs);
+            try std.Io.Dir.copyFileAbsolute(pdmp_src_abs, pdmp_link, io, .{ .replace = true });
+        },
+        else => return err,
+    };
 }
 
 fn printTail(out: []const u8) void {

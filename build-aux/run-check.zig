@@ -35,6 +35,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // environment, dropping TMPDIR/PATH from the test session.
     var env_map = try env.inherit(gpa, minimal);
     defer env_map.deinit();
+    // Match the dump/compile/smoke tools and force the C locale for a
+    // deterministic run, so test inputs (e.g. the UTF-8 string literals in
+    // character-tests.el) decode identically on every host.  Without this a
+    // non-C host locale makes string-width disagree with the expected
+    // values (character-test-string-width failed under a zh-CN host).
+    try env_map.put("LC_ALL", "C");
 
     // -O0 eval frames are large; raise the stack limit so the ert-deftest
     // macro expansion does not overflow the C stack (ulimit -s unlimited).
