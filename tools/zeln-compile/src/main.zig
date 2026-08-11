@@ -142,6 +142,124 @@ const IDX_PUSHHANDLER: u64 = 98;
 const IDX_RESUME: u64 = 99;
 const IDX_POPHANDLER: u64 = 100;
 
+// ---- FRELOC_NAMES: the Zig-side mirror of compz.c's zeln_imports[] order.
+// Positional (slot i = the subr at freloc slot i), in the SAME order as the
+// IDX_* constants above.  The ABI hash (Vzeln_abi_hash) is computed by
+// compz.c over ITS OWN zeln_imports[] only, so a hand-mirror drift here
+// (insert/reorder/rename) would pass the hash gate while the .zeln's freloc
+// calls land on the wrong subrs.  verifyFrelocSurface() parses the ordered
+// signature the manifest carries (compz.c zeln_signature_string) and fails
+// the compile if the count or any positional name disagrees -- the mirror is
+// CHECKED on every zeln-compile run, not just by the dev-time differential.
+const FRELOC_NAMES = [_][]const u8{
+    "zeln-setup-args",          // 0
+    "zeln-funcall",             // 1
+    "zeln-isnil",               // 2
+    "+",                        // 3
+    "-",                        // 4
+    "*",                        // 5
+    "1-",                       // 6
+    "1+",                       // 7
+    "negate",                   // 8
+    "max",                      // 9
+    "min",                      // 10
+    "=",                        // 11
+    ">",                        // 12
+    "<",                        // 13
+    "<=",                       // 14
+    ">=",                       // 15
+    "equal",                    // 16
+    "eq",                       // 17
+    "null",                     // 18
+    "car",                      // 19
+    "cdr",                      // 20
+    "cons",                     // 21
+    "list1",                    // 22
+    "list2",                    // 23
+    "list3",                    // 24
+    "list4",                    // 25
+    "list",                     // 26
+    "symbolp",                  // 27
+    "consp",                    // 28
+    "stringp",                  // 29
+    "listp",                    // 30
+    "numberp",                  // 31
+    "integerp",                 // 32
+    "nth",                      // 33
+    "memq",                     // 34
+    "length",                   // 35
+    "aref",                     // 36
+    "aset",                     // 37
+    "symbol-value",             // 38
+    "symbol-function",          // 39
+    "set",                      // 40
+    "fset",                     // 41
+    "get",                      // 42
+    "substring",                // 43
+    "concat",                   // 44
+    "string=",                  // 45
+    "string-lessp",             // 46
+    "nthcdr",                   // 47
+    "elt",                      // 48
+    "member",                   // 49
+    "assq",                     // 50
+    "nreverse",                 // 51
+    "setcar",                   // 52
+    "setcdr",                   // 53
+    "car-safe",                 // 54
+    "cdr-safe",                 // 55
+    "nconc",                    // 56
+    "/",                        // 57
+    "%",                        // 58
+    "goto-char",                // 59
+    "insert",                   // 60
+    "char-after",               // 61
+    "indent-to",                // 62
+    "forward-char",             // 63
+    "forward-word",             // 64
+    "forward-line",             // 65
+    "char-syntax",              // 66
+    "end-of-line",              // 67
+    "match-beginning",          // 68
+    "match-end",                // 69
+    "upcase",                   // 70
+    "downcase",                 // 71
+    "point",                    // 72
+    "point-max",                // 73
+    "point-min",                // 74
+    "following-char",           // 75
+    "previous-char",            // 76
+    "current-column",           // 77
+    "eolp",                     // 78
+    "eobp",                     // 79
+    "bolp",                     // 80
+    "bobp",                     // 81
+    "current-buffer",           // 82
+    "set-buffer",               // 83
+    "skip-chars-forward",       // 84
+    "skip-chars-backward",      // 85
+    "buffer-substring",         // 86
+    "delete-region",            // 87
+    "narrow-to-region",         // 88
+    "widen",                    // 89
+    "set-marker",               // 90
+    "zeln-varset",              // 91
+    "zeln-varbind",             // 92
+    "zeln-unbind",              // 93
+    "zeln-save-excursion",      // 94
+    "zeln-save-current-buffer", // 95
+    "zeln-save-restriction",    // 96
+    "zeln-unwind-protect",      // 97
+    "zeln-pushhandler",         // 98
+    "zeln-resume",              // 99
+    "zeln-pophandler",          // 100
+};
+comptime {
+    if (FRELOC_NAMES.len != SURFACE)
+        @compileError("FRELOC_NAMES length != SURFACE: update both (freloc surface drift)");
+}
+
+
 // ---- Tier-1 fixnum-arith inline fast path (USE_LSB_TAG). ----------------
 // Mirrors src/lisp.h for USE_LSB_TAG=true: a fixnum's low 2 bits are
 // Lisp_Int0 (== 2), bit 2 is value, so FIXNUMP(x) = (x & 3) == 2,
@@ -361,6 +479,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         std.debug.print("zeln-compile: bad manifest (no hash line)\n", .{});
         std.process.exit(1);
     };
+    // Checked mirror: fail if the Zig-side FRELOC_NAMES / SURFACE drift from
+    // the manifest's ordered freloc signature (compz.c zeln_imports[]).
+    verifyFrelocSurface(manifest) catch |err| {
+        std.debug.print("zeln-compile: freloc surface drift vs manifest: {s}\n", .{@errorName(err)});
+        std.process.exit(1);
+    };
 
     var ll_body: []u8 = undefined;
     if (zabi == 1) {
@@ -449,6 +573,37 @@ fn parseManifestHash(manifest: []const u8) ?[]const u8 {
     const hash_line = it.next() orelse return null;
     if (hash_line.len < 8) return null;
     return hash_line[0..8];
+}
+
+// Verify the Zig-side FRELOC_NAMES mirror against the ordered signature the
+// manifest carries (compz.c zeln_signature_string: `name++arity` concatenated,
+// arity = `(N . many)` or a single digit).  Using the known name at each step
+// makes the parse deterministic (no name/arity ambiguity).  Any count or
+// positional-name mismatch fails the compile: the hand-mirror is CHECKED on
+// every run, so a Zig-side insert/reorder/rename that skips compz.c cannot
+// silently produce misaligned freloc calls behind a passing ABI hash.
+fn verifyFrelocSurface(manifest: []const u8) !void {
+    var it = std.mem.splitScalar(u8, manifest, '\n');
+    _ = it.next(); // ZELN_ABI_VERSION
+    const sig = it.next() orelse return error.MissingSignature;
+    var pos: usize = 0;
+    for (FRELOC_NAMES) |name| {
+        if (pos + name.len > sig.len or !std.mem.eql(u8, sig[pos .. pos + name.len], name))
+            return error.FrelocNameDrift;
+        pos += name.len;
+        // Arity: `(N . many)` (consume to ')') or a single digit 0-3.
+        if (pos >= sig.len)
+            return error.FrelocArityMissing;
+        if (sig[pos] == '(') {
+            const close = std.mem.indexOfScalarPos(u8, sig, pos + 1, ')') orelse
+                return error.FrelocArityMissing;
+            pos = close + 1;
+        } else {
+            pos += 1;
+        }
+    }
+    if (pos != sig.len)
+        return error.FrelocTrailingJunk;
 }
 
 // =====================================================================

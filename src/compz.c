@@ -778,9 +778,11 @@ For internal use.  */)
   (Lisp_Object file)
 {
   CHECK_STRING (file);
-  /* glibc-Linux only; ASCII paths need no file-name encoding, so
-     dynlib_open gets the raw SSDATA bytes.  */
-  dynlib_handle_ptr handle = dynlib_open (SSDATA (file));
+  /* ASCII paths need no file-name encoding, so dynlib_open_for_eln gets
+     the raw SSDATA bytes.  dynlib_open_for_eln (RTLD_LAZY, no RTLD_GLOBAL)
+     is the .eln/.zeln loader contract (tools/emacs-dynlib doc): the .zeln
+     must not leak its internal symbols into the global namespace.  */
+  dynlib_handle_ptr handle = dynlib_open_for_eln (SSDATA (file));
   if (!handle)
     xsignal1 (Qnative_lisp_file_inconsistent,
 	      build_string (dynlib_error () ? dynlib_error ()

@@ -318,14 +318,14 @@ comparator.
 - **M1.5** — transparent load + `.zeln-cache`. ✅
 - **M2a** — full opcode coverage incl. non-local control (setjmp pushhandler
   trampoline); differential 37/37. ✅
-- **M2b** — cache-population + **582-via-.zeln** (the acceptance gate).
-  🚧 **in progress** — infrastructure landed; gate #2 blocked (see §11).
+- **M2b** — cache-population + **582-via-.zeln** (the acceptance gate). ✅
+  gate #2 green: 582/582 via .zeln (see §11).
 - **M2b.1** — GC-root + memset + serialization fixes (resolved the cl-remove
   crash; cache coverage → ~100%). ✅
 - **M2b.2** — "GC safepoint / register-residence" hypothesis **disproven**
   (crash identical at -O0); no change. ✅ (ruled out)
-- **M2b.3** (active) — pin and fix the residual cl-print.zeln heap-corruption
-  write → gate #2 green.
+- **M2b.3** — pin and fix the residual cl-print.zeln heap-corruption
+  write → gate #2 green. ✅ (root cause + fix in §11)
 - **M2.5** — coexistence with gccjit (both switches on; precedence via
   `native-comp-z-prefer`).
 - **M3** — Tier-1 perf specialization (virtual stack → SSA + opcode
@@ -406,6 +406,9 @@ and `describe-function-1` failed on macOS.  build.zig now installs
 `mod-test.<suffix>` per platform; emacs-module-tests is 39/39 on macOS under
 both `-Dmodules=true` and `-Dmodules-zig=true`.
 
+**Debug narrative (HISTORICAL — bug fixed in deca709247f; kept for the next
+debugger's benefit):**
+
 **Symptom:** `check-zeln` SIGSEGV/SIGABRT during GC. `cl-print.zeln`'s
 load-time top-level writes a **pure-garbage** `Lisp_Object`
 `0x8000000000000004` (Lisp_String tag 4 + invalid pointer
@@ -481,9 +484,8 @@ The two are fully independent: either, both, or neither may be on.
 
 ## 14. Risks
 
-- **Gate #2 residual** (§11): the one correctness blocker; deterministic and
-  reproducible, so locatable, but has resisted multiple hypotheses — needs
-  ASAN/watchpoint to pin the exact write. A correctness prerequisite for M3.
+- **Gate #2 residual** (§11): RESOLVED — the heap-subr GC marking fix
+  (deca709247f); 582/582 green. No longer a blocker.
 - **Conservative-GC interaction**: any native-frame state that isn't a valid
   `Lisp_Object` or properly rooted can corrupt GC. The memset + d_reloc-root +
   storeTop model addresses the known classes; gate #2 is the at-scale stress.

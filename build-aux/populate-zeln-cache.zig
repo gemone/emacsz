@@ -160,6 +160,24 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .{ n_compiled, n_skip_emitter, coverage, countLines(skips_lisp) },
     );
 
+    // ---- Coverage floor. ----
+    // Skips are individually legitimate (interpreter fallback), but a
+    // CATASTROPHIC fallback (e.g. every zeln-compile failing to spawn the
+    // linker, as seen on CI: "zig cc spawn failed: FileNotFound" -> 0 compiled
+    // / 100% skipped) must NOT pass silently: the check-zeln suite would then
+    // run entirely on the interpreter and report a vacuous 582/582.  Require
+    // a minimum share of the contended set to actually compile; a sub-floor
+    // run exits non-zero so the gate fails loudly.
+    const MIN_COVERAGE_PCT: f64 = 50.0;
+    if (attempted > 0 and coverage < MIN_COVERAGE_PCT) {
+        std.debug.print(
+            "zeln cache: coverage {d:.1}% below floor {d:.0}% ({d} compiled of {d} contended) — " ++
+                "failing (a near-total silent fallback would vacate the .zeln gate)\n",
+            .{ coverage, MIN_COVERAGE_PCT, n_compiled, attempted },
+        );
+        std.process.exit(1);
+    }
+
     // Best-effort: drop the staging dir now that .zeln are in place.
     cwd.deleteTree(io, staging) catch {};
 

@@ -279,7 +279,7 @@ dynlib_open (const char *path)
   return dlopen (path, RTLD_LAZY | RTLD_GLOBAL);
 }
 
-# ifdef HAVE_NATIVE_COMP
+# if defined (HAVE_NATIVE_COMP) || defined (HAVE_NATIVE_COMP_ZIG)
 dynlib_handle_ptr
 dynlib_open_for_eln (const char *path)
 {
