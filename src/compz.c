@@ -47,6 +47,8 @@
 #ifdef HAVE_NATIVE_COMP_ZIG
 
 #include <stdlib.h>		/* realpath, intptr_t */
+#include <inttypes.h>		/* PRIu64 (FDO profile format) */
+#include <timespec.h>		/* current_timespec, timespectod (FDO) */
 #include "dynlib.h"
 #include "sysstdio.h"		/* FILE, fseeko, ftello, fread, rewind */
 #include "coding.h"		/* ENCODE_FILE / DECODE_FILE */
@@ -765,6 +767,12 @@ zeln_verify_hash (zeln_entry_t *e)
 	      make_string (e->freloc_hash_z, 8));
 }
 
+/* Forward decls: Fcomp_z_load_zeln registers a unit for FDO watching
+   (defined below, after the loader).  */
+static bool zeln_fdo_enabled (void);
+static void zeln_fdo_register (zeln_entry_t *, dynlib_handle_ptr,
+			       Lisp_Object, Lisp_Object);
+
 DEFUN ("comp-z-load-zeln", Fcomp_z_load_zeln, Scomp_z_load_zeln, 1, 1, 0,
        doc: /* Load a .zeln native-comp unit (Zig path).
 FILE is the .zeln path.  The unit holds N native functions (one per
@@ -815,6 +823,7 @@ For internal use.  */)
      subr's Lisp_Object slots; memclear zeroes the non-header fields
      defensively (backtrace / doc lookup may read symbol_name / doc).  */
   Lisp_Object last_subr = Qnil;
+  Lisp_Object subr_list = Qnil;	/* FDO: subrs in fn-table order */
   for (ptrdiff_t i = 0; i < e->n_fns; i++)
     {
       zeln_fn_entry_t *fe = &e->fns[i];
@@ -835,7 +844,9 @@ For internal use.  */)
       Lisp_Object sym = Fintern (build_string (fe->symbol_name), Qnil);
       Ffset (sym, subr_obj);
       last_subr = subr_obj;
+      subr_list = Fcons (subr_obj, subr_list);
     }
+  subr_list = Fnreverse (subr_list);
 
   /* Replay the .elc's non-defun top-level forms (provide / defvar /
      require / autoload / defcustom / ...).  Vload_file_name and
@@ -853,7 +864,349 @@ For internal use.  */)
 
   zeln_load_count++;
 
+  /* FDO: if auto-optimization is configured, watch this unit (flips
+     its fdo_active flag; native fns start counting calls).  The
+     rel-name (basename of the .zeln) names the profile + recompiled
+     artifact under zeln_auto_fdo_path.  A raw basename scan instead of
+     Ffile_name_nondirectory: this runs during Fload with no usable
+     current-buffer context, and the file arg is an absolute ASCII path
+     on every loader call site (the swap path, the transparent Fload
+     path, and the FDO recompile spawn all pass absolute paths).  */
+  if (zeln_fdo_enabled ())
+    {
+      const char *s = SSDATA (file);
+      const char *slash = strrchr (s, '/');
+      Lisp_Object rel = build_string (slash ? slash + 1 : s);
+      zeln_fdo_register (e, handle, subr_list, rel);
+    }
+
   return last_subr;
+}
+
+/* ------------------------------------------------------------------ */
+/* FDO — auto profile-guided recompilation (Z5).  The loader watches
+   every loaded .zeln: when zeln_auto_fdo_path is set AND
+   zeln_auto_fdo_profile is non-nil, it flips the unit's fdo_active
+   flag (the .zeln's native fns then increment their per-fn counters,
+   ~2 cycles/call) and, at post-GC intervals (zeln_auto_fdo_intervel),
+   flushes the counters to a profile file, recompiles the unit with
+   zeln-compile --profile (hot-first layout + !prof weights), and
+   hot-swaps the subr function pointers to the tuned .zeln.  The last
+   round passes --final (counters dropped).  Strategy/stop: a unit is
+   recompiled at most ZELN_FDO_MAX_ROUNDS times; when the profile shows
+   no fn above the zeln_auto_fdo_profile threshold (or max rounds is
+   reached) auto-optimization for that unit stops.  All of this is
+   OFF by default (path nil => the flags stay 0 and the counters'
+   load+icmp+branch falls through).  */
+
+#define ZELN_FDO_MAX_ROUNDS 2
+
+/* One loaded unit being auto-optimized.  Retired (recompiled) units
+   keep their slot until the session ends (the old .zeln handle is
+   dlclosed only after the swap is fully live).  */
+typedef struct
+{
+  dynlib_handle_ptr handle;	/* current .zeln handle */
+  zeln_entry_t *entry;		/* current entry (fn table + fdo fields) */
+  Lisp_Object subrs;		/* list of subr objects, in fn-table order */
+  Lisp_Object rel_name;		/* .zeln rel-filename (profile naming) */
+  double last_check;		/* wall-clock of last flush/recompile */
+  int rounds;			/* recompiles performed */
+  bool active;			/* fdo_active was flipped for this unit */
+} zeln_fdo_unit_t;
+
+#define ZELN_FDO_MAX_UNITS 64
+static zeln_fdo_unit_t zeln_fdo_units[ZELN_FDO_MAX_UNITS];
+static ptrdiff_t zeln_fdo_nunits;
+
+/* GC root for the FDO units' subr lists + rel-names.  Each unit's
+   `subrs' / `rel_name' fields are Lisp objects living only in C struct
+   fields — invisible to GC — so without this root the cons cells (and
+   the rel-name string, which is referenced ONLY here) would be swept
+   between load and the hot-swap (the recompile spawn + intervening GCs
+   destroy them; the subr OBJECTS themselves stay alive via the symbols
+   they're Ffset to, but the list scaffolding and rel-name do not).
+   staticpro'd in syms_of_compz; a single list holding every unit's
+   subr list, with the rel-names in a parallel root.  */
+static Lisp_Object zeln_fdo_subrs_root;
+static Lisp_Object zeln_fdo_names_root;
+
+/* Config (DEFVAR'd in syms_of_compz): zeln_auto_fdo_path (dir for
+   profiles + recompiled .zeln; nil = off), zeln_auto_fdo_intervel
+   (min seconds between post-GC checks; default 60),
+   zeln_auto_fdo_profile (nil = no collection; t = collect with the
+   default hot threshold 1000; number N = hot threshold N).  The
+   DEFVAR_* declarations below make make-docfile emit `#define
+   Vzeln_auto_fdo_path globals.f_...' into globals.h (like
+   Vzeln_abi_hash / zeln_load_count), so there is NO manual
+   declaration here.  */
+
+/* True when the FDO machinery should be active at all.  */
+static bool
+zeln_fdo_enabled (void)
+{
+  return (STRINGP (Vzeln_auto_fdo_path) && !NILP (Vzeln_auto_fdo_profile));
+}
+
+/* The hot threshold: N from zeln_auto_fdo_profile, or the default.  */
+static uint64_t
+zeln_fdo_threshold (void)
+{
+  if (FIXNUMP (Vzeln_auto_fdo_profile))
+    return XFIXNUM (Vzeln_auto_fdo_profile) > 0 ? XFIXNUM (Vzeln_auto_fdo_profile) : 1;
+  return 1000;
+}
+
+/* Register a freshly-loaded unit for FDO watching.  Called by
+   Fcomp_z_load_zeln when zeln_fdo_enabled; flips the unit's active
+   flag so its native fns start counting calls.  */
+static void
+zeln_fdo_register (zeln_entry_t *e, dynlib_handle_ptr handle,
+		   Lisp_Object subr_list, Lisp_Object rel_name)
+{
+  if (zeln_fdo_nunits >= ZELN_FDO_MAX_UNITS)
+    return;
+  zeln_fdo_unit_t *u = &zeln_fdo_units[zeln_fdo_nunits++];
+  u->handle = handle;
+  u->entry = e;
+  u->subrs = subr_list;
+  /* Root the list: cons cells referenced only from the C struct field
+     would be swept by the next GC (the subr OBJECTS survive via their
+     symbols, the list scaffolding does not).  */
+  zeln_fdo_subrs_root = Fcons (subr_list, zeln_fdo_subrs_root);
+  zeln_fdo_names_root = Fcons (rel_name, zeln_fdo_names_root);
+  u->rel_name = rel_name;
+  u->last_check = 0.0;
+  u->rounds = 0;
+  u->active = false;
+  if (e->fdo_active)
+    {
+      *e->fdo_active = 1;
+      u->active = true;
+    }
+}
+
+/* Write the profile file `<path>/<rel>.zprofile': one `fnname<TAB>count'
+   line per fn (read by zeln-compile --profile).  Returns the highest
+   count seen.  */
+static uint64_t
+zeln_fdo_write_profile (const char *path, zeln_entry_t *e)
+{
+  FILE *f = emacs_fopen (path, "w");
+  if (!f)
+    return 0;
+  uint64_t maxc = 0;
+  for (ptrdiff_t i = 0; i < e->n_fns; i++)
+    {
+      uint64_t c = e->fdo_counters ? e->fdo_counters[i] : 0;
+      if (c > maxc)
+	maxc = c;
+      fprintf (f, "%s\t%" PRIu64 "\n", e->fns[i].symbol_name, c);
+    }
+  emacs_fclose (f);
+  return maxc;
+}
+
+/* Reset all counters of a unit (called after a flush / after a swap
+   so the next interval measures fresh).  */
+static void
+zeln_fdo_reset_counters (zeln_entry_t *e)
+{
+  if (!e->fdo_counters)
+    return;
+  for (ptrdiff_t i = 0; i < e->n_fns; i++)
+    e->fdo_counters[i] = 0;
+}
+
+/* Spawn zeln-compile over the unit's embedded zunit + manifest, with
+   --profile (or --final on the last round), producing OUT.  The
+   zeln-compile exe comes from the ZELN_COMPILE env var (absolute
+   path, like zeln-bench) with a PATH fallback.  Returns true on
+   success.  Runs at post-GC (no Lisp in flight); Fcall_process is
+   safe there (inhibit_garbage_collection is in effect).  */
+static bool
+zeln_fdo_recompile (zeln_fdo_unit_t *u, const char *out, bool final)
+{
+  zeln_entry_t *e = u->entry;
+  if (!e->zunit_blob || e->zunit_blob->len == 0)
+    return false;
+
+  /* The recompile inputs land next to the output: <out>.zunit,
+     <out>.manifest, <out>.zprofile.  */
+  char *zu = xmalloc (strlen (out) + 8);
+  char *mf = xmalloc (strlen (out) + 12);
+  char *pf = xmalloc (strlen (out) + 12);
+  sprintf (zu, "%s.zunit", out);
+  sprintf (mf, "%s.manifest", out);
+  sprintf (pf, "%s.zprofile", out);
+
+  FILE *f = emacs_fopen (zu, "wb");
+  if (f)
+    {
+      fwrite (e->zunit_blob->data, 1, e->zunit_blob->len, f);
+      emacs_fclose (f);
+    }
+  f = emacs_fopen (mf, "w");
+  if (f)
+    {
+      hash_zeln_abi ();
+      fprintf (f, "%s\n%s\n%s\n", ZELN_ABI_VERSION,
+	       SSDATA (zeln_signature_string ()), SSDATA (Vzeln_abi_hash));
+      emacs_fclose (f);
+    }
+  zeln_fdo_write_profile (pf, e);
+
+  /* Build the argv: zeln-compile <zunit> <manifest> <out> [--profile
+     <pf> | --final].  Spawn via Fcall_process with the standard
+     layout (PROGRAM INFILE DESTINATION DISPLAY ARGS...): indices 1-3
+     are the redirection slots (Qnil = null-device in / discard out),
+     index 4+ are the program's ARGS.  Safe at post-GC
+     (inhibit_garbage_collection is in effect).  */
+  Lisp_Object argv[10];
+  int nargs = 8;
+  argv[0] = build_string (getenv ("ZELN_COMPILE")
+			  ? getenv ("ZELN_COMPILE")
+			  : "zeln-compile");
+  argv[1] = Qnil;		/* INFILE */
+  argv[2] = Qnil;		/* DESTINATION */
+  argv[3] = Qnil;		/* DISPLAY */
+  argv[4] = build_string (zu);
+  argv[5] = build_string (mf);
+  argv[6] = build_string (out);
+  if (final)
+    {
+      /* The final round keeps the profile-guided layout (hot-first +
+	 branch weights) but drops the counters: both flags.  */
+      argv[7] = build_string ("--profile");
+      argv[8] = build_string (pf);
+      argv[9] = build_string ("--final");
+      nargs = 10;
+    }
+  else
+    {
+      argv[7] = build_string ("--profile");
+      argv[8] = build_string (pf);
+      nargs = 9;
+    }
+
+  xfree (zu); xfree (mf); xfree (pf);
+
+  Lisp_Object rc = Fcall_process (nargs, argv);
+  return EQ (rc, make_fixnum (0));
+}
+
+/* Hot-swap a unit to a freshly recompiled .zeln: dlopen OUT, verify
+   the hash, patch freloc, and repoint every existing subr's function
+   pointer to the new native code.  Constant identity is preserved:
+   the NEW fn's d_reloc arrays are filled with the OLD Lisp_Object
+   values (the loader does not Fread the new blob — it copies the old
+   values, which are identical objects).  Returns true on success.  */
+static bool
+zeln_fdo_swap (zeln_fdo_unit_t *u, const char *out)
+{
+  dynlib_handle_ptr nh = dynlib_open_for_eln (out);
+  if (!nh)
+    return false;
+  zeln_entry_t *(*entry_sym) (void) =
+    (zeln_entry_t * (*) (void)) dynlib_sym (nh, "zeln_entry");
+  if (!entry_sym)
+    {
+      dynlib_close (nh);
+      return false;
+    }
+  zeln_entry_t *ne = entry_sym ();
+  if (!ne || !ne->fdo_counters || ne->n_fns != u->entry->n_fns)
+    {
+      dynlib_close (nh);
+      return false;
+    }
+  hash_zeln_abi ();
+  if (NILP (Fstring_equal (make_string (ne->freloc_hash_z, 8), Vzeln_abi_hash)))
+    {
+      dynlib_close (nh);
+      return false;
+    }
+  zeln_patch_freloc (ne);
+
+  /* Repoint every subr; copy the old d_reloc values into the new
+     arrays (identity: same Lisp_Objects, no fresh Fread).  */
+  Lisp_Object tail = u->subrs;
+  for (ptrdiff_t i = 0; i < ne->n_fns && !NILP (tail); i++, tail = XCDR (tail))
+    {
+      struct Lisp_Subr *subr = XSUBR (XCAR (tail));
+      zeln_fn_entry_t *ofe = &u->entry->fns[i];
+      zeln_fn_entry_t *nfe = &ne->fns[i];
+      if (ofe->n_d_reloc == nfe->n_d_reloc)
+	memcpy (nfe->d_reloc, ofe->d_reloc,
+		ofe->n_d_reloc * sizeof (Lisp_Object));
+      subr->function.aMANY = nfe->native_fn;
+    }
+
+  /* Retire the old handle (the old code is no longer reachable — every
+     subr now points at the new .zeln).  */
+  dynlib_close (u->handle);
+  u->handle = nh;
+  u->entry = ne;
+  u->rounds++;
+  u->last_check = 0.0;
+  /* The new .zeln's counters are gated by ITS fdo_active flag, which
+     starts 0 (fresh artifact): re-flip it so collection continues for
+     the next round (the final round's --final drops the counters, so
+     this is a no-op there — no branch exists to gate).  */
+  if (u->active && ne->fdo_active)
+    *ne->fdo_active = 1;
+  zeln_fdo_reset_counters (ne);
+  return true;
+}
+
+/* The post-GC FDO check: interval-gated flush + threshold recompile +
+   hot-swap.  Called from garbage_collect (alloc.c) after the sweep,
+   under HAVE_NATIVE_COMP_ZIG.  Cheap when disabled: one stringp check
+   when path/profile are nil.  */
+void
+zeln_fdo_gc_check (void)
+{
+  if (!zeln_fdo_enabled () || zeln_fdo_nunits == 0)
+    return;
+
+  double now = timespectod (current_timespec ());
+  uint64_t threshold = zeln_fdo_threshold ();
+  double intervel = FLOATP (Vzeln_auto_fdo_intervel)
+    ? XFLOAT_DATA (Vzeln_auto_fdo_intervel) : 60.0;
+
+  for (ptrdiff_t i = 0; i < zeln_fdo_nunits; i++)
+    {
+      zeln_fdo_unit_t *u = &zeln_fdo_units[i];
+      zeln_entry_t *e = u->entry;
+      if (!e->fdo_counters || u->rounds >= ZELN_FDO_MAX_ROUNDS)
+	continue;
+      if (now - u->last_check < intervel)
+	continue;
+      u->last_check = now;
+
+      /* Count the hot fns; decide recompile.  */
+      uint64_t maxc = 0;
+      for (ptrdiff_t k = 0; k < e->n_fns; k++)
+	if (e->fdo_counters[k] > maxc)
+	  maxc = e->fdo_counters[k];
+      if (maxc < threshold)
+	continue;		/* nothing hot: wait for the next interval */
+
+      /* Build <path>/<rel>.zeln (round 1: --profile; round 2: --final).  */
+      char *out = xmalloc (SBYTES (Vzeln_auto_fdo_path)
+			   + SBYTES (u->rel_name) + 8);
+      sprintf (out, "%s/%s", SSDATA (Vzeln_auto_fdo_path),
+	       SSDATA (u->rel_name));
+      bool final = (u->rounds + 1 >= ZELN_FDO_MAX_ROUNDS);
+      if (zeln_fdo_recompile (u, out, final))
+	{
+	  if (zeln_fdo_swap (u, out))
+	    message ("zeln FDO: recompiled %s (round %d/%d)%s",
+		     SSDATA (u->rel_name), u->rounds, ZELN_FDO_MAX_ROUNDS,
+		     final ? " [final]" : "");
+	}
+      xfree (out);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1603,6 +1956,44 @@ run genuinely executed native code rather than silently falling back to
 the interpreter.  */);
   zeln_load_count = 0;
 
+  /* ---- FDO config (auto profile-guided recompilation).  All three
+     default to OFF: with zeln_auto_fdo_path nil the loaded .zeln's
+     fdo_active flags stay 0 and the per-fn counter branch falls
+     through (~2 cycles/call); setting path + profile switches the
+     machinery on for subsequently loaded units.  */
+  DEFVAR_LISP ("zeln-auto-fdo-path", Vzeln_auto_fdo_path,
+    doc: /* Directory for automatic profile-guided optimization of .zeln
+units.  When non-nil (and `zeln-auto-fdo-profile' is non-nil), every
+loaded .zeln starts collecting per-function call counts automatically
+(no manual enable): at post-GC intervals set by
+`zeln-auto-fdo-intervel', the counts are flushed to
+<PATH>/<zeln-rel-name>.zprofile, and when any function exceeds the
+hot threshold the unit is recompiled with `zeln-compile --profile'
+(hot-first layout + branch weights) and hot-swapped in place.  The
+recompiled artifact lands at <PATH>/<zeln-rel-name>.zeln.  A unit is
+recompiled at most twice (the second round is `--final', dropping the
+counters entirely); auto-optimization for a unit stops once its
+profile shows nothing above the threshold or the round limit is
+reached.  nil (default) disables the whole feature.  */);
+  Vzeln_auto_fdo_path = Qnil;
+
+  DEFVAR_LISP ("zeln-auto-fdo-intervel", Vzeln_auto_fdo_intervel,
+    doc: /* Minimum number of seconds between automatic FDO checks
+(profile flush + recompile decision) for .zeln units, measured at
+garbage-collection time.  Default 60.  Set to 0 to check on every GC.  */);
+  Vzeln_auto_fdo_intervel = make_float (60.0);
+
+  DEFVAR_LISP ("zeln-auto-fdo-profile", Vzeln_auto_fdo_profile,
+    doc: /* Profile-collection switch for automatic .zeln FDO.
+nil (default): no collection (the .zeln counters stay gated off).
+t: collect call counts for every loaded .zeln; a function is hot when
+   its call count exceeds the default threshold (1000).
+a number N: collect and treat a function as hot above N calls.
+The hot threshold gates both recompilation and the auto-stop: when no
+function of a unit exceeds it after a recompile round, that unit stops
+being auto-optimized.  */);
+  Vzeln_auto_fdo_profile = Qnil;
+
   DEFVAR_LISP ("comp-zeln-to-el-h", Vzeln_to_el_h,
 	       doc: /* Hash table zeln-filename -> el-filename.
 Mirrors `comp-eln-to-el-h'; used so loading a .zeln reports the source
@@ -1650,6 +2041,12 @@ exactly one native path is active and this variable is ignored.  */);
      `d_reloc' array aliases would be swept by the first post-load GC.  */
   staticpro (&zeln_loaded_const_vectors);
   zeln_loaded_const_vectors = Qnil;
+  /* FDO unit root (see the declaration): the loaded units' subr lists
+     must survive until their hot-swap.  */
+  staticpro (&zeln_fdo_subrs_root);
+  zeln_fdo_subrs_root = Qnil;
+  staticpro (&zeln_fdo_names_root);
+  zeln_fdo_names_root = Qnil;
 
   defsubr (&Scomp_z_load_zeln);
   defsubr (&Scomp_z_write_spike_zunit);

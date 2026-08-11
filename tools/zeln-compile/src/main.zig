@@ -465,6 +465,62 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     const manifest_path = arg_it.next() orelse return error.MissingManifestArg;
     const out_zeln_path = arg_it.next() orelse return error.MissingOutputArg;
 
+    // ---- FDO (profile-guided recompilation) options.  `--profile FILE`
+    // recompiles the .zeln with per-fn hotness guidance (hot-first
+    // layout + branch weights + hot/cold attributes) read from a
+    // loader-written profile file (lines: `<fnname>\t<count>`).
+    // `--final` drops the per-fn call counters entirely (the tuned
+    // artifact: zero FDO overhead — the loader's last recompile round
+    // passes it, and auto-collection stops for the unit).  The counters
+    // are emitted by default (gated by @zeln_fdo_active, which stays 0
+    // unless the loader flips it), so "load a .zeln" is always ready to
+    // auto-collect; `--final` is the only way to strip them.
+    var fdo_profile_path: ?[]const u8 = null;
+    var fdo_final = false;
+    while (arg_it.next()) |a| {
+        if (std.mem.eql(u8, a, "--profile")) {
+            fdo_profile_path = arg_it.next() orelse {
+                std.debug.print("zeln-compile: --profile needs a file argument\n", .{});
+                std.process.exit(1);
+            };
+        } else if (std.mem.eql(u8, a, "--final")) {
+            fdo_final = true;
+        } else {
+            std.debug.print("zeln-compile: unknown option {s}\n", .{a});
+            std.process.exit(1);
+        }
+    }
+
+    // Parse the FDO profile (if any): map fn symbol name -> call count.
+    // Used to mark hot fns (count > 0) and reorder the fn table
+    // hot-first in the emitted .ll.  Keys are OWNED copies (the profile
+    // buffer is freed below; dangling keys would silently miss every
+    // lookup and leave every fn cold).
+    var fdo_counts = std.StringHashMap(u64).init(gpa);
+    defer {
+        var it = fdo_counts.keyIterator();
+        while (it.next()) |k| gpa.free(k.*);
+        fdo_counts.deinit();
+    }
+    if (fdo_profile_path) |pp| {
+        const data = cwd.readFileAlloc(io, pp, gpa, .limited(16 * 1024 * 1024)) catch |err| {
+            std.debug.print("zeln-compile: cannot read profile {s}: {s}\n", .{ pp, @errorName(err) });
+            std.process.exit(1);
+        };
+        defer gpa.free(data);
+        var lines = std.mem.splitScalar(u8, data, '\n');
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+            if (trimmed.len == 0) continue;
+            var fields = std.mem.splitScalar(u8, trimmed, '\t');
+            const name = fields.next() orelse continue;
+            const count_str = fields.next() orelse continue;
+            const count = std.fmt.parseInt(u64, std.mem.trim(u8, count_str, " \t\r"), 10) catch continue;
+            try fdo_counts.put(try gpa.dupe(u8, name), count);
+        }
+        std.debug.print("zeln-compile: FDO profile {s}: {d} fns\n", .{ pp, fdo_counts.count() });
+    }
+
     const zunit = try cwd.readFileAlloc(io, zunit_path, gpa, .limited(16 * 1024 * 1024));
     defer gpa.free(zunit);
     if (zunit.len < 5 or std.mem.readInt(u32, zunit[0..4], .little) != ZUNIT_MAGIC) {
@@ -502,7 +558,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             std.process.exit(1);
         };
         defer freeM1Unit(gpa, unit);
-        ll_body = emitM1LLVM(gpa, unit, abi_hash) catch |err| {
+        ll_body = emitM1LLVM(gpa, unit, abi_hash, zunit, fdo_counts, fdo_final) catch |err| {
             std.debug.print("zeln-compile: M1 emit failed: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
@@ -513,7 +569,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             std.process.exit(1);
         };
         defer freeFileUnit(gpa, file_unit);
-        ll_body = emitFileLLVM(gpa, file_unit.fns, abi_hash, file_unit.top_blob) catch |err| {
+        ll_body = emitFileLLVM(gpa, file_unit.fns, abi_hash, file_unit.top_blob, zunit, fdo_counts, fdo_final) catch |err| {
             std.debug.print("zeln-compile: file emit failed: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
@@ -1320,6 +1376,13 @@ const Emitter = struct {
     // emitBinaryCompare) can load the LIVE Qt value through d_reloc — the
     // exact pattern gccjit uses (comp.c emit_lisp_obj_reloc_lval).
     qt_const_idx: u64 = 0,
+    // FDO: true while emitting a profile-identified HOT fn.  The inline
+    // fast-path branches (fixnum-arith bothfix check, comparisons, NILP
+    // conds) then get `!prof` branch-weight metadata so LLVM -O2 lays out
+    // the inline path as the fall-through (the classic FDO block-layout
+    // effect).  Set by emitNativeFn from the profile; off for non-FDO
+    // builds so their output stays byte-identical to before.
+    is_hot: bool = false,
 
     fn fresh(self: *Emitter) u32 {
         const r = self.next_reg;
@@ -1421,6 +1484,9 @@ fn emitNativeFn(
     fn_name: []const u8,
     d_reloc_name: []const u8,
     unit: FnUnit,
+    is_hot: bool,
+    emit_counters: bool,
+    fn_index: u64,
 ) !void {
     const opcodes = unit.opcodes;
     if (opcodes.len == 0) return error.EmptyBytecode;
@@ -1430,6 +1496,9 @@ fn emitNativeFn(
     // Point the emitter at THIS fn's d_reloc global + const count, and
     // reset the temp register counter for a clean, readable trace.
     em.d_reloc_global = d_reloc_name;
+    // FDO hotness for this fn (drives !prof weights on the inline
+    // branches below).
+    em.is_hot = is_hot;
     // nconsts includes the synthesized Qt slot (unit.consts.len is its
     // index); emitFileLLVM appended `t' to the blob + sized the array +
     // fn-table n_d_reloc consistently.
@@ -1471,7 +1540,22 @@ fn emitNativeFn(
         }
     }
 
-    try em.wf("define internal i64 @{s}(i64 %nargs, ptr %args) {{\n", .{fn_name});
+    // `hot` attribute on profile-identified hot fns: LLVM -O2 lays out
+    // hot fns together and sizes the cold fns for speed, mirroring the
+    // classic FDO layout effect.  Off when no profile was given (is_hot
+    // false) so the non-FDO output is byte-identical to before.
+    // `hot` attribute on profile-identified hot fns: LLVM -O2 lays out
+    // hot fns together and sizes the cold fns for speed, mirroring the
+    // classic FDO layout effect.  Placed in an attributes group (LLVM
+    // rejects `hot` between `define` and the return type — it is a
+    // function attribute, not a return-type attribute).  Off when no
+    // profile was given (is_hot false) so the non-FDO output is
+    // byte-identical to before.
+    if (is_hot) {
+        try em.wf("define internal i64 @{s}(i64 %nargs, ptr %args) #1 {{\n", .{fn_name});
+    } else {
+        try em.wf("define internal i64 @{s}(i64 %nargs, ptr %args) {{\n", .{fn_name});
+    }
     try em.w("entry:\n");
     try em.wif("%stack = alloca [{d} x i64], align 8\n", .{stack_slots});
     // Zero the WHOLE virtual stack before use.  Only the slots up to `top'
@@ -1493,6 +1577,34 @@ fn emitNativeFn(
     // PVEC-FREE class as the virtual stack).  24 bytes; cheaper than a GC
     // abort on fns with heavy dynamic binding (e.g. cl--parsing-keywords).
     try em.w("  call void @llvm.memset.p0.i64(ptr align 8 %zargs, i8 0, i64 24, i1 false)\n");
+
+    // ---- FDO call counter (auto profile collection, Z5). ----
+    // Gated by @zeln_fdo_active: when the flag is 0 (FDO not enabled in
+    // this session) the whole block collapses to one load + one icmp +
+    // one branch — ~2 cycles, and the branch is perfectly predictable.
+    // When the loader flips the flag to 1, every call increments THIS
+    // fn's slot in @zeln_fdo_counters; the loader reads the array when
+    // flushing the profile (interval-gated, post-GC).  `--final` (the
+    // tuned recompile) drops the block entirely: zero FDO overhead on
+    // the artifact.  Block labels are keyed on the fn index so multiple
+    // fns in one .zeln cannot collide.
+    if (emit_counters) {
+        const fdo_a = em.fresh();
+        try em.wif("%{d} = load i64, ptr @zeln_fdo_active\n", .{fdo_a});
+        const fdo_t = em.fresh();
+        try em.wif("%{d} = icmp eq i64 %{d}, 0\n", .{ fdo_t, fdo_a });
+        try em.wif("br i1 %{d}, label %bb_fdo_sk_{d}, label %bb_fdo_ct_{d}\n", .{ fdo_t, fn_index, fn_index });
+        try em.wf("bb_fdo_ct_{d}:\n", .{fn_index});
+        const fdo_p = em.fresh();
+        try em.wif("%{d} = getelementptr inbounds [{d} x i64], ptr @zeln_fdo_counters, i64 0, i64 {d}\n", .{ fdo_p, fn_index, fn_index });
+        const fdo_c = em.fresh();
+        try em.wif("%{d} = load i64, ptr %{d}\n", .{ fdo_c, fdo_p });
+        const fdo_c1 = em.fresh();
+        try em.wif("%{d} = add i64 %{d}, 1\n", .{ fdo_c1, fdo_c });
+        try em.wif("store i64 %{d}, ptr %{d}\n", .{ fdo_c1, fdo_p });
+        try em.wf("  br label %bb_fdo_sk_{d}\n", .{fn_index});
+        try em.wf("bb_fdo_sk_{d}:\n", .{fn_index});
+    }
     const rlt = em.fresh();
     try em.wif("%{d} = load ptr, ptr @freloc_link_table_z\n", .{rlt});
     const rslot = em.fresh();
@@ -1650,10 +1762,31 @@ fn emitFileLLVM(
     fns: []const FnUnit,
     abi_hash: []const u8,
     top_blob: []const u8,
+    zunit_bytes: []const u8,
+    fdo_counts: std.StringHashMap(u64),
+    fdo_final: bool,
 ) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);
     var em = Emitter{ .gpa = gpa, .out = &out };
+
+    // FDO hotness map: symbol name -> 1 for "hot" (count > 0 in the
+    // profile), kept alive for the whole emission.  The fn table is
+    // reordered hot-first when a profile is present (loader matches
+    // fns by symbol name, so the reorder is transparent to it).
+    var hot_set = std.StringHashMap(bool).init(gpa);
+    defer hot_set.deinit();
+    if (fdo_counts.count() > 0) {
+        var it = fdo_counts.iterator();
+        while (it.next()) |e| {
+            if (e.value_ptr.* > 0) try hot_set.put(e.key_ptr.*, true);
+        }
+    }
+    const hot = struct {
+        fn isHot(s: std.StringHashMap(bool), name: []const u8) bool {
+            return s.get(name) orelse false;
+        }
+    }.isHot;
 
     try em.w("; zeln.ll — Tier-0 emission of a multi-function .zeln (M2b).\n");
     try em.w("; Generated by tools/zeln-compile. N native fns (one per defun)\n");
@@ -1667,6 +1800,54 @@ fn emitFileLLVM(
     try hash_lit.appendSlice(gpa, "\\00");
     try em.wf("@freloc_hash_z_data = internal constant [9 x i8] c\"{s}\"\n\n", .{hash_lit.items});
 
+    // ---- FDO state (auto profile-guided recompilation, Z5). ----
+    // @zeln_fdo_active gates ALL per-fn call counters: when it is 0
+    // (the default; the loader flips it to 1 to start collecting) every
+    // counter block falls through after one load+icmp+branch, so an
+    // FDO-off session pays ~nothing.  @zeln_fdo_counters is the [n_fns]
+    // per-fn call-count array the loader reads when flushing profiles.
+    // @zeln_zunit_blob embeds the ORIGINAL zunit bytes so the loader can
+    // recompile the unit at runtime (auto-FDO) without the build
+    // pipeline: it writes the blob back to disk + a manifest + the
+    // profile, then spawns zeln-compile.  --final drops the counters
+    // entirely (the tuned artifact); the active flag + counters array +
+    // zunit blob are still emitted (entry fields must stay present).
+    try em.w("@zeln_fdo_active = internal global i64 0\n");
+    try em.wf("@zeln_fdo_counters = internal global [{d} x i64] zeroinitializer\n\n", .{fns.len});
+
+    // The embedded zunit: { i64 len, [len x i8] data }.  The loader Freads
+    // nothing from it — it writes the raw bytes to disk for recompile.
+    {
+        var zu_lit: std.ArrayList(u8) = .empty;
+        defer zu_lit.deinit(gpa);
+        try appendCStringLiteral(gpa, &zu_lit, zunit_bytes);
+        try em.wf("@zeln_zunit_blob_data = internal constant {{ i64, [{d} x i8] }} {{ i64 {d}, [{d} x i8] c\"{s}\" }}\n\n", .{ zunit_bytes.len, zunit_bytes.len, zunit_bytes.len, zu_lit.items });
+    }
+
+    // Per-fn emission ORDER: with an FDO profile the fn table is laid out
+    // hot-first (higher call counts first) so the hottest code lands first
+    // in the .so text segment — better icache locality for the hot loop.
+    // WITHOUT a profile the order is the zunit's (stable, matches every
+    // non-FDO .zeln).  The loader matches fns by SYMBOL NAME on hot-swap
+    // (never by index), so reordering is fully transparent to it.
+    var order = try gpa.alloc(usize, fns.len);
+    defer gpa.free(order);
+    if (fdo_counts.count() > 0) {
+        var hot_i: usize = 0;
+        var cold_i: usize = fns.len;
+        for (fns, 0..) |unit, i| {
+            if (hot(hot_set, unit.name)) {
+                order[hot_i] = i;
+                hot_i += 1;
+            } else {
+                cold_i -= 1;
+                order[cold_i] = i;
+            }
+        }
+    } else {
+        for (0..fns.len) |i| order[i] = i;
+    }
+
     // Per-fn globals: d_reloc slot array + d_reloc read-syntax blob +
     // the NUL-terminated defun symbol name.  EVERY fn gets a synthesized
     // trailing `t' constant (the Qt slot, index unit.consts.len) so the
@@ -1674,6 +1855,8 @@ fn emitFileLLVM(
     // d_reloc (gccjit's pattern: emit_lisp_obj_reloc_lval).  The loader
     // Freads the blob and checks its length against n_d_reloc, so the
     // array size, blob, and fn-table n_d_reloc must all count N+1.
+    // Globals keep their ORIGINAL index (zeln_fn_<orig_i>) — only the
+    // table order changes.
     for (fns, 0..) |unit, i| {
         var blob: std.ArrayList(u8) = .empty;
         defer blob.deinit(gpa);
@@ -1701,14 +1884,16 @@ fn emitFileLLVM(
 
     // Function table: [N x { ptr native_fn, i64 args_template, ptr
     // symbol_name, ptr d_reloc, i64 n_d_reloc, ptr d_reloc_blob }]
-    // matching zeln_fn_entry_t (compz.h).
+    // matching zeln_fn_entry_t (compz.h).  HOT-FIRST order with a
+    // profile (see `order` above).
     try em.wf("@zeln_fn_table = private constant [{d} x {{ ptr, i64, ptr, ptr, i64, ptr }}] [\n", .{fns.len});
-    for (fns, 0..) |unit, i| {
+    for (order, 0..) |orig_i, slot| {
+        const unit = fns[orig_i];
         // Each array element needs an explicit struct-type prefix (LLVM
         // rejects a bare struct value as an array element).
         try em.wf("  {{ ptr, i64, ptr, ptr, i64, ptr }} {{ ptr @zeln_fn_{d}, i64 {d}, ptr @sym_name_{d}, ptr @d_reloc_z_{d}, i64 {d}, ptr @d_reloc_blob_{d} }}{s}\n", .{
-            i, unit.args_template, i, i, unit.consts.len + 1, i,
-            if (i + 1 < fns.len) "," else "",
+            orig_i, unit.args_template, orig_i, orig_i, unit.consts.len + 1, orig_i,
+            if (slot + 1 < fns.len) "," else "",
         });
     }
     try em.w("]\n\n");
@@ -1725,6 +1910,11 @@ fn emitFileLLVM(
     try em.w("; sys_setjmp == _setjmp on glibc (HAVE__SETJMP first).\n");
     try em.w("declare i32 @_setjmp(ptr) #0\n");
     try em.w("attributes #0 = { nounwind returns_twice }\n");
+    // FDO: `hot` function attribute for profile-identified hot fns
+    // (LLVM layout hint).  Emitted unconditionally; #1 is only
+    // referenced when is_hot fired for at least one fn, and an unused
+    // attribute group is dropped by -O2 with no cost.
+    try em.w("attributes #1 = { hot }\n");
     // memset intrinsic: zero each native fn's alloca virtual stack at entry
     // (see emitNativeFn) so conservative C-stack GC never marks alloca
     // garbage as a live object.
@@ -1737,23 +1927,33 @@ fn emitFileLLVM(
     // by -O2, so fns with no Bmult pay nothing.
     try em.w("declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)\n\n");
 
-    // N native fns.
-    for (fns, 0..) |unit, i| {
-        const fn_name = try std.fmt.allocPrint(gpa, "zeln_fn_{d}", .{i});
+    // N native fns.  Emitted in the HOT-FIRST order so the hottest code
+    // lands first in the .so text segment; each keeps its ORIGINAL index
+    // (zeln_fn_<orig_i>) so the fn table's globals stay consistent.
+    for (order) |orig_i| {
+        const unit = fns[orig_i];
+        const fn_name = try std.fmt.allocPrint(gpa, "zeln_fn_{d}", .{orig_i});
         defer gpa.free(fn_name);
-        const drr = try std.fmt.allocPrint(gpa, "d_reloc_z_{d}", .{i});
+        const drr = try std.fmt.allocPrint(gpa, "d_reloc_z_{d}", .{orig_i});
         defer gpa.free(drr);
-        try emitNativeFn(gpa, &em, fn_name, drr, unit);
+        const this_hot = hot(hot_set, unit.name);
+        try emitNativeFn(gpa, &em, fn_name, drr, unit, this_hot, !fdo_final, orig_i);
     }
 
     // File entry: { ptr freloc_link_table_z, ptr freloc_hash_z, i64 n_fns,
-    // ptr fns, ptr top_level_blob } matching zeln_entry_t (compz.h).
-    try em.w("@zeln_entry_global = internal global { ptr, ptr, i64, ptr, ptr } {\n");
+    // ptr fns, ptr top_level_blob, ptr fdo_active, ptr fdo_counters,
+    // i64 n_fdo, ptr zunit_blob } matching zeln_entry_t (compz.h).
+    // The three FDO fields are appended after top_level_blob (Z5).
+    try em.w("@zeln_entry_global = internal global { ptr, ptr, i64, ptr, ptr, ptr, ptr, i64, ptr } {\n");
     try em.w("  ptr @freloc_link_table_z,\n");
     try em.w("  ptr @freloc_hash_z_data,\n");
     try em.wf("  i64 {d},\n", .{fns.len});
     try em.w("  ptr @zeln_fn_table,\n");
-    try em.w("  ptr @top_level_blob_data\n}\n\n");
+    try em.w("  ptr @top_level_blob_data,\n");
+    try em.w("  ptr @zeln_fdo_active,\n");
+    try em.w("  ptr @zeln_fdo_counters,\n");
+    try em.wf("  i64 {d},\n", .{fns.len});
+    try em.w("  ptr @zeln_zunit_blob_data\n}\n\n");
 
     try em.w("define dso_local ptr @zeln_entry() {\n");
     try em.w("entry:\n");
@@ -1765,7 +1965,7 @@ fn emitFileLLVM(
 
 // zabi=2 (M1 single-fn): the N=1 case of the multi-function container,
 // with a placeholder symbol name and an empty top_level_blob.
-fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8) ![]u8 {
+fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8, zunit_bytes: []const u8, fdo_counts: std.StringHashMap(u64), fdo_final: bool) ![]u8 {
     var fns = try gpa.alloc(FnUnit, 1);
     defer gpa.free(fns);
     fns[0] = .{
@@ -1775,7 +1975,7 @@ fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8) ![]u8 
         .opcodes = unit.opcodes,
         .consts = unit.consts,
     };
-    return emitFileLLVM(gpa, fns, abi_hash, "");
+    return emitFileLLVM(gpa, fns, abi_hash, "", zunit_bytes, fdo_counts, fdo_final);
 }
 
 // ---- Per-opcode IR fragments.  Each assumes a block is currently open
@@ -1921,8 +2121,14 @@ fn emitBinaryArith(em: *Emitter, idx: u64, start: u32) !void {
     try em.wif("%{d} = icmp eq i64 %{d}, {d}\n", .{ f2, m2, FIXNUM_LSB_TAG });
     const bothfix = em.fresh();
     try em.wif("%{d} = and i1 %{d}, %{d}\n", .{ bothfix, f1, f2 });
-    // both-fixnum -> inline arith; else -> fallback (freloc call).
-    try em.wif("br i1 %{d}, label %bb_ari_{d}, label %bb_far_{d}\n", .{ bothfix, start, start });
+    // both-fixnum -> inline arith; else -> fallback (freloc call).  FDO:
+    // hot fns get !prof branch weights (1000000:1 inline) so LLVM lays out
+    // the inline path as fall-through and sinks the fallback block.
+    if (em.is_hot) {
+        try em.wif("br i1 %{d}, label %bb_ari_{d}, label %bb_far_{d}, !prof {s}\n", .{ bothfix, start, start, "!{!\"branch_weights\", i32 1000000, i32 1}" });
+    } else {
+        try em.wif("br i1 %{d}, label %bb_ari_{d}, label %bb_far_{d}\n", .{ bothfix, start, start });
+    }
 
     // Inline arith block: decode operands, compute res, test overflow.
     try em.wf("bb_ari_{d}:\n", .{start});
@@ -1988,7 +2194,11 @@ fn emitUnaryArith(em: *Emitter, idx: u64, start: u32) !void {
     try em.wif("%{d} = and i64 %{d}, {d}\n", .{ m, v, FIXNUM_LSB_MASK });
     const fix = em.fresh();
     try em.wif("%{d} = icmp eq i64 %{d}, {d}\n", .{ fix, m, FIXNUM_LSB_TAG });
-    try em.wif("br i1 %{d}, label %bb_ari_{d}, label %bb_far_{d}\n", .{ fix, start, start });
+    if (em.is_hot) {
+        try em.wif("br i1 %{d}, label %bb_ari_{d}, label %bb_far_{d}, !prof {s}\n", .{ fix, start, start, "!{!\"branch_weights\", i32 1000000, i32 1}" });
+    } else {
+        try em.wif("br i1 %{d}, label %bb_ari_{d}, label %bb_far_{d}\n", .{ fix, start, start });
+    }
 
     // Inline arith block.
     try em.wf("bb_ari_{d}:\n", .{start});
@@ -2193,7 +2403,11 @@ fn emitBinaryCompare(em: *Emitter, idx: u64, start: u32) !void {
     const bothfix = em.fresh();
     try em.wif("%{d} = and i1 %{d}, %{d}\n", .{ bothfix, f1, f2 });
     // both-fixnum -> inline compare; else -> fallback (freloc call).
-    try em.wif("br i1 %{d}, label %bb_cmp_{d}, label %bb_cfc_{d}\n", .{ bothfix, start, start });
+    if (em.is_hot) {
+        try em.wif("br i1 %{d}, label %bb_cmp_{d}, label %bb_cfc_{d}, !prof {s}\n", .{ bothfix, start, start, "!{!\"branch_weights\", i32 1000000, i32 1}" });
+    } else {
+        try em.wif("br i1 %{d}, label %bb_cmp_{d}, label %bb_cfc_{d}\n", .{ bothfix, start, start });
+    }
 
     // Inline compare block: decode operands, signed-compare, Qt/Qnil select.
     try em.wf("bb_cmp_{d}:\n", .{start});

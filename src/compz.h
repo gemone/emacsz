@@ -104,6 +104,32 @@ typedef struct
      .elc's non-defun top-level forms; zero-len for the M0/M1 single-fn
      .zeln (no top-level replay needed).  */
   zeln_static_obj_t *top_level_blob;
+
+  /* ---- FDO / auto profile-guided recompilation (Z5).  All three are
+     emitted by every .zeln (entry-struct layout is fixed); only the
+     per-fn counter BRANCH in the native code is conditional
+     (`--final` drops it).  The loader uses these to auto-collect call
+     counts and recompile the unit without any build-pipeline
+     dependency.  ----
+     &@zeln_fdo_active: the gating flag.  0 = counters disabled (the
+     fn prologue's load+icmp+branch falls through, ~2 cycles/call).
+     The loader writes 1 here to start collecting (set when
+     zeln_auto_fdo_profile is non-nil at load).  */
+  uint64_t *fdo_active;
+
+  /* &@zeln_fdo_counters[0]: the [n_fns] per-fn call-count array.  The
+     loader reads it at flush time (interval-gated, post-GC) and writes
+     the profile file; the recompiled unit starts fresh zeros.  */
+  uint64_t *fdo_counters;
+
+  /* == n_fns.  */
+  ptrdiff_t n_fdo;
+
+  /* &@zeln_zunit_blob: { len, data[] } — the ORIGINAL zunit bytes,
+     embedded so the loader can recompile the unit at runtime: it
+     writes the blob back to disk + a manifest + the profile, then
+     spawns zeln-compile.  Self-contained: no .elc/.elc access needed.  */
+  zeln_static_obj_t *zunit_blob;
 } zeln_entry_t;
 
 /* The exported entry: a .zeln-global function returning &zeln_entry_global
@@ -156,6 +182,12 @@ extern void compute_z_version_dir (void);
 /* Defined in compz.c; called from src/emacs.c under
    #ifdef HAVE_NATIVE_COMP_ZIG.  */
 extern void syms_of_compz (void);
+
+/* FDO: the post-GC auto profile-flush / recompile / hot-swap check.
+   Called from garbage_collect (src/alloc.c) after the sweep, under
+   #ifdef HAVE_NATIVE_COMP_ZIG.  No-op when zeln-auto-fdo-path is nil
+   or no FDO-enabled .zeln unit is loaded.  */
+extern void zeln_fdo_gc_check (void);
 
 #endif /* HAVE_NATIVE_COMP_ZIG */
 

@@ -406,6 +406,66 @@ and `describe-function-1` failed on macOS.  build.zig now installs
 `mod-test.<suffix>` per platform; emacs-module-tests is 39/39 on macOS under
 both `-Dmodules=true` and `-Dmodules-zig=true`.
 
+---
+
+## 12. FDO — Automatic Profile-Guided Recompilation (Z5)
+
+The `.zeln` pipeline auto-optimizes itself without any manual profiling
+step: loading a `.zeln` is always ready to collect, and when
+`zeln-auto-fdo-path` + `zeln-auto-fdo-profile` are set the loader runs a
+closed loop — collect → flush → recompile → hot-swap → stop.
+
+**Instrumentation (always emitted, ~free when off).** Every native fn's
+prologue has a call-counter block gated by the unit's `@zeln_fdo_active`
+global (compz.h `zeln_entry_t` fields: `fdo_active`, `fdo_counters`,
+`n_fdo`, `zunit_blob`).  With the flag 0 the block collapses to one load +
+one icmp + one branch (~2 cycles, perfectly predicted).  `--final`
+recompiles drop the block entirely (zero footprint artifact).
+
+**Self-contained recompile.** The `.zeln` embeds its own zunit
+(`zeln_zunit_blob`), so the loader can recompile at runtime with no
+build-pipeline dependency: it writes the zunit + manifest + profile to
+`<zeln-auto-fdo-path>/`, then spawns `zeln-compile --profile` (tool path
+from `ZELN_COMPILE` env, PATH fallback).
+
+**PGO emission (`--profile FILE`).** `zeln-compile` reads
+`<fnname><TAB><count>` lines and: reorders the fn table hot-first
+(icache locality; the loader matches fns by symbol name on swap, so the
+reorder is transparent), marks hot fns `hot` (LLVM layout), and attaches
+`!prof` branch weights (1000000:1) to the M3 inline fast-path branches
+(fixnum-arith bothfix, unary fixnum, comparisons) so LLVM -O2 lays the
+inline path as fall-through and sinks the fallback blocks.
+
+**GC-cooperative loop (compz.c `zeln_fdo_gc_check`, called from
+`garbage_collect` post-sweep).**  At `zeln-auto-fdo-intervel`-gated
+intervals (wall clock):
+1. flush per-fn counters → `<path>/<rel>.zprofile`; if no fn exceeds the
+   `zeln-auto-fdo-profile` threshold, wait (auto-stop when the workload
+   cools);
+2. otherwise recompile (round 1 `--profile`; round 2 `--profile --final`,
+   counters dropped) and hot-swap in place: dlopen the new .zeln, verify
+   the ABI hash, patch its freloc, copy the OLD d_reloc Lisp_Object
+   values into the new fn entries (constant identity preserved — no
+   fresh Fread), repoint every subr's `function.aMANY` to the new native
+   code, dlclose the old handle.  At most `ZELN_FDO_MAX_ROUNDS` (2)
+   recompiles per unit; after the final round collection stops.
+
+**Config.** `zeln-auto-fdo-path` (dir for profiles + recompiled .zeln;
+nil = off), `zeln-auto-fdo-intervel` (min seconds between post-GC
+checks; default 60), `zeln-auto-fdo-profile` (nil = off; t = collect with
+default threshold 1000; number N = hot threshold).  All default OFF: the
+loaded units' flags stay 0 and the counter branch falls through.
+
+**Verified (macOS, Z5).** All four gates stay green with the instrumented
+.zeln (gate #2 582/582, gate #4 37/37, gate #3 582/582 off-path).  The
+full auto-FDO cycle was exercised on a simulated 2-fn unit: round 1
+recompiles with `--profile` (hot-first + weights), round 2 with
+`--profile --final` (counters gone, hot layout kept), results identical
+after both hot-swaps.  Perf: the collection gate costs ~0 when off
+(inst-vs-final ratio 0.98–1.04 on the M3 workloads — the M3 inline fast
+paths already dominate, leaving the PGO layout effect to large multi-fn
+files).
+
 **Debug narrative (HISTORICAL — bug fixed in deca709247f; kept for the next
 debugger's benefit):**
 

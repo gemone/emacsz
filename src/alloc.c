@@ -34,6 +34,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #endif
 
 #include "lisp.h"
+#ifdef HAVE_NATIVE_COMP_ZIG
+#include "compz.h"		/* zeln_fdo_gc_check (FDO post-GC hook) */
+#endif
 #include "bignum.h"
 #include "dispextern.h"
 #include "intervals.h"
@@ -6010,6 +6013,15 @@ garbage_collect (void)
     }
 
   gcs_done++;
+
+#ifdef HAVE_NATIVE_COMP_ZIG
+  /* FDO: auto profile flush + recompile + hot-swap for loaded .zeln
+     units, interval-gated.  Runs right after the sweep (stop-the-world:
+     no native code is executing, so swapping subr function pointers and
+     dlclosing the old .zeln handle is safe) and before the Lisp-level
+     post-gc-hook.  */
+  zeln_fdo_gc_check ();
+#endif
 
   /* Collect profiling data.  */
   if (tot_before != (byte_ct) -1)

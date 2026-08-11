@@ -315,7 +315,7 @@ dynlib_error (void)
   return dlerror ();
 }
 
-# ifdef HAVE_NATIVE_COMP
+# if defined (HAVE_NATIVE_COMP) || defined (HAVE_NATIVE_COMP_ZIG)
 int
 dynlib_close (dynlib_handle_ptr h)
 {
