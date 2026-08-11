@@ -2349,6 +2349,38 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("build-aux/compile-lisp.zig"),
         }),
     });
+
+    // generate-cedet-grammars: produce the cedet parser files
+    // (semantic/*-wy.el, semantic/wisent/*-wy.el, semantic/bovine/*-by.el,
+    // srecode/srt-wy.el) from admin/grammars via the bovine/wisent batch
+    // generators (mirrors admin/grammars/Makefile.in). Upstream does not
+    // track these; without them the cedet suites fail to load
+    // ("Cannot open load file srecode/srt-wy").  Declared BEFORE
+    // run_compile_lisp: on a cold checkout compile-lisp needs the grammar
+    // files (cedet sources require the generated -wy.el at compile time),
+    // so run_compile_lisp depends on gen_cedet below.
+    const gen_cedet_tool = b.addExecutable(.{
+        .name = "generate-cedet-grammars",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/generate-cedet-grammars.zig"),
+        }),
+    });
+    const gen_cedet = b.addRunArtifact(gen_cedet_tool);
+    gen_cedet.setCwd(b.path("."));
+    // The grammar batch generators run against the SOURCE bootstrap dump
+    // (bootstrap-emacs.pdmp from `dump`; they load the grammar tools from
+    // lisp/cedet source).  Depend on run_dump, NOT run_smoke: smoke needs
+    // dump-compiled -> compile-lisp, and compile-lisp needs these grammar
+    // files on a cold checkout, so wiring through smoke would be a cycle.
+    gen_cedet.step.dependOn(&run_dump.step);
+    const gen_cedet_step = b.step(
+        "generate-cedet-grammars",
+        "Generate cedet parser files from admin/grammars",
+    );
+    gen_cedet_step.dependOn(&gen_cedet.step);
+
     const run_compile_lisp = b.addRunArtifact(compile_lisp_tool);
     run_compile_lisp.setCwd(b.path("."));
     run_compile_lisp.step.dependOn(&run_dump.step);
@@ -2357,6 +2389,21 @@ pub fn build(b: *std.Build) void {
     // compile time, so generate it from the source dump first (a clean
     // checkout has no stale charprop.el to mask the missing dependency).
     run_compile_lisp.step.dependOn(&gen_charprop.step);
+    // Cold-checkout fix: cedet sources (lisp/cedet/{srecode,semantic}/**)
+    // `require' the generated wisent/bovine grammars (srt-wy.el, c-by.el,
+    // ...) AT COMPILE TIME, and those files are NOT tracked (generated
+    // from admin/grammars/*.{by,wy}).  A cold clone (no warm zigbuild
+    // cache) therefore failed to byte-compile ~20 cedet files ("Cannot
+    // open load file srecode/srt-wy") unless generate-cedet-grammars had
+    // run first.  gen_cedet depends on run_dump only (grammars run
+    // against the source bootstrap dump), so this edge is cycle-free.
+    // POSIX-only edge: the batch grammar generators (bovine/wisent)
+    // do not run on the w32 console build (they exit non-zero there),
+    // so on Windows the grammars are never generated and compile-lisp
+    // falls back to its per-file skip (cedet .elc simply absent), the
+    // pre-existing behavior before this wiring.
+    if (!is_windows)
+        run_compile_lisp.step.dependOn(&gen_cedet.step);
     const compile_lisp_step = b.step("compile-lisp", "Byte-compile lisp/ with the bootstrap emacs");
     compile_lisp_step.dependOn(&run_compile_lisp.step);
 
@@ -2494,30 +2541,6 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run a built-in ert test suite with the dumped emacs");
     test_step.dependOn(check_step);
 
-    // generate-cedet-grammars: produce the cedet parser files
-    // (semantic/*-wy.el, semantic/wisent/*-wy.el, semantic/bovine/*-by.el,
-    // srecode/srt-wy.el) from admin/grammars via the bovine/wisent batch
-    // generators (mirrors admin/grammars/Makefile.in). Upstream does not
-    // track these; without them the cedet suites fail to load
-    // ("Cannot open load file srecode/srt-wy"). Standalone; run before
-    // check-all if the suite set needs cedet.
-    const gen_cedet_tool = b.addExecutable(.{
-        .name = "generate-cedet-grammars",
-        .root_module = b.createModule(.{
-            .target = b.graph.host,
-            .optimize = .Debug,
-            .root_source_file = b.path("build-aux/generate-cedet-grammars.zig"),
-        }),
-    });
-    const gen_cedet = b.addRunArtifact(gen_cedet_tool);
-    gen_cedet.setCwd(b.path("."));
-    gen_cedet.step.dependOn(&run_smoke.step);
-    const gen_cedet_step = b.step(
-        "generate-cedet-grammars",
-        "Generate cedet parser files from admin/grammars",
-    );
-    gen_cedet_step.dependOn(&gen_cedet.step);
-
     // check-all step: run EVERY *-tests.el under test/ — no skip. Each
     // suite runs in its own temacs process under a per-suite timeout so a
     // hang/crash in one suite cannot hide the rest, and every outcome is
@@ -2603,14 +2626,30 @@ pub fn build(b: *std.Build) void {
         // mod-test.c compile's -Isrc; the gen-emacs-module-h run step must
         // have produced it first.
         mod_test_lib.step.dependOn(&run_gen_emh.step);
-        // Install as mod-test.so (NOT libmod-test.so): the suite resolves the
-        // load path with the bare module base name, no lib prefix.  .prefix is
-        // the zig-out root, so the full dest_rel_path lands the .so exactly
-        // where emacs-module-tests.el's mod-test-file points.
+        // Install as mod-test.<suffix> (NOT libmod-test.<suffix>): the suite
+        // resolves the load path with the bare module base name, no lib
+        // prefix.  .prefix is the zig-out root, so the full dest_rel_path
+        // lands the module exactly where emacs-module-tests.el's mod-test-file
+        // points.  The suffix must match the platform's MODULES_SUFFIX (the
+        // PRIMARY module suffix): ".dylib" on darwin, ".dll" on Windows,
+        // ".so" on ELF hosts -- emacs-module-tests' darwin-secondary-suffix
+        // test asserts the primary file exists and manufactures the secondary
+        // (.so) via add-name-to-file, and describe-function-1 compares against
+        // module-file-suffix.  Installing the wrong name fails those on macOS.
+        const mod_suffix: []const u8 = switch (target.result.os.tag) {
+            .macos => ".dylib",
+            .windows => ".dll",
+            else => ".so",
+        };
+        const mod_install_path = std.fmt.allocPrint(
+            b.allocator,
+            "test/src/emacs-module-resources/mod-test{s}",
+            .{mod_suffix},
+        ) catch @panic("OOM");
         const install_mod_test = b.addInstallFileWithDir(
             mod_test_lib.getEmittedBin(),
             .prefix,
-            "test/src/emacs-module-resources/mod-test.so",
+            mod_install_path,
         );
         install_mod_test.step.dependOn(&mod_test_lib.step);
         b.getInstallStep().dependOn(&install_mod_test.step);

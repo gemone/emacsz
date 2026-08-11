@@ -364,6 +364,48 @@ interpreter); geomean native/eln **0.662×** (1.51× faster than gccjit `.eln`);
 **every one of the 10 benchmark workloads beats gccjit individually**.
 Behavioral identity preserved throughout (gate #2 582/582 + zeln-diff 37/37).
 
+**macOS (M3 verification, arm64/Apple Silicon, 2026-08-11):** the identical
+`zeln-bench` micro-benchmark reports geomean native/interp **0.191×** across
+the 10 workloads (5.2× faster than the interpreter; better than the Linux
+0.265× record).  All four acceptance gates are green on macOS: gate #1
+populate-zeln-cache 1044 compiled / 100.0% coverage, gate #2 check-zeln
+582/582 with `zeln-load-count: 53` (genuine `.zeln` execution, see below),
+gate #3 default check 582/582, gate #4 zeln-diff 37/37.  The real-suite
+`bench-check` ratio on macOS is 0.998 (the 582-test wall clock is dominated
+by ert framework overhead, not compute; same shape as Linux's 0.980).
+
+### macOS fixes (2026-08-11) — spawned `zig cc` link + gate instrumentation
+
+Two issues were found and fixed during the macOS verification:
+
+1. **`zig cc spawn failed: FileNotFound` on macOS.**  `zeln-compile` creates
+   its Io instance with `std.Io.Threaded.init(gpa, .{})`, whose default
+   environ block is *empty*; `environ_initialized` is then set true and
+   `scanEnviron()` never runs, so the `argv[0]="zig"` PATH lookup in
+   `spawnPosix` falls back to `default_PATH` (`/usr/local/bin:/bin:/usr/bin`).
+   Homebrew installs zig under `/opt/homebrew/bin` → every link fails.  On
+   Linux CI zig lives in `/usr/bin` (inside `default_PATH`), which masked
+   the bug: the CI zeln gate had been passing via interpreter fallback
+   (populate-zeln-cache tolerates per-file failures, recording 0 compiled /
+   100% skipped).  Fixed by seeding the Threaded environ snapshot with the
+   parent environment (`.environ = minimal.environ`) in
+   `tools/zeln-compile/src/main.zig`; a concurrent agent independently added
+   a `ZELN_ZIG_CC` env-var override in `build.zig` — both coexist.
+2. **Gate #2 genuine-run instrumentation.**  check-zeln previously passed
+   trivially when the cache contained zero usable `.zeln` (silent
+   interpreter fallback).  Added a `zeln-load-count` counter (DEFVAR_INT in
+   `compz.c`, incremented on each completed `Fcomp_z_load_zeln`) and a
+   run-check.zig gate: when `ZELN_LOAD_PATH` is set, the run exits 1 if the
+   count is still 0 after the suite.  The gate now *proves* `.zeln` code
+   ran (macOS reports 53 loaded units).
+
+Also fixed: the sample dynamic module was installed as `mod-test.so` on all
+platforms, but emacs-module-tests requires the PRIMARY `MODULES_SUFFIX`
+name (`.dylib` on Darwin, `.dll` on Windows): `module-darwin-secondary-suffix`
+and `describe-function-1` failed on macOS.  build.zig now installs
+`mod-test.<suffix>` per platform; emacs-module-tests is 39/39 on macOS under
+both `-Dmodules=true` and `-Dmodules-zig=true`.
+
 **Symptom:** `check-zeln` SIGSEGV/SIGABRT during GC. `cl-print.zeln`'s
 load-time top-level writes a **pure-garbage** `Lisp_Object`
 `0x8000000000000004` (Lisp_String tag 4 + invalid pointer

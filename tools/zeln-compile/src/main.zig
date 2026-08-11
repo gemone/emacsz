@@ -323,7 +323,13 @@ const OPCODE_BDISCARDN: u8 = 182; // arg = FETCH (0x80 bit = preserve-TOS)
 
 pub fn main(minimal: std.process.Init.Minimal) !void {
     const gpa = std.heap.smp_allocator;
-    var io_threaded: std.Io.Threaded = .init(gpa, .{});
+    // Seed the Io instance with the parent environment.  WITHOUT it, the
+    // Threaded environ snapshot is empty and `environ_initialized` is set
+    // true, so scanEnviron() never runs and the argv[0]="zig" PATH lookup
+    // in spawnPosix falls back to default_PATH (/usr/local/bin:/bin:/usr/bin)
+    // — which misses Homebrew's /opt/homebrew/bin on macOS (Linux CI's
+    // /usr/bin zig masked this) and every `zig cc` link fails FileNotFound.
+    var io_threaded: std.Io.Threaded = .init(gpa, .{ .environ = minimal.environ });
     const io = io_threaded.io();
     const cwd = std.Io.Dir.cwd();
 

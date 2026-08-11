@@ -302,6 +302,12 @@ const windows_overrides: []const Override = &.{
     // Windows path-list separator is ';' (the Linux ':' would split
     // every drive letter off "D:/..." paths during startup).
     .{ .name = "SEPCHAR", .value = "';'" },
+    // Windows has no /dev/null; its null device is NUL.  The committed
+    // Linux value ("/dev/null") made every subprocess's null stdin/stdout
+    // (call-process, make-process, ...) fail to open with "No such file or
+    // directory" during compile-lisp on the Windows CI runner (woman.el
+    // etc.), aborting the whole build.
+    .{ .name = "NULL_DEVICE", .value = "\"NUL\"" },
     // Module suffix mirrors upstream configure.ac's mingw case
     // (MODULES_SUFFIX follows DYNAMIC_LIB_SUFFIX = ".dll"). See
     // configure.ac:5093-5116.

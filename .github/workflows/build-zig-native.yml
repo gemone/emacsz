@@ -118,13 +118,30 @@ jobs:
           fi
         shell: bash
 
-      - name: .zeln native-comp build (macOS, non-gating)
+      - name: .zeln native-comp gates (macOS)
         if: runner.os == 'macOS'
-        continue-on-error: true
         shell: bash
         run: |
-          zig build -Dnative-comp-zig=true 2>&1 || \
-            echo "::notice::.zeln path did not build on macOS yet"
+          # The .zeln pipeline (compz.c + zeln-compile + populate +
+          # check-zeln + zeln-diff) runs on every native OS since the
+          # gate lift (build.zig: native, non-musl).  Verified on macOS
+          # arm64: gate #1 1044 compiled / 100% coverage, gate #2
+          # 582-via-.zeln (0 unexpected, genuine-load count > 0), gate #4
+          # zeln-diff 37/37.  Now GATING (was continue-on-error while the
+          # macOS spawn fix was in flight).
+          zig build -Dnative-comp-zig=true populate-zeln-cache
+          zig build -Dnative-comp-zig=true check-zeln
+          zig build -Dnative-comp-zig=true zeln-diff
+
+      - name: Dynamic module tests (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # Upstream emacs-module-tests under both module paths; verified
+          # 39/39 on macOS arm64 (the mod-test install name follows
+          # MODULES_SUFFIX: mod-test.dylib here).
+          zig build -Dmodules-zig=true modules-test-run
+          zig build -Dmodules=true modules-test-run
 
       - name: Run tests
         env:
