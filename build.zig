@@ -2720,6 +2720,16 @@ pub fn build(b: *std.Build) void {
                 .root_source_file = zeln_compile_dep.path("src/main.zig"),
             }),
         });
+        // Install the tool to zig-out/bin so the runtime FDO harness can
+        // spawn it (ZELN_COMPILE env, zeln-fdo.el); the same binary the
+        // spike / zeln-diff / populate steps invoke directly.
+        const install_zeln_compile = b.addInstallFileWithDir(
+            zeln_compile_tool.getEmittedBin(),
+            .prefix,
+            "bin/zeln-compile",
+        );
+        install_zeln_compile.step.dependOn(&zeln_compile_tool.step);
+        b.getInstallStep().dependOn(&install_zeln_compile.step);
 
         // Step 1: run the dumped emacs to serialize the spike zunit +
         // manifest (comp-z-write-spike-zunit is defined in src/compz.c).
@@ -2892,6 +2902,34 @@ pub fn build(b: *std.Build) void {
         );
         check_zeln_step.dependOn(&run_check_zeln.step);
 
+        // ---- zeln-fdo: the Z5 auto profile-guided recompilation loop.
+        // build-aux/zeln-fdo.el drives the full closed loop on a SIMULATED
+        // .zeln: build a 2-fn fixture, serialize + compile it, load with
+        // zeln-auto-fdo-path/profile/intervel set (tiny interval + low
+        // threshold), hammer the hot fn, force GC (the loader flushes a
+        // profile and hot-swaps a --profile recompile), hammer again +
+        // GC (round 2 --profile --final: counters dropped), then assert the
+        // profile file exists, the final .zeln is hot-first, and the hot
+        // fn still returns the correct value after both swaps.  Exits
+        // non-zero on any failure.  ZELN_COMPILE points at the installed
+        // zeln-compile (the harness spawns it itself).
+        const run_fdo = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs", "--batch",
+            "-l", "build-aux/zeln-fdo.el",
+            "--eval", "(zeln-fdo-run)",
+        });
+        run_fdo.setCwd(b.path("."));
+        run_fdo.setEnvironmentVariable("ZELN_COMPILE", "zig-out/bin/zeln-compile");
+        run_fdo.step.dependOn(&install_zeln_compile.step);
+        run_fdo.step.dependOn(&run_dump_compiled.step);
+        run_fdo.step.dependOn(&run_loaddefs_final.step);
+        run_fdo.step.dependOn(emacs_wrapper_step);
+        const zeln_fdo_step = b.step(
+            "zeln-fdo",
+            "Z5: auto profile-guided recompilation loop (collect -> recompile -> hot-swap)",
+        );
+        zeln_fdo_step.dependOn(&run_fdo.step);
+
         // ---- bench-check: real-suite perf comparison (interpreter vs
         // .zeln) over the SAME 582 built-in tests.  bench-tests runs the
         // run-check harness in both modes (ZELN_LOAD_PATH unset vs the
@@ -2949,6 +2987,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build zeln-diff         - M1/M2 differential test (N/N identical)
         \\  zig build populate-zeln-cache - M2b: populate .zeln-cache from lisp/
         \\  zig build check-zeln        - M2b: 582 built-in tests via .zeln
+        \\  zig build zeln-fdo          - Z5: auto profile-guided recompile loop
         \\
         \\Native-comp gccjit path (opt-in: -Dnative-comp=true, native glibc-Linux;
         \\  requires libgccjit). Coexists with -Dnative-comp-zig: when both are on,

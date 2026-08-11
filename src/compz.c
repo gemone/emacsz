@@ -1061,12 +1061,17 @@ zeln_fdo_recompile (zeln_fdo_unit_t *u, const char *out, bool final)
      layout (PROGRAM INFILE DESTINATION DISPLAY ARGS...): indices 1-3
      are the redirection slots (Qnil = null-device in / discard out),
      index 4+ are the program's ARGS.  Safe at post-GC
-     (inhibit_garbage_collection is in effect).  */
+     (inhibit_garbage_collection is in effect).  Fcall_process resolves
+     the PROGRAM via exec-path, NOT the cwd, so a relative ZELN_COMPILE
+     (e.g. "zig-out/bin/zeln-compile" from the build step) must be
+     expanded to an absolute path first -- the same reason the harness
+     (build-aux/zeln-fdo.el) expands it.  */
+  const char *zraw = getenv ("ZELN_COMPILE");
+  Lisp_Object zc = zraw ? build_string (zraw) : build_string ("zeln-compile");
+  zc = Fexpand_file_name (zc, Qnil);
   Lisp_Object argv[10];
   int nargs = 8;
-  argv[0] = build_string (getenv ("ZELN_COMPILE")
-			  ? getenv ("ZELN_COMPILE")
-			  : "zeln-compile");
+  argv[0] = zc;
   argv[1] = Qnil;		/* INFILE */
   argv[2] = Qnil;		/* DESTINATION */
   argv[3] = Qnil;		/* DISPLAY */
