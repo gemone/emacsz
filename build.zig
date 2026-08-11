@@ -2328,6 +2328,38 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("build-aux/compile-lisp.zig"),
         }),
     });
+
+    // generate-cedet-grammars: produce the cedet parser files
+    // (semantic/*-wy.el, semantic/wisent/*-wy.el, semantic/bovine/*-by.el,
+    // srecode/srt-wy.el) from admin/grammars via the bovine/wisent batch
+    // generators (mirrors admin/grammars/Makefile.in). Upstream does not
+    // track these; without them the cedet suites fail to load
+    // ("Cannot open load file srecode/srt-wy").  Declared BEFORE
+    // run_compile_lisp: on a cold checkout compile-lisp needs the grammar
+    // files (cedet sources require the generated -wy.el at compile time),
+    // so run_compile_lisp depends on gen_cedet below.
+    const gen_cedet_tool = b.addExecutable(.{
+        .name = "generate-cedet-grammars",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = b.path("build-aux/generate-cedet-grammars.zig"),
+        }),
+    });
+    const gen_cedet = b.addRunArtifact(gen_cedet_tool);
+    gen_cedet.setCwd(b.path("."));
+    // The grammar batch generators run against the SOURCE bootstrap dump
+    // (bootstrap-emacs.pdmp from `dump`; they load the grammar tools from
+    // lisp/cedet source).  Depend on run_dump, NOT run_smoke: smoke needs
+    // dump-compiled -> compile-lisp, and compile-lisp needs these grammar
+    // files on a cold checkout, so wiring through smoke would be a cycle.
+    gen_cedet.step.dependOn(&run_dump.step);
+    const gen_cedet_step = b.step(
+        "generate-cedet-grammars",
+        "Generate cedet parser files from admin/grammars",
+    );
+    gen_cedet_step.dependOn(&gen_cedet.step);
+
     const run_compile_lisp = b.addRunArtifact(compile_lisp_tool);
     run_compile_lisp.setCwd(b.path("."));
     run_compile_lisp.step.dependOn(&run_dump.step);
@@ -2336,6 +2368,15 @@ pub fn build(b: *std.Build) void {
     // compile time, so generate it from the source dump first (a clean
     // checkout has no stale charprop.el to mask the missing dependency).
     run_compile_lisp.step.dependOn(&gen_charprop.step);
+    // Cold-checkout fix: cedet sources (lisp/cedet/{srecode,semantic}/**)
+    // `require' the generated wisent/bovine grammars (srt-wy.el, c-by.el,
+    // ...) AT COMPILE TIME, and those files are NOT tracked (generated
+    // from admin/grammars/*.{by,wy}).  A cold clone (no warm zigbuild
+    // cache) therefore failed to byte-compile ~20 cedet files ("Cannot
+    // open load file srecode/srt-wy") unless generate-cedet-grammars had
+    // run first.  gen_cedet depends on run_dump only (grammars run
+    // against the source bootstrap dump), so this edge is cycle-free.
+    run_compile_lisp.step.dependOn(&gen_cedet.step);
     const compile_lisp_step = b.step("compile-lisp", "Byte-compile lisp/ with the bootstrap emacs");
     compile_lisp_step.dependOn(&run_compile_lisp.step);
 
@@ -2471,30 +2512,6 @@ pub fn build(b: *std.Build) void {
     // with the dumped emacs, so `zig build test` delegates to it.
     const test_step = b.step("test", "Run a built-in ert test suite with the dumped emacs");
     test_step.dependOn(check_step);
-
-    // generate-cedet-grammars: produce the cedet parser files
-    // (semantic/*-wy.el, semantic/wisent/*-wy.el, semantic/bovine/*-by.el,
-    // srecode/srt-wy.el) from admin/grammars via the bovine/wisent batch
-    // generators (mirrors admin/grammars/Makefile.in). Upstream does not
-    // track these; without them the cedet suites fail to load
-    // ("Cannot open load file srecode/srt-wy"). Standalone; run before
-    // check-all if the suite set needs cedet.
-    const gen_cedet_tool = b.addExecutable(.{
-        .name = "generate-cedet-grammars",
-        .root_module = b.createModule(.{
-            .target = b.graph.host,
-            .optimize = .Debug,
-            .root_source_file = b.path("build-aux/generate-cedet-grammars.zig"),
-        }),
-    });
-    const gen_cedet = b.addRunArtifact(gen_cedet_tool);
-    gen_cedet.setCwd(b.path("."));
-    gen_cedet.step.dependOn(&run_smoke.step);
-    const gen_cedet_step = b.step(
-        "generate-cedet-grammars",
-        "Generate cedet parser files from admin/grammars",
-    );
-    gen_cedet_step.dependOn(&gen_cedet.step);
 
     // check-all step: run EVERY *-tests.el under test/ — no skip. Each
     // suite runs in its own temacs process under a per-suite timeout so a
