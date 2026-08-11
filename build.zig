@@ -2685,7 +2685,7 @@ pub fn build(b: *std.Build) void {
         spike_ser.setCwd(b.path("."));
         spike_ser.step.dependOn(&run_dump_compiled.step);
         spike_ser.step.dependOn(&run_loaddefs_final.step);
-        spike_ser.step.dependOn(&chmod_emacs_wrapper.step);
+        spike_ser.step.dependOn(emacs_wrapper_step);
 
         // Step 2: run zeln-compile over the zunit -> .ll -> .zeln.
         const spike_compile = b.addRunArtifact(zeln_compile_tool);
@@ -2741,7 +2741,7 @@ pub fn build(b: *std.Build) void {
         diff_ser.setCwd(b.path("."));
         diff_ser.step.dependOn(&run_dump_compiled.step);
         diff_ser.step.dependOn(&run_loaddefs_final.step);
-        diff_ser.step.dependOn(&chmod_emacs_wrapper.step);
+        diff_ser.step.dependOn(emacs_wrapper_step);
 
         // (c) Harness: emacs --batch -l zeln-diff.el --eval run-harness.  Loads
         // each .zeln, funcalls baseline vs native on the shared inputs, prints
@@ -2756,7 +2756,7 @@ pub fn build(b: *std.Build) void {
         });
         diff_harness.setCwd(b.path("."));
         diff_harness.step.dependOn(&run_dump_compiled.step);
-        diff_harness.step.dependOn(&chmod_emacs_wrapper.step);
+        diff_harness.step.dependOn(emacs_wrapper_step);
         diff_harness.step.dependOn(&diff_ser.step);
 
         // (b) Compile each .zunit -> .ll -> .zeln (one zeln-compile run per fn).
@@ -2813,7 +2813,7 @@ pub fn build(b: *std.Build) void {
         run_populate.step.dependOn(&run_compile_lisp.step);
         run_populate.step.dependOn(&run_dump_compiled.step);
         run_populate.step.dependOn(&run_loaddefs_final.step);
-        run_populate.step.dependOn(&chmod_emacs_wrapper.step);
+        run_populate.step.dependOn(emacs_wrapper_step);
         const populate_step = b.step(
             "populate-zeln-cache",
             "M2b: populate .zeln-cache from lisp/**/*.elc (per-file tolerant)",
@@ -2835,7 +2835,7 @@ pub fn build(b: *std.Build) void {
         run_check_zeln.step.dependOn(&run_populate.step);
         run_check_zeln.step.dependOn(&run_dump_compiled.step);
         run_check_zeln.step.dependOn(&run_loaddefs_final.step);
-        run_check_zeln.step.dependOn(&chmod_emacs_wrapper.step);
+        run_check_zeln.step.dependOn(emacs_wrapper_step);
         const check_zeln_step = b.step(
             "check-zeln",
             "M2b: run 582 built-in tests with transparent .zeln loading",
@@ -2864,7 +2864,7 @@ pub fn build(b: *std.Build) void {
         run_bench.step.dependOn(&run_populate.step);
         run_bench.step.dependOn(&run_dump_compiled.step);
         run_bench.step.dependOn(&run_loaddefs_final.step);
-        run_bench.step.dependOn(&chmod_emacs_wrapper.step);
+        run_bench.step.dependOn(emacs_wrapper_step);
         const bench_step = b.step(
             "bench-check",
             "Real-suite perf: interpreter vs .zeln on the 582 built-in tests (best-of-3)",
