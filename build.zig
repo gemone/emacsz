@@ -1414,6 +1414,15 @@ pub fn build(b: *std.Build) void {
                 .flags = base_flags,
             });
         }
+        // .zeln-only builds (HAVE_NATIVE_COMP_ZIG without gccjit): compz.c's
+        // comp_z_hash_source_file also streams via md5_stream, so compile
+        // lib/md5-stream.c here too (same gnulib-hash Zig package linkage).
+        else if (enable_native_comp_zig and !native_comp_target) {
+            exe.root_module.addCSourceFile(.{
+                .file = b.path("lib/md5-stream.c"),
+                .flags = base_flags,
+            });
+        }
         // Dynamic modules (Track B, plan section 13).  -DHAVE_MODULES
         // activates the upstream module runtime (lread.c module-file
         // detection via MODULES_SUFFIX, eval.c funcall_module dispatch,

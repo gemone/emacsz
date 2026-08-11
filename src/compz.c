@@ -42,6 +42,7 @@
 #include <config.h>
 
 #include "compz.h"
+#include "md5.h"
 
 #ifdef HAVE_NATIVE_COMP_ZIG
 
@@ -1378,15 +1379,17 @@ comp_z_hash_string (Lisp_Object string)
 }
 
 /* MD5 hex digest (first 8 chars) of a source (.el / .el.gz) file's
-   contents.  Mirror comp.c:733 comp_hash_source_file.  comp.c streams
-   through md5_stream (and md5_gz_stream under HAVE_ZLIB); compz.c reads
-   the whole file into a unibyte string and md5s it.  For plain .el this
-   is byte-identical to comp.c; for .el.gz it hashes the COMPRESSED
-   bytes (still a self-consistent source->zeln binding; full gzip-aware
-   hashing is M2 — it needs HAVE_ZLIB, deliberately not a compz.c dep).
-   content_hash is what binds a given .elc to exactly ONE .zeln and
-   defeats stale dlopen-handle reuse (the rationale at comp.c:4348-4356
-   carries over verbatim).  */
+   contents.  Mirror comp.c:733 comp_hash_source_file, including its
+   streaming (md5_stream): no whole-file buffer, and read failures
+   (including short reads) surface as a non-zero md5_stream return
+   instead of being silently truncated into a wrong hash.  For a plain
+   .el the digest is byte-identical to the old whole-file unibyte-string
+   md5; for .el.gz it hashes the COMPRESSED bytes (still a
+   self-consistent source->zeln binding; full gzip-aware hashing needs
+   HAVE_ZLIB, deliberately not a compz.c dep).  content_hash is what
+   binds a given .elc to exactly ONE .zeln and defeats stale
+   dlopen-handle reuse (the rationale at comp.c:4348-4356 carries over
+   verbatim).  */
 static Lisp_Object
 comp_z_hash_source_file (Lisp_Object filename)
 {
@@ -1395,36 +1398,14 @@ comp_z_hash_source_file (Lisp_Object filename)
   if (!f)
     report_file_error ("Opening source file", filename);
 
-  if (fseeko (f, 0, SEEK_END) != 0)
-    {
-      emacs_fclose (f);
-      report_file_error ("Seeking source file", filename);
-    }
-  off_t sz = ftello (f);
-  if (sz < 0)
-    {
-      emacs_fclose (f);
-      report_file_error ("Querying source file size", filename);
-    }
-  rewind (f);
-
-  /* Read the whole file in one shot (source .el files are small).  */
-  char *buf = xmalloc (sz);
-  size_t got = fread (buf, 1, sz, f);
-  bool err = ferror (f);
+  Lisp_Object digest = make_uninit_string (MD5_DIGEST_SIZE * 2);
+  int res = md5_stream (f, SSDATA (digest));
   emacs_fclose (f);
-  if (err)
-    {
-      xfree (buf);
-      xsignal2 (Qfile_notify_error, build_string ("hashing failed"), filename);
-    }
+  if (res)
+    report_file_error ("Hashing source file", filename);
 
-  Lisp_Object acc = make_unibyte_string (buf, got);
-  xfree (buf);
+  hexbuf_digest (SSDATA (digest), SSDATA (digest), MD5_DIGEST_SIZE);
 
-  Lisp_Object md5_args[5] = { intern_c_string ("md5"), acc, Qnil, Qnil,
-			      intern_c_string ("binary") };
-  Lisp_Object digest = Ffuncall (5, md5_args);
   return Fsubstring (digest, Qnil, make_fixnum (8));
 }
 
