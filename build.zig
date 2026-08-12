@@ -2466,6 +2466,15 @@ pub fn build(b: *std.Build) void {
     // which worked locally where a stale temacs existed but failed on
     // a clean checkout with FileNotFound.)
     run_dump.step.dependOn(&install_temacs.step);
+    // Track the temacs binary itself as a cache input: the dumped pdmp
+    // embeds temacs's subrs, which change with the feature switches
+    // (-Dnative-comp-zig/-Dmodules/...).  Without this, flipping a switch
+    // between two `zig build` invocations that share a cache (e.g. the CI
+    // test job running `zig build` then `-Dnative-comp-zig=true populate`)
+    // reuses the stale dump -> the populate's emacs lacks comp-z-write-
+    // file-zunit ("not bound").  getEmittedBin's content differs per flag,
+    // so the dump correctly reruns when temacs changes.
+    run_dump.addFileArg(exe.getEmittedBin());
     // The dumped image loads the charset maps and the unicode script
     // tables from the source tree; both are gitignored generated data,
     // so a clean checkout must generate them before the dump runs.
@@ -2633,6 +2642,8 @@ pub fn build(b: *std.Build) void {
     const run_dump_compiled = b.addRunArtifact(dump_compiled_tool);
     run_dump_compiled.setCwd(b.path("."));
     run_dump_compiled.step.dependOn(&run_compile_lisp.step);
+    // Same temacs-content tracking as run_dump (flag flip -> rerun).
+    run_dump_compiled.addFileArg(exe.getEmittedBin());
     const dump_compiled_step = b.step("dump-compiled", "Re-dump bootstrap-emacs.pdmp with compiled lisp");
     dump_compiled_step.dependOn(&run_dump_compiled.step);
     // The default `zig build` must produce a usable emacs, not just
@@ -3068,6 +3079,9 @@ pub fn build(b: *std.Build) void {
         // Pass the built zeln-compile exe as a file arg (tracked dep) so the
         // driver can spawn one zeln-compile per zunit.
         run_populate.addFileArg(zeln_compile_tool.getEmittedBin());
+        // Track temacs (its subrs decide whether comp-z-write-file-zunit is
+        // bound in the dumped image) so a flag flip invalidates the cache.
+        run_populate.addFileArg(exe.getEmittedBin());
         run_populate.step.dependOn(&zeln_compile_tool.step);
         run_populate.step.dependOn(&run_compile_lisp.step);
         run_populate.step.dependOn(&run_dump_compiled.step);
