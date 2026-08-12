@@ -2240,6 +2240,97 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("shell32", .{});
     }
 
+    // lib-src tools (emacsclient, etags) — the user-facing programs the
+    // native build installs (zig-out/bin).  Mirror the make-docfile pattern:
+    // each is a standalone executable compiled with the libgnu-style flags
+    // plus exactly the gnulib provider sources it references (upstream
+    // links them via ../lib/libgnu.a; the zig build compiles the handful
+    // of providers directly).  These run on the TARGET (not the build
+    // host), so they use the target config + target.
+    {
+        const libsrc_flags_core = [_][]const u8{
+            "-std=gnu2x",
+            "-fno-common",
+            "-fno-strict-aliasing",
+            "-D_GNU_SOURCE",
+            "-DHAVE_CONFIG_H",
+            "-I.",
+            "-Isrc",
+            "-Ilib",
+            "-Ilib/malloc",
+        };
+        const libsrc_flags: []const []const u8 = if (is_windows)
+            &(libsrc_flags_core ++ [_][]const u8{ "-Int/inc", "-Ilib/w32" })
+        else
+            &libsrc_flags_core;
+
+        const Tool = struct {
+            name: []const u8,
+            src: []const u8,
+            providers: []const []const u8,
+        };
+        const tools = [_]Tool{
+            .{
+                .name = "emacsclient",
+                .src = "lib-src/emacsclient.c",
+                .providers = &.{
+                    "lib/c-ctype.c",
+                    "lib/realloc.c",
+                    "lib/file-has-acl.c",
+                    "lib/strnul.c",
+                    "lib/acl-errno-valid.c",
+                    "lib/memeq.c",
+                },
+            },
+            .{
+                .name = "etags",
+                .src = "lib-src/etags.c",
+                .providers = &.{
+                    "lib/c-ctype.c",
+                    "lib/binary-io.c",
+                    "lib/streq.c",
+                    "lib/realloc.c",
+                    "lib/regex.c", // includes regcomp/regexec/regex_internal
+                    "lib/c-strcasecmp.c",
+                    "lib/c-strncasecmp.c",
+                    "lib/memeq.c",
+                    "lib/malloc/dynarray_resize.c",
+                },
+            },
+        };
+
+        for (tools) |t| {
+            const tool_exe = b.addExecutable(.{
+                .name = t.name,
+                .root_module = b.createModule(.{
+                    .target = target,
+                    .optimize = optimize,
+                    .link_libc = true,
+                }),
+            });
+            tool_exe.root_module.addCSourceFile(.{
+                .file = b.path(t.src),
+                .flags = libsrc_flags,
+            });
+            for (t.providers) |p| {
+                tool_exe.root_module.addCSourceFile(.{
+                    .file = b.path(p),
+                    .flags = libsrc_flags,
+                });
+            }
+            // emacsclient's file_has_acl needs libacl on glibc-Linux;
+            // upstream links FILE_HAS_ACL_LIB there too.
+            if (target.result.os.tag == .linux and target.result.abi != .musl)
+                tool_exe.root_module.linkSystemLibrary("acl", .{});
+            if (is_windows and std.mem.eql(u8, t.name, "emacsclient"))
+                tool_exe.root_module.linkSystemLibrary("ws2_32", .{});
+            tool_exe.root_module.addIncludePath(target_config_h_file.file.dirname());
+            tool_exe.step.dependOn(target_config_h_file.step);
+            const install_tool = b.addInstallArtifact(tool_exe, .{});
+            b.getInstallStep().dependOn(&install_tool.step);
+        }
+    }
+
     // Install the executable.  The step is kept as an explicit handle so
     // the dump tool can depend on "temacs is in place" without pulling in
     // the whole install step (which would otherwise create an install ->
