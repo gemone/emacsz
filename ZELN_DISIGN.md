@@ -461,7 +461,7 @@ wrong weights) and is expected to matter on x86-64, where gccjit's
 .eln comparison runs.
 
 **GC-cooperative loop (compz.c `zeln_fdo_gc_check`, called from
-`garbage_collect` post-sweep).**  At `zeln-auto-fdo-intervel`-gated
+`garbage_collect` post-sweep).**  At `zeln-auto-fdo-interval`-gated
 intervals (wall clock):
 1. compute each unit's hot fn count; if no fn exceeds the
    `zeln-auto-fdo-profile` threshold, wait and re-check at the next
@@ -479,7 +479,7 @@ intervals (wall clock):
    the final round collection stops.
 
 **Config.** `zeln-auto-fdo-path` (dir for profiles + recompiled .zeln;
-nil = off), `zeln-auto-fdo-intervel` (min seconds between post-GC
+nil = off), `zeln-auto-fdo-interval` (min seconds between post-GC
 checks; default 60), `zeln-auto-fdo-profile` (nil = off; t = collect with
 default threshold 1000; number N = hot threshold).  All default OFF: the
 loaded units' flags stay 0 and the counter branch falls through.

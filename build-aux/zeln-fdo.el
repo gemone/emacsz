@@ -7,7 +7,7 @@
 ;;      serialize it to a zabi=3 zunit (comp-z-write-file-zunit),
 ;;      compile to a .zeln via the ZELN_COMPILE tool;
 ;;   2. load it with zeln-auto-fdo-path / zeln-auto-fdo-profile /
-;;      zeln-auto-fdo-intervel set (tiny interval, low threshold) so the
+;;      zeln-auto-fdo-interval set (tiny interval, low threshold) so the
 ;;      loader registers the unit and flips its fdo_active flag;
 ;;   3. hammer the hot fn (counter climbs past the threshold);
 ;;   4. force GC -> zeln_fdo_gc_check flushes the profile, recompiles
@@ -89,7 +89,7 @@
           ;; ---- 2. Load with auto-FDO configured. ----
           (setq zeln-auto-fdo-path fdo-dir
                 zeln-auto-fdo-profile 50000
-                zeln-auto-fdo-intervel 0.0)
+                zeln-auto-fdo-interval 0.0)
           (comp-z-load-zeln zelnfile)
 
           ;; ---- 3. Hammer the hot fn (last fset subr is zeln-fdo-cold;

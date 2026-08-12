@@ -2905,7 +2905,7 @@ pub fn build(b: *std.Build) void {
         // ---- zeln-fdo: the Z5 auto profile-guided recompilation loop.
         // build-aux/zeln-fdo.el drives the full closed loop on a SIMULATED
         // .zeln: build a 2-fn fixture, serialize + compile it, load with
-        // zeln-auto-fdo-path/profile/intervel set (tiny interval + low
+        // zeln-auto-fdo-path/profile/interval set (tiny interval + low
         // threshold), hammer the hot fn, force GC (the loader flushes a
         // profile and hot-swaps a --profile recompile), hammer again +
         // GC (round 2 --profile --final: counters dropped), then assert the

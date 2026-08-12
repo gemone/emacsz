@@ -894,7 +894,7 @@ For internal use.  */)
    every loaded .zeln: when zeln_auto_fdo_path is set AND
    zeln_auto_fdo_profile is non-nil, it flips the unit's fdo_active
    flag (the .zeln's native fns then increment their per-fn counters,
-   ~2 cycles/call) and, at post-GC intervals (zeln_auto_fdo_intervel),
+   ~2 cycles/call) and, at post-GC intervals (zeln_auto_fdo_interval),
    flushes the counters to a profile file, recompiles the unit with
    zeln-compile --profile (hot-first layout + !prof weights), and
    hot-swaps the subr function pointers to the tuned .zeln.  The last
@@ -938,7 +938,7 @@ static Lisp_Object zeln_fdo_subrs_root;
 static Lisp_Object zeln_fdo_names_root;
 
 /* Config (DEFVAR'd in syms_of_compz): zeln_auto_fdo_path (dir for
-   profiles + recompiled .zeln; nil = off), zeln_auto_fdo_intervel
+   profiles + recompiled .zeln; nil = off), zeln_auto_fdo_interval
    (min seconds between post-GC checks; default 60),
    zeln_auto_fdo_profile (nil = no collection; t = collect with the
    default hot threshold 1000; number N = hot threshold N).  The
@@ -1210,8 +1210,8 @@ zeln_fdo_gc_check (void)
 
   double now = timespectod (current_timespec ());
   uint64_t threshold = zeln_fdo_threshold ();
-  double intervel = FLOATP (Vzeln_auto_fdo_intervel)
-    ? XFLOAT_DATA (Vzeln_auto_fdo_intervel) : 60.0;
+  double interval = FLOATP (Vzeln_auto_fdo_interval)
+    ? XFLOAT_DATA (Vzeln_auto_fdo_interval) : 60.0;
 
   for (ptrdiff_t i = 0; i < zeln_fdo_nunits; i++)
     {
@@ -1219,7 +1219,7 @@ zeln_fdo_gc_check (void)
       zeln_entry_t *e = u->entry;
       if (!e->fdo_counters || u->rounds >= ZELN_FDO_MAX_ROUNDS)
 	continue;
-      if (now - u->last_check < intervel)
+      if (now - u->last_check < interval)
 	continue;
       u->last_check = now;
 
@@ -2005,7 +2005,7 @@ the interpreter.  */);
 units.  When non-nil (and `zeln-auto-fdo-profile' is non-nil), every
 loaded .zeln starts collecting per-function call counts automatically
 (no manual enable): at post-GC intervals set by
-`zeln-auto-fdo-intervel', and when any function exceeds the hot
+`zeln-auto-fdo-interval', and when any function exceeds the hot
 threshold the unit's profile is written to
 <PATH>/<zeln-rel-name>.zprofile and the unit is recompiled with
 `zeln-compile --profile' (hot-first layout + branch weights), then
@@ -2018,11 +2018,11 @@ each interval without recompiling.  nil (default) disables the whole
 feature.  */);
   Vzeln_auto_fdo_path = Qnil;
 
-  DEFVAR_LISP ("zeln-auto-fdo-intervel", Vzeln_auto_fdo_intervel,
+  DEFVAR_LISP ("zeln-auto-fdo-interval", Vzeln_auto_fdo_interval,
     doc: /* Minimum number of seconds between automatic FDO checks
 (profile flush + recompile decision) for .zeln units, measured at
 garbage-collection time.  Default 60.  Set to 0 to check on every GC.  */);
-  Vzeln_auto_fdo_intervel = make_float (60.0);
+  Vzeln_auto_fdo_interval = make_float (60.0);
 
   DEFVAR_LISP ("zeln-auto-fdo-profile", Vzeln_auto_fdo_profile,
     doc: /* Profile-collection switch for automatic .zeln FDO.
