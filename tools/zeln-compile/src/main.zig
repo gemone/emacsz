@@ -1418,6 +1418,11 @@ const Emitter = struct {
     // fallback-counter blocks (emitFallbackCounter) alongside the
     // call-counter block.
     emit_fb_counters: bool = false,
+    // FDO counter-array length ([n_fns]); the GEP type must be the FULL
+    // array size while the index is the fn index — passing fn_index for
+    // both made fn i's GEP a [i x i64] against a [n_fns x i64] array
+    // (out-of-range for i > 1; silently wrong offsets for all fns).
+    fdo_n: u64 = 1,
 
     fn fresh(self: *Emitter) u32 {
         const r = self.next_reg;
@@ -1554,9 +1559,9 @@ fn emitNativeFn(
 
     // Point the emitter at THIS fn's d_reloc global + const count, and
     // reset the temp register counter for a clean, readable trace.
+    em.d_reloc_global = d_reloc_name;
     em.fn_index = fn_index;
     em.emit_fb_counters = emit_counters;
-    em.d_reloc_global = d_reloc_name;
     // FDO hotness + real branch weights for this fn (drive !prof
     // weights on the inline branches below).
     em.is_hot = is_hot;
@@ -1602,10 +1607,6 @@ fn emitNativeFn(
         }
     }
 
-    // `hot` attribute on profile-identified hot fns: LLVM -O2 lays out
-    // hot fns together and sizes the cold fns for speed, mirroring the
-    // classic FDO layout effect.  Off when no profile was given (is_hot
-    // false) so the non-FDO output is byte-identical to before.
     // `hot` attribute on profile-identified hot fns: LLVM -O2 lays out
     // hot fns together and sizes the cold fns for speed, mirroring the
     // classic FDO layout effect.  Placed in an attributes group (LLVM
@@ -1658,7 +1659,7 @@ fn emitNativeFn(
         try em.wif("br i1 %{d}, label %bb_fdo_sk_{d}, label %bb_fdo_ct_{d}\n", .{ fdo_t, fn_index, fn_index });
         try em.wf("bb_fdo_ct_{d}:\n", .{fn_index});
         const fdo_p = em.fresh();
-        try em.wif("%{d} = getelementptr inbounds [{d} x i64], ptr @zeln_fdo_counters, i64 0, i64 {d}\n", .{ fdo_p, fn_index, fn_index });
+        try em.wif("%{d} = getelementptr inbounds [{d} x i64], ptr @zeln_fdo_counters, i64 0, i64 {d}\n", .{ fdo_p, em.fdo_n, fn_index });
         const fdo_c = em.fresh();
         try em.wif("%{d} = load i64, ptr %{d}\n", .{ fdo_c, fdo_p });
         const fdo_c1 = em.fresh();
@@ -1832,7 +1833,7 @@ fn emitFallbackCounter(em: *Emitter, start: u32) !void {
     try em.wif("br i1 %{d}, label %bb_fbf_sk_{d}, label %bb_fbf_ct_{d}\n", .{ fdo_t, start, start });
     try em.wf("bb_fbf_ct_{d}:\n", .{start});
     const fdo_p = em.fresh();
-    try em.wif("%{d} = getelementptr inbounds [{d} x i64], ptr @zeln_fdo_fallbacks, i64 0, i64 {d}\n", .{ fdo_p, em.fn_index, em.fn_index });
+    try em.wif("%{d} = getelementptr inbounds [{d} x i64], ptr @zeln_fdo_fallbacks, i64 0, i64 {d}\n", .{ fdo_p, em.fdo_n, em.fn_index });
     const fdo_c = em.fresh();
     try em.wif("%{d} = load i64, ptr %{d}\n", .{ fdo_c, fdo_p });
     const fdo_c1 = em.fresh();
@@ -2042,7 +2043,8 @@ fn emitFileLLVM(
     // N native fns.  Emitted in the HOT-FIRST order so the hottest code
     // lands first in the .so text segment; each keeps its ORIGINAL index
     // (zeln_fn_<orig_i>) so the fn table's globals stay consistent.
-    for (order) |orig_i| {
+    em.fdo_n = fns.len;
+    for (order, 0..) |orig_i, slot| {
         const unit = fns[orig_i];
         const fn_name = try std.fmt.allocPrint(gpa, "zeln_fn_{d}", .{orig_i});
         defer gpa.free(fn_name);
@@ -2050,7 +2052,13 @@ fn emitFileLLVM(
         defer gpa.free(drr);
         const this_hot = hot(hot_set, unit.name);
         const w = weightOf(fdo_counts, fdo_fallbacks, unit.name);
-        try emitNativeFn(gpa, &em, fn_name, drr, unit, this_hot, !fdo_final, orig_i, w);
+        // fn_index = the fn TABLE SLOT (order[] position), NOT orig_i:
+        // the FDO counter arrays are indexed by table slot so
+        // zeln_fdo_write_profile's fns[slot].symbol_name pairs with
+        // fdo_counters[slot] — under hot-first reorder slot != orig_i.
+        // The fn GLOBALS keep orig_i (zeln_fn_<orig_i>); only the
+        // counter index follows the table order.
+        try emitNativeFn(gpa, &em, fn_name, drr, unit, this_hot, !fdo_final, slot, w);
     }
 
     // File entry: { ptr freloc_link_table_z, ptr freloc_hash_z, i64 n_fns,

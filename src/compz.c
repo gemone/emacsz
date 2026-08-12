@@ -835,13 +835,19 @@ For internal use.  */)
       subr->function.aMANY = fe->native_fn;
       subr->min_args = 0;
       subr->max_args = MANY;
-      subr->symbol_name = fe->symbol_name;
-      Lisp_Object subr_obj;
-      XSETSUBR (subr_obj, subr);
       /* Ffset the native fn under its baked defun symbol so loading the
 	 .zeln leaves every defun natively callable, mirroring how loading
 	 the .elc would fset each via its top-level `defalias'.  */
       Lisp_Object sym = Fintern (build_string (fe->symbol_name), Qnil);
+      /* subr->symbol_name is a plain C char*: the interned symbol's
+	 name Lisp_Object stays stable, but the .zeln's baked
+	 fe->symbol_name points into the .zeln's static memory, which the
+	 FDO hot-swap dlcloses — leaving the subr's name dangling when
+	 the next swap must match it.  Copy into malloc'd memory that
+	 outlives the .zeln (bounded by ZELN_FDO_MAX_UNITS units).  */
+      subr->symbol_name = xstrdup (fe->symbol_name);
+      Lisp_Object subr_obj;
+      XSETSUBR (subr_obj, subr);
       Ffset (sym, subr_obj);
       last_subr = subr_obj;
       subr_list = Fcons (subr_obj, subr_list);
@@ -1037,13 +1043,15 @@ zeln_fdo_recompile (zeln_fdo_unit_t *u, const char *out, bool final)
     return false;
 
   /* The recompile inputs land next to the output: <out>.zunit,
-     <out>.manifest, <out>.zprofile.  */
-  char *zu = xmalloc (strlen (out) + 8);
-  char *mf = xmalloc (strlen (out) + 12);
-  char *pf = xmalloc (strlen (out) + 12);
-  sprintf (zu, "%s.zunit", out);
-  sprintf (mf, "%s.manifest", out);
-  sprintf (pf, "%s.zprofile", out);
+     <out>.manifest, <out>.zprofile.  Sizes are exact (len + suffix +
+     NUL), not magic +8/+12, so a suffix change cannot overflow.  */
+  const char *zu_suf = ".zunit", *mf_suf = ".manifest", *pf_suf = ".zprofile";
+  char *zu = xmalloc (strlen (out) + strlen (zu_suf) + 1);
+  char *mf = xmalloc (strlen (out) + strlen (mf_suf) + 1);
+  char *pf = xmalloc (strlen (out) + strlen (pf_suf) + 1);
+  sprintf (zu, "%s%s", out, zu_suf);
+  sprintf (mf, "%s%s", out, mf_suf);
+  sprintf (pf, "%s%s", out, pf_suf);
 
   FILE *f = emacs_fopen (zu, "wb");
   if (f)
@@ -1139,17 +1147,38 @@ zeln_fdo_swap (zeln_fdo_unit_t *u, const char *out)
   zeln_patch_freloc (ne);
 
   /* Repoint every subr; copy the old d_reloc values into the new
-     arrays (identity: same Lisp_Objects, no fresh Fread).  */
+     arrays (identity: same Lisp_Objects, no fresh Fread).  Match by
+     SYMBOL NAME, never by table index: the PGO recompile emits the fn
+     table HOT-FIRST (main.zig `order`), so new slot i is generally NOT
+     the same fn as old slot i.  Index pairing would hand each symbol
+     the wrong native code + a crossed d_reloc constant vector (the
+     harness's hot-first fixture masked this).  The subr's symbol_name
+     is the same string as the .zeln's baked symbol_name for that fn.  */
   Lisp_Object tail = u->subrs;
-  for (ptrdiff_t i = 0; i < ne->n_fns && !NILP (tail); i++, tail = XCDR (tail))
+  for (; !NILP (tail); tail = XCDR (tail))
     {
       struct Lisp_Subr *subr = XSUBR (XCAR (tail));
-      zeln_fn_entry_t *ofe = &u->entry->fns[i];
-      zeln_fn_entry_t *nfe = &ne->fns[i];
-      if (ofe->n_d_reloc == nfe->n_d_reloc)
-	memcpy (nfe->d_reloc, ofe->d_reloc,
-		ofe->n_d_reloc * sizeof (Lisp_Object));
-      subr->function.aMANY = nfe->native_fn;
+      const char *sym = subr->symbol_name;
+      for (ptrdiff_t j = 0; j < ne->n_fns; j++)
+	{
+	  zeln_fn_entry_t *nfe = &ne->fns[j];
+	  if (strcmp (sym, nfe->symbol_name) != 0)
+	    continue;
+	  subr->function.aMANY = nfe->native_fn;
+	  /* Copy the old d_reloc values into this new entry's array:
+	     identity preserved (same Lisp_Objects, only the table order
+	     changed).  The old entry lives in u->entry->fns.  */
+	  for (ptrdiff_t k = 0; k < u->entry->n_fns; k++)
+	    if (strcmp (sym, u->entry->fns[k].symbol_name) == 0)
+	      {
+		zeln_fn_entry_t *ofe = &u->entry->fns[k];
+		if (ofe->n_d_reloc == nfe->n_d_reloc)
+		  memcpy (nfe->d_reloc, ofe->d_reloc,
+			  ofe->n_d_reloc * sizeof (Lisp_Object));
+		break;
+	      }
+	  break;
+	}
     }
 
   /* Retire the old handle (the old code is no longer reachable — every
@@ -1976,15 +2005,17 @@ the interpreter.  */);
 units.  When non-nil (and `zeln-auto-fdo-profile' is non-nil), every
 loaded .zeln starts collecting per-function call counts automatically
 (no manual enable): at post-GC intervals set by
-`zeln-auto-fdo-intervel', the counts are flushed to
-<PATH>/<zeln-rel-name>.zprofile, and when any function exceeds the
-hot threshold the unit is recompiled with `zeln-compile --profile'
-(hot-first layout + branch weights) and hot-swapped in place.  The
-recompiled artifact lands at <PATH>/<zeln-rel-name>.zeln.  A unit is
-recompiled at most twice (the second round is `--final', dropping the
-counters entirely); auto-optimization for a unit stops once its
-profile shows nothing above the threshold or the round limit is
-reached.  nil (default) disables the whole feature.  */);
+`zeln-auto-fdo-intervel', and when any function exceeds the hot
+threshold the unit's profile is written to
+<PATH>/<zeln-rel-name>.zprofile and the unit is recompiled with
+`zeln-compile --profile' (hot-first layout + branch weights), then
+hot-swapped in place.  The recompiled artifact lands at
+<PATH>/<zeln-rel-name>.zeln.  A unit is recompiled at most twice (the
+second round is `--final', dropping the counters entirely);
+auto-optimization stops once the round limit is reached.  While a
+unit's profile stays below the threshold it is simply re-checked at
+each interval without recompiling.  nil (default) disables the whole
+feature.  */);
   Vzeln_auto_fdo_path = Qnil;
 
   DEFVAR_LISP ("zeln-auto-fdo-intervel", Vzeln_auto_fdo_intervel,

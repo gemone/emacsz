@@ -122,7 +122,7 @@ manifest carries:
 - `freloc_hash_z` — an 8-hex ABI hash over `ZELN_ABI_VERSION ++ emacs-version
   ++ config ++ config-options ++ signature` (mirrors gccjit's
   `hash_native_abi` / `comp.c:782`),
-- `ZELN_ABI_VERSION` ("Z4" at present — see §6).
+- `ZELN_ABI_VERSION` ("Z6" at present — see §6).
 
 The emitter's `IDX_*` constants (`tools/zeln-compile/src/main.zig`) mirror the
 `IDX_*` enum in `src/compz.c` field-for-field; the hash fingerprints the
@@ -418,9 +418,12 @@ closed loop — collect → flush → recompile → hot-swap → stop.
 **Instrumentation (always emitted, ~free when off).** Every native fn's
 prologue has a call-counter block gated by the unit's `@zeln_fdo_active`
 global (compz.h `zeln_entry_t` fields: `fdo_active`, `fdo_counters`,
-`n_fdo`, `zunit_blob`).  With the flag 0 the block collapses to one load +
-one icmp + one branch (~2 cycles, perfectly predicted).  `--final`
-recompiles drop the block entirely (zero footprint artifact).
+`fdo_fallbacks`, `n_fdo`, `zunit_blob`).  The inline fast-path branches
+also carry a gated FALLBACK counter (`@zeln_fdo_fallbacks`) recording
+how often they took the freloc fallback, so the profile carries real
+calls-vs-fallbacks data.  With the flag 0 the blocks collapse to one
+load + one icmp + one branch (~2 cycles, perfectly predicted).  `--final`
+recompiles drop the blocks entirely (zero footprint artifact).
 
 **Self-contained recompile.** The `.zeln` embeds its own zunit
 (`zeln_zunit_blob`), so the loader can recompile at runtime with no
@@ -460,16 +463,20 @@ wrong weights) and is expected to matter on x86-64, where gccjit's
 **GC-cooperative loop (compz.c `zeln_fdo_gc_check`, called from
 `garbage_collect` post-sweep).**  At `zeln-auto-fdo-intervel`-gated
 intervals (wall clock):
-1. flush per-fn counters → `<path>/<rel>.zprofile`; if no fn exceeds the
-   `zeln-auto-fdo-profile` threshold, wait (auto-stop when the workload
-   cools);
-2. otherwise recompile (round 1 `--profile`; round 2 `--profile --final`,
+1. compute each unit's hot fn count; if no fn exceeds the
+   `zeln-auto-fdo-profile` threshold, wait and re-check at the next
+   interval (no recompile, no profile write — the profile file is
+   written only when a recompile is triggered);
+2. otherwise write `<path>/<rel>.zprofile` (real calls + fallbacks),
+   recompile (round 1 `--profile`; round 2 `--profile --final`,
    counters dropped) and hot-swap in place: dlopen the new .zeln, verify
    the ABI hash, patch its freloc, copy the OLD d_reloc Lisp_Object
    values into the new fn entries (constant identity preserved — no
    fresh Fread), repoint every subr's `function.aMANY` to the new native
-   code, dlclose the old handle.  At most `ZELN_FDO_MAX_ROUNDS` (2)
-   recompiles per unit; after the final round collection stops.
+   code (matched by SYMBOL NAME — the table is hot-first reordered, so
+   index pairing would hand each symbol the wrong code), dlclose the old
+   handle.  At most `ZELN_FDO_MAX_ROUNDS` (2) recompiles per unit; after
+   the final round collection stops.
 
 **Config.** `zeln-auto-fdo-path` (dir for profiles + recompiled .zeln;
 nil = off), `zeln-auto-fdo-intervel` (min seconds between post-GC
