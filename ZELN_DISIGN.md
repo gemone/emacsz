@@ -429,12 +429,33 @@ build-pipeline dependency: it writes the zunit + manifest + profile to
 from `ZELN_COMPILE` env, PATH fallback).
 
 **PGO emission (`--profile FILE`).** `zeln-compile` reads
-`<fnname><TAB><count>` lines and: reorders the fn table hot-first
-(icache locality; the loader matches fns by symbol name on swap, so the
-reorder is transparent), marks hot fns `hot` (LLVM layout), and attaches
-`!prof` branch weights (1000000:1) to the M3 inline fast-path branches
-(fixnum-arith bothfix, unary fixnum, comparisons) so LLVM -O2 lays the
-inline path as fall-through and sinks the fallback blocks.
+`<fnname><TAB><count>[<TAB><fallbacks>]` lines and: reorders the fn
+table hot-first (icache locality; the loader matches fns by symbol name
+on swap, so the reorder is transparent), marks hot fns `hot` (LLVM
+layout), and attaches `!prof` branch weights to the M3 inline fast-path
+branches (fixnum-arith bothfix, unary fixnum, comparisons) so LLVM -O2
+lays the hot path as fall-through and sinks the cold blocks.  The
+weights are the REAL profile ratio: inline = calls − fallbacks,
+fallback = fallbacks (both floored at 1).  The fallbacks are collected
+by a second per-fn counter array (`@zeln_fdo_fallbacks`, entry field
+`fdo_fallbacks`, Z6) incremented in the inline branches' fallback
+blocks under the same `@zeln_fdo_active` gate — so an overflow/float-
+heavy fn whose fallback path is genuinely hot gets weights that lay
+the FALLBACK as fall-through (the fix for the initial hardcoded
+1000000:1 weights, which were directionally wrong on such workloads;
+disassembly confirms LLVM honors them, e.g. sinking the bignum block
+out of the hot loop).
+
+**Measurement note (macOS arm64).**  The machinery is verified working
+end-to-end (profile captures real fallback ratios like calls=101709 /
+fallbacks=5085450; PGO artifact's branch weights = `i32 1, i32
+5085450`; machine code changes).  Timing gains are ~0 on Apple Silicon
+(0.3–1.1%, within noise): ARMv8.6+ branch prediction + large L1i make
+block layout timing-neutral here — the classic PGO branch-layout wins
+are x86-specific.  The real-weight profile data is nonetheless a
+correctness/architecture improvement (it removes the directionally-
+wrong weights) and is expected to matter on x86-64, where gccjit's
+.eln comparison runs.
 
 **GC-cooperative loop (compz.c `zeln_fdo_gc_check`, called from
 `garbage_collect` post-sweep).**  At `zeln-auto-fdo-intervel`-gated

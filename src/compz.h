@@ -122,6 +122,16 @@ typedef struct
      the profile file; the recompiled unit starts fresh zeros.  */
   uint64_t *fdo_counters;
 
+  /* &@zeln_fdo_fallbacks[0]: the [n_fns] per-fn FALLBACK-count array —
+     how many times each fn's M3 inline fast-path branches took the
+     freloc fallback (bignum/float/non-fixnum).  Incremented by the
+     same gated counter mechanism as fdo_counters.  The profile file
+     format is `fnname<TAB>calls[<TAB>fallbacks]`, and the PGO
+     recompile derives the !prof branch weights from the REAL
+     calls-vs-fallbacks ratio (fixes the hardcoded 1000000:1 weights
+     being wrong on overflow-heavy workloads).  Z6.  */
+  uint64_t *fdo_fallbacks;
+
   /* == n_fns.  */
   ptrdiff_t n_fdo;
 

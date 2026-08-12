@@ -999,9 +999,11 @@ zeln_fdo_write_profile (const char *path, zeln_entry_t *e)
   for (ptrdiff_t i = 0; i < e->n_fns; i++)
     {
       uint64_t c = e->fdo_counters ? e->fdo_counters[i] : 0;
+      uint64_t fb = e->fdo_fallbacks ? e->fdo_fallbacks[i] : 0;
       if (c > maxc)
 	maxc = c;
-      fprintf (f, "%s\t%" PRIu64 "\n", e->fns[i].symbol_name, c);
+      fprintf (f, "%s\t%" PRIu64 "\t%" PRIu64 "\n",
+	       e->fns[i].symbol_name, c, fb);
     }
   emacs_fclose (f);
   return maxc;
@@ -1016,6 +1018,9 @@ zeln_fdo_reset_counters (zeln_entry_t *e)
     return;
   for (ptrdiff_t i = 0; i < e->n_fns; i++)
     e->fdo_counters[i] = 0;
+  if (e->fdo_fallbacks)
+    for (ptrdiff_t i = 0; i < e->n_fns; i++)
+      e->fdo_fallbacks[i] = 0;
 }
 
 /* Spawn zeln-compile over the unit's embedded zunit + manifest, with

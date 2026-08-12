@@ -491,16 +491,30 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         }
     }
 
-    // Parse the FDO profile (if any): map fn symbol name -> call count.
-    // Used to mark hot fns (count > 0) and reorder the fn table
-    // hot-first in the emitted .ll.  Keys are OWNED copies (the profile
-    // buffer is freed below; dangling keys would silently miss every
-    // lookup and leave every fn cold).
+    // Parse the FDO profile (if any): map fn symbol name -> (calls,
+    // fallbacks).  Calls mark hot fns (count > 0) and reorder the fn
+    // table hot-first; FALLBACKS are the REAL count of times this fn's
+    // M3 inline fast-path branches took the freloc fallback (bignum/
+    // float/non-fixnum), collected by the same gated counter as the
+    // calls.  The recompile's !prof branch weights are derived from the
+    // two numbers (inline weight = calls - fallbacks, fallback weight =
+    // fallbacks), so an overflow-heavy fn whose fallback path is
+    // genuinely hot gets weights that let LLVM lay the fallback as
+    // fall-through — the fix for the previous hardcoded 1000000:1
+    // weights being wrong on such workloads.  Format:
+    //   <fnname>\t<calls>[ \t<fallbacks>]
+    // (fallbacks omitted => 0, backward compatible).  Keys are OWNED
+    // copies (the profile buffer is freed below; dangling keys would
+    // silently miss every lookup and leave every fn cold).
     var fdo_counts = std.StringHashMap(u64).init(gpa);
+    var fdo_fallbacks = std.StringHashMap(u64).init(gpa);
     defer {
-        var it = fdo_counts.keyIterator();
-        while (it.next()) |k| gpa.free(k.*);
-        fdo_counts.deinit();
+        {
+            var it = fdo_counts.keyIterator();
+            while (it.next()) |k| gpa.free(k.*);
+            fdo_counts.deinit();
+        }
+        fdo_fallbacks.deinit();
     }
     if (fdo_profile_path) |pp| {
         const data = cwd.readFileAlloc(io, pp, gpa, .limited(16 * 1024 * 1024)) catch |err| {
@@ -516,7 +530,14 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             const name = fields.next() orelse continue;
             const count_str = fields.next() orelse continue;
             const count = std.fmt.parseInt(u64, std.mem.trim(u8, count_str, " \t\r"), 10) catch continue;
-            try fdo_counts.put(try gpa.dupe(u8, name), count);
+            var fb: u64 = 0;
+            if (fields.next()) |fb_str| {
+                const t = std.mem.trim(u8, fb_str, " \t\r");
+                if (t.len > 0) fb = std.fmt.parseInt(u64, t, 10) catch 0;
+            }
+            const owned = try gpa.dupe(u8, name);
+            try fdo_counts.put(owned, count);
+            try fdo_fallbacks.put(owned, fb);
         }
         std.debug.print("zeln-compile: FDO profile {s}: {d} fns\n", .{ pp, fdo_counts.count() });
     }
@@ -558,7 +579,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             std.process.exit(1);
         };
         defer freeM1Unit(gpa, unit);
-        ll_body = emitM1LLVM(gpa, unit, abi_hash, zunit, fdo_counts, fdo_final) catch |err| {
+        ll_body = emitM1LLVM(gpa, unit, abi_hash, zunit, fdo_counts, fdo_fallbacks, fdo_final) catch |err| {
             std.debug.print("zeln-compile: M1 emit failed: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
@@ -569,7 +590,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             std.process.exit(1);
         };
         defer freeFileUnit(gpa, file_unit);
-        ll_body = emitFileLLVM(gpa, file_unit.fns, abi_hash, file_unit.top_blob, zunit, fdo_counts, fdo_final) catch |err| {
+        ll_body = emitFileLLVM(gpa, file_unit.fns, abi_hash, file_unit.top_blob, zunit, fdo_counts, fdo_fallbacks, fdo_final) catch |err| {
             std.debug.print("zeln-compile: file emit failed: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
@@ -1383,6 +1404,20 @@ const Emitter = struct {
     // effect).  Set by emitNativeFn from the profile; off for non-FDO
     // builds so their output stays byte-identical to before.
     is_hot: bool = false,
+    // FDO branch weights for THIS fn: [inline_weight, fallback_weight],
+    // derived from the profile's real calls vs fallbacks counts.  Used
+    // in the inline fast-path branches' !prof metadata.  Only set when
+    // is_hot (a profile is present); otherwise the plain branches are
+    // emitted and the output matches the non-FDO build.
+    fdo_weights: [2]u64 = .{ 0, 0 },
+    // FDO index of the fn being emitted (slot in @zeln_fdo_counters /
+    // @zeln_fdo_fallbacks).  Set by emitNativeFn; used by the inline
+    // branch emitters' fallback-counter increments.
+    fn_index: u64 = 0,
+    // True while counters are being emitted (not --final).  Gates the
+    // fallback-counter blocks (emitFallbackCounter) alongside the
+    // call-counter block.
+    emit_fb_counters: bool = false,
 
     fn fresh(self: *Emitter) u32 {
         const r = self.next_reg;
@@ -1410,6 +1445,29 @@ const Emitter = struct {
         const s = try std.fmt.allocPrint(self.gpa, fmt, args);
         defer self.gpa.free(s);
         try self.out.appendSlice(self.gpa, s);
+    }
+
+    // The `, !prof !{!"branch_weights", i32 W_IN, i32 W_FB}` suffix for an
+    // inline fast-path branch, from THIS fn's real profile weights.  Empty
+    // when not a profile-hot fn (branch emitted plain, non-FDO output
+    // unchanged).  The first weight (W_IN) belongs to the inline path
+    // (the branch's TRUE edge), the second (W_FB) to the fallback —
+    // matches how LLVM consumes branch_weights on `br i1 %c, label %t,
+    // label %f` (t = first weight).
+    fn profMD(self: *Emitter, gpa: std.mem.Allocator) ![]const u8 {
+        if (!self.is_hot) return "";
+        return try std.fmt.allocPrint(
+            gpa,
+            ", !prof !{{!\"branch_weights\", i32 {d}, i32 {d}}}",
+            .{ self.fdo_weights[0], self.fdo_weights[1] },
+        );
+    }
+
+    // The inline-weight string for the hot check: either the real
+    // branch_weights MD or empty.  Uses the emitter's stored allocator
+    // so per-opcode emitters (which only hold *Emitter) can call it.
+    fn profMDAlloc(self: *Emitter) ![]const u8 {
+        return self.profMD(self.gpa);
     }
 
     // load %top.slot -> a fresh ptr register; returns the reg number.
@@ -1487,6 +1545,7 @@ fn emitNativeFn(
     is_hot: bool,
     emit_counters: bool,
     fn_index: u64,
+    weights: [2]u64,
 ) !void {
     const opcodes = unit.opcodes;
     if (opcodes.len == 0) return error.EmptyBytecode;
@@ -1495,10 +1554,13 @@ fn emitNativeFn(
 
     // Point the emitter at THIS fn's d_reloc global + const count, and
     // reset the temp register counter for a clean, readable trace.
+    em.fn_index = fn_index;
+    em.emit_fb_counters = emit_counters;
     em.d_reloc_global = d_reloc_name;
-    // FDO hotness for this fn (drives !prof weights on the inline
-    // branches below).
+    // FDO hotness + real branch weights for this fn (drive !prof
+    // weights on the inline branches below).
     em.is_hot = is_hot;
+    em.fdo_weights = weights;
     // nconsts includes the synthesized Qt slot (unit.consts.len is its
     // index); emitFileLLVM appended `t' to the blob + sized the array +
     // fn-table n_d_reloc consistently.
@@ -1753,6 +1815,33 @@ fn emitNativeFn(
     try em.w("}\n\n");
 }
 
+// Per-fn FALLBACK counter: increment THIS fn's slot in
+// @zeln_fdo_fallbacks when an M3 inline fast-path branch takes the
+// freloc fallback (bignum/float/non-fixnum).  Same gated pattern as
+// the call counter (flag 0 => one load + icmp + branch, ~free), so the
+// profile can report the REAL fallback frequency and the PGO recompile
+// can weight the branches accordingly.  The caller must have emitted
+// the `bb_far_<s>:` / `bb_cfc_<s>:` label already; this function only
+// emits the counter + fall-through.  Omitted entirely on --final.
+fn emitFallbackCounter(em: *Emitter, start: u32) !void {
+    if (!em.emit_fb_counters) return;
+    const fdo_a = em.fresh();
+    try em.wif("%{d} = load i64, ptr @zeln_fdo_active\n", .{fdo_a});
+    const fdo_t = em.fresh();
+    try em.wif("%{d} = icmp eq i64 %{d}, 0\n", .{ fdo_t, fdo_a });
+    try em.wif("br i1 %{d}, label %bb_fbf_sk_{d}, label %bb_fbf_ct_{d}\n", .{ fdo_t, start, start });
+    try em.wf("bb_fbf_ct_{d}:\n", .{start});
+    const fdo_p = em.fresh();
+    try em.wif("%{d} = getelementptr inbounds [{d} x i64], ptr @zeln_fdo_fallbacks, i64 0, i64 {d}\n", .{ fdo_p, em.fn_index, em.fn_index });
+    const fdo_c = em.fresh();
+    try em.wif("%{d} = load i64, ptr %{d}\n", .{ fdo_c, fdo_p });
+    const fdo_c1 = em.fresh();
+    try em.wif("%{d} = add i64 %{d}, 1\n", .{ fdo_c1, fdo_c });
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ fdo_c1, fdo_p });
+    try em.wf("  br label %bb_fbf_sk_{d}\n", .{start});
+    try em.wf("bb_fbf_sk_{d}:\n", .{start});
+}
+
 // Emit the whole .ll for a multi-function .zeln: shared globals + per-fn
 // globals + fn table + top_level_blob + N native fns + entry.  FNS is
 // non-empty (zabi=2 passes 1; zabi=3 passes N).  TOP_BLOB is the raw
@@ -1764,6 +1853,7 @@ fn emitFileLLVM(
     top_blob: []const u8,
     zunit_bytes: []const u8,
     fdo_counts: std.StringHashMap(u64),
+    fdo_fallbacks: std.StringHashMap(u64),
     fdo_final: bool,
 ) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
@@ -1787,6 +1877,21 @@ fn emitFileLLVM(
             return s.get(name) orelse false;
         }
     }.isHot;
+
+    // Real branch weights per fn: inline_weight = calls - fallbacks,
+    // fallback_weight = fallbacks (both floored at 1).  The inline
+    // branches' !prof metadata uses these, so a fn whose fallback path
+    // is genuinely hot (bignum/float-heavy) gets weights that let LLVM
+    // lay the fallback as fall-through — fixing the hardcoded
+    // 1000000:1 weights that were wrong on such workloads.
+    const weightOf = struct {
+        fn get(counts: std.StringHashMap(u64), fbs: std.StringHashMap(u64), name: []const u8) [2]u64 {
+            const calls = counts.get(name) orelse 0;
+            const fbs_v = fbs.get(name) orelse 0;
+            const inline_w = @max(@as(u64, 1), calls -| fbs_v);
+            return .{ inline_w, @max(@as(u64, 1), fbs_v) };
+        }
+    }.get;
 
     try em.w("; zeln.ll — Tier-0 emission of a multi-function .zeln (M2b).\n");
     try em.w("; Generated by tools/zeln-compile. N native fns (one per defun)\n");
@@ -1813,7 +1918,14 @@ fn emitFileLLVM(
     // entirely (the tuned artifact); the active flag + counters array +
     // zunit blob are still emitted (entry fields must stay present).
     try em.w("@zeln_fdo_active = internal global i64 0\n");
-    try em.wf("@zeln_fdo_counters = internal global [{d} x i64] zeroinitializer\n\n", .{fns.len});
+    try em.wf("@zeln_fdo_counters = internal global [{d} x i64] zeroinitializer\n", .{fns.len});
+    // Per-fn FALLBACK counters: how many times each fn's M3 inline
+    // fast-path branches took the freloc fallback (bignum/float/non-
+    // fixnum operands).  Incremented in the same gated style as the
+    // call counters; the loader flushes both to the profile file
+    // (format: fnname<calls<TAB>fallbacks), and the PGO recompile
+    // derives the !prof branch weights from the REAL ratio.
+    try em.wf("@zeln_fdo_fallbacks = internal global [{d} x i64] zeroinitializer\n\n", .{fns.len});
 
     // The embedded zunit: { i64 len, [len x i8] data }.  The loader Freads
     // nothing from it — it writes the raw bytes to disk for recompile.
@@ -1937,14 +2049,16 @@ fn emitFileLLVM(
         const drr = try std.fmt.allocPrint(gpa, "d_reloc_z_{d}", .{orig_i});
         defer gpa.free(drr);
         const this_hot = hot(hot_set, unit.name);
-        try emitNativeFn(gpa, &em, fn_name, drr, unit, this_hot, !fdo_final, orig_i);
+        const w = weightOf(fdo_counts, fdo_fallbacks, unit.name);
+        try emitNativeFn(gpa, &em, fn_name, drr, unit, this_hot, !fdo_final, orig_i, w);
     }
 
     // File entry: { ptr freloc_link_table_z, ptr freloc_hash_z, i64 n_fns,
     // ptr fns, ptr top_level_blob, ptr fdo_active, ptr fdo_counters,
-    // i64 n_fdo, ptr zunit_blob } matching zeln_entry_t (compz.h).
-    // The three FDO fields are appended after top_level_blob (Z5).
-    try em.w("@zeln_entry_global = internal global { ptr, ptr, i64, ptr, ptr, ptr, ptr, i64, ptr } {\n");
+    // ptr fdo_fallbacks, i64 n_fdo, ptr zunit_blob } matching
+    // zeln_entry_t (compz.h).  The four FDO fields are appended after
+    // top_level_blob (Z5; fdo_fallbacks added in Z6).
+    try em.w("@zeln_entry_global = internal global { ptr, ptr, i64, ptr, ptr, ptr, ptr, ptr, i64, ptr } {\n");
     try em.w("  ptr @freloc_link_table_z,\n");
     try em.w("  ptr @freloc_hash_z_data,\n");
     try em.wf("  i64 {d},\n", .{fns.len});
@@ -1952,6 +2066,7 @@ fn emitFileLLVM(
     try em.w("  ptr @top_level_blob_data,\n");
     try em.w("  ptr @zeln_fdo_active,\n");
     try em.w("  ptr @zeln_fdo_counters,\n");
+    try em.w("  ptr @zeln_fdo_fallbacks,\n");
     try em.wf("  i64 {d},\n", .{fns.len});
     try em.w("  ptr @zeln_zunit_blob_data\n}\n\n");
 
@@ -1965,7 +2080,7 @@ fn emitFileLLVM(
 
 // zabi=2 (M1 single-fn): the N=1 case of the multi-function container,
 // with a placeholder symbol name and an empty top_level_blob.
-fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8, zunit_bytes: []const u8, fdo_counts: std.StringHashMap(u64), fdo_final: bool) ![]u8 {
+fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8, zunit_bytes: []const u8, fdo_counts: std.StringHashMap(u64), fdo_fallbacks: std.StringHashMap(u64), fdo_final: bool) ![]u8 {
     var fns = try gpa.alloc(FnUnit, 1);
     defer gpa.free(fns);
     fns[0] = .{
@@ -1975,7 +2090,7 @@ fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8, zunit_
         .opcodes = unit.opcodes,
         .consts = unit.consts,
     };
-    return emitFileLLVM(gpa, fns, abi_hash, "", zunit_bytes, fdo_counts, fdo_final);
+    return emitFileLLVM(gpa, fns, abi_hash, "", zunit_bytes, fdo_counts, fdo_fallbacks, fdo_final);
 }
 
 // ---- Per-opcode IR fragments.  Each assumes a block is currently open
@@ -2122,13 +2237,12 @@ fn emitBinaryArith(em: *Emitter, idx: u64, start: u32) !void {
     const bothfix = em.fresh();
     try em.wif("%{d} = and i1 %{d}, %{d}\n", .{ bothfix, f1, f2 });
     // both-fixnum -> inline arith; else -> fallback (freloc call).  FDO:
-    // hot fns get !prof branch weights (1000000:1 inline) so LLVM lays out
-    // the inline path as fall-through and sinks the fallback block.
-    if (em.is_hot) {
-        try em.wif("br i1 %{d}, label %bb_ari_{d}, label %bb_far_{d}, !prof {s}\n", .{ bothfix, start, start, "!{!\"branch_weights\", i32 1000000, i32 1}" });
-    } else {
-        try em.wif("br i1 %{d}, label %bb_ari_{d}, label %bb_far_{d}\n", .{ bothfix, start, start });
-    }
+    // hot fns get !prof branch weights from the REAL profile (inline =
+    // calls - fallbacks, fallback = fallbacks) so LLVM lays out whichever
+    // path is genuinely hot as fall-through.
+    const pmd = try em.profMDAlloc();
+    defer em.gpa.free(pmd);
+    try em.wif("br i1 %{d}, label %bb_ari_{d}, label %bb_far_{d}{s}\n", .{ bothfix, start, start, pmd });
 
     // Inline arith block: decode operands, compute res, test overflow.
     try em.wf("bb_ari_{d}:\n", .{start});
@@ -2175,6 +2289,7 @@ fn emitBinaryArith(em: *Emitter, idx: u64, start: u32) !void {
     // Fallback: the byte-identical freloc shim call (zeln_plus->Fplus etc.)
     // the Tier-0 emitter makes — np[0]=v1, np[1]=v2 are still pristine.
     try em.wf("bb_far_{d}:\n", .{start});
+    try emitFallbackCounter(em, start);
     const r = try em.frelocCallI64(idx, 2, np);
     try em.wif("store i64 %{d}, ptr %{d}\n", .{ r, np });
     try em.wif("br label %bb_adone_{d}\n", .{start});
@@ -2194,11 +2309,9 @@ fn emitUnaryArith(em: *Emitter, idx: u64, start: u32) !void {
     try em.wif("%{d} = and i64 %{d}, {d}\n", .{ m, v, FIXNUM_LSB_MASK });
     const fix = em.fresh();
     try em.wif("%{d} = icmp eq i64 %{d}, {d}\n", .{ fix, m, FIXNUM_LSB_TAG });
-    if (em.is_hot) {
-        try em.wif("br i1 %{d}, label %bb_ari_{d}, label %bb_far_{d}, !prof {s}\n", .{ fix, start, start, "!{!\"branch_weights\", i32 1000000, i32 1}" });
-    } else {
-        try em.wif("br i1 %{d}, label %bb_ari_{d}, label %bb_far_{d}\n", .{ fix, start, start });
-    }
+    const pmd = try em.profMDAlloc();
+    defer em.gpa.free(pmd);
+    try em.wif("br i1 %{d}, label %bb_ari_{d}, label %bb_far_{d}{s}\n", .{ fix, start, start, pmd });
 
     // Inline arith block.
     try em.wf("bb_ari_{d}:\n", .{start});
@@ -2234,6 +2347,7 @@ fn emitUnaryArith(em: *Emitter, idx: u64, start: u32) !void {
 
     // Fallback: byte-identical freloc shim call (zeln_sub1->Fsub1 etc.).
     try em.wf("bb_far_{d}:\n", .{start});
+    try emitFallbackCounter(em, start);
     const r = try em.frelocCallI64(idx, 1, t);
     try em.wif("store i64 %{d}, ptr %{d}\n", .{ r, t });
     try em.wif("br label %bb_adone_{d}\n", .{start});
@@ -2403,11 +2517,9 @@ fn emitBinaryCompare(em: *Emitter, idx: u64, start: u32) !void {
     const bothfix = em.fresh();
     try em.wif("%{d} = and i1 %{d}, %{d}\n", .{ bothfix, f1, f2 });
     // both-fixnum -> inline compare; else -> fallback (freloc call).
-    if (em.is_hot) {
-        try em.wif("br i1 %{d}, label %bb_cmp_{d}, label %bb_cfc_{d}, !prof {s}\n", .{ bothfix, start, start, "!{!\"branch_weights\", i32 1000000, i32 1}" });
-    } else {
-        try em.wif("br i1 %{d}, label %bb_cmp_{d}, label %bb_cfc_{d}\n", .{ bothfix, start, start });
-    }
+    const pmd = try em.profMDAlloc();
+    defer em.gpa.free(pmd);
+    try em.wif("br i1 %{d}, label %bb_cmp_{d}, label %bb_cfc_{d}{s}\n", .{ bothfix, start, start, pmd });
 
     // Inline compare block: decode operands, signed-compare, Qt/Qnil select.
     try em.wf("bb_cmp_{d}:\n", .{start});
@@ -2446,6 +2558,7 @@ fn emitBinaryCompare(em: *Emitter, idx: u64, start: u32) !void {
     // Fallback: byte-identical freloc shim call (zeln_gtr->Fgtr etc.) —
     // np[0]=v1, np[1]=v2 are still pristine.
     try em.wf("bb_cfc_{d}:\n", .{start});
+    try emitFallbackCounter(em, start);
     const r = try em.frelocCallI64(idx, 2, np);
     try em.wif("store i64 %{d}, ptr %{d}\n", .{ r, np });
     try em.wif("br label %bb_cdn_{d}\n", .{start});
