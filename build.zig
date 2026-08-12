@@ -106,7 +106,9 @@ fn makeConfigHeader(b: *std.Build, tag: ?[]const u8, triple: ?[]const u8) Config
     }
 
     if (tag) |t| {
-        const overrides: ?[]const config_overrides.Override = if (std.mem.eql(u8, t, "musl"))
+        const overrides: ?[]const config_overrides.Override = if (std.mem.eql(u8, t, "linux"))
+            &config_overrides.linux_overrides
+        else if (std.mem.eql(u8, t, "musl"))
             &config_overrides.musl_overrides
         else if (std.mem.eql(u8, t, "windows"))
             &config_overrides.windows_overrides
@@ -330,7 +332,7 @@ pub fn build(b: *std.Build) void {
     // per-target differences derived from the target (not the host), so
     // builds are reproducible.  Every C compile (make-docfile + temacs)
     // includes the generated <config.h> via addIncludePath below.
-    const base_config = makeConfigHeader(b, null, null);
+    const base_config = makeConfigHeader(b, "linux", null);
     const config_h_file = base_config.file;
     const gen_config_step = b.step(
         "generate-config",

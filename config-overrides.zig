@@ -13,6 +13,75 @@ pub const Override = struct {
     value: []const u8 = "",
 };
 
+// Linux TTY build: no window system / image / font backends are compiled
+// (the zig build compiles only the 63 TTY core C sources), so the committed
+// Linux autoconf snapshot's display knobs are undef'd -- parity with upstream
+// `--without-x --without-ns` -- eliminating the declaration/compile drift.
+// (musl/windows/macos overrides keep them undef'd too; this table makes the
+// native Linux TTY build consistent with them.)
+pub const linux_overrides = [_]Override{
+    .{ .name = "HAVE_ANDROID" },
+    .{ .name = "HAVE_GIF" },
+    .{ .name = "HAVE_GTK3" },
+    .{ .name = "HAVE_HAIKU" },
+    .{ .name = "HAVE_HARFBUZZ" },
+    .{ .name = "HAVE_IMAGEMAGICK" },
+    .{ .name = "HAVE_IMAGEMAGICK7" },
+    .{ .name = "HAVE_JPEG" },
+    .{ .name = "HAVE_LIBOTF" },
+    .{ .name = "HAVE_M17N_FLT" },
+    .{ .name = "HAVE_NATIVE_IMAGE_API" },
+    .{ .name = "HAVE_NS" },
+    .{ .name = "HAVE_NTGUI" },
+    .{ .name = "HAVE_PGTK" },
+    .{ .name = "HAVE_PNG" },
+    .{ .name = "HAVE_RSVG" },
+    .{ .name = "HAVE_TIFF" },
+    .{ .name = "HAVE_W32NOTIFY" },
+    .{ .name = "HAVE_WEBP" },
+    .{ .name = "HAVE_WINDOW_SYSTEM" },
+    .{ .name = "HAVE_X11" },
+    .{ .name = "HAVE_X11R6" },
+    .{ .name = "HAVE_X11R6_XIM" },
+    .{ .name = "HAVE_X11XTR6" },
+    .{ .name = "HAVE_XAW3D" },
+    .{ .name = "HAVE_XCB_SHAPE" },
+    .{ .name = "HAVE_XCOMPOSITE" },
+    .{ .name = "HAVE_XDBE" },
+    .{ .name = "HAVE_XDESTROYSUBWINDOWS" },
+    .{ .name = "HAVE_XDISPLAYCELLS" },
+    .{ .name = "HAVE_XFIXES" },
+    .{ .name = "HAVE_XFT" },
+    .{ .name = "HAVE_XIM" },
+    .{ .name = "HAVE_XINERAMA" },
+    .{ .name = "HAVE_XINPUT2" },
+    .{ .name = "HAVE_XKB" },
+    .{ .name = "HAVE_XKBFREENAMES" },
+    .{ .name = "HAVE_XKBREFRESHKEYBOARDMAPPING" },
+    .{ .name = "HAVE_XPM" },
+    .{ .name = "HAVE_XRANDR" },
+    .{ .name = "HAVE_XRENDER" },
+    .{ .name = "HAVE_XSHAPE" },
+    .{ .name = "HAVE_XSYNC" },
+    .{ .name = "HAVE_XSYNCTRIGGERFENCE" },
+    .{ .name = "HAVE_XWIDGETS" },
+    .{ .name = "HAVE_X_I18N" },
+    .{ .name = "HAVE_X_SM" },
+    .{ .name = "HAVE_X_WINDOWS" },
+    .{ .name = "USE_CAIRO" },
+    .{ .name = "USE_CAIRO_XCB" },
+    .{ .name = "USE_GTK" },
+    .{ .name = "USE_LUCID" },
+    .{ .name = "USE_MOTIF" },
+    .{ .name = "USE_XCB" },
+    .{ .name = "USE_XIM" },
+    .{ .name = "USE_X_TOOLKIT" },
+    // Advertise only what the TTY build actually provides: drop XIM from
+    // the runtime feature string (EMACS_CONFIG_FEATURES otherwise keeps
+    // advertising the X Input Method although HAVE_XIM is now undef'd).
+    .{ .name = "EMACS_CONFIG_FEATURES", .value = "\"ACL DBUS GMP GNUTLS GPM LCMS2 LIBXML2 NOTIFY INOTIFY PDUMPER SECCOMP SOUND SQLITE3 THREADS TREE_SITTER ZLIB\"" },
+};
+
 pub const musl_overrides = [_]Override{
     .{ .name = "HAVE_GNUTLS" },
     .{ .name = "HAVE_ALSA" },
