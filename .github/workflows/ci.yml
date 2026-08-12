@@ -1,0 +1,238 @@
+name: CI (zig build)
+
+# Standardized pure-`zig build` workflow.  Every platform (Linux / macOS /
+# Windows) builds independently via a matrix, with two scenarios:
+#
+#   1. build-bin  — build the binaries on each platform in BOTH ReleaseFast
+#                   and Debug modes (3 platforms x 2 modes = 6 jobs) and
+#                   upload them.
+#   2. test       — identical steps on all three platforms: the built-in
+#                   ert suite (582 tests) plus the .zeln native-comp
+#                   feature gates (populate-zeln-cache / check-zeln /
+#                   zeln-diff).
+#
+# No make, no ./configure, no shell step: `zig build` is the sole build
+# system (src/config.h is a first-class b.addConfigHeader artifact).
+
+on:
+  push:
+    branches: [ master, main, zig-build-* ]
+    paths:
+      - 'build.zig'
+      - 'build.zig.zon'
+      - 'config-overrides.zig'
+      - 'tools/**'
+      - 'src/**'
+      - 'lib/**'
+      - 'build-aux/**'
+      - 'etc/**'
+      - 'test/**'
+      - 'lisp/**'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches: [ master, main, zig-build-* ]
+    paths:
+      - 'build.zig'
+      - 'build.zig.zon'
+      - 'config-overrides.zig'
+      - 'tools/**'
+      - 'src/**'
+      - 'lib/**'
+      - 'build-aux/**'
+      - 'etc/**'
+      - 'test/**'
+      - 'lisp/**'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Scenario 1: build the binaries on each platform independently.
+  # ---------------------------------------------------------------------
+  build-bin:
+    name: build-bin (${{ matrix.os }} ${{ matrix.mode }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+        mode: [ ReleaseFast, Debug ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install system libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libgnutls28-dev \
+            libncurses-dev \
+            libacl1-dev \
+            libasound2-dev \
+            libgpm-dev \
+            libdbus-1-dev
+
+      # Cache the Zig build cache plus the generated source-tree artifacts
+      # (byte-compiled .elc, generated Unicode/charset data, dumps). With a
+      # warm cache Zig skips the expensive lisp-bootstrap pipeline
+      # (dump -> byte-compile ~1600 files -> re-dump).
+      - name: Cache build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache
+            ~/.cache/zig
+            lisp/**/*.elc
+            lisp/loaddefs.el
+            lisp/**/*-loaddefs.el
+            lisp/international/charprop.el
+            lisp/international/charscript.el
+            lisp/international/emoji-zwj.el
+            lisp/international/uni-*.el
+            lisp/international/cp51932.el
+            lisp/international/eucjp-ms.el
+            etc/charsets
+            etc/DOC
+            zig-out/bin/*.pdmp
+          key: zigbuild-${{ runner.os }}-${{ matrix.mode }}-${{ hashFiles('build.zig', 'build.zig.zon', 'config-overrides.zig', 'build-aux/**', 'tools/**') }}-v1
+          restore-keys: |
+            zigbuild-${{ runner.os }}-${{ matrix.mode }}-
+            zigbuild-${{ runner.os }}-
+
+      - name: Build
+        run: zig build -Doptimize=${{ matrix.mode }}
+        shell: bash
+
+      - name: Verify temacs executable
+        run: |
+          if [ -f zig-out/bin/temacs ]; then
+            echo "✓ temacs built successfully"
+            file zig-out/bin/temacs || true
+          elif [ -f zig-out/bin/temacs.exe ]; then
+            echo "✓ temacs.exe built successfully"
+            file zig-out/bin/temacs.exe || true
+          else
+            echo "✗ temacs/temacs.exe not found"
+            exit 1
+          fi
+        shell: bash
+
+      - name: Smoke test
+        run: |
+          if [ -f ./zig-out/bin/temacs.exe ]; then
+            # Explicit dump file: the default-search path is the build
+            # tree's lib-src (PATH_EXEC), not the executable directory.
+            ./zig-out/bin/temacs.exe --batch --dump-file=./zig-out/bin/bootstrap-emacs.pdmp --eval "(progn (message \"Zig build working!\") (kill-emacs 0))"
+          else
+            ./zig-out/bin/temacs --batch --eval "(progn (message \"Zig build working!\") (kill-emacs 0))"
+          fi
+        shell: bash
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: emacs-zig-${{ matrix.os }}-${{ matrix.mode }}-bin
+          path: |
+            zig-out/bin/temacs
+            zig-out/bin/temacs.exe
+            zig-out/bin/bootstrap-emacs.pdmp
+          retention-days: 7
+
+  # ---------------------------------------------------------------------
+  # Scenario 2: tests + .zeln feature tests on each platform.
+  # ---------------------------------------------------------------------
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install system libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libgnutls28-dev \
+            libncurses-dev \
+            libacl1-dev \
+            libasound2-dev \
+            libgpm-dev \
+            libdbus-1-dev
+
+      - name: Cache build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache
+            ~/.cache/zig
+            lisp/**/*.elc
+            lisp/loaddefs.el
+            lisp/**/*-loaddefs.el
+            lisp/international/charprop.el
+            lisp/international/charscript.el
+            lisp/international/emoji-zwj.el
+            lisp/international/uni-*.el
+            lisp/international/cp51932.el
+            lisp/international/eucjp-ms.el
+            etc/charsets
+            etc/DOC
+            zig-out/bin/*.pdmp
+          key: zigbuild-test-${{ runner.os }}-${{ hashFiles('build.zig', 'build.zig.zon', 'config-overrides.zig', 'build-aux/**', 'tools/**') }}-v1
+          restore-keys: |
+            zigbuild-test-${{ runner.os }}-
+            zigbuild-${{ runner.os }}-
+
+      # Full build first: the default install step is what puts the
+      # flag-correct temacs into zig-out/bin.
+      - name: Build
+        run: zig build
+
+      - name: Built-in ert tests (582)
+        env:
+          ZIG_COMPILE_LISP_PROBE: ${{ runner.os == 'Windows' && '1' || '' }}
+        timeout-minutes: 90
+        run: |
+          # GitHub macOS runners sandbox the step process: creating files
+          # works, but writing to an existing file is denied both in /tmp
+          # and in RUNNER_TEMP (file-write-data), which fails e.g. the
+          # check-declare ert tests that open their temp file for writing.
+          # The workspace (zig-out is gitignored) is writable for existing
+          # files, so point TMPDIR there.
+          mkdir -p "${PWD}/zig-out/tmp"
+          export TMPDIR="${PWD}/zig-out/tmp"
+          zig build check
+        shell: bash
+
+      # .zeln native-comp feature tests.  Run identically on all three
+      # platforms so the feature surface stays uniform.
+      - name: .zeln feature tests (populate + gate #2 + zeln-diff)
+        timeout-minutes: 120
+        run: |
+          zig build -Dnative-comp-zig=true populate-zeln-cache
+          zig build -Dnative-comp-zig=true check-zeln
+          zig build -Dnative-comp-zig=true zeln-diff
+        shell: bash
