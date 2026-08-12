@@ -353,7 +353,7 @@ Expected and generally harmless. Zig's warning system differs from GCC/Clang. On
 
 ### Build System Integrity
 
-- **Fix the Source, Not the Artifact**: Always resolve build-related issues by modifying **`build.zig`**. Do **not** manually edit generated files such as `Makefile`, `src/config.h`, or other Autotools output to bypass errors. 
+- **Fix the Source, Not the Artifact**: Always resolve build-related issues by modifying **`build.zig`**. Do **not** manually edit generated files such as `Makefile`, `src/config.h`, or other Autotools output to bypass errors.
 - **Single Source of Truth**: Treat the `zig build` system as the future single source of truth. Ensure all compiler flags, include paths, and dependency logic are correctly implemented using the `std.Build` API (v0.16.0).
 - **Correct Tooling Usage**: Use `zig build --summary legacy` or similar flags to debug the build graph instead of hacking temporary build directories.
 
