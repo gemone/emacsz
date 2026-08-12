@@ -2230,6 +2230,14 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("gdi32", .{});
         exe.root_module.linkSystemLibrary("winmm", .{});
         exe.root_module.linkSystemLibrary("mpr", .{});
+        // shell32 is NOT explicit in upstream W32_LIBS but is pulled in
+        // transitively there (comctl32/comdlg32/ole32 import it).  The
+        // console-only build links none of those, so without an explicit
+        // -lshell32 the DLL is absent from the import table and the w32
+        // dynamic loads via GetModuleHandle("shell32.dll") fail: the
+        // init_environment AppData HOME fallback (SHGetFolderPathA) is
+        // skipped and ShellExecuteEx (browse-url) is unavailable.
+        exe.root_module.linkSystemLibrary("shell32", .{});
     }
 
     // Install the executable.  The step is kept as an explicit handle so
