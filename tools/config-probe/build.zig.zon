@@ -1,8 +1,8 @@
 .{
-    .name = .gen_config,
+    .name = .config_probe,
     .version = "0.1.0",
     .minimum_zig_version = "0.16.0",
-    .fingerprint = 0xb3f1169c85a54e0e,
+    .fingerprint = 0x6a733d6a866e04a5,
     .dependencies = .{},
     .paths = .{
         "build.zig.zon",

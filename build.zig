@@ -1,4 +1,5 @@
 const std = @import("std");
+const config_overrides = @import("config-overrides.zig");
 
 // Canonical GNU-style configuration string for the build target
 // (EMACS_CONFIGURATION); autoconf derives the same value from the host
@@ -60,6 +61,101 @@ fn gnutlsGlCollision(src: []const u8) bool {
     return false;
 }
 
+const ConfigOut = struct {
+    file: std.Build.LazyPath,
+    step: *std.Build.Step,
+};
+
+// Build config.h as a FIRST-CLASS Zig build artifact via `b.addConfigHeader`
+// (`.style = .autoconf_undef` over the committed src/config.h.in -- the exact
+// template format the old gen-config tool consumed).  Values come from the
+// committed src/config_values.txt (the Linux autoconf results) plus the
+// per-target override tables in config-overrides.zig; every `#undef NAME` in
+// the template must have a value (raw `.ident` for a present value, or
+// `.undef`), so the rendering is functionally identical to the previous
+// output (ConfigHeader prepends its standard generated-file banner line).
+fn makeConfigHeader(b: *std.Build, tag: ?[]const u8, triple: ?[]const u8) ConfigOut {
+    const io = b.graph.io;
+    const alloc = b.allocator;
+
+    const values_text = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        "src/config_values.txt",
+        alloc,
+        .limited(4 * 1024 * 1024),
+    ) catch @panic("build.zig: read src/config_values.txt");
+    const template_text = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        "src/config.h.in",
+        alloc,
+        .limited(4 * 1024 * 1024),
+    ) catch @panic("build.zig: read src/config.h.in");
+
+    // name -> raw value ("" = undef)
+    var values = std.StringHashMap([]const u8).init(alloc);
+    {
+        var it = std.mem.splitScalar(u8, values_text, '\n');
+        while (it.next()) |line| {
+            if (line.len == 0) continue;
+            if (std.mem.indexOfScalar(u8, line, '=')) |eq| {
+                values.put(b.dupe(line[0..eq]), b.dupe(line[eq + 1 ..])) catch @panic("OOM");
+            } else {
+                values.put(b.dupe(line), "") catch @panic("OOM");
+            }
+        }
+    }
+
+    if (tag) |t| {
+        const overrides: ?[]const config_overrides.Override = if (std.mem.eql(u8, t, "musl"))
+            &config_overrides.musl_overrides
+        else if (std.mem.eql(u8, t, "windows"))
+            &config_overrides.windows_overrides
+        else if (std.mem.eql(u8, t, "macos"))
+            &config_overrides.macos_overrides
+        else
+            null;
+        if (overrides) |list| {
+            for (list) |o| values.put(b.dupe(o.name), b.dupe(o.value)) catch @panic("OOM");
+        }
+        if (std.mem.eql(u8, t, "macos")) {
+            const quoted = std.fmt.allocPrint(alloc, "\"{s}\"", .{
+                triple orelse @panic("build.zig: macos config needs a triple"),
+            }) catch @panic("OOM");
+            values.put(b.dupe("EMACS_CONFIGURATION"), quoted) catch @panic("OOM");
+        }
+    }
+
+    // The set of `#undef NAME` lines the template declares (the only knobs
+    // the renderer substitutes; every other line passes through verbatim).
+    var undef_names = std.StringHashMap(void).init(alloc);
+    {
+        var it = std.mem.splitScalar(u8, template_text, '\n');
+        while (it.next()) |line| {
+            if (line.len == 0 or line[0] != '#') continue;
+            var tok = std.mem.tokenizeAny(u8, line[1..], " \t\r");
+            const kw = tok.next() orelse continue;
+            if (!std.mem.eql(u8, kw, "undef")) continue;
+            const name = tok.next() orelse continue;
+            undef_names.put(name, {}) catch @panic("OOM");
+        }
+    }
+
+    const header = b.addConfigHeader(.{
+        .style = .{ .autoconf_undef = b.path("src/config.h.in") },
+        .include_path = "config.h",
+    }, .{});
+    var it = undef_names.keyIterator();
+    while (it.next()) |name| {
+        const raw = values.get(name.*) orelse "";
+        if (raw.len == 0) {
+            header.values.put(alloc, b.dupe(name.*), .undef) catch @panic("OOM");
+        } else {
+            header.values.put(alloc, b.dupe(name.*), .{ .ident = raw }) catch @panic("OOM");
+        }
+    }
+    return .{ .file = header.getOutputFile(), .step = &header.step };
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -85,7 +181,7 @@ pub fn build(b: *std.Build) void {
     // Target-derived flags.  `target` is resolved at line 64, so target.result
     // is in scope here; computing these early lets the make-docfile / doc-scan
     // / buildobj gates below read them (they run before the source-compile
-    // block).  musl targets get a minimal config (gen-config "musl" tag undefs
+    // block).  musl targets get a minimal config (config-overrides.zig undefs
     // the optional system-lib features), so skip the corresponding -l flags
     // there too; only libm and ncurses (terminal support) remain.
     const is_windows = target.result.os.tag == .windows;
@@ -222,53 +318,59 @@ pub fn build(b: *std.Build) void {
     );
     gen_charsets_step.dependOn(&gen_charsets.step);
 
-    // Generate src/config.h via a CUSTOM generator (not addConfigHeader).
-    // addConfigHeader needs a comptime values struct, unwieldy for the ~760
-    // config.h knobs; this reads the lean zig-authored template (src/config.h.in:
-    // guard + _GNU_SOURCE + every `#undef NAME` from config.in + conf_post) plus
-    // the zig-owned answer data (src/config_values.txt: `NAME=value`, or bare
-    // `NAME` for undef) and substitutes each `#undef NAME` -> the value --
-    // the macro processing autoconf's config.status does. Text-based, so every
-    // value type (ints, strings, char literals, /**/) is handled uniformly.
-    // This REPLACES the former ./configure shell step (autoconf probe): the
-    // template + answer file are committed, the tool is pure Zig, and every C
-    // compile (make-docfile + temacs) includes the generated <config.h> from
-    // the zig-cache via addIncludePath below. No shell is needed.
-    //
-    // The config.h generator is an independent Zig package (dependency
-    // `gen_config` in build.zig.zon -> tools/gen-config). The tool reads
-    // src/config.h.in + src/config_values.txt (with cwd = repo root via
-    // setCwd) and writes the substituted config.h body to STDOUT;
-    // captureStdOut lands it in the zig-cache. Defined here (before
-    // make-docfile + temacs) because every C compile includes <config.h>.
-    const gen_config_dep = b.dependency("gen_config", .{});
-    const gen_config_tool = b.addExecutable(.{
-        .name = "gen-config",
-        .root_module = b.createModule(.{
-            .target = b.graph.host,
-            .optimize = .Debug,
-            .link_libc = true,
-            .root_source_file = gen_config_dep.path("src/main.zig"),
-        }),
-    });
-    const run_gen_config = b.addRunArtifact(gen_config_tool);
-    run_gen_config.setCwd(b.path("."));
-    // Pass the template + answer files as args so the step's cache tracks
-    // their content (the tool reads them relative to the cwd).
-    run_gen_config.addFileArg(b.path("src/config.h.in"));
-    run_gen_config.addFileArg(b.path("src/config_values.txt"));
-    const config_h_file = run_gen_config.captureStdOut(.{ .basename = "config.h" });
+    // Generate src/config.h as a FIRST-CLASS Zig build artifact via
+    // `b.addConfigHeader` (`.style = .autoconf_undef` over src/config.h.in,
+    // the lean template: guard + _GNU_SOURCE + every `#undef NAME` from
+    // config.in + conf_post).  Values come from the committed
+    // src/config_values.txt (NAME=value / bare NAME for undef, the Linux
+    // autoconf results) plus the per-target override tables in
+    // config-overrides.zig.  This replaces both the former ./configure
+    // shell step and the custom gen-config tool: config.h is a standard
+    // Step.ConfigHeader artifact, fully owned by the zig build, with
+    // per-target differences derived from the target (not the host), so
+    // builds are reproducible.  Every C compile (make-docfile + temacs)
+    // includes the generated <config.h> via addIncludePath below.
+    const base_config = makeConfigHeader(b, null, null);
+    const config_h_file = base_config.file;
     const gen_config_step = b.step(
         "generate-config",
-        "Generate src/config.h from the zig-authored template + values",
+        "Generate src/config.h via addConfigHeader (template + values + per-target overrides)",
     );
-    gen_config_step.dependOn(&run_gen_config.step);
+    gen_config_step.dependOn(base_config.step);
+
+    // config-probe: a DIAGNOSTIC host prober (tools/config-probe).  A
+    // cached Run step that reports the host's header/function reality as
+    // NAME=value override lines (`zig build probe-config`).  It does NOT
+    // feed config.h: config.h is a deterministic, first-class artifact of
+    // the zig build, derived ONLY from the committed config_values.txt +
+    // per-target overrides, so the build is reproducible across machines.
+    const enable_config_probe = b.option(bool, "config-probe", "Build the diagnostic host prober step (zig build probe-config)") orelse true;
+    if (enable_config_probe) {
+        const config_probe_dep = b.dependency("config_probe", .{});
+        const config_probe_tool = b.addExecutable(.{
+            .name = "config-probe",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = config_probe_dep.path("src/main.zig"),
+            }),
+        });
+        const run_config_probe = b.addRunArtifact(config_probe_tool);
+        run_config_probe.setCwd(b.path("."));
+        run_config_probe.addArg(b.graph.zig_exe);
+        run_config_probe.addArg("pkg-config");
+        const config_probe_step = b.step(
+            "probe-config",
+            "Diagnostic: probe the host's headers/functions (zig cc) and print the would-be config.h overrides",
+        );
+        config_probe_step.dependOn(&run_config_probe.step);
+    }
 
     // Cross targets get a target-tagged config: the committed values are
     // the native Linux configure results, so for musl and Windows the
-    // generator additionally undefs the optional system-library features
-    // those targets cannot link yet. The HOST config above stays
-    // untouched for make-docfile and the config verifiers; only the
+    // per-target override tables undef the optional system-library
+    // features those targets cannot link yet.  The HOST/base config above
+    // stays untouched for make-docfile and the config verifiers; only the
     // temacs C compile switches to the target config.
     const target_config_tag: ?[]const u8 = switch (target.result.os.tag) {
         .windows => "windows",
@@ -276,26 +378,10 @@ pub fn build(b: *std.Build) void {
         .linux => if (target.result.abi == .musl) "musl" else null,
         else => null,
     };
-    const TargetConfig = struct {
-        file: std.Build.LazyPath,
-        step: *std.Build.Step,
-    };
-    const target_config_h_file: TargetConfig = if (target_config_tag) |tag| blk: {
-        const run = b.addRunArtifact(gen_config_tool);
-        run.setCwd(b.path("."));
-        run.addFileArg(b.path("src/config.h.in"));
-        run.addFileArg(b.path("src/config_values.txt"));
-        run.addArg(tag);
-        if (std.mem.eql(u8, tag, "macos"))
-            run.addArg(canonicalConfiguration(target.result, b.allocator));
-        break :blk TargetConfig{
-            .file = run.captureStdOut(.{ .basename = "config.h" }),
-            .step = &run.step,
-        };
-    } else TargetConfig{
-        .file = config_h_file,
-        .step = &run_gen_config.step,
-    };
+    const target_config_h_file: ConfigOut = if (target_config_tag) |tag|
+        makeConfigHeader(b, tag, if (std.mem.eql(u8, tag, "macos")) canonicalConfiguration(target.result, b.allocator) else null)
+    else
+        base_config;
 
     // make-docfile is a HOST tool: it must compile against a config that
     // matches the OS it runs on.  The committed values are Linux-derived
@@ -310,22 +396,10 @@ pub fn build(b: *std.Build) void {
         .macos => "macos",
         else => null,
     };
-    const mdf_config: TargetConfig = if (host_config_tag) |tag| blk: {
-        const run = b.addRunArtifact(gen_config_tool);
-        run.setCwd(b.path("."));
-        run.addFileArg(b.path("src/config.h.in"));
-        run.addFileArg(b.path("src/config_values.txt"));
-        run.addArg(tag);
-        if (std.mem.eql(u8, tag, "macos"))
-            run.addArg(canonicalConfiguration(b.graph.host.result, b.allocator));
-        break :blk TargetConfig{
-            .file = run.captureStdOut(.{ .basename = "config.h" }),
-            .step = &run.step,
-        };
-    } else TargetConfig{
-        .file = config_h_file,
-        .step = &run_gen_config.step,
-    };
+    const mdf_config: ConfigOut = if (host_config_tag) |tag|
+        makeConfigHeader(b, tag, if (std.mem.eql(u8, tag, "macos")) canonicalConfiguration(b.graph.host.result, b.allocator) else null)
+    else
+        base_config;
 
     // Build make-docfile as a HOST tool (it runs at build time, so it must
     // target the build host rather than the cross target). Reuses the same
@@ -591,7 +665,7 @@ pub fn build(b: *std.Build) void {
     //
     // The epaths.h generator is an independent Zig package (dependency
     // `gen_epaths` in build.zig.zon -> tools/gen-epaths), mirroring the
-    // gen_config extraction above. The tool is pure/deterministic: it takes
+    // config.h generation above. The tool is pure/deterministic: it takes
     // the absolute repo root as argv[1] and writes the 11 PATH_* macros to
     // STDOUT; captureStdOut lands it in the zig-cache, the same LazyPath
     // shape the inline addWriteFiles produced, so the include-path
@@ -653,8 +727,31 @@ pub fn build(b: *std.Build) void {
         "config-diff",
         "Report the config.h knob gap vs the gitignored reference",
     );
-    diff_config_step.dependOn(&run_gen_config.step);
+    diff_config_step.dependOn(base_config.step);
     diff_config_step.dependOn(&diff_config_cmd.step);
+
+    // collect-config: the SIMD complete-DEF collector (tools/config-collect).
+    // Scans any autoconf-style config file for every `#define`/`#undef`
+    // (incl. indented `# define`, `# undef` and the `/* #undef */` comment
+    // form) and prints the sorted-unique knob set -- the completeness
+    // instrument: config.in universe vs config.h.in template vs the
+    // generated config.h.  Standalone; runs on the lean template by default.
+    const config_collect_dep = b.dependency("config_collect", .{});
+    const config_collect_tool = b.addExecutable(.{
+        .name = "config-collect",
+        .root_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .root_source_file = config_collect_dep.path("src/main.zig"),
+        }),
+    });
+    const collect_config_cmd = b.addRunArtifact(config_collect_tool);
+    collect_config_cmd.addFileArg(b.path("src/config.h.in"));
+    const collect_config_step = b.step(
+        "collect-config",
+        "SIMD-scan a config file for the complete DEF knob set (default: src/config.h.in)",
+    );
+    collect_config_step.dependOn(&collect_config_cmd.step);
 
     // Create temacs executable
     const exe = b.addExecutable(.{
@@ -1428,7 +1525,7 @@ pub fn build(b: *std.Build) void {
         // detection via MODULES_SUFFIX, eval.c funcall_module dispatch,
         // alloc.c make_user_ptr, emacs.c syms_of_module init).  config.h
         // carries MODULES_SUFFIX (set in src/config_values.txt + the
-        // per-target gen-config overrides), so the lread.c #ifdef
+        // per-target config-overrides.zig overrides), so the lread.c #ifdef
         // HAVE_MODULES blocks compile.  emacs-module.c is the runtime
         // implementation -- it is src/Makefile.in's MODULES_OBJ, a separate
         // @MODULES_OBJ@ var (comment at Makefile.in:270), so it is NOT in
@@ -1708,7 +1805,7 @@ pub fn build(b: *std.Build) void {
     // Zig-managed third-party libraries.  Every vendored dependency is
     // cross-platform, so it is built from source into a static lib linked
     // on all targets (macOS, Linux, musl and Windows) and the matching
-    // config.h feature flag is enabled everywhere (see tools/gen-config);
+    // config.h feature flag is enabled everywhere (see config-overrides.zig);
     // only genuinely platform-specific libraries stay behind guards.
 
     // XML parsing: libxml2 built from source as a Zig-managed dependency
@@ -2081,6 +2178,9 @@ pub fn build(b: *std.Build) void {
     // other Unix-likes until their configs are vendored (the w32 console
     // needs no terminfo).  ACL/ALSA/GPM/D-Bus back Linux-only subsystems
     // (POSIX ACLs, ALSA sound, console mouse, D-Bus).
+    // All declared natively via linkSystemLibrary: zig's compiler driver
+    // resolves system libraries itself (pkg-config → vcpkg → plain `-l`
+    // search paths), so e.g. libgpm present without a .pc file still links.
     // macOS builds link the vendored gnutls/ncurses above when the host
     // is macOS; every other Unix-like (Linux, BSD, or a non-macOS host
     // cross-compiling the macOS target) keeps the system libraries until
@@ -2444,7 +2544,7 @@ pub fn build(b: *std.Build) void {
     // loadup, which is impossible for a cross target (the foreign temacs
     // cannot run on the build host), so a cross `zig build -Dtarget=...`
     // stays a compile-only check (install_temacs only), matching the
-    // cross-compile gates in zig-verify.yml.
+    // per-platform matrix in .github/workflows/ci.yml.
     const is_native_target = target.result.cpu.arch == b.graph.host.result.cpu.arch and
         target.result.os.tag == b.graph.host.result.os.tag and
         target.result.abi == b.graph.host.result.abi;

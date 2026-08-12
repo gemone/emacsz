@@ -10,11 +10,18 @@
         .gl_headers_gen = .{
             .path = "tools/gl-headers",
         },
-        // The src/config.h generator, extracted as an independent Zig
-        // package (mirrors gl_headers_gen above; reads the zig-authored
-        // template + values and substitutes each #undef).
-        .gen_config = .{
-            .path = "tools/gen-config",
+        // config-probe: the diagnostic host prober (`zig build
+        // probe-config`).  Reports the host's headers/functions via `zig
+        // cc` compile probes; does NOT feed config.h (which is generated
+        // deterministically by b.addConfigHeader in build.zig).
+        .config_probe = .{
+            .path = "tools/config-probe",
+        },
+        // The complete-DEF collector: config-collect SIMD-scans any config
+        // file for every `#define`/`#undef` and emits the sorted-unique
+        // knob set (template/universe/answer completeness instrument).
+        .config_collect = .{
+            .path = "tools/config-collect",
         },
         // The native-comp Zig tool (HAVE_NATIVE_COMP_ZIG path): parses a
         // zunit, emits LLVM IR, drives `zig cc -shared` to produce `.zeln`.
@@ -23,7 +30,8 @@
             .path = "tools/zeln-compile",
         },
         // The src/epaths.h generator, extracted as an independent Zig
-        // package (mirrors gen_config above; formats the 11 PATH_* macros
+        // package (mirrors the addConfigHeader config.h generation above;
+        // formats the 11 PATH_* macros
         // from the absolute repo root passed as argv[1]).
         .gen_epaths = .{
             .path = "tools/gen-epaths",
