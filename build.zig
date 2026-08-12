@@ -74,7 +74,9 @@ const ConfigOut = struct {
 // the template must have a value (raw `.ident` for a present value, or
 // `.undef`), so the rendering is functionally identical to the previous
 // output (ConfigHeader prepends its standard generated-file banner line).
-fn makeConfigHeader(b: *std.Build, tag: ?[]const u8, triple: ?[]const u8) ConfigOut {
+// `disabled` lists knob names to force undef (user feature switches like
+// -Dwith-gnutls=false), applied after the per-target overrides.
+fn makeConfigHeader(b: *std.Build, tag: ?[]const u8, triple: ?[]const u8, disabled: []const []const u8) ConfigOut {
     const io = b.graph.io;
     const alloc = b.allocator;
 
@@ -124,6 +126,47 @@ fn makeConfigHeader(b: *std.Build, tag: ?[]const u8, triple: ?[]const u8) Config
                 triple orelse @panic("build.zig: macos config needs a triple"),
             }) catch @panic("OOM");
             values.put(b.dupe("EMACS_CONFIGURATION"), quoted) catch @panic("OOM");
+        }
+    }
+
+    // User feature switches (-Dwith-gnutls=false ...): force-undef the
+    // knob, applied last so the option wins over snapshot + target data.
+    for (disabled) |knob| {
+        values.put(b.dupe(knob), "") catch @panic("OOM");
+    }
+    // Keep EMACS_CONFIG_FEATURES truthful: drop the feature tokens whose
+    // knob a switch disabled (e.g. HAVE_GNUTLS -> "GNUTLS").
+    if (disabled.len > 0) {
+        const features = values.get("EMACS_CONFIG_FEATURES") orelse null;
+        if (features) |f| {
+            // The stored value carries C string quotes ("ACL DBUS ...").
+            const inner = if (f.len >= 2 and f[0] == '"' and f[f.len - 1] == '"') f[1 .. f.len - 1] else f;
+            const knob_to_token = [_]struct { knob: []const u8, token: []const u8 }{
+                .{ .knob = "HAVE_GNUTLS", .token = "GNUTLS" },
+                .{ .knob = "HAVE_GPM", .token = "GPM" },
+                .{ .knob = "HAVE_DBUS", .token = "DBUS" },
+                .{ .knob = "HAVE_ALSA", .token = "SOUND" },
+                .{ .knob = "HAVE_SQLITE3", .token = "SQLITE3" },
+                .{ .knob = "HAVE_LIBXML2", .token = "LIBXML2" },
+                .{ .knob = "HAVE_LCMS2", .token = "LCMS2" },
+                .{ .knob = "HAVE_ZLIB", .token = "ZLIB" },
+                .{ .knob = "USE_ACL", .token = "ACL" },
+            };
+            var drop = std.StringHashMap(void).init(alloc);
+            defer drop.deinit();
+            for (disabled) |knob| {
+                for (knob_to_token) |m| {
+                    if (std.mem.eql(u8, knob, m.knob)) drop.put(m.token, {}) catch @panic("OOM");
+                }
+            }
+            var kept: std.ArrayList([]const u8) = .empty;
+            defer kept.deinit(alloc);
+            var tok = std.mem.tokenizeAny(u8, inner, " \t");
+            while (tok.next()) |t| {
+                if (!drop.contains(t)) kept.append(alloc, t) catch @panic("OOM");
+            }
+            const quoted = std.fmt.allocPrint(alloc, "\"{s}\"", .{std.mem.join(alloc, " ", kept.items) catch @panic("OOM")}) catch @panic("OOM");
+            values.put(b.dupe("EMACS_CONFIG_FEATURES"), quoted) catch @panic("OOM");
         }
     }
 
@@ -332,7 +375,41 @@ pub fn build(b: *std.Build) void {
     // per-target differences derived from the target (not the host), so
     // builds are reproducible.  Every C compile (make-docfile + temacs)
     // includes the generated <config.h> via addIncludePath below.
-    const base_config = makeConfigHeader(b, "linux", null);
+    // Optional system-feature switches (mirror upstream --with-<lib>=no):
+    // -Dwith-gnutls=false undefs HAVE_GNUTLS in config.h AND skips linking
+    // the library.  Default on; each is applied after the per-target
+    // overrides so the user's choice always wins.
+    const with_gnutls = b.option(bool, "with-gnutls", "Link GnuTLS (HAVE_GNUTLS)") orelse true;
+    const with_dbus = b.option(bool, "with-dbus", "Link D-Bus (HAVE_DBUS)") orelse true;
+    const with_gpm = b.option(bool, "with-gpm", "Link GPM console mouse (HAVE_GPM)") orelse true;
+    const with_alsa = b.option(bool, "with-alsa", "Link ALSA sound (HAVE_ALSA)") orelse true;
+    const with_acl = b.option(bool, "with-acl", "Link POSIX ACL (USE_ACL)") orelse true;
+    const with_sqlite3 = b.option(bool, "with-sqlite3", "Enable SQLite (HAVE_SQLITE3)") orelse true;
+    const with_xml2 = b.option(bool, "with-xml2", "Enable libxml2 (HAVE_LIBXML2)") orelse true;
+    const with_lcms2 = b.option(bool, "with-lcms2", "Enable Little CMS (HAVE_LCMS2)") orelse true;
+    const with_zlib = b.option(bool, "with-zlib", "Enable zlib (HAVE_ZLIB)") orelse true;
+
+    // Knob names to force-undef in config.h, collected from the switches.
+    var disabled_knobs: std.ArrayList([]const u8) = .empty;
+    defer disabled_knobs.deinit(b.allocator);
+    {
+        const Feature = struct { on: bool, knob: []const u8 };
+        const feats = [_]Feature{
+            .{ .on = with_gnutls, .knob = "HAVE_GNUTLS" },
+            .{ .on = with_dbus, .knob = "HAVE_DBUS" },
+            .{ .on = with_gpm, .knob = "HAVE_GPM" },
+            .{ .on = with_alsa, .knob = "HAVE_ALSA" },
+            .{ .on = with_acl, .knob = "USE_ACL" },
+            .{ .on = with_sqlite3, .knob = "HAVE_SQLITE3" },
+            .{ .on = with_xml2, .knob = "HAVE_LIBXML2" },
+            .{ .on = with_lcms2, .knob = "HAVE_LCMS2" },
+            .{ .on = with_zlib, .knob = "HAVE_ZLIB" },
+        };
+        for (feats) |f| {
+            if (!f.on) disabled_knobs.append(b.allocator, f.knob) catch @panic("OOM");
+        }
+    }
+    const base_config = makeConfigHeader(b, "linux", null, disabled_knobs.items);
     const config_h_file = base_config.file;
     const gen_config_step = b.step(
         "generate-config",
@@ -347,6 +424,7 @@ pub fn build(b: *std.Build) void {
     // the zig build, derived ONLY from the committed config_values.txt +
     // per-target overrides, so the build is reproducible across machines.
     const enable_config_probe = b.option(bool, "config-probe", "Build the diagnostic host prober step (zig build probe-config)") orelse true;
+
     if (enable_config_probe) {
         const config_probe_dep = b.dependency("config_probe", .{});
         const config_probe_tool = b.addExecutable(.{
@@ -381,7 +459,7 @@ pub fn build(b: *std.Build) void {
         else => null,
     };
     const target_config_h_file: ConfigOut = if (target_config_tag) |tag|
-        makeConfigHeader(b, tag, if (std.mem.eql(u8, tag, "macos")) canonicalConfiguration(target.result, b.allocator) else null)
+        makeConfigHeader(b, tag, if (std.mem.eql(u8, tag, "macos")) canonicalConfiguration(target.result, b.allocator) else null, disabled_knobs.items)
     else
         base_config;
 
@@ -399,7 +477,7 @@ pub fn build(b: *std.Build) void {
         else => null,
     };
     const mdf_config: ConfigOut = if (host_config_tag) |tag|
-        makeConfigHeader(b, tag, if (std.mem.eql(u8, tag, "macos")) canonicalConfiguration(b.graph.host.result, b.allocator) else null)
+        makeConfigHeader(b, tag, if (std.mem.eql(u8, tag, "macos")) canonicalConfiguration(b.graph.host.result, b.allocator) else null, disabled_knobs.items)
     else
         base_config;
 
@@ -2191,7 +2269,7 @@ pub fn build(b: *std.Build) void {
         // gnutls + ncurses are already linked from the vendored libs above.
     } else if (!is_windows and !is_musl) {
         // Core libraries
-        exe.root_module.linkSystemLibrary("gnutls", .{});
+        if (with_gnutls) exe.root_module.linkSystemLibrary("gnutls", .{});
 
         // Terminal support
         exe.root_module.linkSystemLibrary("ncurses", .{});
@@ -2205,13 +2283,13 @@ pub fn build(b: *std.Build) void {
         // and the library is installed. Do NOT link libselinux: config.h has
         // HAVE_LIBSELINUX undefined and the library is absent on the host, so
         // linking it only breaks the build.
-        exe.root_module.linkSystemLibrary("acl", .{});
+        if (with_acl) exe.root_module.linkSystemLibrary("acl", .{});
         // ALSA audio (HAVE_ALSA): snd_* symbols from src/sound.c.
-        exe.root_module.linkSystemLibrary("asound", .{});
+        if (with_alsa) exe.root_module.linkSystemLibrary("asound", .{});
         // Linux console mouse (HAVE_GPM): Gpm_*/gpm_* symbols from src/term.c.
-        exe.root_module.linkSystemLibrary("gpm", .{});
+        if (with_gpm) exe.root_module.linkSystemLibrary("gpm", .{});
         // D-Bus (HAVE_DBUS): dbus_* symbols from src/dbusbind.c.
-        exe.root_module.linkSystemLibrary("dbus-1", .{});
+        if (with_dbus) exe.root_module.linkSystemLibrary("dbus-1", .{});
     }
 
     if (is_musl) {
