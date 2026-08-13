@@ -3086,13 +3086,20 @@ pub fn build(b: *std.Build) void {
                 .root_source_file = zeln_compile_dep.path("src/main.zig"),
             }),
         });
+        // Installed filename + ZELN_COMPILE path.  Windows needs the .exe
+        // suffix: the emitted executable is zeln-compile.exe there, and
+        // file-executable-p / the shell won't accept it without it.
+        const zeln_compile_bin = if (b.graph.host.result.os.tag == .windows)
+            "zeln-compile.exe"
+        else
+            "zeln-compile";
         // Install the tool to zig-out/bin so the runtime FDO harness can
         // spawn it (ZELN_COMPILE env, zeln-fdo.el); the same binary the
         // spike / zeln-diff / populate steps invoke directly.
         const install_zeln_compile = b.addInstallFileWithDir(
             zeln_compile_tool.getEmittedBin(),
             .prefix,
-            "bin/zeln-compile",
+            b.fmt("bin/{s}", .{zeln_compile_bin}),
         );
         install_zeln_compile.step.dependOn(&zeln_compile_tool.step);
         b.getInstallStep().dependOn(&install_zeln_compile.step);
@@ -3288,7 +3295,7 @@ pub fn build(b: *std.Build) void {
             "--eval", "(zeln-fdo-run)",
         });
         run_fdo.setCwd(b.path("."));
-        run_fdo.setEnvironmentVariable("ZELN_COMPILE", "zig-out/bin/zeln-compile");
+        run_fdo.setEnvironmentVariable("ZELN_COMPILE", b.fmt("zig-out/bin/{s}", .{zeln_compile_bin}));
         run_fdo.step.dependOn(&install_zeln_compile.step);
         run_fdo.step.dependOn(&run_dump_compiled.step);
         run_fdo.step.dependOn(&run_loaddefs_final.step);
@@ -3314,7 +3321,7 @@ pub fn build(b: *std.Build) void {
             "--eval", "(zeln-pgo-run)",
         });
         run_pgo.setCwd(b.path("."));
-        run_pgo.setEnvironmentVariable("ZELN_COMPILE", "zig-out/bin/zeln-compile");
+        run_pgo.setEnvironmentVariable("ZELN_COMPILE", b.fmt("zig-out/bin/{s}", .{zeln_compile_bin}));
         run_pgo.step.dependOn(&install_zeln_compile.step);
         run_pgo.step.dependOn(&run_dump_compiled.step);
         run_pgo.step.dependOn(&run_loaddefs_final.step);

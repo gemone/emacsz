@@ -1,4 +1,13 @@
 ;;; zeln-pgo.el --- Multi-fixture PGO closed-loop test (Zig native-comp path)  -*- lexical-binding: t; -*-
+
+;; Windows CI runs temacs --batch without an attached console, so the
+;; codepage resolves to 0 and file-name-coding-system becomes the invalid
+;; `cp0' -- directory-files-recursively / file-name decoding then signal
+;; coding-system-error.  Repo filenames are ASCII, so utf-8 is safe and
+;; matches Linux/macOS.
+(when (eq system-type 'windows-nt)
+  (setq file-name-coding-system 'utf-8
+        default-file-name-coding-system 'utf-8))
 ;; The Z7 PGO gate: the Z5 auto-FDO loop (build -> instrument -> load ->
 ;; hammer -> GC -> profile recompile -> hot-swap -> --final) run over a
 ;; CORPUS of workload-shaped fixtures instead of a single hot/cold pair.

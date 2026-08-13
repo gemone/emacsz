@@ -1,5 +1,14 @@
 ;;; zeln-populate.el --- walk lisp+test .elc, serialize zabi=3 zunits. -*- lexical-binding: t; -*-
 
+;; Windows CI runs temacs --batch without an attached console, so the
+;; codepage resolves to 0 and file-name-coding-system becomes the invalid
+;; `cp0' -- directory-files-recursively / file-name decoding then signal
+;; coding-system-error.  Repo filenames are ASCII, so utf-8 is safe and
+;; matches Linux/macOS.
+(when (eq system-type 'windows-nt)
+  (setq file-name-coding-system 'utf-8
+        default-file-name-coding-system 'utf-8))
+
 ;; The serialize half of the M2b cache-population step (plan M2b
 ;; deliverable 1; extended to the full test surface).  Runs in the dumped
 ;; emacs (built with -Dnative-comp-zig=true).  For each lisp/**/*.elc AND
