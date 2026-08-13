@@ -3268,6 +3268,32 @@ pub fn build(b: *std.Build) void {
         );
         zeln_fdo_step.dependOn(&run_fdo.step);
 
+        // ---- zeln-pgo: the Z7 multi-fixture PGO gate.  Same closed loop
+        // as zeln-fdo (build -> instrument -> load -> hammer -> GC ->
+        // profile recompile -> hot-swap -> --final), but over a CORPUS of
+        // workload-shaped fixtures (dispatch loop / recursion / bignum
+        // overflow / list ops / dense arith / branchy) instead of a single
+        // hot/cold pair.  Runs identically on glibc-Linux, macOS and
+        // Windows (the .zeln is a native .so/.dylib/.dll), so it can gate
+        // the per-platform CI matrix.  Hammer count is parameterized via
+        // ZELN_PGO_HAMMER (default 150000/round) for quick CI runs.
+        const run_pgo = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs", "--batch",
+            "-l", "build-aux/zeln-pgo.el",
+            "--eval", "(zeln-pgo-run)",
+        });
+        run_pgo.setCwd(b.path("."));
+        run_pgo.setEnvironmentVariable("ZELN_COMPILE", "zig-out/bin/zeln-compile");
+        run_pgo.step.dependOn(&install_zeln_compile.step);
+        run_pgo.step.dependOn(&run_dump_compiled.step);
+        run_pgo.step.dependOn(&run_loaddefs_final.step);
+        run_pgo.step.dependOn(emacs_wrapper_step);
+        const zeln_pgo_step = b.step(
+            "zeln-pgo",
+            "Z7: multi-fixture PGO closed-loop test (6 workload shapes on any native OS)",
+        );
+        zeln_pgo_step.dependOn(&run_pgo.step);
+
         // ---- bench-check: real-suite perf comparison (interpreter vs
         // .zeln) over the SAME 582 built-in tests.  bench-tests runs the
         // run-check harness in both modes (ZELN_LOAD_PATH unset vs the
@@ -3326,6 +3352,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build populate-zeln-cache - M2b: populate .zeln-cache from lisp/
         \\  zig build check-zeln        - M2b: 582 built-in tests via .zeln
         \\  zig build zeln-fdo          - Z5: auto profile-guided recompile loop
+        \\  zig build zeln-pgo          - Z7: multi-fixture PGO test (6 workload shapes)
         \\
         \\Native-comp gccjit path (opt-in: -Dnative-comp=true, native glibc-Linux;
         \\  requires libgccjit). Coexists with -Dnative-comp-zig: when both are on,
