@@ -877,6 +877,29 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag != .macos)
         exe.pie = false;
 
+    // Embed the Windows application manifest (nt/emacs-{x64,x86}.manifest)
+    // into temacs.exe.  The manifest advertises the Windows 10+
+    // <supportedOS> GUIDs; without them GetVersion()/GetVersionEx()
+    // (src/w32fns.c) report 6.2 (Windows 8) even on Windows 10/11, which
+    // makes w32con_setup_virtual_terminal (src/w32console.c) fail the
+    // `w32_major_version >= 10' gate and DISABLE_VIRTUAL_TERMINAL the
+    // console.  VTP off then routes output through the legacy
+    // WriteConsoleOutputCharacter path (w32con_write_glyphs else-branch),
+    // which misrenders multibyte (CJK) text on Windows Terminal (the
+    // VT-native host).  The autotools build embeds this manifest via
+    // WINDRES (nt/Makefile.in + configure.ac EMACS_MANIFEST); the zig
+    // build previously had no equivalent, so CJK output was garbled.
+    if (target.result.os.tag == .windows) {
+        // The compatibility GUIDs (the part that fixes version detection)
+        // are arch-independent; aarch64-windows has no dedicated manifest,
+        // so it reuses the x64 file.
+        const manifest_path: []const u8 = switch (target.result.cpu.arch) {
+            .x86 => "nt/emacs-x86.manifest",
+            else => "nt/emacs-x64.manifest",
+        };
+        exe.win32_manifest = b.path(manifest_path);
+    }
+
     // temacs includes <config.h>; the generated file (from src/config.h.in +
     // src/config_values.txt) is provided via the module include path, so the
     // compile must wait for the generator. Cross targets use the
@@ -2530,6 +2553,20 @@ pub fn build(b: *std.Build) void {
                 .root_source_file = b.path("build-aux/emacs-launcher.zig"),
             }),
         });
+        // The launcher is the top-level process on a native Windows build,
+        // so give it the same manifest as temacs (consistency + matches
+        // upstream emacs.exe).  Only set it when the HOST is Windows: the
+        // launcher is built for b.graph.host (so it can run during the
+        // build), and Zig rejects win32_manifest unless the target object
+        // format is COFF -- so cross-compiling from Linux (host=ELF) must
+        // skip it.  temacs above uses the cross *target*, so it always gets
+        // the manifest regardless of host.
+        if (b.graph.host.result.os.tag == .windows) {
+            emacs_launcher.win32_manifest = b.path(switch (b.graph.host.result.cpu.arch) {
+                .x86 => "nt/emacs-x86.manifest",
+                else => "nt/emacs-x64.manifest",
+            });
+        }
         const install_emacs_launcher = b.addInstallArtifact(emacs_launcher, .{});
         b.getInstallStep().dependOn(&install_emacs_launcher.step);
         break :blk &install_emacs_launcher.step;
