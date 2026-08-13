@@ -229,10 +229,11 @@ jobs:
 
       # .zeln native-comp feature tests.  Run identically on all three
       # platforms so the feature surface stays uniform.
-      - name: .zeln feature tests (populate + gate #2 + zeln-diff)
+      - name: .zeln feature tests (populate + gate #2 + zeln-diff + pgo)
         timeout-minutes: 120
         run: |
           zig build -Dnative-comp-zig=true populate-zeln-cache
           zig build -Dnative-comp-zig=true check-zeln
           zig build -Dnative-comp-zig=true zeln-diff
+          ZELN_PGO_HAMMER=30000 zig build -Dnative-comp-zig=true zeln-pgo
         shell: bash
