@@ -1,18 +1,22 @@
 name: CI (zig build)
 
-# Standardized pure-`zig build` workflow.  Every platform (Linux / macOS /
-# Windows) builds independently via a matrix, with two scenarios:
+# Pure-`zig build` workflow.  One job per platform (Linux / macOS / Windows)
+# builds the ReleaseFast binary ONCE, then runs smoke + the full test suite
+# (582 ert tests + the .zeln native-comp gates) against that same Release
+# binary, and uploads the binaries.
 #
-#   1. build-bin  — build the binaries on each platform in BOTH ReleaseFast
-#                   and Debug modes (3 platforms x 2 modes = 6 jobs) and
-#                   upload them.
-#   2. test       — identical steps on all three platforms: the built-in
-#                   ert suite (582 tests) plus the .zeln native-comp
-#                   feature gates (populate-zeln-cache / check-zeln /
-#                   zeln-diff).
+# Why a single job per platform:
+#   * ReleaseFast only -- Debug is dropped, so the matrix is 3 jobs (one per
+#     OS), not 3 x {ReleaseFast,Debug}.
+#   * The test suite reuses the Release build already in the workspace instead
+#     of rebuilding from a cold checkout.  Every step after `Build` passes
+#     `-Doptimize=ReleaseFast`, so the in-workspace zig build cache makes the
+#     compile/dump steps a cache hit -- only the loaddefs-final + test runner
+#     actually execute.  (A separate `test` job would start from a fresh
+#     checkout and rebuild everything again.)
 #
-# No make, no ./configure, no shell step: `zig build` is the sole build
-# system (src/config.h is a first-class b.addConfigHeader artifact).
+# No make, no ./configure, no shell step: `zig build` is the sole build system
+# (src/config.h is a first-class b.addConfigHeader artifact).
 
 on:
   push:
@@ -46,17 +50,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ---------------------------------------------------------------------
-  # Scenario 1: build the binaries on each platform independently.
-  # ---------------------------------------------------------------------
-  build-bin:
-    name: build-bin (${{ matrix.os }} ${{ matrix.mode }})
+  build-and-test:
+    name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ ubuntu-latest, macos-latest, windows-latest ]
-        mode: [ ReleaseFast, Debug ]
 
     steps:
       - name: Checkout
@@ -82,8 +82,11 @@ jobs:
             libgpm-dev \
             libdbus-1-dev
 
+      # Build ONCE in ReleaseFast.  Every later step passes
+      # -Doptimize=ReleaseFast so it reuses this exact build via the
+      # in-workspace zig cache instead of rebuilding.
       - name: Build
-        run: zig build -Doptimize=${{ matrix.mode }}
+        run: zig build -Doptimize=ReleaseFast
         shell: bash
 
       - name: Verify temacs executable
@@ -111,55 +114,17 @@ jobs:
           fi
         shell: bash
 
+      # Upload right after a successful build+smoke, so the Release binary is
+      # captured even if a later test step fails.
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
-          name: emacs-zig-${{ matrix.os }}-${{ matrix.mode }}-bin
+          name: emacs-zig-${{ matrix.os }}-bin
           path: |
             zig-out/bin/temacs
             zig-out/bin/temacs.exe
             zig-out/bin/bootstrap-emacs.pdmp
           retention-days: 7
-
-  # ---------------------------------------------------------------------
-  # Scenario 2: tests + .zeln feature tests on each platform.
-  # ---------------------------------------------------------------------
-  test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ ubuntu-latest, macos-latest, windows-latest ]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install Zig
-        uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: 0.16.0
-
-      - name: Install system libraries (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            pkg-config \
-            libgnutls28-dev \
-            libncurses-dev \
-            libacl1-dev \
-            libasound2-dev \
-            libgpm-dev \
-            libdbus-1-dev
-
-      # Full build first: the default install step is what puts the
-      # flag-correct temacs into zig-out/bin.
-      - name: Build
-        run: zig build
 
       - name: Built-in ert tests (582)
         env:
@@ -174,16 +139,17 @@ jobs:
           # files, so point TMPDIR there.
           mkdir -p "${PWD}/zig-out/tmp"
           export TMPDIR="${PWD}/zig-out/tmp"
-          zig build check
+          zig build -Doptimize=ReleaseFast check
         shell: bash
 
       # .zeln native-comp feature tests.  Run identically on all three
-      # platforms so the feature surface stays uniform.
+      # platforms so the feature surface stays uniform.  -Doptimize=ReleaseFast
+      # keeps them on the same build as the rest of the job.
       - name: .zeln feature tests (populate + gate #2 + zeln-diff + pgo)
         timeout-minutes: 120
         run: |
-          zig build -Dnative-comp-zig=true populate-zeln-cache
-          zig build -Dnative-comp-zig=true check-zeln
-          zig build -Dnative-comp-zig=true zeln-diff
-          ZELN_PGO_HAMMER=30000 zig build -Dnative-comp-zig=true zeln-pgo
+          zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast populate-zeln-cache
+          zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast check-zeln
+          zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-diff
+          ZELN_PGO_HAMMER=30000 zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-pgo
         shell: bash
