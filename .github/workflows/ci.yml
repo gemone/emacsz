@@ -15,6 +15,12 @@ name: CI (zig build)
 #     actually execute.  (A separate `test` job would start from a fresh
 #     checkout and rebuild everything again.)
 #
+# Shell: Windows builds under PowerShell (pwsh) -- the native Windows shell --
+# so `zig build` runs with the real Windows PATH and no Git-Bash/MSYS path
+# translation; Linux/macOS use bash.  Env vars are passed via step `env:`
+# blocks (or $GITHUB_ENV) rather than inline `VAR=val cmd` prefixes, which
+# are bash-only.
+#
 # No make, no ./configure, no shell step: `zig build` is the sole build system
 # (src/config.h is a first-class b.addConfigHeader artifact).
 
@@ -57,6 +63,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ ubuntu-latest, macos-latest, windows-latest ]
+    defaults:
+      run:
+        # Native shell per OS: PowerShell on Windows, bash elsewhere.
+        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
 
     steps:
       - name: Checkout
@@ -87,32 +97,28 @@ jobs:
       # in-workspace zig cache instead of rebuilding.
       - name: Build
         run: zig build -Doptimize=ReleaseFast
-        shell: bash
 
-      - name: Verify temacs executable
+      # Verify + smoke: the binary name and dump handling differ per OS, so
+      # run each in its native shell.  The --eval arg is single-quoted so the
+      # inner double quotes survive verbatim in both bash and pwsh.
+      - name: Verify & smoke (Unix)
+        if: runner.os != 'Windows'
         run: |
-          if [ -f zig-out/bin/temacs ]; then
-            echo "✓ temacs built successfully"
-            file zig-out/bin/temacs || true
-          elif [ -f zig-out/bin/temacs.exe ]; then
-            echo "✓ temacs.exe built successfully"
-            file zig-out/bin/temacs.exe || true
-          else
-            echo "✗ temacs/temacs.exe not found"
-            exit 1
-          fi
-        shell: bash
+          test -f zig-out/bin/temacs || { echo '✗ temacs not found'; exit 1; }
+          echo '✓ temacs built successfully'
+          ./zig-out/bin/temacs --batch --eval '(progn (message "Zig build working!") (kill-emacs 0))'
 
-      - name: Smoke test
+      - name: Verify & smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          if [ -f ./zig-out/bin/temacs.exe ]; then
-            # Explicit dump file: the default-search path is the build
-            # tree's lib-src (PATH_EXEC), not the executable directory.
-            ./zig-out/bin/temacs.exe --batch --dump-file=./zig-out/bin/bootstrap-emacs.pdmp --eval "(progn (message \"Zig build working!\") (kill-emacs 0))"
-          else
-            ./zig-out/bin/temacs --batch --eval "(progn (message \"Zig build working!\") (kill-emacs 0))"
-          fi
-        shell: bash
+          if (-not (Test-Path 'zig-out/bin/temacs.exe')) {
+            Write-Host '✗ temacs.exe not found'; exit 1
+          }
+          Write-Host '✓ temacs.exe built successfully'
+          # Explicit dump file: the default-search path is the build tree's
+          # lib-src (PATH_EXEC), not the executable directory.
+          ./zig-out/bin/temacs.exe --batch --dump-file=./zig-out/bin/bootstrap-emacs.pdmp --eval '(progn (message "Zig build working!") (kill-emacs 0))'
 
       # Upload right after a successful build+smoke, so the Release binary is
       # captured even if a later test step fails.
@@ -126,30 +132,34 @@ jobs:
             zig-out/bin/bootstrap-emacs.pdmp
           retention-days: 7
 
+      # GitHub macOS runners sandbox the step process: creating files works,
+      # but writing to an existing file is denied in /tmp and RUNNER_TEMP
+      # (file-write-data), which fails e.g. the check-declare ert tests.
+      # The workspace (zig-out is gitignored) is writable for existing files,
+      # so point TMPDIR there -- exported via $GITHUB_ENV so it only takes
+      # effect on macOS and never leaks onto Linux/Windows.
+      - name: Point TMPDIR at the workspace (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/zig-out/tmp"
+          echo "TMPDIR=$GITHUB_WORKSPACE/zig-out/tmp" >> "$GITHUB_ENV"
+
       - name: Built-in ert tests (582)
         env:
           ZIG_COMPILE_LISP_PROBE: ${{ runner.os == 'Windows' && '1' || '' }}
         timeout-minutes: 90
-        run: |
-          # GitHub macOS runners sandbox the step process: creating files
-          # works, but writing to an existing file is denied both in /tmp
-          # and in RUNNER_TEMP (file-write-data), which fails e.g. the
-          # check-declare ert tests that open their temp file for writing.
-          # The workspace (zig-out is gitignored) is writable for existing
-          # files, so point TMPDIR there.
-          mkdir -p "${PWD}/zig-out/tmp"
-          export TMPDIR="${PWD}/zig-out/tmp"
-          zig build -Doptimize=ReleaseFast check
-        shell: bash
+        run: zig build -Doptimize=ReleaseFast check
 
-      # .zeln native-comp feature tests.  Run identically on all three
-      # platforms so the feature surface stays uniform.  -Doptimize=ReleaseFast
-      # keeps them on the same build as the rest of the job.
+      # .zeln native-comp feature tests, identical on all three platforms.
+      # ZELN_PGO_HAMMER is set in the step env (shell-agnostic) instead of the
+      # bash-only `VAR=val cmd` prefix; only zeln-pgo reads it.
       - name: .zeln feature tests (populate + gate #2 + zeln-diff + pgo)
+        env:
+          ZELN_PGO_HAMMER: '30000'
         timeout-minutes: 120
         run: |
           zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast populate-zeln-cache
           zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast check-zeln
           zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-diff
-          ZELN_PGO_HAMMER=30000 zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-pgo
-        shell: bash
+          zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-pgo
