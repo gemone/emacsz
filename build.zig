@@ -66,6 +66,14 @@ const ConfigOut = struct {
     step: *std.Build.Step,
 };
 
+// A knob forced by a user feature switch (-Dwith-gnutls=false).  Empty
+// `value` = undef the knob; some gnulib switch macros (USE_ACL, ...) are
+// used as C expressions and must be `0`, not undef, when disabled.
+const DisabledKnob = struct {
+    name: []const u8,
+    value: []const u8 = "",
+};
+
 // Build config.h as a FIRST-CLASS Zig build artifact via `b.addConfigHeader`
 // (`.style = .autoconf_undef` over the committed src/config.h.in -- the exact
 // template format the old gen-config tool consumed).  Values come from the
@@ -74,9 +82,11 @@ const ConfigOut = struct {
 // the template must have a value (raw `.ident` for a present value, or
 // `.undef`), so the rendering is functionally identical to the previous
 // output (ConfigHeader prepends its standard generated-file banner line).
-// `disabled` lists knob names to force undef (user feature switches like
-// -Dwith-gnutls=false), applied after the per-target overrides.
-fn makeConfigHeader(b: *std.Build, tag: ?[]const u8, triple: ?[]const u8, disabled: []const []const u8) ConfigOut {
+// `disabled` lists knobs forced by the feature switches (value "" =
+// undef; a non-empty value defines the knob to it, for gnulib switch
+// macros that must be 0 when off).  Applied after the per-target
+// overrides.
+fn makeConfigHeader(b: *std.Build, tag: ?[]const u8, triple: ?[]const u8, disabled: []const DisabledKnob) ConfigOut {
     const io = b.graph.io;
     const alloc = b.allocator;
 
@@ -129,10 +139,11 @@ fn makeConfigHeader(b: *std.Build, tag: ?[]const u8, triple: ?[]const u8, disabl
         }
     }
 
-    // User feature switches (-Dwith-gnutls=false ...): force-undef the
-    // knob, applied last so the option wins over snapshot + target data.
-    for (disabled) |knob| {
-        values.put(b.dupe(knob), "") catch @panic("OOM");
+    // User feature switches (-Dwith-gnutls=false ...): force the knob,
+    // applied last so the option wins over snapshot + target data.  Empty
+    // value = undef; a non-empty value defines it (USE_ACL=0 for gnulib).
+    for (disabled) |d| {
+        values.put(b.dupe(d.name), b.dupe(d.value)) catch @panic("OOM");
     }
     // Keep EMACS_CONFIG_FEATURES truthful: drop the feature tokens whose
     // knob a switch disabled (e.g. HAVE_GNUTLS -> "GNUTLS").
@@ -154,9 +165,9 @@ fn makeConfigHeader(b: *std.Build, tag: ?[]const u8, triple: ?[]const u8, disabl
             };
             var drop = std.StringHashMap(void).init(alloc);
             defer drop.deinit();
-            for (disabled) |knob| {
+            for (disabled) |d| {
                 for (knob_to_token) |m| {
-                    if (std.mem.eql(u8, knob, m.knob)) drop.put(m.token, {}) catch @panic("OOM");
+                    if (std.mem.eql(u8, d.name, m.knob)) drop.put(m.token, {}) catch @panic("OOM");
                 }
             }
             var kept: std.ArrayList([]const u8) = .empty;
@@ -389,24 +400,26 @@ pub fn build(b: *std.Build) void {
     const with_lcms2 = b.option(bool, "with-lcms2", "Enable Little CMS (HAVE_LCMS2)") orelse true;
     const with_zlib = b.option(bool, "with-zlib", "Enable zlib (HAVE_ZLIB)") orelse true;
 
-    // Knob names to force-undef in config.h, collected from the switches.
-    var disabled_knobs: std.ArrayList([]const u8) = .empty;
+    // Knobs forced by the switches, collected into DisabledKnob entries.
+    var disabled_knobs: std.ArrayList(DisabledKnob) = .empty;
     defer disabled_knobs.deinit(b.allocator);
     {
-        const Feature = struct { on: bool, knob: []const u8 };
+        const Feature = struct { on: bool, name: []const u8, value: []const u8 = "" };
         const feats = [_]Feature{
-            .{ .on = with_gnutls, .knob = "HAVE_GNUTLS" },
-            .{ .on = with_dbus, .knob = "HAVE_DBUS" },
-            .{ .on = with_gpm, .knob = "HAVE_GPM" },
-            .{ .on = with_alsa, .knob = "HAVE_ALSA" },
-            .{ .on = with_acl, .knob = "USE_ACL" },
-            .{ .on = with_sqlite3, .knob = "HAVE_SQLITE3" },
-            .{ .on = with_xml2, .knob = "HAVE_LIBXML2" },
-            .{ .on = with_lcms2, .knob = "HAVE_LCMS2" },
-            .{ .on = with_zlib, .knob = "HAVE_ZLIB" },
+            .{ .on = with_gnutls, .name = "HAVE_GNUTLS" },
+            .{ .on = with_dbus, .name = "HAVE_DBUS" },
+            .{ .on = with_gpm, .name = "HAVE_GPM" },
+            .{ .on = with_alsa, .name = "HAVE_ALSA" },
+            // USE_ACL is a gnulib switch macro used as a C expression;
+            // it must be 0 (not undef) when disabled.
+            .{ .on = with_acl, .name = "USE_ACL", .value = "0" },
+            .{ .on = with_sqlite3, .name = "HAVE_SQLITE3" },
+            .{ .on = with_xml2, .name = "HAVE_LIBXML2" },
+            .{ .on = with_lcms2, .name = "HAVE_LCMS2" },
+            .{ .on = with_zlib, .name = "HAVE_ZLIB" },
         };
         for (feats) |f| {
-            if (!f.on) disabled_knobs.append(b.allocator, f.knob) catch @panic("OOM");
+            if (!f.on) disabled_knobs.append(b.allocator, .{ .name = f.name, .value = f.value }) catch @panic("OOM");
         }
     }
     const base_config = makeConfigHeader(b, "linux", null, disabled_knobs.items);
@@ -1897,6 +1910,7 @@ pub fn build(b: *std.Build) void {
     // catalog, C14N, debug, ICU, iconv, zlib/lzma compression) are
     // compiled out. On Windows the pthread/unistd/dlfcn/mmap features are
     // dropped so libxml2 takes its win32 code paths.
+    if (with_xml2) {
     const xml2_src = b.dependency("xml2_src", .{});
     const xml2_win = target.result.os.tag == .windows;
     const xml2_cfg = b.addConfigHeader(.{
@@ -2004,11 +2018,13 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkLibrary(xml2_lib);
     exe.root_module.addConfigHeader(xml2_cfg);
     exe.root_module.addIncludePath(xml2_src.path("include"));
+    }
 
     // Compression: zlib built from source as a Zig-managed dependency
     // (build.zig.zon -> zlib_src URL dep), replacing the system libz.
     // Compiled in its own module so the Emacs config.h flags never
     // leak into zlib, and exported as a static libz for the exe.
+    if (with_zlib) {
     const zlib_src = b.dependency("zlib_src", .{});
     const zlib_mod = b.createModule(.{
         .target = target,
@@ -2028,10 +2044,12 @@ pub fn build(b: *std.Build) void {
     const zlib_lib = b.addLibrary(.{ .name = "z", .root_module = zlib_mod });
     exe.root_module.linkLibrary(zlib_lib);
     exe.root_module.addIncludePath(zlib_src.path(""));
+    }
 
     // Color management: Little CMS built from source as a Zig-managed
     // dependency (build.zig.zon -> lcms2_src), replacing the system
     // liblcms2.  Own module so Emacs config flags do not leak in.
+    if (with_lcms2) {
     const lcms2_src = b.dependency("lcms2_src", .{});
     const lcms2_mod = b.createModule(.{
         .target = target,
@@ -2060,6 +2078,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkLibrary(lcms2_lib);
     exe.root_module.addIncludePath(lcms2_src.path("src"));
     exe.root_module.addIncludePath(lcms2_src.path("include"));
+    }
 
     // SQLite database: the amalgamation built from source as a
     // Zig-managed dependency (build.zig.zon -> sqlite_src), replacing
@@ -2067,6 +2086,7 @@ pub fn build(b: *std.Build) void {
     // leak in; exported as a static libsqlite3 for the exe.  Loadable
     // extensions are compiled in so `sqlite-load-extension' works on
     // every target (the vendored build, unlike the platform sqlite3).
+    if (with_sqlite3) {
     const sqlite_src = b.dependency("sqlite_src", .{});
     const sqlite_mod = b.createModule(.{
         .target = target,
@@ -2081,6 +2101,7 @@ pub fn build(b: *std.Build) void {
     const sqlite_lib = b.addLibrary(.{ .name = "sqlite3", .root_module = sqlite_mod });
     exe.root_module.linkLibrary(sqlite_lib);
     exe.root_module.addIncludePath(sqlite_src.path(""));
+    }
 
     // Tree-sitter (HAVE_TREE_SITTER): ts_* symbols from src/treesit.c.
     // Built from source as a Zig-managed dependency (build.zig.zon ->
@@ -2107,8 +2128,9 @@ pub fn build(b: *std.Build) void {
     // compiled when the host is macOS.  Cross-compiling the macOS target
     // from another host falls through to the system-library link below
     // (which fails at link time on a non-macOS host, as before the
-    // vendoring).
-    if (target.result.os.tag == .macos and b.graph.host.result.os.tag == .macos) vendored_gnutls: {
+    // vendoring).  Gated on -Dwith-gnutls so the switch actually skips
+    // the whole vendored GnuTLS/nettle/unistring stack on macOS.
+    if (target.result.os.tag == .macos and b.graph.host.result.os.tag == .macos and with_gnutls) vendored_gnutls: {
         const nettle_src = b.lazyDependency("nettle_src", .{}) orelse break :vendored_gnutls;
         const nettle_mod = b.createModule(.{
             .target = target,
@@ -2349,33 +2371,46 @@ pub fn build(b: *std.Build) void {
             src: []const u8,
             providers: []const []const u8,
         };
+        // Provider sets are per-platform: the POSIX ACL stack is compiled
+        // only where file_has_acl's #ifdef SOCKETS_IN_FILE_SYSTEM code
+        // lives, and the Windows tools need the mingw shims (stpcpy,
+        // nl_langinfo) plus the Zig gnulib-tempname mkostemp.
+        const emacsclient_providers: []const []const u8 = if (is_windows)
+            &.{
+                "lib/c-ctype.c",        "lib/realloc.c",
+                "lib/strnul.c",         "lib/memeq.c",
+                "lib/getline.c",        "lib/getdelim.c",
+                "lib/w32/stpcpy.c",
+            }
+        else
+            &.{ "lib/c-ctype.c", "lib/realloc.c", "lib/file-has-acl.c", "lib/strnul.c", "lib/acl-errno-valid.c", "lib/memeq.c" };
+        const etags_providers: []const []const u8 = if (is_windows)
+            &.{
+                "lib/c-ctype.c",           "lib/binary-io.c",
+                "lib/streq.c",             "lib/realloc.c",
+                "lib/regex.c", // includes regcomp/regexec/regex_internal
+                "lib/c-strcasecmp.c",      "lib/c-strncasecmp.c",
+                "lib/memeq.c",             "lib/malloc/dynarray_resize.c",
+                "lib/w32/stpcpy.c",        "lib/w32/nl_langinfo.c",
+            }
+        else
+            &.{
+                "lib/c-ctype.c",           "lib/binary-io.c",
+                "lib/streq.c",             "lib/realloc.c",
+                "lib/regex.c", // includes regcomp/regexec/regex_internal
+                "lib/c-strcasecmp.c",      "lib/c-strncasecmp.c",
+                "lib/memeq.c",             "lib/malloc/dynarray_resize.c",
+            };
         const tools = [_]Tool{
             .{
                 .name = "emacsclient",
                 .src = "lib-src/emacsclient.c",
-                .providers = &.{
-                    "lib/c-ctype.c",
-                    "lib/realloc.c",
-                    "lib/file-has-acl.c",
-                    "lib/strnul.c",
-                    "lib/acl-errno-valid.c",
-                    "lib/memeq.c",
-                },
+                .providers = emacsclient_providers,
             },
             .{
                 .name = "etags",
                 .src = "lib-src/etags.c",
-                .providers = &.{
-                    "lib/c-ctype.c",
-                    "lib/binary-io.c",
-                    "lib/streq.c",
-                    "lib/realloc.c",
-                    "lib/regex.c", // includes regcomp/regexec/regex_internal
-                    "lib/c-strcasecmp.c",
-                    "lib/c-strncasecmp.c",
-                    "lib/memeq.c",
-                    "lib/malloc/dynarray_resize.c",
-                },
+                .providers = etags_providers,
             },
         };
 
@@ -2399,11 +2434,21 @@ pub fn build(b: *std.Build) void {
                 });
             }
             // emacsclient's file_has_acl needs libacl on glibc-Linux;
-            // upstream links FILE_HAS_ACL_LIB there too.
-            if (target.result.os.tag == .linux and target.result.abi != .musl)
+            // upstream links FILE_HAS_ACL_LIB there too.  Gated on the
+            // -Dwith-acl switch (the ACL providers are dropped on
+            // !with_acl... keep in sync with emacsclient_providers above).
+            if (target.result.os.tag == .linux and target.result.abi != .musl and with_acl)
                 tool_exe.root_module.linkSystemLibrary("acl", .{});
-            if (is_windows and std.mem.eql(u8, t.name, "emacsclient"))
+            if (is_windows and std.mem.eql(u8, t.name, "emacsclient")) {
+                // w32_window_app (emacsclient.c:412) calls InitCommonControls.
+                tool_exe.root_module.linkSystemLibrary("comctl32", .{});
                 tool_exe.root_module.linkSystemLibrary("ws2_32", .{});
+            }
+            // etags's mkostemp on Windows comes from the Zig gnulib-tempname
+            // package (same provider the temacs build links); the mingw CRT
+            // has no mkostemp.
+            if (is_windows and std.mem.eql(u8, t.name, "etags"))
+                tool_exe.root_module.linkLibrary(gnulib_tempname_lib);
             tool_exe.root_module.addIncludePath(target_config_h_file.file.dirname());
             tool_exe.step.dependOn(target_config_h_file.step);
             const install_tool = b.addInstallArtifact(tool_exe, .{});

@@ -318,7 +318,10 @@
         // library. Configure-generated config.h + gnutls.h + gnulib and
         // unistring headers are committed under tools/gnutls-config.
         .gnutls_src = .{
-            .url = "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.13.tar.xz",
+            // gnupg.org's canonical URL 403s from CI runners (WAF);
+            // mirrorservice.org serves the byte-identical tarball (hash
+            // verified via `zig fetch`).
+            .url = "https://www.mirrorservice.org/sites/ftp.gnupg.org/gcrypt/gnutls/v3.8/gnutls-3.8.13.tar.xz",
             .hash = "N-V-__8AAH0-EAR3RviaBbm3AeH1WBMFsgm_sQIS_InlvfyY",
             .lazy = true,
         },
