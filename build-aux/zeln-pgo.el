@@ -6,8 +6,7 @@
 ;; profile collection, hot-first reordering, or hot-swap behavior that a
 ;; single loop fixture would miss shows up as a per-fixture FAIL.
 ;;
-;; Fixture corpus (each = (NAME HOT-BODY COLD-BODY HAMMER-ARG
-;;                          RESULT-ARG EXPECTED)):
+;; Fixture corpus (each = (NAME HOT-BODY COLD-BODY HAMMER-ARG EXPECTED)):
 ;;   loop-arith   - dispatch-bound loop (the classic Z5 shape)
 ;;   fib-rec      - recursion (hot fn calls itself via symbol)
 ;;   bignum-ovf   - fixnum overflow -> bignum (exercises the freloc
@@ -22,15 +21,20 @@
 ;;      zunit, compile to an instrumented .zeln via ZELN_COMPILE;
 ;;   2. load it with zeln-auto-fdo-path / -profile / -interval set
 ;;      (tiny interval, per-fixture threshold);
-;;   3. hammer the HOT fn (call counter climbs past the threshold);
-;;   4. GC -> zeln_fdo_gc_check flushes the profile, recompiles with
-;;      --profile (round 1), hot-swaps the subr in place;
-;;   5. hammer again + GC -> round 2 recompiles with --profile --final
+;;   3. reverse check: GC with counters at 0 -> NO profile written
+;;      (the loader must not write a profile below the hot threshold);
+;;   4. hammer the HOT fn (call counter climbs past the threshold);
+;;   5. GC -> zeln_fdo_gc_check flushes the profile, recompiles with
+;;      --profile (round 1), hot-swaps the subr in place; assert the
+;;      hot fn still returns the expected result after THIS swap;
+;;   6. hammer again + GC -> round 2 recompiles with --profile --final
 ;;      (counters dropped) and hot-swaps again;
-;;   6. assert per fixture: profile file written, the final .zeln is
-;;      hot-first, its counters are dropped, and the hot fn still
-;;      returns the expected result after BOTH swaps (behavioral
-;;      identity).
+;;   7. assert per fixture: profile file written, the hot fn still
+;;      returns the expected result after the FINAL swap (behavioral
+;;      identity after BOTH swaps), the final .zeln is hot-first, its
+;;      inline fast-path branches carry the real `!prof` branch
+;;      weights from the profile (calls-vs-fallbacks), and its
+;;      counters are dropped (--final).
 ;;
 ;; Speed: the hammer count is parameterized via the ZELN_PGO_HAMMER env
 ;; var (default 150000 calls per round).  CI and quick local checks can
@@ -51,10 +55,10 @@
   "Hot threshold = hammer-count / this ratio, so a shorter hammer run
 still reliably trips the profile threshold.")
 
-;; Each fixture: (NAME HOT-BODY COLD-BODY HAMMER-ARG RESULT-ARG EXPECTED).
+;; Each fixture: (NAME HOT-BODY COLD-BODY HAMMER-ARG EXPECTED).
 ;; The defuns are emitted as (defun zeln-pgo-NAME-hot (n) BODY) and
 ;; (defun zeln-pgo-NAME-cold (n) BODY); the harness hammers the hot one.
-;; EXPECTED is the hot fn's value at RESULT-ARG.
+;; EXPECTED is the hot fn's value at HAMMER-ARG.
 (defconst zeln-pgo-fixtures
   '((loop-arith
      ";; dispatch-bound loop
@@ -64,13 +68,13 @@ still reliably trips the profile threshold.")
           (setq i (1+ i)))
         s)"
      "(* n 2)"
-     1000 1000 499500)
+     1000 499500)
     (fib-rec
      ";; recursion: hot fn recurses through its own symbol
       (if (< n 2) n (+ (zeln-pgo-fib-rec-hot (1- n))
                        (zeln-pgo-fib-rec-hot (- n 2))))"
      "(if (= n 0) 1 (* n (zeln-pgo-fib-rec-cold (1- n))))"
-     20 20 6765)
+     20 6765)
     (bignum-ovf
      ";; every addend overflows fixnum -> bignum fallback block
       (let ((s 0) (i 0))
@@ -79,7 +83,7 @@ still reliably trips the profile threshold.")
           (setq i (1+ i)))
         s)"
      "(* n 2)"
-     200 200 461168601842738790200)
+     200 461168601842738790200)
     (list-ops
      ";; alloc-heavy cons loop
       (let ((l nil) (i 0))
@@ -88,12 +92,12 @@ still reliably trips the profile threshold.")
           (setq i (1+ i)))
         (length l))"
      "(* n 2)"
-     500 500 500)
+     500 500)
     (dense-arith
      ";; no loop: 3 arith ops per call, freloc+Fprimitive exposed
       (+ (* n n) (- n 2))"
      "(* n 2)"
-     3 3 10)
+     3 10)
     (branchy
      ";; hot loop with an inner hot/cold branch pair
       (let ((c 0) (i 0))
@@ -103,27 +107,41 @@ still reliably trips the profile threshold.")
           (setq i (+ i 1)))
         c)"
      "(* n 2)"
-     1000 1000 999))
-  "The PGO fixture corpus: (NAME HOT-BODY COLD-BODY HAMMER-ARG
-RESULT-ARG EXPECTED).  RESULT-ARG is the n passed to the hot fn when
-checking behavioral identity after the hot-swaps.")
+     1000 999))
+  "The PGO fixture corpus: (NAME HOT-BODY COLD-BODY HAMMER-ARG EXPECTED).")
 
 (defun zeln-pgo--locate-zc ()
   "Return the zeln-compile path, or nil if not found."
+  ;; call-process resolves the program via exec-path, not cwd: expand a
+  ;; relative ZELN_COMPILE (e.g. zig-out/bin/zeln-compile from the build
+  ;; step) against the invocation directory.
   (let ((raw (or (getenv "ZELN_COMPILE")
                  (car (directory-files-recursively
                        (expand-file-name ".zig-cache")
                        "^zeln-compile$" nil)))))
     (and raw (expand-file-name raw))))
 
-(defun zeln-pgo--assert (ok msg)
-  "Return 1 if OK, else print FAIL MSG and return 0."
+(defun zeln-pgo--assert (name ok msg)
+  "Print the outcome (prefixed by fixture NAME for CI log grepping)
+and return 0 if OK, 1 if FAIL — a count directly addable to the
+fixture's failure tally."
   (if ok
-      (progn (message "  ok: %s" msg) 1)
-    (progn (message "  FAIL: %s" msg) 0)))
+      (progn (message "  zeln-pgo[%s]: ok: %s" name msg) 0)
+    (progn (message "  zeln-pgo[%s]: FAIL: %s" name msg) 1)))
+
+(defun zeln-pgo--profile-written-p (name fdo-dir)
+  "Non-nil if a .zprofile for fixture NAME exists under FDO-DIR.
+Profiles accumulate across fixtures in the shared FDO dir, so the
+match is by fixture name (names are pairwise disjoint)."
+  (let ((profs (directory-files fdo-dir t "\\.zprofile\\'")))
+    (and profs
+         (catch 'found
+           (dolist (p profs nil)
+             (when (string-match-p (regexp-quote name) p)
+               (throw 'found t)))))))
 
 (defun zeln-pgo--run-fixture (name hot-body cold-body
-                              hammer-arg result-arg expected
+                              hammer-arg expected
                               zc dir)
   "Run the full PGO closed loop for one fixture.  Returns the number
 of assertions that failed."
@@ -177,33 +195,52 @@ of assertions that failed."
             zeln-auto-fdo-interval 0.0)
       (comp-z-load-zeln zelnfile)
 
+      ;; ---- Reverse check: counters at 0 must NOT write a profile. ----
+      (garbage-collect)
+      (setq fails
+            (+ fails
+               (zeln-pgo--assert
+                name
+                (not (zeln-pgo--profile-written-p name fdo-dir))
+                (format "%s no profile below threshold (reverse check)" name))))
+
       ;; ---- Round 1: hammer + GC -> profile + recompile + hot-swap. ----
       (dotimes (_ zeln-pgo-hammer)
         (funcall hot-sym hammer-arg))
       (garbage-collect)
+      (setq fails
+            (+ fails
+               (zeln-pgo--assert
+                name
+                (zeln-pgo--profile-written-p name fdo-dir)
+                (format "profile written for %s" name))))
+      (setq fails
+            (+ fails
+               (zeln-pgo--assert
+                name
+                (equal (funcall hot-sym hammer-arg) expected)
+                (format "%s identity after round-1 swap: got %S want %S"
+                        name (funcall hot-sym hammer-arg) expected))))
 
       ;; ---- Round 2: hammer + GC -> --final recompile + hot-swap. ----
       (dotimes (_ zeln-pgo-hammer)
         (funcall hot-sym hammer-arg))
       (garbage-collect)
+      (setq fails
+            (+ fails
+               (zeln-pgo--assert
+                name
+                (equal (funcall hot-sym hammer-arg) expected)
+                (format "%s identity after final swap: got %S want %S"
+                        name (funcall hot-sym hammer-arg) expected))))
 
-      ;; ---- Assertions. ----
+      ;; ---- Artifact assertions on the final (round-2) .zeln. ----
       (let ((cache-zeln (expand-file-name (concat name ".zeln") fdo-dir))
             (cache-ll (expand-file-name (concat name ".zeln.ll") fdo-dir)))
-        (setq fails
-              (+ fails
-                 (if (zeln-pgo--assert
-                      (let ((profs (directory-files fdo-dir t "\\.zprofile\\'")))
-                        (and profs
-                             (catch 'found
-                               (dolist (p profs nil)
-                                 (when (string-match-p (regexp-quote name) p)
-                                   (throw 'found t))))))
-                      (format "profile written for %s" name))
-                     0 1)))
         (if (not (file-exists-p cache-ll))
             (progn
-              (message "  FAIL: recompiled .ll for %s under fdo path" name)
+              (message "  zeln-pgo[%s]: FAIL: recompiled .ll not under fdo path"
+                       name)
               (setq fails (1+ fails)))
           (let ((ll (with-temp-buffer
                       (insert-file-contents cache-ll)
@@ -212,30 +249,30 @@ of assertions that failed."
                   (cold-pos (string-match (format "zeln-pgo-%s-cold" name) ll)))
               (setq fails
                     (+ fails
-                       (if (zeln-pgo--assert
-                            (and hot-pos cold-pos (<= hot-pos cold-pos))
-                            (format "%s recompiled .zeln hot-first" name))
-                           0 1))))
+                       (zeln-pgo--assert
+                        name
+                        (and hot-pos cold-pos (<= hot-pos cold-pos))
+                        (format "%s recompiled .zeln hot-first" name)))))
             (setq fails
                   (+ fails
-                     (if (zeln-pgo--assert
-                          (not (string-match-p "bb_fdo_" ll))
-                          (format "%s final .zeln counters dropped" name))
-                         0 1)))
+                     (zeln-pgo--assert
+                      name
+                      (not (string-match-p "bb_fdo_" ll))
+                      (format "%s final .zeln counters dropped" name))))
+            (setq fails
+                  (+ fails
+                     (zeln-pgo--assert
+                      name
+                      (string-match-p "branch_weights" ll)
+                      (format "%s final .zeln carries !prof branch weights"
+                               name))))))
           (setq fails
                 (+ fails
-                   (if (zeln-pgo--assert
-                        (file-exists-p cache-zeln)
-                        (format "recompiled .zeln for %s" name))
-                       0 1)))
-        (setq fails
-              (+ fails
-                 (if (zeln-pgo--assert
-                      (equal (funcall hot-sym result-arg) expected)
-                      (format "%s behavioral identity: got %S want %S"
-                              name (funcall hot-sym result-arg) expected))
-                     0 1))))
-    fails))))
+                   (zeln-pgo--assert
+                    name
+                    (file-exists-p cache-zeln)
+                    (format "recompiled .zeln for %s"                        name)))))
+    fails))
 
 (defun zeln-pgo-run ()
   "Run the multi-fixture PGO closed-loop harness."
@@ -258,12 +295,11 @@ of assertions that failed."
                   (hot (nth 1 fixture))
                   (cold (nth 2 fixture))
                   (harg (nth 3 fixture))
-                  (rarg (nth 4 fixture))
-                  (expected (nth 5 fixture)))
+                  (expected (nth 4 fixture)))
               (setq fails
                     (+ fails
                        (zeln-pgo--run-fixture
-                        name hot cold harg rarg expected zc dir)))))
+                        name hot cold harg expected zc dir)))))
           (if (zerop fails)
               (message "zeln-pgo: PASS (%d fixtures, all green)"
                        (length zeln-pgo-fixtures))

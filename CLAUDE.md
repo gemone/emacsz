@@ -90,7 +90,8 @@ This repository contains GNU Emacs with an ongoing effort to modernize the build
   per-platform matrix over Linux / macOS / Windows and two scenarios —
   `build-bin` (build + smoke + upload the binaries on each platform) and
   `test` (582 built-in ert tests on all three, plus the `.zeln` feature
-  gates `populate-zeln-cache` / `check-zeln` / `zeln-diff` on all three
+  gates `populate-zeln-cache` / `check-zeln` / `zeln-diff` / `zeln-pgo`
+  (the multi-fixture PGO closed-loop test, Z7) on all three
   platforms — the `.zeln` feature surface is uniform across Linux / macOS
   / Windows).  The standard matrix covers NATIVE builds only: the former
   cross-compile gates (musl/windows-from-linux), the dynamic-modules
