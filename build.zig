@@ -2408,7 +2408,11 @@ pub fn build(b: *std.Build) void {
                 "lib/w32/stpcpy.c",
             }
         else if (target.result.os.tag == .macos)
-            &.{ "lib/c-ctype.c", "lib/realloc.c", "lib/macos-file-has-acl-stub.c", "lib/strnul.c", "lib/memeq.c" }
+            // macOS lacks SOCK_CLOEXEC, so emacsclient.c's cloexec_socket()
+            // takes its fcntl(F_SETFD, FD_CLOEXEC) fallback; gnulib's
+            // lib/fcntl.h renames fcntl -> rpl_fcntl, so lib/fcntl.c must be
+            // linked (Linux/glibc has SOCK_CLOEXEC and never calls fcntl).
+            &.{ "lib/c-ctype.c", "lib/realloc.c", "lib/macos-file-has-acl-stub.c", "lib/fcntl.c", "lib/strnul.c", "lib/memeq.c" }
         else
             &.{ "lib/c-ctype.c", "lib/realloc.c", "lib/file-has-acl.c", "lib/strnul.c", "lib/acl-errno-valid.c", "lib/memeq.c" };
         const etags_providers: []const []const u8 = if (is_windows)
