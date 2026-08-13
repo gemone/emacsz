@@ -30,8 +30,11 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 
 /* Dynamic loading of libtree-sitter.  */
+/* TREE_SITTER_STATIC: the zig build links tree-sitter statically, so the
+   WINDOWSNT LoadLibrary path is skipped and the ts_* calls bind to the
+   static library directly.  */
 
-#ifdef WINDOWSNT
+#if defined WINDOWSNT && !defined TREE_SITTER_STATIC
 # include "w32common.h"
 
 /* In alphabetical order.  */
@@ -535,7 +538,7 @@ static bool treesit_initialized = false;
 static bool
 load_tree_sitter_if_necessary (bool required)
 {
-#ifdef WINDOWSNT
+#if defined WINDOWSNT && !defined TREE_SITTER_STATIC
   static bool tried_to_initialize_once;
   static bool tree_sitter_initialized;
 

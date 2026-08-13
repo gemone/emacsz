@@ -1869,6 +1869,10 @@ pub fn build(b: *std.Build) void {
         // modules (w32fns/w32term/w32menu/w32select/w32font/...) are
         // intentionally omitted; the few GUI symbols they would provide
         // are stubbed by w32-stubs.c instead.
+        // TREE_SITTER_STATIC: tree-sitter is linked statically (vendored
+        // dep), so treesit.c must NOT take its WINDOWSNT LoadLibrary
+        // path (no tree-sitter.dll to load).
+        exe.root_module.addCMacro("TREE_SITTER_STATIC", "1");
         for ([_][]const u8{
             "src/w32.c",
             "src/w32console.c",
@@ -1882,6 +1886,22 @@ pub fn build(b: *std.Build) void {
         }) |w32src| {
             exe.root_module.addCSourceFile(.{
                 .file = b.path(w32src),
+                .flags = libgnu_flags,
+            });
+        }
+
+        // Phase-2.1 subsystem switches, Windows branch (mirrors the Unix
+        // branch above): the native-comp Zig path compiles src/compz.c and
+        // defines HAVE_NATIVE_COMP_ZIG so the zeln DEFUNs are registered.
+        if (enable_native_comp_zig) {
+            exe.root_module.addCMacro("HAVE_NATIVE_COMP_ZIG", "1");
+            exe.root_module.addCSourceFile(.{
+                .file = b.path("src/compz.c"),
+                .flags = libgnu_flags,
+            });
+            // compz.c's comp_z_hash_source_file streams via md5_stream.
+            exe.root_module.addCSourceFile(.{
+                .file = b.path("lib/md5-stream.c"),
                 .flags = libgnu_flags,
             });
         }
@@ -2363,6 +2383,10 @@ pub fn build(b: *std.Build) void {
         };
         const libsrc_flags: []const []const u8 = if (is_windows)
             &(libsrc_flags_core ++ [_][]const u8{ "-Int/inc", "-Ilib/w32" })
+        else if (target.result.os.tag == .macos)
+            // Darwin does not declare environ in <unistd.h>; force the
+            // crt_externs accessor header before every tool source.
+            &(libsrc_flags_core ++ [_][]const u8{ "-include", "lib/macos-environ.h" })
         else
             &libsrc_flags_core;
 
@@ -2372,9 +2396,10 @@ pub fn build(b: *std.Build) void {
             providers: []const []const u8,
         };
         // Provider sets are per-platform: the POSIX ACL stack is compiled
-        // only where file_has_acl's #ifdef SOCKETS_IN_FILE_SYSTEM code
-        // lives, and the Windows tools need the mingw shims (stpcpy,
-        // nl_langinfo) plus the Zig gnulib-tempname mkostemp.
+        // only where libacl exists (glibc-Linux; macOS uses a stub since
+        // its config's HAVE_ACL_LIBACL_H would pull <acl/libacl.h>), and
+        // the Windows tools need the mingw shims (stpcpy, nl_langinfo)
+        // plus the Zig gnulib-tempname mkostemp.
         const emacsclient_providers: []const []const u8 = if (is_windows)
             &.{
                 "lib/c-ctype.c",        "lib/realloc.c",
@@ -2382,6 +2407,8 @@ pub fn build(b: *std.Build) void {
                 "lib/getline.c",        "lib/getdelim.c",
                 "lib/w32/stpcpy.c",
             }
+        else if (target.result.os.tag == .macos)
+            &.{ "lib/c-ctype.c", "lib/realloc.c", "lib/macos-file-has-acl-stub.c", "lib/strnul.c", "lib/memeq.c" }
         else
             &.{ "lib/c-ctype.c", "lib/realloc.c", "lib/file-has-acl.c", "lib/strnul.c", "lib/acl-errno-valid.c", "lib/memeq.c" };
         const etags_providers: []const []const u8 = if (is_windows)
