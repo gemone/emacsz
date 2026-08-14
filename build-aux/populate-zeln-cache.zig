@@ -106,42 +106,65 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         }
     }
 
-    var job_it = std.mem.splitScalar(u8, jobs_data, '\n');
-    while (job_it.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0) continue;
-        // Line format: "zunit\tmanifest\tzeln\telc".
-        var fields = std.mem.splitScalar(u8, trimmed, '\t');
-        const zunit = fields.next() orelse continue;
-        const manifest = fields.next() orelse continue;
-        const zeln = fields.next() orelse continue;
-        const elc = fields.next() orelse "?";
-
-        const cc_argv = [_][]const u8{ zeln_compile, zunit, manifest, zeln };
-        const res = std.process.run(gpa, io, .{
-            .argv = &cc_argv,
-            .environ_map = &env_map,
-            .stdout_limit = .limited(64 * 1024),
-            .stderr_limit = .limited(64 * 1024),
-        }) catch |err| {
-            // Spawn failure (not an emitter reject): record + continue.
-            const msg = try std.fmt.allocPrint(gpa, "{s}\tspawn-failed: {s}\n", .{ elc, @errorName(err) });
-            defer gpa.free(msg);
-            try skip_list.appendSlice(gpa, msg);
-            n_skip_emitter += 1;
-            continue;
-        };
-        const ok = (res.term == .exited and res.term.exited == 0);
-        if (ok) {
-            n_compiled += 1;
-        } else {
-            n_skip_emitter += 1;
-            // Classify the reason from the emitter's stderr.
-            const reason = classifyEmitterReason(res.stderr);
-            const msg = try std.fmt.allocPrint(gpa, "{s}\t{s}\n", .{ elc, reason });
-            defer gpa.free(msg);
-            try skip_list.appendSlice(gpa, msg);
+    // Parse JOBS once.  The field slices point into jobs_data, which stays
+    // alive (and read-only) for the whole compile phase, so the worker
+    // threads can share it safely.
+    var jobs: std.ArrayList(Job) = .empty;
+    defer jobs.deinit(gpa);
+    {
+        var job_it = std.mem.splitScalar(u8, jobs_data, '\n');
+        while (job_it.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+            if (trimmed.len == 0) continue;
+            // Line format: "zunit\tmanifest\tzeln\telc".
+            var fields = std.mem.splitScalar(u8, trimmed, '\t');
+            const zunit = fields.next() orelse continue;
+            const manifest = fields.next() orelse continue;
+            const zeln = fields.next() orelse continue;
+            const elc = fields.next() orelse "?";
+            try jobs.append(gpa, .{ .zunit = zunit, .manifest = manifest, .zeln = zeln, .elc = elc });
         }
+    }
+    const n_jobs = jobs.items.len;
+
+    // Compile phase, parallelized.  Each zeln-compile is an independent
+    // leaf process (one zunit -> one .zeln, no shared state), so fan out
+    // across worker threads.  The big win is Windows -- zig cc startup is
+    // ~7s there vs ~0.2s on Linux, and 1000+ serial spawns used to blow
+    // the 120-minute CI step timeout -- but Linux/macOS get the same
+    // speedup.  Cap workers at 8 to bound peak memory (each zeln-compile
+    // loads the full zig toolchain); ZELN_PARALLELISM overrides.
+    const worker_count: usize = blk: {
+        if (env_map.get("ZELN_PARALLELISM")) |v|
+            break :blk std.fmt.parseInt(usize, v, 10) catch 4;
+        break :blk @min(std.Thread.getCpuCount() catch 4, 8);
+    };
+    const results = gpa.alloc(WorkerResult, worker_count) catch @panic("OOM");
+    defer gpa.free(results);
+    for (results) |*r| r.* = .{};
+
+    if (n_jobs > 0 and worker_count > 1) {
+        const threads = gpa.alloc(std.Thread, worker_count) catch @panic("OOM");
+        defer gpa.free(threads);
+        for (0..worker_count) |w| {
+            threads[w] = std.Thread.spawn(.{ .allocator = gpa }, processJobs, .{
+                gpa, io, &env_map, zeln_compile, jobs.items, w, worker_count, &results[w],
+            }) catch |err| {
+                std.debug.print("populate-zeln-cache: thread spawn failed: {s}\n", .{@errorName(err)});
+                std.process.exit(1);
+            };
+        }
+        for (threads) |t| t.join();
+    } else if (n_jobs > 0) {
+        processJobs(gpa, io, &env_map, zeln_compile, jobs.items, 0, 1, &results[0]);
+    }
+
+    // Merge per-worker tallies in order.
+    for (results) |*r| {
+        n_compiled += r.n_compiled;
+        n_skip_emitter += r.n_skip_emitter;
+        try skip_list.appendSlice(gpa, r.skip_list.items);
+        r.skip_list.deinit(gpa);
     }
 
     // ---- Write SKIP-LIST. ----
@@ -208,4 +231,69 @@ fn countLines(s: []const u8) usize {
         if (std.mem.trim(u8, line, " \t\r").len > 0) n += 1;
     }
     return n;
+}
+
+// ---- Parallel compile phase ---------------------------------------------
+
+/// One JOBS line: "zunit\tmanifest\tzeln\telc".  The slices point into the
+/// JOBS buffer, which outlives the whole compile phase (read-only shared).
+const Job = struct {
+    zunit: []const u8,
+    manifest: []const u8,
+    zeln: []const u8,
+    elc: []const u8,
+};
+
+/// Per-worker tallies; merged in order after the threads join.
+const WorkerResult = struct {
+    n_compiled: usize = 0,
+    n_skip_emitter: usize = 0,
+    skip_list: std.ArrayList(u8) = .empty,
+};
+
+/// Worker body: process JOBS[start], JOBS[start+stride], ... (strided so
+/// every worker walks the whole array without locking).  Each job spawns
+/// one zeln-compile leaf process and records its outcome locally; errors
+/// are swallowed per-file (that IS the tolerance contract), allocation
+/// failure just drops the skip-list line.
+fn processJobs(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    env_map: *const std.process.Environ.Map,
+    zeln_compile: []const u8,
+    jobs: []const Job,
+    start: usize,
+    stride: usize,
+    result: *WorkerResult,
+) void {
+    var i = start;
+    while (i < jobs.len) : (i += stride) {
+        const job = jobs[i];
+        const cc_argv = [_][]const u8{ zeln_compile, job.zunit, job.manifest, job.zeln };
+        const res = std.process.run(gpa, io, .{
+            .argv = &cc_argv,
+            .environ_map = env_map,
+            .stdout_limit = .limited(64 * 1024),
+            .stderr_limit = .limited(64 * 1024),
+        }) catch |err| {
+            // Spawn failure (not an emitter reject): record + continue.
+            const msg = std.fmt.allocPrint(gpa, "{s}\tspawn-failed: {s}\n", .{ job.elc, @errorName(err) }) catch return;
+            defer gpa.free(msg);
+            result.skip_list.appendSlice(gpa, msg) catch {};
+            result.n_skip_emitter += 1;
+            continue;
+        };
+        defer gpa.free(res.stdout);
+        defer gpa.free(res.stderr);
+        if (res.term == .exited and res.term.exited == 0) {
+            result.n_compiled += 1;
+        } else {
+            result.n_skip_emitter += 1;
+            // Classify the reason from the emitter's stderr.
+            const reason = classifyEmitterReason(res.stderr);
+            const msg = std.fmt.allocPrint(gpa, "{s}\t{s}\n", .{ job.elc, reason }) catch return;
+            defer gpa.free(msg);
+            result.skip_list.appendSlice(gpa, msg) catch {};
+        }
+    }
 }
