@@ -63,6 +63,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [ ubuntu-latest, macos-latest, windows-latest ]
+    env:
+      # Zig's GLOBAL cache (toolchain lib + downloaded dependency packages)
+      # lives in a per-platform dir; this is the cheap, high-hit-rate thing
+      # to persist across runs.  The repo-local .zig-cache is large and
+      # misses on every fresh commit, so we don't cache it.  Windows
+      # runner LOCALAPPDATA is fixed at C:\Users\runneradmin\AppData\Local.
+      ZIG_GLOBAL_CACHE: ${{ matrix.os == 'windows-latest' && 'C:\Users\runneradmin\AppData\Local\zig' || (matrix.os == 'macos-latest' && '~/Library/Caches/org.ziglang.zig' || '~/.cache/zig') }}
     defaults:
       run:
         # Native shell per OS: PowerShell on Windows, bash elsewhere.  Use
@@ -80,6 +87,17 @@ jobs:
         uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.16.0
+
+      # Restore the zig global cache.  A cache-service hiccup must not fail
+      # the build, so restore is best-effort (continue-on-error).
+      - name: Restore zig global cache
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: ${{ env.ZIG_GLOBAL_CACHE }}
+          key: zig-global-${{ matrix.os }}-${{ hashFiles('build.zig.zon', 'tools/**/build.zig.zon') }}
+          restore-keys: |
+            zig-global-${{ matrix.os }}-
 
       - name: Install system libraries (Linux)
         if: runner.os == 'Linux'
@@ -165,3 +183,14 @@ jobs:
           zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast check-zeln
           zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-diff
           zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-pgo
+
+      # Persist the zig global cache for the next run.  Always runs (even on
+      # a late step failure) and must not fail the job (cache-service 4xx
+      # is transient and non-fatal).
+      - name: Save zig global cache
+        uses: actions/cache/save@v4
+        if: always()
+        continue-on-error: true
+        with:
+          path: ${{ env.ZIG_GLOBAL_CACHE }}
+          key: zig-global-${{ matrix.os }}-${{ hashFiles('build.zig.zon', 'tools/**/build.zig.zon') }}
