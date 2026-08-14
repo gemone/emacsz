@@ -6,7 +6,7 @@
    are physically isolated (plan section 2).
 
    This file holds the four C-side pieces the M0 spike contract needs
-   (plan section 5 / .omc/plans/native-comp-zig-zeln.md M0):
+   (plan section 5 / M0):
 
    (a) zeln_freloc state + zeln_freloc_check_fill  (mirror comp.c:526/824)
        importing exactly one runtime subr: &Fmessage.
@@ -1366,6 +1366,45 @@ that tools/zeln-compile bakes into the .zeln.  For internal use.  */)
    zeln_emit_closure_body (which immediately follows) references it.  */
 static uint8_t zeln_const_tag (Lisp_Object);
 
+/* Round-trip self-check comparator: like Fequal, but hash tables compare
+   by CONTENT.  `equal' never returns t for two distinct hash tables
+   (internal_equal's vectorlike switch has no PVEC_HASH_TABLE case, so
+   non-identical tables fall to the default and compare by identity),
+   and the reader always builds a fresh table from #s(hash-table ...)
+   syntax -- so a perfectly faithful round-trip was rejected and every
+   .elc whose defuns hold a hash-table constant was skipped to the
+   interpreter (763 files on 32.0.50).  Printing preserves the test name
+   and the data but not the weakness, so weak tables are still rejected:
+   their semantics genuinely do not survive the round-trip.  */
+static bool
+zeln_roundtrip_equal (Lisp_Object a, Lisp_Object b)
+{
+  if (BASE_EQ (a, b))
+    return true;
+  if (HASH_TABLE_P (a) && HASH_TABLE_P (b))
+    {
+      struct Lisp_Hash_Table *ha = XHASH_TABLE (a), *hb = XHASH_TABLE (b);
+      if (ha->count != hb->count
+	  || ha->weakness != hb->weakness
+	  || !EQ (ha->test->name, hb->test->name)
+	  || !EQ (ha->test->user_hash_function,
+		  hb->test->user_hash_function)
+	  || !EQ (ha->test->user_cmp_function,
+		  hb->test->user_cmp_function))
+	return false;
+      DOHASH_SAFE (ha, i)
+	{
+	  ptrdiff_t j = hash_find (hb, HASH_KEY (ha, i));
+	  if (j < 0
+	      || !zeln_roundtrip_equal (HASH_VALUE (ha, i),
+					HASH_VALUE (hb, j)))
+	    return false;
+	}
+      return true;
+    }
+  return !NILP (Fequal (a, b));
+}
+
 /* ------------------------------------------------------------------ */
 /* (d-m1-shared) closure-body serializer.  Validates FUN is a lexical
    compiled closure (the exact shape exec_byte_code consumes) and emits
@@ -1432,7 +1471,7 @@ zeln_emit_closure_body (FILE *f, Lisp_Object fun)
       if (clen > 0xFFFFFFFFu)
 	error ("zeln: constant read-syntax too large");
       Lisp_Object roundtripped = Fread (printed);
-      if (NILP (Fequal (c, roundtripped)))
+      if (!zeln_roundtrip_equal (c, roundtripped))
 	error ("zeln: constant does not round-trip (skip file)");
       emit_u8  (f, zeln_const_tag (c));		/* advisory; loader ignores */
       emit_u32 (f, (uint32_t) clen);
