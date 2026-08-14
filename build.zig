@@ -232,7 +232,6 @@ pub fn build(b: *std.Build) void {
     // Phase-2.1 subsystem switches (all OFF by default => the build is
     // byte-identical to main). When ON, build.zig injects the matching
     // -DHAVE_* and, for the native-comp Zig path, compiles src/compz.c.
-    // See .omc/plans/native-comp-zig-zeln.md (sections 2 and 13).
     const enable_native_comp_zig = b.option(bool, "native-comp-zig", "Enable the Zig/LLVM native-comp path (.zeln)") orelse false;
     // gccjit native-comp (.eln) — the UPSTREAM path (HAVE_NATIVE_COMP, src/comp.c).
     // Independent of -Dnative-comp-zig; both default OFF, both can be ON (M2.5
@@ -1571,7 +1570,7 @@ pub fn build(b: *std.Build) void {
         // Phase-2.1 subsystem switches (all OFF by default => the build is
         // byte-identical to main). When ON they inject -DHAVE_* (activating
         // the matching #ifdef blocks); the native-comp Zig path also compiles
-        // src/compz.c. OFF => all no-ops. See .omc/plans/native-comp-zig-zeln.md.
+        // src/compz.c. OFF => all no-ops.
         if (enable_native_comp_zig) {
             exe.root_module.addCMacro("HAVE_NATIVE_COMP_ZIG", "1");
             exe.root_module.addCSourceFile(.{
@@ -2418,8 +2417,15 @@ pub fn build(b: *std.Build) void {
             &(libsrc_flags_core ++ [_][]const u8{ "-Int/inc", "-Ilib/w32" })
         else if (target.result.os.tag == .macos)
             // Darwin does not declare environ in <unistd.h>; force the
-            // crt_externs accessor header before every tool source.
-            &(libsrc_flags_core ++ [_][]const u8{ "-include", "lib/macos-environ.h" })
+            // crt_externs accessor header before every tool source.  The
+            // newest SDKs (Xcode 26.5) annotate <getopt.h>'s declarations
+            // (_LIBC_CSTR / _LIBC_COUNT), which conflict with the gnulib
+            // getopt-ext.h re-declarations that -Ilib's <getopt.h> wrapper
+            // emits after its include_next of the SDK header.  Rename the
+            // gnulib getopt surface out of the way (__GETOPT_PREFIX=rpl_,
+            // the gnulib-standard mechanism) and provide lib/getopt{,1}.c
+            // below so the tools get a self-consistent GNU getopt.
+            &(libsrc_flags_core ++ [_][]const u8{ "-include", "lib/macos-environ.h", "-D__GETOPT_PREFIX=rpl_" })
         else
             &libsrc_flags_core;
 
@@ -2445,7 +2451,9 @@ pub fn build(b: *std.Build) void {
             // takes its fcntl(F_SETFD, FD_CLOEXEC) fallback; gnulib's
             // lib/fcntl.h renames fcntl -> rpl_fcntl, so lib/fcntl.c must be
             // linked (Linux/glibc has SOCK_CLOEXEC and never calls fcntl).
-            &.{ "lib/c-ctype.c", "lib/realloc.c", "lib/macos-file-has-acl-stub.c", "lib/fcntl.c", "lib/strnul.c", "lib/memeq.c" }
+            // getopt{,1}.c supply the rpl_ getopt implementation the
+            // -D__GETOPT_PREFIX rename above points the call sites at.
+            &.{ "lib/c-ctype.c", "lib/realloc.c", "lib/macos-file-has-acl-stub.c", "lib/fcntl.c", "lib/strnul.c", "lib/memeq.c", "lib/getopt.c", "lib/getopt1.c" }
         else
             &.{ "lib/c-ctype.c", "lib/realloc.c", "lib/file-has-acl.c", "lib/strnul.c", "lib/acl-errno-valid.c", "lib/memeq.c" };
         const etags_providers: []const []const u8 = if (is_windows)
@@ -2456,6 +2464,17 @@ pub fn build(b: *std.Build) void {
                 "lib/c-strcasecmp.c",      "lib/c-strncasecmp.c",
                 "lib/memeq.c",             "lib/malloc/dynarray_resize.c",
                 "lib/w32/stpcpy.c",        "lib/w32/nl_langinfo.c",
+            }
+        else if (target.result.os.tag == .macos)
+            // The macOS flags rename the gnulib getopt surface to rpl_ (see
+            // libsrc_flags above), so the implementation is linked in too.
+            &.{
+                "lib/c-ctype.c",           "lib/binary-io.c",
+                "lib/streq.c",             "lib/realloc.c",
+                "lib/regex.c", // includes regcomp/regexec/regex_internal
+                "lib/c-strcasecmp.c",      "lib/c-strncasecmp.c",
+                "lib/memeq.c",             "lib/malloc/dynarray_resize.c",
+                "lib/getopt.c",            "lib/getopt1.c",
             }
         else
             &.{
