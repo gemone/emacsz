@@ -9,9 +9,19 @@ const config_overrides = @import("config-overrides.zig");
 fn canonicalConfiguration(t: std.Target, allocator: std.mem.Allocator) []const u8 {
     return switch (t.os.tag) {
         .macos => std.fmt.allocPrint(allocator, "{s}-apple-darwin", .{@tagName(t.cpu.arch)}) catch @panic("OOM"),
-        .windows => std.fmt.allocPrint(allocator, "{s}-pc-windows-msvc", .{@tagName(t.cpu.arch)}) catch @panic("OOM"),
+        .windows => std.fmt.allocPrint(allocator, "{s}-pc-windows-gnu", .{@tagName(t.cpu.arch)}) catch @panic("OOM"),
         else => std.Target.linuxTriple(&t, allocator) catch @panic("OOM"),
     };
+}
+
+// Which per-target config tags must override EMACS_CONFIGURATION: the
+// committed config_values.txt carries the Linux triple, which only
+// matches the native "linux" config.  macOS/Windows/musl compute their
+// (arch-aware) triple from the target instead.
+fn needsConfigTriple(tag: []const u8) bool {
+    return std.mem.eql(u8, tag, "macos") or
+        std.mem.eql(u8, tag, "windows") or
+        std.mem.eql(u8, tag, "musl");
 }
 
 // Parse a committed vendored-source list (one relative path per line,
@@ -131,9 +141,9 @@ fn makeConfigHeader(b: *std.Build, tag: ?[]const u8, triple: ?[]const u8, disabl
         if (overrides) |list| {
             for (list) |o| values.put(b.dupe(o.name), b.dupe(o.value)) catch @panic("OOM");
         }
-        if (std.mem.eql(u8, t, "macos")) {
+        if (needsConfigTriple(t)) {
             const quoted = std.fmt.allocPrint(alloc, "\"{s}\"", .{
-                triple orelse @panic("build.zig: macos config needs a triple"),
+                triple orelse @panic("build.zig: this config tag needs a triple"),
             }) catch @panic("OOM");
             values.put(b.dupe("EMACS_CONFIGURATION"), quoted) catch @panic("OOM");
         }
@@ -472,7 +482,7 @@ pub fn build(b: *std.Build) void {
         else => null,
     };
     const target_config_h_file: ConfigOut = if (target_config_tag) |tag|
-        makeConfigHeader(b, tag, if (std.mem.eql(u8, tag, "macos")) canonicalConfiguration(target.result, b.allocator) else null, disabled_knobs.items)
+        makeConfigHeader(b, tag, if (needsConfigTriple(tag)) canonicalConfiguration(target.result, b.allocator) else null, disabled_knobs.items)
     else
         base_config;
 
@@ -490,7 +500,7 @@ pub fn build(b: *std.Build) void {
         else => null,
     };
     const mdf_config: ConfigOut = if (host_config_tag) |tag|
-        makeConfigHeader(b, tag, if (std.mem.eql(u8, tag, "macos")) canonicalConfiguration(b.graph.host.result, b.allocator) else null, disabled_knobs.items)
+        makeConfigHeader(b, tag, if (needsConfigTriple(tag)) canonicalConfiguration(b.graph.host.result, b.allocator) else null, disabled_knobs.items)
     else
         base_config;
 
@@ -2582,6 +2592,9 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .target = b.graph.host,
                 .optimize = .Debug,
+                // Uses std.c.chmod (POSIX chmod from the host libc) so the
+                // syscall is target-correct on Linux and macOS.
+                .link_libc = true,
                 .root_source_file = b.path("build-aux/chmod-x.zig"),
             }),
         });
@@ -2703,6 +2716,10 @@ pub fn build(b: *std.Build) void {
     });
     const gen_charprop = b.addRunArtifact(gen_charprop_tool);
     gen_charprop.setCwd(b.path("."));
+    // Writes gitignored lisp/international/{charprop,uni-*}.el into the
+    // source tree; treat as side-effectful so a cached run can never skip
+    // regeneration after the files vanish (mirrors gen_loaddefs).
+    gen_charprop.has_side_effects = true;
     gen_charprop.step.dependOn(&run_dump.step);
     const gen_charprop_step = b.step(
         "generate-charprop",
@@ -2782,6 +2799,10 @@ pub fn build(b: *std.Build) void {
     });
     const gen_cedet = b.addRunArtifact(gen_cedet_tool);
     gen_cedet.setCwd(b.path("."));
+    // Writes gitignored cedet grammar files (semantic/*-wy.el etc.) into
+    // the source tree; treat as side-effectful so a cached run can never
+    // skip regeneration after the files vanish (mirrors gen_loaddefs).
+    gen_cedet.has_side_effects = true;
     // The grammar batch generators run against the SOURCE bootstrap dump
     // (bootstrap-emacs.pdmp from `dump`; they load the grammar tools from
     // lisp/cedet source).  Depend on run_dump, NOT run_smoke: smoke needs
@@ -2975,7 +2996,10 @@ pub fn build(b: *std.Build) void {
     run_check_all.setCwd(b.path("."));
     run_check_all.step.dependOn(&run_smoke.step);
     run_check_all.step.dependOn(&run_loaddefs_final.step);
-    run_check_all.step.dependOn(&gen_cedet.step); // cedet suites require the generated wisent grammars (srecode/srt-wy.el, ...)
+    // cedet suites require the generated wisent grammars
+    // (srecode/srt-wy.el, ...); on Windows the batch grammar generators
+    // exit non-zero, so gate the dependency like compile-lisp does.
+    if (!is_windows) run_check_all.step.dependOn(&gen_cedet.step);
     const check_all_step = b.step("check-all", "Run ALL ert suites (no skip; per-suite isolation + timeout) and classify failures");
     check_all_step.dependOn(&run_check_all.step);
 

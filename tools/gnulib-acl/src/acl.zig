@@ -123,6 +123,13 @@ extern "c" fn SetFileInformationByHandle(
     info: *anyopaque,
     len: u32,
 ) c_int;
+// Read counterpart of SetFileInformationByHandle (which only writes).
+extern "c" fn GetFileInformationByHandleEx(
+    h: ?*anyopaque,
+    class: u32,
+    info: *anyopaque,
+    len: u32,
+) c_int;
 extern "c" fn _errno() *c_int;
 
 const FileBasicInfo = extern struct {
@@ -143,7 +150,12 @@ fn fchmodWindows(fd: c_int, mode: mode_t) c_int {
     if (h == invalid)
         return -1; // CRT set errno
     var info: FileBasicInfo = undefined;
-    if (SetFileInformationByHandle(h, FileBasicInfoClass, &info, @sizeOf(FileBasicInfo)) == 0) {
+    // SetFileInformationByHandle WRITES the given struct verbatim; it
+    // does not read the file's current info.  Read the current
+    // attributes with GetFileInformationByHandleEx first, then modify
+    // and write back -- otherwise uninitialized (garbage) timestamps
+    // and attributes get written to the file.
+    if (GetFileInformationByHandleEx(h, FileBasicInfoClass, &info, @sizeOf(FileBasicInfo)) == 0) {
         _errno().* = EINVAL;
         return -1;
     }

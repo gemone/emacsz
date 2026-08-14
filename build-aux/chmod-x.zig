@@ -14,6 +14,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     const z = try std.fmt.allocPrintSentinel(gpa, "{s}", .{path}, 0);
     defer gpa.free(z);
-    const rc = std.os.linux.fchmodat(std.os.linux.AT.FDCWD, z, 0o755);
-    if (@as(isize, @bitCast(rc)) < 0) return error.ChmodFailed;
+    // std.c.chmod is the POSIX chmod from the host libc, target-correct on
+    // both Linux and macOS; std.os.linux.chmod would emit a Linux syscall
+    // number on macOS, where the syscall ABI is different.
+    if (std.c.chmod(z, 0o755) != 0) return error.ChmodFailed;
 }

@@ -82,8 +82,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         std.process.exit(1);
     };
     defer gpa.free(jobs_data);
-    const skips_lisp = cwd.readFileAlloc(io, skips_lisp_path, gpa, .limited(16 * 1024 * 1024)) catch "";
-    defer gpa.free(skips_lisp);
+    // SKIPS-LISP may legitimately be absent (empty serialize-phase skip
+    // list); never free the "" fallback -- it is a string literal, not a
+    // heap allocation (freeing it would be UB).
+    const skips_lisp_opt = cwd.readFileAlloc(io, skips_lisp_path, gpa, .limited(16 * 1024 * 1024)) catch null;
+    defer if (skips_lisp_opt) |sl| gpa.free(sl);
+    const skips_lisp = skips_lisp_opt orelse "";
 
     // ---- (b) compile phase: one zeln-compile per job, per-file tolerant. ----
     var n_compiled: usize = 0;
