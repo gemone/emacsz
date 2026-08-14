@@ -159,7 +159,7 @@ jobs:
       - name: .zeln feature tests (populate + gate #2 + zeln-diff + pgo)
         env:
           ZELN_PGO_HAMMER: '30000'
-        timeout-minutes: 120
+        timeout-minutes: 180
         run: |
           zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast populate-zeln-cache
           zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast check-zeln

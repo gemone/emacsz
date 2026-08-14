@@ -28,7 +28,16 @@ const env = @import("env.zig");
 
 pub fn main(minimal: std.process.Init.Minimal) !void {
     const gpa = std.heap.smp_allocator;
-    var io_threaded: std.Io.Threaded = .init(gpa, .{});
+    // Default async_limit is cpu_count-1 (Io.Threaded.init).  On a
+    // 2-vCPU Windows runner that is 1, which serializes every concurrent
+    // child-process operation back to one -- so the N worker threads'
+    // std.process.run calls above would run one-at-a-time and the compile
+    // phase never finished within the CI step timeout.  Raise the limit so
+    // the parallel spawns actually run concurrently.
+    var io_threaded: std.Io.Threaded = .init(gpa, .{
+        .async_limit = .unlimited,
+        .concurrent_limit = .unlimited,
+    });
     const io = io_threaded.io();
     const cwd = std.Io.Dir.cwd();
 
