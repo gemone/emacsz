@@ -91,15 +91,23 @@ static zeln_f_reloc_t zeln_freloc;
      - IDX_NILP:        ptrdiff_t (*)(ptrdiff_t, Lisp_Object *) -> 0/1
        (a RAW 0/1, not a tagged Lisp_Object, so the IR can branch on
        `icmp eq i64 %ret, 0' without knowing Lisp_Object tag bits).
+     - IDX_SWITCH_TARGET: ptrdiff_t (*)(ptrdiff_t, Lisp_Object *) ->
+       the Bswitch target bytecode offset, or -1 for a miss (RAW, same
+       rationale as IDX_NILP; the native side dispatches on the offset
+       with a static switch whose case set comes from the zunit's
+       switch-table sidecar).
      - every other IDX: Lisp_Object (*)(ptrdiff_t, Lisp_Object *)
        (the uniform MANY convention matching struct Lisp_Subr aMANY).
 
    ZELN_ABI_VERSION was bumped Z1 -> Z2 for the M1 layout + surface,
    then Z2 -> Z3 for the M2 freloc-surface growth, then Z3 -> Z4 for the
    M2b multi-function .zeln container (the entry struct gained a
-   function table + top_level_blob), so a stale M0/M1/M2 .zeln is
-   rejected by the hash gate before any native code runs.  The IDX_*
-   freloc surface itself is UNCHANGED across Z3 -> Z4 (no per-fn drift),
+   function table + top_level_blob), then Z6 -> Z7 for the Bswitch
+   support (the freloc surface gained zeln-switch-target and the zunit
+   format became zabi=4 with the switch-table sidecar), so a stale
+   .zeln is rejected by the hash gate before any native code runs.  The
+   IDX_* freloc surface growth is append-only (the hash fingerprints
+   the ordered name list, so appending is safe but reordering is not),
    so the differential gate's per-opcode contract still holds.  */
 
 /* Prologue helper: replicates exec_byte_code setup_frame arg binding
@@ -153,6 +161,26 @@ static ptrdiff_t
 zeln_isnil (ptrdiff_t nargs, Lisp_Object *args)
 {
   return NILP (args[0]) ? 1 : 0;
+}
+
+/* Bswitch jump resolution (bytecode.c:1743 CASE (Bswitch)): look KEY up
+   in the defun's jump-table hash TABLE under the table's own test and
+   return the target's ABSOLUTE bytecode offset, or -1 on a miss (the
+   interpreter then falls through to the next opcode, which bytecomp
+   always makes the `goto DEFAULT' after a byte-switch).  RAW return so
+   the native side can dispatch on the offset with a plain i64 switch.
+   hash_find covers every key type bytecomp puts in the table (fixnum,
+   char, symbol, string) under eq/eql/equal -- exactly the
+   interpreter's `else' branch; the count<=5 linear BASE_EQ path is a
+   pure optimization with the same result.  */
+static ptrdiff_t
+zeln_switch_target (ptrdiff_t nargs, Lisp_Object *args)
+{
+  struct Lisp_Hash_Table *h = XHASH_TABLE (args[1]);
+  ptrdiff_t i = hash_find (h, args[0]);
+  if (i >= 0)
+    return XFIXNUM (HASH_VALUE (h, i));
+  return -1;
 }
 
 /* Per-opcode primitive shims.  Each wraps the C primitive the M1
@@ -491,6 +519,7 @@ enum {
   IDX_PUSHHANDLER,		/* Bpushcatch + Bpushconditioncase (returns jmpbuf) */
   IDX_RESUME,			/* longjmp-caught path: restore top + push val */
   IDX_POPHANDLER,		/* Bpophandler */
+  IDX_SWITCH_TARGET,		/* Bswitch: jump-table lookup -> raw offset/-1 */
   ZELN_F_RELOC_COUNT
 };
 
@@ -603,6 +632,7 @@ static const struct
   [IDX_PUSHHANDLER]         = { "zeln-pushhandler",        "(3 . many)", (void *) &zeln_pushhandler },
   [IDX_RESUME]              = { "zeln-resume",             "(1 . many)", (void *) &zeln_resume },
   [IDX_POPHANDLER]          = { "zeln-pophandler",         "(0 . many)", (void *) &zeln_pophandler },
+  [IDX_SWITCH_TARGET]       = { "zeln-switch-target",      "2",          (void *) &zeln_switch_target },
 };
 
 static void
@@ -813,12 +843,15 @@ For internal use.  */)
   zeln_verify_hash (e);
   zeln_patch_freloc (e);
 
-  /* Wrap each native fn into a freshly-allocated MANY subr and Ffset it
-     under its baked defun symbol.  M1/M2b native fns use the MANY
-     convention (i64 (i64 nargs, ptr args)) matching the aMANY slot
-     (lisp.h:2188); the native fn's prologue (zeln_setup_args) is the
-     real arity enforcer (it bakes args_template and signals
-     wrong_number_of_arguments), so min=0/max=MANY here is correct.
+  /* Wrap each native fn into a freshly-allocated subr and Ffset it
+     under its baked defun symbol.  The fn's REAL arity (decoded from
+     args_template) is installed into min_args/max_args — mirroring
+     gccjit's comp.c make_subr — so `func-arity' reports the truth; the
+     function slot carries the .zeln's arity-honest native_entry (an
+     exact-arity trampoline for no-&rest arities with max <= 8, the
+     MANY body itself otherwise), so funcall's dispatch-by-max_args
+     reaches a matching signature.  The native fn's prologue
+     (zeln_setup_args) remains the enforcer — identical arity errors.
      ALLOCATE_PLAIN_PSEUDOVECTOR sets lisplen=0, so GC traces none of the
      subr's Lisp_Object slots; memclear zeroes the non-header fields
      defensively (backtrace / doc lookup may read symbol_name / doc).  */
@@ -832,9 +865,12 @@ For internal use.  */)
 	ALLOCATE_PLAIN_PSEUDOVECTOR (struct Lisp_Subr, PVEC_SUBR);
       memclear (&subr->function,
 		sizeof (*subr) - offsetof (struct Lisp_Subr, function));
-      subr->function.aMANY = fe->native_fn;
-      subr->min_args = 0;
-      subr->max_args = MANY;
+      bool rest = (fe->args_template & 128) != 0;
+      int mandatory = fe->args_template & 127;
+      ptrdiff_t nonrest = fe->args_template >> 8;
+      subr->function.aMANY = fe->native_entry;
+      subr->min_args = mandatory;
+      subr->max_args = (rest || nonrest > 8) ? MANY : nonrest;
       /* Ffset the native fn under its baked defun symbol so loading the
 	 .zeln leaves every defun natively callable, mirroring how loading
 	 the .elc would fset each via its top-level `defalias'.  */
@@ -1164,7 +1200,9 @@ zeln_fdo_swap (zeln_fdo_unit_t *u, const char *out)
 	  zeln_fn_entry_t *nfe = &ne->fns[j];
 	  if (strcmp (sym, nfe->symbol_name) != 0)
 	    continue;
-	  subr->function.aMANY = nfe->native_fn;
+	  /* The arity never changes across swaps (same fn), so min/max stay;
+	     repoint the function slot at the new unit's arity-honest entry.  */
+	  subr->function.aMANY = nfe->native_entry;
 	  /* Copy the old d_reloc values into this new entry's array:
 	     identity preserved (same Lisp_Objects, only the table order
 	     changed).  The old entry lives in u->entry->fns.  */
@@ -1405,6 +1443,49 @@ zeln_roundtrip_equal (Lisp_Object a, Lisp_Object b)
   return !NILP (Fequal (a, b));
 }
 
+/* If C is a byte-switch jump table (a hash table whose values are all
+   fixnum offsets into the fn's bytecode), return the number of DISTINCT
+   offsets and set *OFFS_OUT to a malloc'd sorted array of them;
+   otherwise return -1.  bytecomp lowers pcase/cond switches to
+   `Bconstant <jump-table>; Bswitch' (bytecomp.el:4639); the sidecar
+   written from this lets the Zig emitter lower Bswitch to a static
+   LLVM switch without parsing Lisp read-syntax.  */
+static ptrdiff_t
+zeln_switch_table_offsets (Lisp_Object c, ptrdiff_t opcode_len,
+			   ptrdiff_t **offs_out)
+{
+  if (!HASH_TABLE_P (c))
+    return -1;
+  struct Lisp_Hash_Table *h = XHASH_TABLE (c);
+  if (h->count < 1)
+    return -1;
+  ptrdiff_t *offs = xmalloc (h->count * sizeof *offs);
+  ptrdiff_t n = 0;
+  DOHASH_SAFE (h, j)
+    {
+      Lisp_Object v = HASH_VALUE (h, j);
+      if (!FIXNUMP (v))
+	goto not_table;
+      ptrdiff_t off = XFIXNUM (v);
+      if (off < 0 || off >= opcode_len)
+	goto not_table;
+      ptrdiff_t k = 0;
+      while (k < n && offs[k] < off)
+	k++;
+      if (k < n && offs[k] == off)
+	continue;
+      memmove (offs + k + 1, offs + k, (n - k) * sizeof *offs);
+      offs[k] = off;
+      n++;
+    }
+  *offs_out = offs;
+  return n;
+
+ not_table:
+  xfree (offs);
+  return -1;
+}
+
 /* ------------------------------------------------------------------ */
 /* (d-m1-shared) closure-body serializer.  Validates FUN is a lexical
    compiled closure (the exact shape exec_byte_code consumes) and emits
@@ -1417,7 +1498,7 @@ zeln_roundtrip_equal (Lisp_Object a, Lisp_Object b)
    into a logged skip.  Extracted verbatim from the former
    comp-z-write-zunit body.  */
 static void
-zeln_emit_closure_body (FILE *f, Lisp_Object fun)
+zeln_emit_closure_body (FILE *f, Lisp_Object fun, bool emit_switch_tables)
 {
   CHECK_TYPE (CLOSUREP (fun), Qcompiled_function_p, fun);
   CHECK_TYPE (FIXNUMP (AREF (fun, CLOSURE_ARGLIST)),
@@ -1478,6 +1559,37 @@ zeln_emit_closure_body (FILE *f, Lisp_Object fun)
       emit_bytes (f, SSDATA (printed), clen);
     }
   unbind_to (print_punct, Qnil);
+
+  /* (zabi=4) switch-table sidecar: for every jump-table constant, the
+     DISTINCT sorted bytecode offsets, so the emitter can lower Bswitch
+     to a static LLVM switch.  Layout after the consts:
+       u32 n_tables; n_tables x { u32 const_idx; u32 n_offsets;
+                                  u32 offsets[n_offsets]; }.  */
+  if (emit_switch_tables)
+    {
+      ptrdiff_t n_tables = 0;
+      for (ptrdiff_t i = 0; i < nconsts; i++)
+	{
+	  ptrdiff_t *offs;
+	  if (zeln_switch_table_offsets (AREF (vector, i), opcode_len,
+					 &offs) >= 0)
+	    { xfree (offs); n_tables++; }
+	}
+      emit_u32 (f, (uint32_t) n_tables);
+      for (ptrdiff_t i = 0; i < nconsts; i++)
+	{
+	  ptrdiff_t *offs;
+	  ptrdiff_t n = zeln_switch_table_offsets (AREF (vector, i),
+						    opcode_len, &offs);
+	  if (n < 0)
+	    continue;
+	  emit_u32 (f, (uint32_t) i);
+	  emit_u32 (f, (uint32_t) n);
+	  for (ptrdiff_t k = 0; k < n; k++)
+	    emit_u32 (f, (uint32_t) offs[k]);
+	  xfree (offs);
+	}
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1580,7 +1692,7 @@ For internal use.  */)
 
   emit_u32 (zout, ZUNIT_MAGIC);
   emit_u8  (zout, 2);				/* zabi_version (M1) */
-  zeln_emit_closure_body (zout, fun);
+  zeln_emit_closure_body (zout, fun, false);
 
   if (emacs_fclose (zout) != 0)
     report_file_error ("Closing zunit", build_string (path));
@@ -1710,11 +1822,14 @@ on an unserializable closure or a load error.  For internal use.  */)
   if (nfuncs > 0xFFFFFFFFu)
     error ("comp-z-write-file-zunit: too many defuns");
 
-  /* --- .zunit (M2b, zabi=3): u32 magic; u8 zabi=3; u32 nfuncs;
+  /* --- .zunit (zabi=4): u32 magic; u8 zabi=4; u32 nfuncs;
      then nfuncs × { u32 sym_name_len; u8 sym_name[len]; <closure body> };
      then u32 top_blob_len; u8 top_blob[len].  The <closure body> is the
-     SAME shape zeln_emit_closure_body writes (args_template, stack_depth,
-     opcodes, consts).  */
+     SAME shape zeln_emit_closure_body writes (args_template,
+     stack_depth, opcodes, consts) PLUS the zabi=4 switch-table sidecar
+     (Bswitch's jump tables pre-resolved to distinct offset sets; zabi=3
+     units carry none and every Bswitch in them stays an emitter
+     skip).  */
   char path[4096 + 16];
   snprintf (path, sizeof path, "%s.zunit", prefix);
   FILE *zout = emacs_fopen (path, "wb");
@@ -1722,7 +1837,7 @@ on an unserializable closure or a load error.  For internal use.  */)
     report_file_error ("Opening zunit", build_string (path));
 
   emit_u32 (zout, ZUNIT_MAGIC);
-  emit_u8  (zout, 3);			/* zabi_version (M2b multi-function) */
+  emit_u8  (zout, 4);			/* zabi_version (multi-fn + switch sidecar) */
   emit_u32 (zout, (uint32_t) nfuncs);
 
   for (Lisp_Object t2 = defun_list; !NILP (t2); t2 = XCDR (t2))
@@ -1735,7 +1850,7 @@ on an unserializable closure or a load error.  For internal use.  */)
 	error ("comp-z-write-file-zunit: symbol name too long");
       emit_u32 (zout, (uint32_t) namelen);
       emit_bytes (zout, SSDATA (namestr), namelen);
-      zeln_emit_closure_body (zout, closure);
+      zeln_emit_closure_body (zout, closure, true);
     }
 
   /* Top-level blob: (progn ,@blob_forms) as read-syntax.  Empty (zero

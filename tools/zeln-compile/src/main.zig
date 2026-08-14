@@ -37,7 +37,7 @@ const ZUNIT_MAGIC: u32 = 0x5A554E54;
 // The freloc surface size — MUST match src/compz.c's ZELN_F_RELOC_COUNT.
 // The IR's getelementptr type is `[SURFACE x ptr]` over the loader-patched
 // link-table base.  Frozen order: the IDX_* below mirror the compz.c enum.
-const SURFACE: u64 = 101;
+const SURFACE: u64 = 102;
 
 const IDX_SETUP_ARGS: u64 = 0;
 const IDX_FUNCALL: u64 = 1;
@@ -141,6 +141,7 @@ const IDX_UNWIND_PROTECT: u64 = 97;
 const IDX_PUSHHANDLER: u64 = 98;
 const IDX_RESUME: u64 = 99;
 const IDX_POPHANDLER: u64 = 100;
+const IDX_SWITCH_TARGET: u64 = 101;
 
 // ---- FRELOC_NAMES: the Zig-side mirror of compz.c's zeln_imports[] order.
 // Positional (slot i = the subr at freloc slot i), in the SAME order as the
@@ -253,6 +254,7 @@ const FRELOC_NAMES = [_][]const u8{
     "zeln-pushhandler",         // 98
     "zeln-resume",              // 99
     "zeln-pophandler",          // 100
+    "zeln-switch-target",       // 101
 };
 comptime {
     if (FRELOC_NAMES.len != SURFACE)
@@ -335,6 +337,7 @@ const OPCODE_BGOTOIFNIL: u8 = 131;
 const OPCODE_BGOTOIFNONNIL: u8 = 132;
 const OPCODE_BGOTOIFNILELSEPOP: u8 = 133;
 const OPCODE_BGOTOIFNONNILELSEPOP: u8 = 134;
+const OPCODE_BSWITCH: u8 = 183; // byte-switch (jump table in the preceding Bconstant)
 const OPCODE_BRETURN: u8 = 135;
 const OPCODE_BDISCARD: u8 = 136;
 const OPCODE_BDUP: u8 = 137;
@@ -583,8 +586,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             std.debug.print("zeln-compile: M1 emit failed: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
-    } else if (zabi == 3) {
+    } else if (zabi == 3 or zabi == 4) {
         // M2b path: multi-function file zunit (N defuns + top_level_blob).
+        // zabi=4 adds the per-fn switch-table sidecar (Bswitch); zabi=3
+        // units carry none and keep rejecting Bswitch at decode.
         const file_unit = parseFileZunit(gpa, zunit) catch |err| {
             std.debug.print("zeln-compile: file zunit parse failed: {s}\n", .{@errorName(err)});
             std.process.exit(1);
@@ -595,7 +600,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             std.process.exit(1);
         };
     } else {
-        std.debug.print("zeln-compile: unsupported zabi_version {d} (want 1, 2, or 3)\n", .{zabi});
+        std.debug.print("zeln-compile: unsupported zabi_version {d} (want 1, 2, 3, or 4)\n", .{zabi});
         std.process.exit(1);
     }
     defer gpa.free(ll_body);
@@ -775,8 +780,8 @@ fn emitSpikeLLVM(gpa: std.mem.Allocator, consts: []Const, abi_hash: []const u8) 
     try A.addf(&out, gpa, "@freloc_hash_z_data = internal constant [9 x i8] c\"{s}\"\n\n", .{hash_lit.items});
     try A.add(&out, gpa,
         \\@sym_name_0 = internal constant [11 x i8] c"zeln-spike\00"
-        \\@zeln_fn_table = private constant [1 x { ptr, i64, ptr, ptr, i64, ptr }] [
-        \\  { ptr, i64, ptr, ptr, i64, ptr } { ptr @zeln_spike_native, i64 0, ptr @sym_name_0, ptr @d_reloc_z, i64 2, ptr @d_reloc_z_blob }
+        \\@zeln_fn_table = private constant [1 x { ptr, i64, ptr, ptr, i64, ptr, ptr }] [
+        \\  { ptr, i64, ptr, ptr, i64, ptr, ptr } { ptr @zeln_spike_native, i64 128, ptr @sym_name_0, ptr @d_reloc_z, i64 2, ptr @d_reloc_z_blob, ptr @zeln_spike_native }
         \\]
         \\@top_level_blob_data = internal constant { i64, [0 x i8] } { i64 0, [0 x i8] c"" }
         \\@zeln_entry_global = internal global { ptr, ptr, i64, ptr, ptr } {
@@ -924,12 +929,37 @@ fn parseFileZunit(gpa: std.mem.Allocator, zunit: []const u8) !FileUnit {
             consts[i] = zunit[off .. off + len];
             off += len;
         }
+        // (zabi=4) switch-table sidecar after the consts:
+        //   u32 n_tables; n_tables x { u32 const_idx; u32 n_offsets;
+        //                              u32 offsets[n_offsets]; }.
+        var switches: []SwitchTable = &.{};
+        if (zunit[4] == 4) {
+            if (off + 4 > zunit.len) return error.ZunitTooShort;
+            const n_tables = std.mem.readInt(u32, zunit[off..][0..4], .little);
+            off += 4;
+            switches = try gpa.alloc(SwitchTable, n_tables);
+            for (0..n_tables) |t| {
+                if (off + 8 > zunit.len) return error.SwitchHeaderOverflow;
+                const const_idx = std.mem.readInt(u32, zunit[off..][0..4], .little);
+                off += 4;
+                const n_offsets = std.mem.readInt(u32, zunit[off..][0..4], .little);
+                off += 4;
+                if (off + 4 * @as(usize, n_offsets) > zunit.len) return error.SwitchDataOverflow;
+                const offsets = try gpa.alloc(u32, n_offsets);
+                for (0..n_offsets) |k| {
+                    offsets[k] = std.mem.readInt(u32, zunit[off..][0..4], .little);
+                    off += 4;
+                }
+                switches[t] = .{ .const_idx = const_idx, .offsets = offsets };
+            }
+        }
         fns[fn_i] = .{
             .name = name,
             .args_template = args_template,
             .stack_depth = stack_depth,
             .opcodes = opcodes,
             .consts = consts,
+            .switches = switches,
         };
     }
 
@@ -942,7 +972,11 @@ fn parseFileZunit(gpa: std.mem.Allocator, zunit: []const u8) !FileUnit {
 }
 
 fn freeFileUnit(gpa: std.mem.Allocator, u: FileUnit) void {
-    for (u.fns) |f| gpa.free(f.consts);
+    for (u.fns) |f| {
+        for (f.switches) |t| gpa.free(t.offsets);
+        gpa.free(f.switches);
+        gpa.free(f.consts);
+    }
     gpa.free(u.fns);
 }
 
@@ -974,6 +1008,7 @@ const Op = enum {
     noarg, // idx = IDX (call fn(0), discard) — save_*/pophandler
     pushhandler, // idx = type (0=CATCHER,1=CONDITION_CASE); target = handler-body off
     unary_pop, // idx = IDX (POP one, call fn(1,&oldtop), discard) — Bunwind_protect
+    switch_, // idx = jump-table const idx (the immediately preceding Bconstant)
 };
 
 const Instr = struct {
@@ -1045,6 +1080,7 @@ fn decode(opcodes: []const u8, pc0: u32) !Instr {
             ins.op = .goto_if_nonnil_else_pop;
             ins.target = fetch2(opcodes, &pc);
         },
+        OPCODE_BSWITCH => ins.op = .switch_, // no immediate: the table is the preceding Bconstant's const
         OPCODE_BCALL...OPCODE_BCALL5 => {
             ins.op = .call;
             ins.imm = b - OPCODE_BCALL; // 0..5
@@ -1526,12 +1562,21 @@ const Emitter = struct {
 // matches src/compz.h field-for-field.  zabi=2 (M1) is the N=1 case
 // with an empty top_level_blob, so ONE emitter serves both.
 // =====================================================================
+// A pre-resolved byte-switch jump table (zabi=4 sidecar): the const
+// index of the table hash and its DISTINCT sorted bytecode offsets —
+// the static target set the emitter lowers Bswitch to.
+const SwitchTable = struct {
+    const_idx: u32,
+    offsets: []const u32,
+};
+
 const FnUnit = struct {
     name: []const u8, // defun symbol name (placeholder "zeln-m1" for zabi=2)
     args_template: u32,
     stack_depth: u32,
     opcodes: []const u8,
     consts: [][]const u8,
+    switches: []SwitchTable = &.{},
 };
 
 // Emit ONE native fn: `define internal i64 @FN_NAME(i64 %nargs, ptr
@@ -1585,11 +1630,28 @@ fn emitNativeFn(
     @memset(is_block_start, false);
     is_block_start[0] = true;
 
+    // Bswitch's jump tables, keyed by const idx (zabi=4 sidecar).
+    var sw_map = std.AutoHashMap(u32, []const u32).init(gpa);
+    defer sw_map.deinit();
+    for (unit.switches) |t| {
+        try sw_map.put(t.const_idx, t.offsets);
+    }
+
     var pc: u32 = 0;
+    var prev: ?Instr = null;
     while (pc < n) {
-        const ins = try decode(opcodes, pc);
+        var ins = try decode(opcodes, pc);
+        // Bswitch consumes the jump table the IMMEDIATELY preceding
+        // Bconstant pushed (bytecomp.el:4653 always emits the pair);
+        // capture that constant's index for the emission below.
+        if (ins.op == .switch_) {
+            const p = prev orelse return error.SwitchWithoutTable;
+            if (p.op != .constant) return error.SwitchWithoutTable;
+            ins.idx = p.idx;
+        }
         is_instr_start[ins.start] = true;
         try instrs.append(gpa, ins);
+        prev = ins;
         pc = ins.end;
     }
     for (instrs.items) |ins| {
@@ -1598,6 +1660,19 @@ fn emitNativeFn(
                 if (ins.target >= n or !is_instr_start[ins.target])
                     return error.BranchTargetNotAligned;
                 is_block_start[ins.target] = true;
+                if (ins.end <= n) is_block_start[ins.end] = true;
+            },
+            .switch_ => {
+                // Every distinct jump-table offset is a branch target;
+                // a miss falls through to the next opcode (the `goto
+                // DEFAULT' bytecomp emits right after the switch).
+                const offs = sw_map.get(@intCast(ins.idx)) orelse
+                    return error.SwitchTableMissing;
+                for (offs) |t| {
+                    if (t >= n or !is_instr_start[t])
+                        return error.BranchTargetNotAligned;
+                    is_block_start[t] = true;
+                }
                 if (ins.end <= n) is_block_start[ins.end] = true;
             },
             .ret => {
@@ -1807,6 +1882,12 @@ fn emitNativeFn(
                 try emitCondElsePop(em, ins.start, ins.target, ins.end, .eq_nonnil);
                 block_open = false;
             },
+            .switch_ => {
+                const offs = sw_map.get(@intCast(ins.idx)) orelse
+                    return error.SwitchTableMissing;
+                try emitSwitch(em, ins.idx, offs, ins.end);
+                block_open = false;
+            },
         }
     }
 
@@ -1996,16 +2077,17 @@ fn emitFileLLVM(
     try em.w("\n");
 
     // Function table: [N x { ptr native_fn, i64 args_template, ptr
-    // symbol_name, ptr d_reloc, i64 n_d_reloc, ptr d_reloc_blob }]
-    // matching zeln_fn_entry_t (compz.h).  HOT-FIRST order with a
-    // profile (see `order` above).
-    try em.wf("@zeln_fn_table = private constant [{d} x {{ ptr, i64, ptr, ptr, i64, ptr }}] [\n", .{fns.len});
+    // symbol_name, ptr d_reloc, i64 n_d_reloc, ptr d_reloc_blob, ptr
+    // native_entry }] matching zeln_fn_entry_t (compz.h).  HOT-FIRST
+    // order with a profile (see `order` above).  native_entry is the
+    // arity-honest subr entry (exact-arity trampoline or a MANY alias).
+    try em.wf("@zeln_fn_table = private constant [{d} x {{ ptr, i64, ptr, ptr, i64, ptr, ptr }}] [\n", .{fns.len});
     for (order, 0..) |orig_i, slot| {
         const unit = fns[orig_i];
         // Each array element needs an explicit struct-type prefix (LLVM
         // rejects a bare struct value as an array element).
-        try em.wf("  {{ ptr, i64, ptr, ptr, i64, ptr }} {{ ptr @zeln_fn_{d}, i64 {d}, ptr @sym_name_{d}, ptr @d_reloc_z_{d}, i64 {d}, ptr @d_reloc_blob_{d} }}{s}\n", .{
-            orig_i, unit.args_template, orig_i, orig_i, unit.consts.len + 1, orig_i,
+        try em.wf("  {{ ptr, i64, ptr, ptr, i64, ptr, ptr }} {{ ptr @zeln_fn_{d}, i64 {d}, ptr @sym_name_{d}, ptr @d_reloc_z_{d}, i64 {d}, ptr @d_reloc_blob_{d}, ptr @zeln_entry_fn_{d} }}{s}\n", .{
+            orig_i, unit.args_template, orig_i, orig_i, unit.consts.len + 1, orig_i, orig_i,
             if (slot + 1 < fns.len) "," else "",
         });
     }
@@ -2059,6 +2141,9 @@ fn emitFileLLVM(
         // The fn GLOBALS keep orig_i (zeln_fn_<orig_i>); only the
         // counter index follows the table order.
         try emitNativeFn(gpa, &em, fn_name, drr, unit, this_hot, !fdo_final, slot, w);
+        // The subr's function-slot entry for this fn: an exact-arity
+        // trampoline (or a MANY alias) — see emitTrampoline.
+        try emitTrampoline(&em, fn_name, unit.args_template, orig_i);
     }
 
     // File entry: { ptr freloc_link_table_z, ptr freloc_hash_z, i64 n_fns,
@@ -2088,6 +2173,39 @@ fn emitFileLLVM(
 
 // zabi=2 (M1 single-fn): the N=1 case of the multi-function container,
 // with a placeholder symbol name and an empty top_level_blob.
+// Arity-honest entry for the subr's function slot.  The loader sets the
+// subr's min_args/max_args from the fn's args_template (mirroring
+// gccjit's comp.c make_subr) so `func-arity' reports the real arity;
+// funcall then dispatches by max_args (aN slot for 0..8, aMANY for
+// &rest).  The MANY-convention native body only matches aMANY, so for
+// no-&rest arities with max <= 8 emit an exact-arity trampoline
+// i64(i64 a0..aN-1) forwarding to the body; &rest / >8-max fns alias
+// the body itself (the loader keeps max=MANY for those, so the
+// dispatch still reaches a matching signature).
+fn emitTrampoline(em: *Emitter, fn_global: []const u8, args_template: u32, idx: usize) !void {
+    const rest = (args_template & 128) != 0;
+    const nonrest: u64 = args_template >> 8;
+    if (rest or nonrest > 8) {
+        try em.wf("@zeln_entry_fn_{d} = internal alias ptr, ptr @{s}\n\n", .{ idx, fn_global });
+        return;
+    }
+    try em.wf("define internal i64 @zeln_entry_fn_{d}(", .{idx});
+    for (0..nonrest) |k| {
+        if (k > 0) try em.w(", ");
+        try em.wf("i64 %a{d}", .{k});
+    }
+    try em.w(") {\nentry:\n");
+    try em.wf("  %arr = alloca [{d} x i64], align 8\n", .{nonrest});
+    for (0..nonrest) |k| {
+        const p = em.fresh();
+        try em.wf("  %{d} = getelementptr inbounds [{d} x i64], ptr %arr, i64 0, i64 {d}\n", .{ p, nonrest, k });
+        try em.wf("  store i64 %a{d}, ptr %{d}\n", .{ k, p });
+    }
+    const r = em.fresh();
+    try em.wf("  %{d} = call i64 @{s}(i64 {d}, ptr %arr)\n", .{ r, fn_global, nonrest });
+    try em.wf("  ret i64 %{d}\n}}\n\n", .{r});
+}
+
 fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8, zunit_bytes: []const u8, fdo_counts: std.StringHashMap(u64), fdo_fallbacks: std.StringHashMap(u64), fdo_final: bool) ![]u8 {
     var fns = try gpa.alloc(FnUnit, 1);
     defer gpa.free(fns);
@@ -2637,6 +2755,37 @@ const CondSense = enum { eq_nil, eq_nonnil };
 // inline (no fallback, no freloc indirection) replacing a 3-instruction
 // freloc call + shim body on every conditional branch.  Identity holds
 // by construction: the branch condition is bit-identical to the shim's.
+// Bswitch: POP the jump table (TOS) and the key (below it); resolve the
+// key->offset lookup in C (zeln-switch-target freloc helper mirrors the
+// interpreter's hash_find exactly -- every key type bytecomp puts in the
+// table, under eq/eql/equal), then dispatch STATICALLY on the returned
+// absolute bytecode offset: the sidecar's distinct offsets are the case
+// set, and the default (a miss, -1, or any unexpected value) falls
+// through to the next opcode, which bytecomp always emits as the `goto
+// DEFAULT' right after the switch.  The table object itself is
+// re-loaded from d_reloc (the same Lisp object the Bconstant pushed).
+fn emitSwitch(em: *Emitter, const_idx: u64, offsets: []const u32, fall_off: u32) !void {
+    const t = try em.loadTop();
+    const kslot = em.fresh();
+    try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 -1\n", .{ kslot, t });
+    const key = em.fresh();
+    try em.wif("%{d} = load i64, ptr %{d}\n", .{ key, kslot }); // the key (table is at t[0])
+    const np = em.fresh();
+    try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 -2\n", .{ np, t }); // POP 2
+    try em.storeTop(np);
+    const table = try em.loadConst(const_idx);
+    const z0 = try em.zargsSlot(0);
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ key, z0 });
+    const z1 = try em.zargsSlot(1);
+    try em.wif("store i64 %{d}, ptr %{d}\n", .{ table, z1 });
+    const zbase = try em.zargsSlot(0);
+    const target = try em.frelocCallI64(IDX_SWITCH_TARGET, 2, zbase);
+    try em.wf("switch i64 %{d}, label %bb_{d} [\n", .{ target, fall_off });
+    for (offsets) |off|
+        try em.wf("    i64 {d}, label %bb_{d}\n", .{ off, off });
+    try em.w("  ]\n");
+}
+
 fn emitCondPop(em: *Emitter, target: u32, fall_off: u32, sense: CondSense) !void {
     const t = try em.loadTop();
     const np = em.fresh();

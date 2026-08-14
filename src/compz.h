@@ -53,9 +53,11 @@ typedef struct
      Lisp_Subr's aMANY slot (lisp.h:2188).  */
   Lisp_Object (*native_fn) (ptrdiff_t, Lisp_Object *);
 
-  /* The fn's args_template (15-bit lexical-arity encoding).  Embedded
-     here for reference; the native fn's prologue (zeln_setup_args) is
-     the real arity enforcer, so the loader sets subr min=0/max=MANY.  */
+  /* The fn's args_template (15-bit lexical-arity encoding).  The loader
+     decodes the REAL arity from it into the subr's min_args/max_args
+     (see native_entry below); the native fn's prologue
+     (zeln_setup_args) remains the arity enforcer with identical
+     errors.  */
   ptrdiff_t args_template;
 
   /* &@sym_name_<i>: NUL-terminated C string, the defun symbol name.  The
@@ -73,6 +75,17 @@ typedef struct
   /* &@d_reloc_blob_<i>: this fn's read-syntax const vector blob ({ len,
      data[] }).  Loader Freads it once.  */
   zeln_static_obj_t *d_reloc_blob;
+
+  /* &@zeln_entry_fn_<i>: the ARITY-HONEST entry the loader installs in
+     the subr's function slot.  With it the loader sets subr
+     min_args/max_args to the fn's real arity (mirroring gccjit's
+     comp.c make_subr), so `func-arity' reports the truth: for no-&rest
+     arities with max <= 8 this is an exact-arity trampoline
+     (i64 (i64 a0..aN-1)) forwarding to native_fn's MANY body — funcall
+     dispatches by max_args, and the union slot (a0..a8/aMANY alias one
+     word) reaches a signature that matches; &rest / >8-max fns alias
+     native_fn itself and the loader keeps max_args = MANY.  */
+  void *native_entry;
 } zeln_fn_entry_t;
 
 /* The file-level entry returned by the exported zeln_entry() symbol.

@@ -351,6 +351,32 @@ recursive resolution.  Errors are returned as `(error . ,e) for comparison."
       (apply fn args)
     (error (cons 'error err))))
 
+(defun zeln-diff--arity-datum (d)
+  "Canonical (MIN . MAX) for a wrong-number-of-arguments datum.
+The datum is representation-dependent on the callee's path upstream:
+byte-code closures signal (MIN . MAX) directly, while subr calls
+signal the subr/symbol object (e.g. `(car 1 2)' signals datum `car').
+.zeln native fns are subrs with honest min/max (like gccjit .eln), so
+their arity errors carry the object form; normalize both sides to the
+arity itself so the gate compares SEMANTICS (same arity, same count)."
+  (cond ((consp d) d)
+        ((subrp d) (subr-arity d))
+        ((and (symbolp d) (fboundp d))
+         (condition-case nil (func-arity d) (error d)))
+        (t d)))
+
+(defun zeln-diff--equal (a b)
+  "Behavioral equality: plain `equal', except wrong-number-of-arguments
+errors compare through `zeln-diff--arity-datum' (see its docstring)."
+  (or (equal a b)
+      (and (eq (car-safe a) 'error)
+           (eq (car-safe b) 'error)
+           (eq (cadr a) 'wrong-number-of-arguments)
+           (eq (cadr b) 'wrong-number-of-arguments)
+           (equal (zeln-diff--arity-datum (nth 2 a))
+                  (zeln-diff--arity-datum (nth 2 b)))
+           (equal (nth 3 a) (nth 3 b)))))
+
 (defun zeln-diff-run-harness ()
   "Load each .zeln and assert baseline == native on every input.
 Exits non-zero on the first mismatch (printing name/input/both values)."
@@ -380,7 +406,7 @@ Exits non-zero on the first mismatch (printing name/input/both values)."
                  (r0 (zeln-diff--apply baseline args bind baseline))
                  (r1 (zeln-diff--apply native args bind native)))
             (setq zeln-diff--n (1+ zeln-diff--n))
-            (unless (equal r0 r1)
+            (unless (zeln-diff--equal r0 r1)
               (setq fn-failed (1+ fn-failed))
               (message "zeln-diff MISMATCH: %s input=%S\n  baseline=%S\n  native =%S"
                        name args r0 r1))))

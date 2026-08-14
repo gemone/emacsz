@@ -95,8 +95,9 @@ A binary blob produced by temacs:
 
 ```
 u32  magic = 0x5A554E54 ("ZUNT")
-u8   zabi_version          # 1 = M0 spike, 2 = M1 single-fn, 3 = M2b multi-fn
-# zabi=3 (multi-function) body:
+u8   zabi_version          # 1 = M0 spike, 2 = M1 single-fn, 3 = M2b multi-fn,
+                           # 4 = M3f multi-fn + per-fn switch-table sidecar
+# zabi=4 (multi-function + switch sidecar) body:
 u32  nfuncs
 foreach fn:
     u32  bytecode_len ; u8[bytecode_len] opcodes
@@ -104,6 +105,13 @@ foreach fn:
     u16  stack_depth
     u16  args_template (15-bit lexical arity encoding)
     u32  symbol_name_len ; u8[symbol_name_len] defun symbol
+    # Bswitch support: every jump-table constant (a hash table whose
+    # values are all fixnum bytecode offsets) pre-resolved to its
+    # DISTINCT sorted offset set, so the emitter lowers Bswitch to a
+    # static LLVM switch without parsing Lisp read-syntax (zabi=3
+    # carries none of these and rejects Bswitch at decode).
+    u32  n_switch_tables
+    foreach table: u32 const_idx ; u32 n_offsets ; u32 offsets[n]
 # the .elc's non-defun top-level forms as a single (progn ...) read-syntax
 u32  top_level_blob_len ; u8[top_level_blob_len]
 ```
@@ -138,11 +146,13 @@ top-level replay) — exactly like gccjit's `.eln`.
 ```c
 typedef struct {
   Lisp_Object (*native_fn)(ptrdiff_t, Lisp_Object *);  // MANY-convention
-  ptrdiff_t   args_template;     // lexical arity (reference; prologue enforces)
+  ptrdiff_t   args_template;     // lexical arity (loader decodes REAL min/max)
   const char *symbol_name;       // &@sym_name_<i>: the defun symbol
   Lisp_Object *d_reloc;          // &@d_reloc_z_<i>[0]: THIS fn's const vector
   ptrdiff_t   n_d_reloc;         // == nconsts for this fn
   zeln_static_obj_t *d_reloc_blob; // &@d_reloc_blob_<i>: read-syntax const blob
+  void *native_entry;            // &@zeln_entry_fn_<i>: arity-honest subr
+                                 // entry (exact-arity trampoline or MANY alias)
 } zeln_fn_entry_t;
 
 typedef struct {
@@ -171,6 +181,11 @@ Two conventions:
 - `IDX_NILP`: `ptrdiff_t (*)(ptrdiff_t, Lisp_Object *)` — a RAW 0/1 (not a
    tagged `Lisp_Object`), so the IR branches on `icmp eq i64 %ret, 0` without
    knowing `Lisp_Object` tag bits.
+- `IDX_SWITCH_TARGET`: `ptrdiff_t (*)(ptrdiff_t, Lisp_Object *)` — Bswitch's
+   key→offset lookup (RAW absolute bytecode offset, or -1 on a miss),
+   mirroring the interpreter's `hash_find` under the table's own test; the
+   native side dispatches on the offset with a static LLVM switch whose
+   case set is the zunit sidecar's distinct offsets.
 - every other IDX: `Lisp_Object (*)(ptrdiff_t, Lisp_Object *)` — the uniform
    MANY convention matching `struct Lisp_Subr aMANY`.
 
@@ -194,8 +209,10 @@ entry** (see §6).
 
 ### Opcode coverage
 Tier-0 covers every practical bytecode opcode (the full `bytecode.c` DEFINE
-table minus `Bswitch`, used only by large pcase/cond, and 6 obsolete forms
-modern lexical bytecomp never emits). Family members (`Bvarref1..7`,
+table minus the 6 obsolete forms modern lexical bytecomp never emits;
+`Bswitch` included since M3f — its jump table is pre-resolved in the zunit
+sidecar and the runtime key lookup stays in C via `zeln-switch-target`, so
+behavioral identity holds by construction). Family members (`Bvarref1..7`,
 `Bstack_ref1..7`, `Bcall1..7`, `Blist1..4`, …) are decoded as base + low-bits.
 
 ### Non-local control (the hard case) — the setjmp pushhandler trampoline
@@ -255,9 +272,10 @@ its own fix:
 
 `ZELN_ABI_VERSION` is bumped whenever the `.zeln` layout or freloc surface
 changes (Z1→Z2 M1 layout; Z2→Z3 M2 surface growth; Z3→Z4 M2b multi-fn
-`zeln_entry_t`). The stale-`.zeln` guard is double: the version dir embeds the
-abi_hash, **and** `Fcomp_z_load_zeln` calls `zeln_verify_hash` before any
-native code runs.
+`zeln_entry_t`; Z6→Z7 Bswitch — the `zeln-switch-target` freloc entry and
+the zabi=4 switch-table sidecar). The stale-`.zeln` guard is double: the
+version dir embeds the abi_hash, **and** `Fcomp_z_load_zeln` calls
+`zeln_verify_hash` before any native code runs.
 
 ---
 
@@ -285,9 +303,10 @@ serialize via `comp-z-write-file-zunit`, run `zeln-compile` → `.zeln` into
 `.zeln-cache/<version>/<rel>.zeln`. **Per-file fault-tolerant:** a `.elc` whose
 bytecode can't round-trip (or hits any error) is *skipped* and recorded in
 `.zeln-cache/SKIP-LIST`; the step exits 0. Skipped files fall back to the
-interpreter via the transparent-load fallthrough. Current coverage: 100% of
-compilable files (the print-circle/level/length fix closed the serialization
-gap that had limited it to 46.6%).
+interpreter via the transparent-load fallthrough. Current compiled count:
+1550 of 2330 walked (the 780 serialize-skips are 499 no-defuns files —
+nothing to native-compile — plus 261 files holding a constant the
+round-trip self-check still rejects, under diagnosis).
 
 ---
 
@@ -330,6 +349,17 @@ comparator.
   `native-comp-z-prefer`).
 - **M3** — Tier-1 perf specialization (virtual stack → SSA + opcode
   specialization); **beat the interpreter**. The user's core perf goal.
+- **M3f** — `Bswitch` + arity-honest subrs (Z7).  bytecomp's pcase/cond
+  jump tables are pre-resolved in the zunit (zabi=4 sidecar: per
+  jump-table const, its distinct bytecode offsets), the runtime key
+  lookup stays in C (`zeln-switch-target` freloc helper mirrors the
+  interpreter's `hash_find`), and the emitter lowers each Bswitch to a
+  static LLVM `switch` on the returned offset.  Each fn also exports an
+  arity-honest entry (exact-arity trampoline for no-&rest arities with
+  max ≤ 8, a MANY alias otherwise) so the loader installs the REAL
+  min_args/max_args into the subr (mirroring gccjit's `make_subr`) and
+  `func-arity` reports the truth.  Compiled units 1048 → 1550 of 2330
+  walked (the 502 Bswitch files unblocked; all four gates green).
 
 ---
 
@@ -577,9 +607,10 @@ The two are fully independent: either, both, or neither may be on.
 - **Conservative-GC interaction**: any native-frame state that isn't a valid
   `Lisp_Object` or properly rooted can corrupt GC. The memset + d_reloc-root +
   storeTop model addresses the known classes; gate #2 is the at-scale stress.
-- **Opcode long tail**: `Bswitch` (large pcache/cond) is deferred; any `.elc`
-  using it is skipped to the interpreter. Adding it is straightforward when
-  needed.
+- **Opcode long tail**: RESOLVED — `Bswitch` is implemented (M3f: zunit
+  sidecar + `zeln-switch-target` freloc helper + static LLVM switch);
+  the 502 files it used to block now compile. The 6 obsolete opcodes
+  stay unimplemented (modern bytecomp never emits them).
 - **Native-frame backtrace/debugger parity**: a `.zeln` fn appears in the
   backtrace as a single subr frame (same shape as gccjit); full debug-on-error
   parity into native frames is M2.5+.
