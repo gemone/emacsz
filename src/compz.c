@@ -1284,6 +1284,22 @@ emit_bytes (FILE *f, const char *p, ptrdiff_t len)
   fwrite (p, 1, len, f);
 }
 
+/* Close *FP (a FILE *) if non-NULL and set it to NULL.  Registered via
+   record_unwind_protect_ptr after every emacs_fopen in the zeln writers so
+   a signal between open and close (e.g. "constant does not round-trip"
+   from the emit path, or a "too large" check) cannot leak the stdio
+   stream.  The previous code leaked ~1 fd per failed serialize, which
+   eventually exhausted the w32 fd table mid-population ("Too many open
+   files" once ~520 round-trip skips had accumulated).  */
+static void
+zeln_unwind_close_file (void *arg)
+{
+  FILE **fp = arg;
+  if (*fp)
+    emacs_fclose (*fp);
+  *fp = NULL;
+}
+
 DEFUN ("comp-z-write-spike-zunit", Fcomp_z_write_spike_zunit,
        Scomp_z_write_spike_zunit, 1, 1, 0,
        doc: /* Write the M0 spike zunit + manifest for the .zeln pipeline.
@@ -1312,6 +1328,8 @@ that tools/zeln-compile bakes into the .zeln.  For internal use.  */)
   FILE *zout = emacs_fopen (path, "wb");
   if (!zout)
     report_file_error ("Opening zunit", build_string (path));
+  specpdl_ref fcount = SPECPDL_INDEX ();
+  record_unwind_protect_ptr (zeln_unwind_close_file, &zout);
 
   emit_u32 (zout, ZUNIT_MAGIC);
   emit_u8  (zout, 1);		/* zabi_version = ZELN_SPIKE_ABI == 1 */
@@ -1343,14 +1361,19 @@ that tools/zeln-compile bakes into the .zeln.  For internal use.  */)
   emit_u32 (zout, (uint32_t) (sizeof (c1) - 1));
   emit_bytes (zout, c1, sizeof (c1) - 1);
 
-  if (emacs_fclose (zout) != 0)
-    report_file_error ("Closing zunit", build_string (path));
+  {
+    int zc = emacs_fclose (zout);
+    zout = NULL;
+    if (zc != 0)
+      report_file_error ("Closing zunit", build_string (path));
+  }
 
   /* --- .manifest: ASCII `Z1\n<sig>\n<8-hex>\n'.  */
   snprintf (path, sizeof path, "%s.manifest", prefix);
   FILE *mout = emacs_fopen (path, "w");
   if (!mout)
     report_file_error ("Opening manifest", build_string (path));
+  record_unwind_protect_ptr (zeln_unwind_close_file, &mout);
 
   /* Sig line: the imported subr surface, name ++ prin1(arity).  The
      spike imports only `message' (arity (1 . MANY)) -> "message(1 . many)".  */
@@ -1358,6 +1381,8 @@ that tools/zeln-compile bakes into the .zeln.  For internal use.  */)
   fprintf (mout, "message(1 . many)\n");
   fprintf (mout, "%s\n", SSDATA (Vzeln_abi_hash));
   emacs_fclose (mout);
+  mout = NULL;
+  unbind_to (fcount, Qnil);
 
   return Qt;
 }
@@ -1538,13 +1563,19 @@ For internal use.  */)
   FILE *zout = emacs_fopen (path, "wb");
   if (!zout)
     report_file_error ("Opening zunit", build_string (path));
+  specpdl_ref fcount = SPECPDL_INDEX ();
+  record_unwind_protect_ptr (zeln_unwind_close_file, &zout);
 
   emit_u32 (zout, ZUNIT_MAGIC);
   emit_u8  (zout, 2);				/* zabi_version (M1) */
   zeln_emit_closure_body (zout, fun);
 
-  if (emacs_fclose (zout) != 0)
-    report_file_error ("Closing zunit", build_string (path));
+  {
+    int zc = emacs_fclose (zout);
+    zout = NULL;
+    if (zc != 0)
+      report_file_error ("Closing zunit", build_string (path));
+  }
 
   /* --- .manifest: `<ZELN_ABI_VERSION>\n<sig>\n<8-hex>\n'.  The sig line
      is the fixed M1 surface (constant for all fns); the 8-hex is what
@@ -1553,10 +1584,13 @@ For internal use.  */)
   FILE *mout = emacs_fopen (path, "w");
   if (!mout)
     report_file_error ("Opening manifest", build_string (path));
+  record_unwind_protect_ptr (zeln_unwind_close_file, &mout);
   fprintf (mout, "%s\n", ZELN_ABI_VERSION);
   fprintf (mout, "%s\n", SSDATA (zeln_signature_string ()));
   fprintf (mout, "%s\n", SSDATA (Vzeln_abi_hash));
   emacs_fclose (mout);
+  mout = NULL;
+  unbind_to (fcount, Qnil);
 
   return Qt;
 }
@@ -1681,6 +1715,8 @@ on an unserializable closure or a load error.  For internal use.  */)
   FILE *zout = emacs_fopen (path, "wb");
   if (!zout)
     report_file_error ("Opening zunit", build_string (path));
+  specpdl_ref fcount = SPECPDL_INDEX ();
+  record_unwind_protect_ptr (zeln_unwind_close_file, &zout);
 
   emit_u32 (zout, ZUNIT_MAGIC);
   emit_u8  (zout, 3);			/* zabi_version (M2b multi-function) */
@@ -1721,18 +1757,25 @@ on an unserializable closure or a load error.  For internal use.  */)
   emit_u32 (zout, (uint32_t) blob_len);
   emit_bytes (zout, SSDATA (blob_printed), blob_len);
 
-  if (emacs_fclose (zout) != 0)
-    report_file_error ("Closing zunit", build_string (path));
+  {
+    int zc = emacs_fclose (zout);
+    zout = NULL;
+    if (zc != 0)
+      report_file_error ("Closing zunit", build_string (path));
+  }
 
   /* --- .manifest: identical shape to M1 (ZELN_ABI_VERSION + sig + hash).  */
   snprintf (path, sizeof path, "%s.manifest", prefix);
   FILE *mout = emacs_fopen (path, "w");
   if (!mout)
     report_file_error ("Opening manifest", build_string (path));
+  record_unwind_protect_ptr (zeln_unwind_close_file, &mout);
   fprintf (mout, "%s\n", ZELN_ABI_VERSION);
   fprintf (mout, "%s\n", SSDATA (zeln_signature_string ()));
   fprintf (mout, "%s\n", SSDATA (Vzeln_abi_hash));
   emacs_fclose (mout);
+  mout = NULL;
+  unbind_to (fcount, Qnil);
 
   return make_fixnum (nfuncs);
 }
