@@ -1,6 +1,6 @@
 ;;; zeln-bench.el --- Tier-1 perf benchmark: .zeln native vs interpreter  -*- lexical-binding: t; -*-
 
-;; The M3a perf gate (plan .omc/plans/native-comp-zig-zeln.md M3):
+;; The M3a perf gate:
 ;; for each workload closure, byte-compile it (the reference interpreter
 ;; path, exec_byte_code), serialize it to a zunit, compile to a .zeln
 ;; via the `zeln-compile' tool (located via ZELN_COMPILE), load it via

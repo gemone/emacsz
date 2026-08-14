@@ -9,7 +9,7 @@
   (setq file-name-coding-system 'utf-8
         default-file-name-coding-system 'utf-8))
 
-;; The M1 correctness gate (plan .omc/plans/native-comp-zig-zeln.md M1):
+;; The M1 correctness gate:
 ;; for each corpus fn, byte-compile it with the standard bytecomp.el
 ;; (untouched), serialize it to a zunit via `comp-z-write-zunit', and
 ;; compare funcalling the resulting .zeln native fn against the reference

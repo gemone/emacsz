@@ -588,8 +588,6 @@ The two are fully independent: either, both, or neither may be on.
 
 ## References
 
-- Plan: `.omc/plans/native-comp-zig-zeln.md` (internal; detailed milestone
-  specs, §0 acceptance pillars, §5 full contract, §6 milestones).
 - C side: `src/compz.c`, `src/compz.h`.
 - Compiler: `tools/zeln-compile/src/main.zig`, `tools/zeln-compile/build.zig.zon`.
 - Harness: `build-aux/zeln-diff.el`.
