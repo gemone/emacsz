@@ -5,6 +5,15 @@
 //! ert failure exits < 128 and is not retried, while signal death (the
 //! pdumper relocation flake) is retried like the shell did. Run with
 //! cwd = repo root.
+//!
+//! The suites run in PARALLEL: the list is partitioned into groups
+//! (CHECK_JOBS, default = one per CPU) and each group gets its own
+//! dumped-emacs process from a worker thread, with the same prelude and
+//! the same ert selector as the former single-process run.  Group output
+//! is captured and printed sequentially on completion, so the summary
+//! stays readable.  Each suite file is self-contained (it loads its own
+//! prerequisites; the prelude preloads cl-macs/cl-seq/cl-extra exactly
+//! as before), which is what makes the split safe.
 
 const std = @import("std");
 const aslr = @import("aslr.zig");
@@ -26,11 +35,29 @@ const test_files = [_][]const u8{
     "regexp-opt-tests", "range-tests", "crypto-hash-tests",
 };
 
+const GroupResult = struct {
+    out: []u8 = &.{},
+    rc: u16 = 0,
+    zeln_load_count: u64 = 0,
+};
+
+const Worker = struct {
+    files: []const []const u8,
+    env_map: *const std.process.Environ.Map,
+    zeln_gate: bool,
+    result: GroupResult = .{},
+
+    fn run(self: *Worker) void {
+        self.result = runGroup(self.files, self.env_map, self.zeln_gate) catch |err| blk: {
+            std.debug.print("check: group run error: {s}\n", .{@errorName(err)});
+            break :blk .{ .rc = 255 };
+        };
+    }
+};
+
 pub fn main(minimal: std.process.Init.Minimal) !void {
     aslr.disableAslr();
     const gpa = std.heap.smp_allocator;
-    var io_threaded: std.Io.Threaded = .init(gpa, .{});
-    const io = io_threaded.io();
     // Copy the parent environment: POSIX spawns otherwise pass an empty
     // environment, dropping TMPDIR/PATH from the test session.
     var env_map = try env.inherit(gpa, minimal);
@@ -51,44 +78,117 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         }) catch {};
     }
 
-    var eval: std.ArrayList(u8) = .empty;
-    defer eval.deinit(gpa);
-    try eval.appendSlice(gpa, "(progn ");
     // M2b check-zeln gate: if ZELN_LOAD_PATH is set, point the .zeln cache
     // at it so the dumped emacs transparently swaps .elc -> .zeln where
     // compiled (and falls through to the interpreter where skipped).  The
     // SAME test list / ert selector as the off-path `check' run, so the
     // two summaries are directly comparable (behavioral-identity proof).
-    // Gate-#2 genuine-run instrumentation: the run FAILS when
-    // `zeln-load-count' is still 0 after the suite, so a cache with zero
-    // usable .zeln (e.g. every link failed) can no longer pass this gate
-    // via silent interpreter fallback.
+    // Gate-#2 genuine-run instrumentation: the run FAILS when the summed
+    // `zeln-load-count' across groups is 0, so a cache with zero usable
+    // .zeln (e.g. every link failed) can no longer pass this gate via
+    // silent interpreter fallback.
     var zeln_gate = false;
     if (env_map.get("ZELN_LOAD_PATH")) |zp| {
+        if (zp.len > 0) zeln_gate = true;
+    }
+
+    // Group the suites: CHECK_JOBS overrides, default one group per CPU
+    // (the emacs processes are the real workers; the zig threads only
+    // babysit them).
+    const suites = test_files[3..]; // drop the three preloaded files
+    var group_count: usize = std.Thread.getCpuCount() catch 1;
+    if (env_map.get("CHECK_JOBS")) |s| {
+        group_count = std.fmt.parseInt(usize, s, 10) catch group_count;
+    }
+    group_count = @max(1, @min(group_count, suites.len));
+
+    var workers = try gpa.alloc(Worker, group_count);
+    defer gpa.free(workers);
+    {
+        // Round-robin partition keeps every group's original relative
+        // order (group i gets suites i, i+G, i+2G, ...).
+        var lists = try gpa.alloc(std.ArrayList([]const u8), group_count);
+        defer gpa.free(lists);
+        for (lists) |*l| l.* = .empty;
+        defer for (lists) |*l| l.deinit(gpa);
+        for (suites, 0..) |f, idx| try lists[idx % group_count].append(gpa, f);
+        // toOwnedSlice transfers the buffer to the worker (the defer
+        // deinit above then frees nothing); main frees it after join.
+        for (workers, 0..) |*w, i|
+            w.* = .{ .files = try lists[i].toOwnedSlice(gpa), .env_map = &env_map, .zeln_gate = zeln_gate };
+    }
+
+    var threads = try gpa.alloc(std.Thread, workers.len - 1);
+    defer gpa.free(threads);
+    var spawned: usize = 0;
+    for (workers[0 .. workers.len - 1]) |*w| {
+        threads[spawned] = std.Thread.spawn(.{}, Worker.run, .{w}) catch break;
+        spawned += 1;
+    }
+    // The last group runs on the main thread.
+    workers[workers.len - 1].run();
+    for (threads[0..spawned]) |t| t.join();
+
+    // Report: group outputs sequentially (the summary stays linear), then
+    // the aggregate verdict.
+    var failed: ?usize = null;
+    var zeln_total: u64 = 0;
+    for (workers, 0..) |w, i| {
+        if (workers.len > 1) std.debug.print("\n=== check: group {d}/{d} ===\n", .{ i + 1, workers.len });
+        std.debug.print("{s}\n", .{w.result.out});
+        zeln_total += w.result.zeln_load_count;
+        if (w.result.rc != 0 and failed == null) failed = i;
+    }
+    for (workers) |w| {
+        gpa.free(w.result.out);
+        gpa.free(w.files);
+    }
+    if (failed) |i| {
+        std.debug.print("check: group {d} failed (rc={d})\n", .{ i + 1, workers[i].result.rc });
+        std.process.exit(1);
+    }
+    if (zeln_gate and zeln_total == 0) {
+        std.debug.print("check-zeln: FAIL - no .zeln loaded (silent interpreter fallback); populate-zeln-cache produced no usable artifacts\n", .{});
+        std.process.exit(1);
+    }
+}
+
+/// Run one group: prelude + (load ...) for each suite + the ert batch
+/// selector, in one dumped-emacs process, retrying signal death (the
+/// pdumper relocation flake).  Returns the captured output, the exit
+/// code and this group's zeln-load-count.
+fn runGroup(
+    files: []const []const u8,
+    env_map: *const std.process.Environ.Map,
+    zeln_gate: bool,
+) !GroupResult {
+    const gpa = std.heap.smp_allocator;
+    var io_threaded: std.Io.Threaded = .init(gpa, .{});
+    const io = io_threaded.io();
+
+    var eval: std.ArrayList(u8) = .empty;
+    defer eval.deinit(gpa);
+    try eval.appendSlice(gpa, "(progn ");
+    if (env_map.get("ZELN_LOAD_PATH")) |zp| {
         if (zp.len > 0) {
-            zeln_gate = true;
             try eval.appendSlice(gpa, "(setq native-comp-zeln-load-path (list (expand-file-name \"");
             try eval.appendSlice(gpa, zp);
             try eval.appendSlice(gpa, "\"))) ");
         }
     }
     try eval.appendSlice(gpa, "(load \"cl-macs\") (load \"cl-seq\") (load \"cl-extra\") (require (quote ert)) ");
-    for (test_files) |f| {
-        if (std.mem.eql(u8, f, "cl-macs") or std.mem.eql(u8, f, "cl-seq") or std.mem.eql(u8, f, "cl-extra"))
-            continue;
+    for (files) |f| {
         try eval.appendSlice(gpa, "(load \"");
         try eval.appendSlice(gpa, f);
         try eval.appendSlice(gpa, "\") ");
     }
     // ert-run-tests-batch-and-exit calls kill-emacs itself, so when the
     // zeln gate is on we use ert-run-tests-batch and compute the exit code
-    // manually: 0 = suite passed AND at least one .zeln was genuinely
-    // loaded; 1 = unexpected results OR a silent interpreter fallback
-    // (zeln-load-count still 0, e.g. every cache link failed).
+    // manually: 0 = suite passed; 1 = unexpected results.
     if (zeln_gate) {
         try eval.appendSlice(gpa, " (let ((stats (ert-run-tests-batch (quote (not (or (tag :expensive-test) (tag :unstable) (tag :nativecomp)))))))");
         try eval.appendSlice(gpa, " (princ (format \"\\nzeln-load-count: %d\\n\" zeln-load-count))");
-        try eval.appendSlice(gpa, " (if (zerop (ert-stats-completed-unexpected stats)) (if (zerop zeln-load-count) (progn (princ \"check-zeln: FAIL - no .zeln loaded (silent interpreter fallback); populate-zeln-cache produced no usable artifacts\\n\") (kill-emacs 1)) (kill-emacs 0)) (kill-emacs 1))))");
+        try eval.appendSlice(gpa, " (kill-emacs (if (zerop (ert-stats-completed-unexpected stats)) 0 1))))");
     } else {
         try eval.appendSlice(gpa, " (ert-run-tests-batch-and-exit (quote (not (or (tag :expensive-test) (tag :unstable) (tag :nativecomp))))))");
     }
@@ -106,26 +206,44 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     var attempt: usize = 0;
     while (true) : (attempt += 1) {
-        var child = try std.process.spawn(io, .{
+        const res = std.process.run(gpa, io, .{
             .argv = &argv,
-            .environ_map = &env_map,
-            .stdin = .inherit,
-            .stdout = .inherit,
-            .stderr = .inherit,
-        });
-        const term = try child.wait(io);
-        switch (term) {
+            .environ_map = env_map,
+            .stdout_limit = .unlimited,
+            .stderr_limit = .unlimited,
+        }) catch |err| {
+            std.debug.print("check: group spawn failed: {s}\n", .{@errorName(err)});
+            return .{ .rc = 255 };
+        };
+        const out = try std.mem.concat(gpa, u8, &.{ res.stdout, res.stderr });
+        gpa.free(res.stdout);
+        gpa.free(res.stderr);
+        switch (res.term) {
             .exited => |code| {
                 // A genuine test failure (exit < 128) is final; signal
                 // death is the pdumper relocation flake and is retried.
-                if (code == 0 or code < 128) std.process.exit(code);
-                std.debug.print("check: temacs died with signal ({d}) on attempt {d}/3; retrying (pdumper relocation flakiness)\n", .{ code, attempt + 1 });
+                if (code == 0 or code < 128)
+                    return .{ .out = out, .rc = code, .zeln_load_count = parseZelnCount(out) };
+                std.debug.print("check: group exited {d} on attempt {d}/3; retrying (pdumper relocation flakiness)\n", .{ code, attempt + 1 });
+                gpa.free(out);
             },
             .signal => |sig| {
                 std.debug.print("check: temacs died with signal {d} on attempt {d}/3; retrying (pdumper relocation flakiness)\n", .{ @intFromEnum(sig), attempt + 1 });
+                gpa.free(out);
             },
-            else => std.process.exit(1),
+            else => {
+                gpa.free(out);
+                return .{ .rc = 255 };
+            },
         }
-        if (attempt >= 2) std.process.exit(1);
+        if (attempt >= 2) return .{ .rc = 1 };
     }
+}
+
+fn parseZelnCount(out: []const u8) u64 {
+    const marker = "zeln-load-count: ";
+    const idx = std.mem.indexOf(u8, out, marker) orelse return 0;
+    const rest = out[idx + marker.len ..];
+    const end = std.mem.indexOfScalar(u8, rest, '\n') orelse rest.len;
+    return std.fmt.parseInt(u64, std.mem.trim(u8, rest[0..end], " \r"), 10) catch 0;
 }

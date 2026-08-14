@@ -5,6 +5,7 @@
 //! repo root.
 
 const std = @import("std");
+const stamp = @import("stamp.zig");
 
 const Entry = struct {
     start: []const u8,
@@ -185,7 +186,7 @@ pub fn main() !void {
     try out.appendSlice(gpa, "\n(provide 'charscript)");
     try out.append(gpa, '\n');
 
-    try cwd.writeFile(io, .{ .sub_path = "lisp/international/charscript.el", .data = out.items });
+    _ = try stamp.writeFileIfChanged(io, gpa, cwd, "lisp/international/charscript.el", out.items);
 }
 
 fn isHex(c: u8) bool {

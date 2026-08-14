@@ -9,6 +9,7 @@
 const std = @import("std");
 const aslr = @import("aslr.zig");
 const env = @import("env.zig");
+const stamp = @import("stamp.zig");
 const temacs_path = @import("temacs-path.zig");
 
 pub fn main(minimal: std.process.Init.Minimal) !void {
@@ -26,6 +27,32 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     defer gpa.free(lisp_path);
     const etc_path = try std.fs.path.join(gpa, &.{ root, "etc" });
     defer gpa.free(etc_path);
+    const temacs = try temacs_path.joinBin(gpa, root);
+    defer gpa.free(temacs);
+
+    // zig-out/etc -> ../etc so the dumped emacs resolves ../etc/ relative
+    // to the process CWD at dump time (Fsnarf-documentation / DOC).
+    // Kept BEFORE the freshness check: it must exist even on the skip
+    // path (the dumped emacs consults ../etc at runtime too).
+    linkEtc(io, cwd);
+
+    // Freshness stamp: loadup embeds the temacs binary's subrs plus the
+    // preloaded lisp state (loadup.el + the lisp tree, .el sources and
+    // .elc whichever is newer) and snarfs etc/DOC, with the charset maps
+    // under etc/charsets loaded during preload.  When none of that moved
+    // and both dump outputs survive, skip the whole scrub+loadup.  Both
+    // Run sites of this tool (source dump and post-compile re-dump)
+    // compute the fingerprint at THEIR position in the graph, so a
+    // recompile between them naturally invalidates the second dump.
+    // The loaddefs outputs are excluded: loadup must not see them (the
+    // scrub below deletes them) and they are regenerated downstream.
+    {
+        var f = try freshFinger(io, gpa, cwd, temacs);
+        if (stamp.isFresh(io, gpa, cwd, stampName, f.final())) {
+            std.debug.print("bootstrap-dump: dump up to date (stamp); skipping loadup\n", .{});
+            return;
+        }
+    }
 
     // Scrub stale loaddefs: a leftover lisp/loaddefs.el makes loadup
     // abort (e.g. void frameset-filter-alist at tab-bar), so remove the
@@ -50,19 +77,6 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             }
         }
     }
-
-    // zig-out/etc -> ../etc so the dumped emacs resolves ../etc/ relative
-    // to the process CWD at dump time (Fsnarf-documentation / DOC).
-    cwd.deleteFile(io, "zig-out/etc") catch {};
-    cwd.symLink(io, "../etc", "zig-out/etc", .{ .is_directory = true }) catch |err| switch (err) {
-        error.PathAlreadyExists => {}, // parallel build already linked it
-        // Non-privileged Windows hosts can't create symlinks
-        // (PRIVILEGE_NOT_HELD; needs Developer Mode or admin). EMACSDATA
-        // below already points the bootstrap emacs at the source-tree etc,
-        // so the relative ../etc resolution is not required there.
-        error.PermissionDenied => {},
-        else => return err,
-    };
 
     // Loadup must run from zig-out/bin with the source-tree env.
     var env_map = try env.inherit(gpa, minimal);
@@ -119,6 +133,73 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             try std.Io.Dir.copyFileAbsolute(pdmp_src_abs, pdmp_link, io, .{ .replace = true });
         },
         else => return err,
+    };
+
+    // Record the post-run fingerprint + outputs (the pdmp itself and the
+    // <temacs>.pdmp companion).  Computed AFTER loadup so a re-dump that
+    // nothing upstream moved converges on the next run.
+    var f = try freshFinger(io, gpa, cwd, temacs);
+    stamp.mark(io, gpa, cwd, stampName, f.final(), &.{
+        "zig-out/bin/bootstrap-emacs.pdmp",
+        "zig-out/bin/" ++ temacs_path.name ++ ".pdmp",
+    });
+}
+
+const stampName = "dump.stamp";
+
+/// Fingerprint of every loadup input: the temacs binary (subrs land in
+/// the dump), src/loadup.el (the preload script), the lisp tree minus
+/// the loaddefs outputs (loadup reads .el/.elc with ldefs-boot instead),
+/// etc/DOC (snarfed at dump time), the charset maps (loaded during
+/// preload) and this tool's source.
+fn freshFinger(io: std.Io, gpa: std.mem.Allocator, cwd: std.Io.Dir, temacs: []const u8) !stamp.Finger {
+    var f = stamp.Finger.init("dump");
+    f.file(io, cwd, temacs);
+    f.file(io, cwd, "build-aux/bootstrap-dump.zig");
+    // etc/DOC is rewritten by the UpdateSourceFiles step on every build
+    // (the make-docfile Run re-executes and its capture carries a fresh
+    // mtime), so fingerprint its CONTENT: an unchanged DOC must not
+    // invalidate the dump stamp.
+    f.fileContent(io, cwd, gpa, "etc/DOC");
+    f.tree(io, gpa, cwd, "etc/charsets", null) catch {};
+    f.tree(io, gpa, cwd, "lisp", isLoaddefsOutput) catch {};
+    return f;
+}
+
+/// The files the scrub deletes before loadup: lisp/loaddefs.el(.elc) and
+/// every per-subdir *-loaddefs.el(.elc).  Excluded from the fingerprint
+/// because loadup never reads them.  cus-load.el and finder-inf.el are
+/// excluded too: they are autoload-metadata written by the loaddefs
+/// pass AFTER the dump (never preload inputs), and fingerprinting them
+/// would make the dump and loaddefs stamps invalidate each other
+/// forever.
+fn isLoaddefsOutput(rel: []const u8) bool {
+    const base = std.fs.path.basename(rel);
+    if (std.mem.endsWith(u8, base, "~")) return true; // emacs backup files
+    // An .elc is excluded when its .el is: byte-recompile-directory
+    // compiles the whole regenerated loaddefs family every build, so
+    // cus-load.elc / finder-inf.elc churn the tree as much as the .el
+    // forms do.
+    if (std.mem.endsWith(u8, base, ".elc"))
+        return isLoaddefsOutput(base[0 .. base.len - 1]);
+    return std.mem.eql(u8, base, "loaddefs.el") or
+        std.mem.eql(u8, base, "cus-load.el") or
+        std.mem.eql(u8, base, "finder-inf.el") or
+        std.mem.endsWith(u8, base, "-loaddefs.el");
+}
+
+/// Ensure zig-out/etc -> ../etc (idempotent; called on both the fresh
+/// and the skip path).
+fn linkEtc(io: std.Io, cwd: std.Io.Dir) void {
+    cwd.deleteFile(io, "zig-out/etc") catch {};
+    cwd.symLink(io, "../etc", "zig-out/etc", .{ .is_directory = true }) catch |err| switch (err) {
+        error.PathAlreadyExists => {}, // parallel build already linked it
+        // Non-privileged Windows hosts can't create symlinks
+        // (PRIVILEGE_NOT_HELD; needs Developer Mode or admin). EMACSDATA
+        // already points the bootstrap emacs at the source-tree etc,
+        // so the relative ../etc resolution is not required there.
+        error.PermissionDenied => {},
+        else => return,
     };
 }
 

@@ -11,6 +11,7 @@
 //! need them are left untouched until those land.
 
 const std = @import("std");
+const stamp = @import("stamp.zig");
 
 const Rule = struct {
     out: []const u8,          // relative to repo root
@@ -52,6 +53,19 @@ pub fn main() !void {
     var io_threaded: std.Io.Threaded = .init(gpa, .{});
     const io = io_threaded.io();
     const cwd = std.Io.Dir.cwd();
+
+    // Freshness stamp: inputs are the admin/charsets tree (plus this
+    // tool's source); outputs are the etc/charsets maps and the two
+    // generated codepage .el files.  When nothing moved and every
+    // output survives, skip the whole generation pass (the Run step
+    // re-executes on every `zig build`; see stamp.zig).
+    {
+        var f = freshFinger(io, gpa, cwd);
+        if (stamp.isFresh(io, gpa, cwd, "charsets.stamp", f.final())) {
+            std.debug.print("gen-charsets: up to date (stamp); skipping\n", .{});
+            return;
+        }
+    }
 
     // Special awk-based targets.
     try genCp932(gpa, io, cwd);
@@ -148,6 +162,36 @@ pub fn main() !void {
     try genAlternativnyj(gpa, io, cwd);
 
     std.debug.print("gen-charsets: generated/updated {d} compact maps\n", .{generated});
+
+    // Record the post-run fingerprint + the produced outputs.
+    var f = freshFinger(io, gpa, cwd);
+    var outputs: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (outputs.items) |o| gpa.free(o);
+        outputs.deinit(gpa);
+    }
+    {
+        var etc = try cwd.openDir(io, "etc/charsets", .{ .iterate = true });
+        defer etc.close(io);
+        var we = try etc.walk(gpa);
+        defer we.deinit();
+        while (we.next(io) catch null) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.basename, ".map")) continue;
+            const full = try std.fs.path.join(gpa, &.{ "etc/charsets", entry.path });
+            try outputs.append(gpa, full);
+        }
+    }
+    try outputs.append(gpa, try gpa.dupe(u8, "lisp/international/cp51932.el"));
+    try outputs.append(gpa, try gpa.dupe(u8, "lisp/international/eucjp-ms.el"));
+    stamp.mark(io, gpa, cwd, "charsets.stamp", f.final(), outputs.items);
+}
+
+fn freshFinger(io: std.Io, gpa: std.mem.Allocator, cwd: std.Io.Dir) stamp.Finger {
+    var f = stamp.Finger.init("charsets");
+    f.file(io, cwd, "build-aux/gen-charsets.zig");
+    f.tree(io, gpa, cwd, "admin/charsets", null) catch {};
+    return f;
 }
 
 fn alreadyHandled(base: []const u8) bool {
@@ -267,8 +311,7 @@ fn genMap(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, rule: Rule) !bool
         try out.appendSlice(gpa, l);
         try out.append(gpa, '\n');
     }
-    try cwd.writeFile(io, .{ .sub_path = rule.out, .data = out.items });
-    return true;
+    return try stamp.writeFileIfChanged(io, gpa, cwd, rule.out, out.items);
 }
 
 fn stripGz(base: []const u8) []const u8 {
@@ -549,7 +592,7 @@ fn writeOut(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir, path: []const u
         try out.appendSlice(gpa, l);
         try out.append(gpa, '\n');
     }
-    try cwd.writeFile(io, .{ .sub_path = path, .data = out.items });
+    _ = try stamp.writeFileIfChanged(io, gpa, cwd, path, out.items);
 }
 
 // ---------------------------------------------------------------------
@@ -690,7 +733,7 @@ fn genCp51932(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir) !void {
     try raw.appendSlice(gpa, "  (define-translation-table 'cp51932-encode map))\n");
     try raw.appendSlice(gpa, "\n");
     try raw.appendSlice(gpa, "(provide 'cp51932)\n");
-    try cwd.writeFile(io, .{ .sub_path = "lisp/international/cp51932.el", .data = raw.items });
+    _ = try stamp.writeFileIfChanged(io, gpa, cwd, "lisp/international/cp51932.el", raw.items);
 }
 
 // ---------------------------------------------------------------------
@@ -792,7 +835,7 @@ fn genEucjpMs(gpa: std.mem.Allocator, io: std.Io, cwd: std.Io.Dir) !void {
     try raw.appendSlice(gpa, "  (define-translation-table 'eucjp-ms-encode map))\n");
     try raw.appendSlice(gpa, "\n");
     try raw.appendSlice(gpa, "(provide 'eucjp-ms)\n");
-    try cwd.writeFile(io, .{ .sub_path = "lisp/international/eucjp-ms.el", .data = raw.items });
+    _ = try stamp.writeFileIfChanged(io, gpa, cwd, "lisp/international/eucjp-ms.el", raw.items);
 }
 
 // ---------------------------------------------------------------------

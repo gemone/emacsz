@@ -6,6 +6,7 @@
 //! repo root.
 
 const std = @import("std");
+const stamp = @import("stamp.zig");
 
 const trigger_codepoints = [_][]const u8{
     "261D", "26F9", "270C", "270D", "2764", "1F3CB", "1F3CC",
@@ -134,7 +135,7 @@ pub fn main() !void {
     try out.appendSlice(gpa, "                                           #'compose-gstring-for-graphic))))\n");
     try out.appendSlice(gpa, "\n(provide 'emoji-zwj)");
 
-    try cwd.writeFile(io, .{ .sub_path = "lisp/international/emoji-zwj.el", .data = out.items });
+    _ = try stamp.writeFileIfChanged(io, gpa, cwd, "lisp/international/emoji-zwj.el", out.items);
 }
 
 fn isHex(c: u8) bool {

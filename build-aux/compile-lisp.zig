@@ -6,12 +6,14 @@
 const std = @import("std");
 const aslr = @import("aslr.zig");
 const env = @import("env.zig");
+const stamp = @import("stamp.zig");
 
 pub fn main(minimal: std.process.Init.Minimal) !void {
     aslr.disableAslr();
     const gpa = std.heap.smp_allocator;
     var io_threaded: std.Io.Threaded = .init(gpa, .{});
     const io = io_threaded.io();
+    const cwd = std.Io.Dir.cwd();
 
     const root = try std.process.currentPathAlloc(io, gpa);
     defer gpa.free(root);
@@ -24,6 +26,20 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     defer gpa.free(dump);
     const etc_path = try std.fs.path.join(gpa, &.{ root, "etc" });
     defer gpa.free(etc_path);
+
+    // Freshness stamp: byte-recompile-directory compiles every .el whose
+    // .elc is missing or older, so the inputs are the .el tree (plus the
+    // dumped emacs that runs the compiler) and the outputs are the .elc
+    // files.  When the stamp matches and every recorded .elc survives,
+    // skip the emacs invocation entirely (byte-recompile itself would be
+    // a no-op anyway; this just saves the startup + tree walk).
+    {
+        var f = freshFinger(io, gpa, cwd, temacs, dump);
+        if (stamp.isFresh(io, gpa, cwd, stampName, f.final())) {
+            std.debug.print("compile-lisp: .elc tree up to date (stamp); skipping\n", .{});
+            return;
+        }
+    }
 
     var env_map = try env.inherit(gpa, minimal);
     defer env_map.deinit();
@@ -88,7 +104,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         const term = try child.wait(io);
         switch (term) {
             .exited => |code| {
-                if (code == 0) return;
+                if (code == 0) break;
                 std.debug.print("compile-lisp: temacs exited {d}\n", .{code});
                 std.process.exit(1);
             },
@@ -99,4 +115,57 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             else => std.process.exit(1),
         }
     }
+
+    // Record the post-run fingerprint + the .elc outputs (any missing
+    // .elc forces a re-run; the emacs side would recompile just it).
+    var f = freshFinger(io, gpa, cwd, temacs, dump);
+    const outputs = try collectElc(io, gpa, cwd);
+    defer {
+        for (outputs) |o| gpa.free(o);
+        gpa.free(outputs);
+    }
+    stamp.mark(io, gpa, cwd, stampName, f.final(), outputs);
+}
+
+const stampName = "compile-lisp.stamp";
+
+fn freshFinger(io: std.Io, gpa: std.mem.Allocator, cwd: std.Io.Dir, temacs: []const u8, dump: []const u8) stamp.Finger {
+    var f = stamp.Finger.init("compile-lisp");
+    f.file(io, cwd, temacs);
+    f.file(io, cwd, dump);
+    f.file(io, cwd, "build-aux/compile-lisp.zig");
+    // .elc are this tool's OUTPUTS (excluded); loaddefs outputs are
+    // compile-time inputs and stay fingerprinted.
+    f.tree(io, gpa, cwd, "lisp", isElc) catch {};
+    return f;
+}
+
+fn isElc(rel: []const u8) bool {
+    if (std.mem.endsWith(u8, rel, "~")) return true; // emacs backup files
+    return std.mem.endsWith(u8, rel, ".elc") or std.mem.endsWith(u8, rel, ".elc.gz");
+}
+
+/// Every .elc under lisp/, sorted (the deterministic output list).
+fn collectElc(io: std.Io, gpa: std.mem.Allocator, cwd: std.Io.Dir) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (out.items) |o| gpa.free(o);
+        out.deinit(gpa);
+    }
+    var lisp = try cwd.openDir(io, "lisp", .{ .iterate = true });
+    defer lisp.close(io);
+    var w = try lisp.walk(gpa);
+    defer w.deinit();
+    while (w.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!isElc(entry.path)) continue;
+        const full = try std.fs.path.join(gpa, &.{ "lisp", entry.path });
+        try out.append(gpa, full);
+    }
+    std.mem.sort([]const u8, out.items, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lt);
+    return out.toOwnedSlice(gpa);
 }
