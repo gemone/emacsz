@@ -264,10 +264,7 @@ from; the default is `load-path'."
 	      (lambda (a b) (string< (symbol-name (car a))
 				     (symbol-name (car b))))))
 
-  (with-current-buffer
-      (find-file-noselect generated-finder-keywords-file)
-    (setq buffer-undo-list t)
-    (erase-buffer)
+  (with-temp-buffer
     (generate-lisp-file-heading
      generated-finder-keywords-file 'finder-compile-keywords
      :title "keyword-to-package mapping")
@@ -285,7 +282,13 @@ from; the default is `load-path'."
     (prin1 finder-keywords-hash (current-buffer))
     (insert ")\n")
     (generate-lisp-file-trailer generated-finder-keywords-file)
-    (basic-save-buffer)))
+    ;; Write the file directly (mirroring loaddefs-generate): the older
+    ;; find-file-noselect + basic-save-buffer path intermittently hangs in
+    ;; the emacs write phase on the 2-vCPU Windows CI runner (Defender
+    ;; stalls the visited-buffer save), whereas write-region from a temp
+    ;; buffer reliably completes for the large loaddefs.el writes.
+    (write-region (point-min) (point-max)
+                  generated-finder-keywords-file nil 'silent)))
 
 (defun finder-compile-keywords-make-dist ()
   "Regenerate `finder-inf.el' for the Emacs distribution."
