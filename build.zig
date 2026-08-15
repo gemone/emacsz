@@ -2419,13 +2419,16 @@ pub fn build(b: *std.Build) void {
             // Darwin does not declare environ in <unistd.h>; force the
             // crt_externs accessor header before every tool source.  The
             // newest SDKs (Xcode 26.5) annotate <getopt.h>'s declarations
-            // (_LIBC_CSTR / _LIBC_COUNT), which conflict with the gnulib
+            // (_LIBC_CSTR / _LIBC_COUNT), which conflicts with the gnulib
             // getopt-ext.h re-declarations that -Ilib's <getopt.h> wrapper
             // emits after its include_next of the SDK header.  Rename the
             // gnulib getopt surface out of the way (__GETOPT_PREFIX=rpl_,
-            // the gnulib-standard mechanism) and provide lib/getopt{,1}.c
-            // below so the tools get a self-consistent GNU getopt.
-            &(libsrc_flags_core ++ [_][]const u8{ "-include", "lib/macos-environ.h", "-D__GETOPT_PREFIX=rpl_" })
+            // the gnulib-standard mechanism), link lib/getopt{,1}.c below,
+            // and force lib/macos-tool-getopt.h BEFORE any source so the
+            // system <getopt.h> is never reached at all: it pre-defines
+            // lib/getopt.h's guard (every later #include <getopt.h> is a
+            // no-op) and supplies the full prefixed declarations itself.
+            &(libsrc_flags_core ++ [_][]const u8{ "-include", "lib/macos-environ.h", "-include", "lib/macos-tool-getopt.h", "-D__GETOPT_PREFIX=rpl_" })
         else
             &libsrc_flags_core;
 
