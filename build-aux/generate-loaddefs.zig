@@ -207,7 +207,14 @@ fn collectDirs(io: std.Io, gpa: std.mem.Allocator, cwd: std.Io.Dir, for_finder: 
 
 /// Run one dumped-emacs batch invocation with the given fixed args and
 /// the trailing SUBDIRS list; retry on signal death (pdumper relocation
-/// flakiness, like the check step).
+/// flakiness, like the check step) AND on a hard timeout.  The timeout
+/// matters as much as the retry: a windows-latest CI run has been
+/// observed printing the finder scan's final progress line and then
+/// sitting in the emacs exit path indefinitely, silently burning the
+/// whole step budget.  Each emacs scrape gets 15 minutes (the full
+/// three-pass regeneration needs well under 4 locally); on timeout the
+/// child is killed and retried with a fresh process (the scrape is
+/// deterministic, so a respawn makes forward progress).
 fn runEmacs(
     io: std.Io,
     gpa: std.mem.Allocator,
@@ -232,18 +239,44 @@ fn runEmacs(
     var it = std.mem.tokenizeScalar(u8, dirs, ' ');
     while (it.next()) |d| try argv.append(gpa, d);
 
+    const EMACS_TIMEOUT_SECS: i64 = blk: {
+        if (env_map.get("LOADDEFS_EMACS_TIMEOUT")) |v|
+            break :blk std.fmt.parseInt(i64, v, 10) catch 900;
+        break :blk 900;
+    };
+
     var attempt: usize = 0;
     while (true) : (attempt += 1) {
-        var child = try std.process.spawn(io, .{
+        const res = std.process.run(gpa, io, .{
             .argv = argv.items,
             .cwd = .{ .path = lisp_path },
             .environ_map = env_map,
-            .stdin = .inherit,
-            .stdout = .inherit,
-            .stderr = .inherit,
-        });
-        const term = try child.wait(io);
-        switch (term) {
+            .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromSeconds(EMACS_TIMEOUT_SECS), .clock = .awake } },
+            .stdout_limit = .unlimited,
+            .stderr_limit = .unlimited,
+        }) catch |err| switch (err) {
+            error.Timeout => {
+                std.debug.print("generate-loaddefs: emacs scrape timed out after {d}s (attempt {d}/3); respawning\n", .{ EMACS_TIMEOUT_SECS, attempt + 1 });
+                if (attempt >= 2) {
+                    std.debug.print("generate-loaddefs: scrape timed out 3x -- failing\n", .{});
+                    std.process.exit(1);
+                }
+                continue;
+            },
+            else => {
+                std.debug.print("generate-loaddefs: spawn failed: {s}\n", .{@errorName(err)});
+                std.process.exit(1);
+            },
+        };
+        if (res.stdout.len > 0) {
+            std.debug.print("{s}", .{res.stdout});
+            gpa.free(res.stdout);
+        }
+        if (res.stderr.len > 0) {
+            std.debug.print("{s}", .{res.stderr});
+            gpa.free(res.stderr);
+        }
+        switch (res.term) {
             .exited => |code| {
                 if (code == 0) return;
                 std.debug.print("generate-loaddefs: temacs exited {d}\n", .{code});
