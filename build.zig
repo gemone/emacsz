@@ -2413,22 +2413,35 @@ pub fn build(b: *std.Build) void {
             "-Ilib",
             "-Ilib/malloc",
         };
+        // macOS tool flags: like the core set but WITHOUT -Ilib (lib/ is
+        // a module include path there, ordered after lib/macos-tool so
+        // the getopt.h substitute wins -- see the flags comment below).
+        const _macsrc_flags_core = [_][]const u8{
+            "-std=gnu2x",
+            "-fno-common",
+            "-fno-strict-aliasing",
+            "-D_GNU_SOURCE",
+            "-DHAVE_CONFIG_H",
+            "-I.",
+            "-Isrc",
+            "-Ilib/malloc",
+        };
         const libsrc_flags: []const []const u8 = if (is_windows)
             &(libsrc_flags_core ++ [_][]const u8{ "-Int/inc", "-Ilib/w32" })
         else if (target.result.os.tag == .macos)
             // Darwin does not declare environ in <unistd.h>; force the
-            // crt_externs accessor header before every tool source.  The
-            // newest SDKs (Xcode 26.5) annotate <getopt.h>'s declarations
-            // (_LIBC_CSTR / _LIBC_COUNT), which conflicts with the gnulib
-            // getopt-ext.h re-declarations that -Ilib's <getopt.h> wrapper
-            // emits after its include_next of the SDK header.  Rename the
-            // gnulib getopt surface out of the way (__GETOPT_PREFIX=rpl_,
-            // the gnulib-standard mechanism), link lib/getopt{,1}.c below,
-            // and force lib/macos-tool-getopt.h BEFORE any source so the
-            // system <getopt.h> is never reached at all: it pre-defines
-            // lib/getopt.h's guard (every later #include <getopt.h> is a
-            // no-op) and supplies the full prefixed declarations itself.
-            &(libsrc_flags_core ++ [_][]const u8{ "-include", "lib/macos-environ.h", "-include", "lib/macos-tool-getopt.h", "-D__GETOPT_PREFIX=rpl_" })
+            // crt_externs accessor header before every tool source, and
+            // rename the gnulib getopt surface out of the system's way
+            // (__GETOPT_PREFIX=rpl_, the gnulib-standard mechanism) with
+            // lib/getopt{,1}.c linked below.  -Ilib is deliberately
+            // DROPPED here and supplied (after lib/macos-tool) as a
+            // module include path in the tools loop, so #include
+            // <getopt.h> resolves to lib/macos-tool/getopt.h -- the
+            // full gnulib substitute, with no include_next graft onto
+            // the SDK's <getopt.h> (the graft broke against Xcode 26.5's
+            // annotated declarations and left getopt1.c parsing with
+            // the renames undefined on CI's SDK).
+            &(_macsrc_flags_core ++ [_][]const u8{ "-include", "lib/macos-environ.h", "-D__GETOPT_PREFIX=rpl_" })
         else
             &libsrc_flags_core;
 
@@ -2537,6 +2550,15 @@ pub fn build(b: *std.Build) void {
                 tool_exe.root_module.linkLibrary(gnulib_tempname_lib);
             tool_exe.root_module.addIncludePath(target_config_h_file.file.dirname());
             tool_exe.step.dependOn(target_config_h_file.step);
+            // macOS tools: resolve #include <getopt.h> against the
+            // substitute in lib/macos-tool FIRST, then lib/ itself for
+            // the rest of the gnulib headers (module include paths keep
+            // their add order and follow the per-file -I flags).
+            if (target.result.os.tag == .macos)
+            {
+                tool_exe.root_module.addIncludePath(b.path("lib/macos-tool"));
+                tool_exe.root_module.addIncludePath(b.path("lib"));
+            }
             const install_tool = b.addInstallArtifact(tool_exe, .{});
             b.getInstallStep().dependOn(&install_tool.step);
         }
