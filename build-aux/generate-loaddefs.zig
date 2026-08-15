@@ -72,7 +72,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     defer gpa.free(charprop_eval);
     try runEmacs(io, gpa, &env_map, temacs, dump, lisp_path, &.{
         "--eval", charprop_eval,
-        "--eval", "(setq make-backup-files nil)",
+        "--eval", "(setq make-backup-files nil create-lockfiles nil)",
         "-l", "emacs-lisp/loaddefs-gen.el",
         "-f", "loaddefs-generate--emacs-batch",
     }, subdirs);
@@ -80,7 +80,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     const cus_eval = try std.fmt.allocPrint(gpa, "(setq generated-custom-dependencies-file \"{s}/cus-load.el\")", .{lisp_path_flat});
     defer gpa.free(cus_eval);
     try runEmacs(io, gpa, &env_map, temacs, dump, lisp_path, &.{
-        "--eval", "(setq make-backup-files nil)",
+        "--eval", "(setq make-backup-files nil create-lockfiles nil)",
         "-l", "cus-dep",
         "--eval", cus_eval,
         "-f", "custom-make-dependencies",
@@ -89,7 +89,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     const finder_eval = try std.fmt.allocPrint(gpa, "(setq generated-finder-keywords-file \"{s}/finder-inf.el\")", .{lisp_path_flat});
     defer gpa.free(finder_eval);
     try runEmacs(io, gpa, &env_map, temacs, dump, lisp_path, &.{
-        "--eval", "(setq make-backup-files nil)",
+        "--eval", "(setq make-backup-files nil create-lockfiles nil)",
         "-l", "finder",
         "--eval", finder_eval,
         "-f", "finder-compile-keywords-make-dist",
