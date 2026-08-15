@@ -181,12 +181,14 @@ jobs:
       - name: .zeln feature tests (populate + gate #2 + zeln-diff + pgo)
         env:
           ZELN_PGO_HAMMER: '30000'
-        # Hard bound for genuinely-stuck runs.  The old 180-minute budget
-        # silently burned hours; with the finder hang eliminated this leaves
-        # room for the (slow but healthy) 2-vCPU Windows native-comp and
-        # still fails a real stall ~6x sooner than the historical 180m.
+        # Hard bound for genuinely-stuck runs.  The historical 180-minute
+        # budget was silently burned by a Defender-induced finder-inf.el
+        # overwrite hang; generate-loaddefs now skips rewriting an existing
+        # finder-inf.el, so that wedge is gone.  The step still needs a wide
+        # bound on Windows: populate-zeln-cache native-compiles ~2300 .elc via
+        # zig-cc and takes well over 30 min on the 2-vCPU runner even healthy.
         # Linux/macOS finish the whole step in ~6 min.
-        timeout-minutes: 30
+        timeout-minutes: 90
         run: |
           zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast populate-zeln-cache
           zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast check-zeln
