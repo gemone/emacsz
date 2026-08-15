@@ -94,6 +94,7 @@ harness, and without an .elc it simply has no .zeln (interpreter path)."
     (dolist (el (directory-files-recursively "test" "\\.el\\'"))
       (unless (file-exists-p (concat el "c"))
 	(setq n (1+ n))
+	(message "zeln-pop bc %s" el)
 	(condition-case err
 	    (byte-compile-file el)
 	  (error (setq nfail (1+ nfail))
@@ -117,6 +118,7 @@ Writes <cache-root>/JOBS and <cache-root>/SKIPS-LISP.  Exits 0."
   (let ((n 0))
     (dolist (dir zeln-pop--walk-dirs)
       (dolist (elc (directory-files-recursively dir "\\.elc\\'"))
+	(message "zeln-pop ser %s" elc)
 	(zeln-pop--handle elc)
 	(setq n (1+ n))))
     (with-temp-file (expand-file-name "JOBS" zeln-pop--cache-root)
