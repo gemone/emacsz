@@ -109,15 +109,34 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 const stampName = "loaddefs.stamp";
 
 /// Fingerprint of everything the three emacs invocations read: the lisp
-/// tree minus this tool's own outputs, plus the binary and dump that run
-/// the scrape (and this tool's source, so editing it invalidates).
+/// tree minus this tool's own outputs (isLoaddefsOutput) and minus every
+/// .elc (isElc), plus the binary and dump that run the scrape (and this
+/// tool's source, so editing it invalidates).
+///
+/// Excluding ALL .elc breaks a stamp-death cycle with compile-lisp: the
+/// scrape reads autoload/custom/finder cookies from the .el SOURCES, so a
+/// recompile's new .elc (mtime/size churn) is not a scrape input.  Before
+/// this, compile-lisp re-emitting .elc invalidated loaddefs.stamp, which
+/// rewrote the *-loaddefs.el (mtime churn), which reinvalidated
+/// compile-lisp.stamp (it fingerprints the loaddefs .el as inputs), which
+/// recompiled again -- loaddefs-final and compile-lisp ping-ponged on
+/// every `zig build`, so the CI .zeln step regenerated the whole tree
+/// 6-10x (finder/custom/loaddefs runs plus compile-lisp) instead of once.
 fn freshFinger(io: std.Io, gpa: std.mem.Allocator, cwd: std.Io.Dir, temacs: []const u8, dump: []const u8) stamp.Finger {
     var f = stamp.Finger.init("loaddefs");
     f.file(io, cwd, temacs);
     f.file(io, cwd, dump);
     f.file(io, cwd, "build-aux/generate-loaddefs.zig");
-    f.tree(io, gpa, cwd, "lisp", isLoaddefsOutput) catch {};
+    f.tree(io, gpa, cwd, "lisp", fingerprintExclude) catch {};
     return f;
+}
+
+/// Tree entries excluded from the freshness fingerprint: every .elc
+/// (compile-lisp's outputs; not scrape inputs) and this tool's own
+/// loaddefs outputs.
+fn fingerprintExclude(rel: []const u8) bool {
+    if (std.mem.endsWith(u8, rel, ".elc")) return true;
+    return isLoaddefsOutput(rel);
 }
 
 fn upToDate(io: std.Io, gpa: std.mem.Allocator, cwd: std.Io.Dir, temacs: []const u8, dump: []const u8) !bool {
@@ -241,8 +260,8 @@ fn runEmacs(
 
     const EMACS_TIMEOUT_SECS: i64 = blk: {
         if (env_map.get("LOADDEFS_EMACS_TIMEOUT")) |v|
-            break :blk std.fmt.parseInt(i64, v, 10) catch 900;
-        break :blk 900;
+            break :blk std.fmt.parseInt(i64, v, 10) catch 120;
+        break :blk 120;
     };
 
     var attempt: usize = 0;
