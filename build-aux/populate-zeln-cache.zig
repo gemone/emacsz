@@ -241,7 +241,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             .stdout = .inherit,
             .stderr = .inherit,
         });
-        const term = try child.wait(io);
+        // Bound the serialize pass with a watchdog too: on the 2-vCPU
+        // windows-latest runner the serialize emacs can hang (Defender /
+        // I/O), and `child.wait` alone would block forever with zero log
+        // output -- exactly the "one hour+ with no output" symptom.  The
+        // watchdog thread force-terminates the child after bc_batch_secs so
+        // the step fails loudly instead of silently wedging.
+        const term = waitBounded(io, gpa, &child, bc_batch_secs);
         switch (term) {
             .exited => |code| if (code != 0) {
                 std.debug.print("populate-zeln-cache: serialize phase exited {d}\n", .{code});
@@ -488,4 +494,49 @@ fn processJobs(
             result.skip_list.appendSlice(gpa, msg) catch {};
         }
     }
+}
+
+/// Watchdog-bounded child wait: waits for CHILD to exit, but force-terminates
+/// it after TIMEOUT_SECS so a wedged emacs (the Windows CI Defender/I-O hang)
+/// cannot block the step forever with zero log output.  Mirrors the
+/// generate-loaddefs runEmacs watchdog: a helper thread does the blocking
+/// `child.wait` on an Io it owns while the calling thread loops on the clock
+/// and calls `child.kill(io)` past the deadline.
+const WaitState = struct {
+    gpa: std.mem.Allocator,
+    child: *std.process.Child,
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    term: std.process.Child.Term = .{ .exited = 255 },
+};
+
+fn waitThreadFn(w: *WaitState) void {
+    var wio_threaded: std.Io.Threaded = .init(w.gpa, .{});
+    const wio = wio_threaded.io();
+    w.term = w.child.wait(wio) catch .{ .exited = 255 };
+    w.done.store(true, .release);
+}
+
+fn waitBounded(io: std.Io, gpa: std.mem.Allocator, child: *std.process.Child, timeout_secs: i64) std.process.Child.Term {
+    var state: WaitState = .{ .gpa = gpa, .child = child };
+    const t = std.Thread.spawn(.{ .allocator = gpa }, waitThreadFn, .{&state}) catch |err| {
+        std.debug.print("populate-zeln-cache: watchdog thread spawn failed: {s}\n", .{@errorName(err)});
+        child.kill(io);
+        return .{ .exited = 255 };
+    };
+
+    var killed = false;
+    const clock = std.Io.Clock.awake;
+    const deadline = std.Io.Timestamp.now(io, clock).addDuration(
+        std.Io.Duration.fromSeconds(timeout_secs),
+    );
+    while (!state.done.load(.acquire)) {
+        if (std.Io.Timestamp.now(io, clock).durationTo(deadline).nanoseconds <= 0 and !killed) {
+            killed = true;
+            std.debug.print("populate-zeln-cache: serialize watchdog timed out after {d}s; killing\n", .{timeout_secs});
+            child.kill(io);
+        }
+        io.sleep(std.Io.Duration.fromMilliseconds(500), std.Io.Clock.awake) catch {};
+    }
+    t.join();
+    return state.term;
 }
