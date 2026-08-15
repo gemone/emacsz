@@ -19,14 +19,17 @@
 #ifndef _GL_GETOPT_H
 #define _GL_GETOPT_H 1
 
-/* getopt-pfx-core.h pulls <unistd.h> on Darwin, and the gnulib wrappers
-   it reaches (sys/select.h, sys/types.h, ...) require config.h FIRST;
-   a -include runs before the including source's own config.h include,
-   so provide it here.  */
+/* Forced includes are injected by zig cc through the built-in preamble
+   layer, where the per-source -I user paths are NOT visible (only the
+   module-generated config dir is -- which is why <config.h> resolves
+   here but <getopt-cdefs.h> does not).  The gnulib headers are reached
+   with QUOTED includes, which resolve against this file's own
+   directory (lib/) independent of the -I set.  config.h comes first
+   because getopt-pfx-core pulls <unistd.h> on Darwin and the gnulib
+   wrappers it reaches (sys/select.h, sys/types.h, ...) demand it.  */
 #include <config.h>
-
-#include <getopt-cdefs.h>
-#include <getopt-pfx-core.h>
-#include <getopt-pfx-ext.h>
+#include "getopt-cdefs.h"
+#include "getopt-pfx-core.h"
+#include "getopt-pfx-ext.h"
 
 #endif /* _GL_GETOPT_H */
