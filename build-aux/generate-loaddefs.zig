@@ -88,14 +88,28 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     const finder_eval = try std.fmt.allocPrint(gpa, "(setq generated-finder-keywords-file \"{s}/finder-inf.el\")", .{lisp_path_flat});
     defer gpa.free(finder_eval);
-    try runEmacs(io, gpa, &env_map, temacs, dump, lisp_path, &.{
-        "--eval", "(setq make-backup-files nil create-lockfiles nil write-region-inhibit-fsync t)",
-        "-l", "finder",
-        "--eval", finder_eval,
-        // drive finder-compile-keywords over the trailing DIRS and let batch
-        // mode exit normally (no explicit `kill-emacs').
-        "--eval", "(apply #'finder-compile-keywords command-line-args-left)",
-    }, finder_dirs);
+    // The Windows CI runner hangs when emacs overwrites an EXISTING
+    // finder-inf.el (writing a NEW one, as the Build step does on a fresh
+    // checkout, succeeds; overwriting it later in the .zeln step wedges the
+    // emacs child on the 2-vCPU runner).  finder-inf.el is content-identical
+    // across regenerations, so when one already exists we skip rewriting it:
+    // the .zeln step then never touches the blockable overwrite path and the
+    // package-tests requirement ('finder-inf') is still satisfied by the copy
+    // the Build step produced.
+    const finder_inf_full = try std.fs.path.join(gpa, &.{ lisp_path, "finder-inf.el" });
+    defer gpa.free(finder_inf_full);
+    const finder_existing = cwd.statFile(io, finder_inf_full, .{}) catch null;
+    const finder_stale = if (finder_existing) |st| st.size == 0 else true;
+    if (finder_stale) {
+        try runEmacs(io, gpa, &env_map, temacs, dump, lisp_path, &.{
+            "--eval", "(setq make-backup-files nil create-lockfiles nil write-region-inhibit-fsync t)",
+            "-l", "finder",
+            "--eval", finder_eval,
+            "--eval", "(apply #'finder-compile-keywords command-line-args-left)",
+        }, finder_dirs);
+    } else {
+        std.debug.print("generate-loaddefs: finder-inf.el exists ({d}B); skipping finder rewrite\n", .{finder_existing.?.size});
+    }
 
     // Record the post-run fingerprint + the outputs that must survive
     // for the next run to skip (any missing output forces a regen).
