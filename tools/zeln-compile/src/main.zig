@@ -30,6 +30,15 @@
 //! next to the output, then runs `zig cc -shared` to produce the .zeln.
 
 const std = @import("std");
+const builtin = @import("builtin");
+
+// sys_setjmp symbol for the emitted IR, mirroring src/lisp.h:2273-2287 so
+// the .zeln's non-local exit stays ABI-identical to the host emacs: glibc
+// (HAVE__SETJMP) and darwin export _setjmp/_longjmp, but windows-gnu's
+// CRT only has the plain pair (zig's bundled mingw has no _setjmp --
+// lld-link fails with 'undefined symbol: _setjmp'), and the host emacs
+// binary there compiles the #else branch (plain setjmp/longjmp) too.
+const setjmp_sym: []const u8 = if (builtin.os.tag == .windows) "setjmp" else "_setjmp";
 
 // "ZUNT" little-endian. Written by src/compz.c's serializers.
 const ZUNIT_MAGIC: u32 = 0x5A554E54;
@@ -2102,8 +2111,8 @@ fn emitFileLLVM(
 
     // _setjmp (sys_setjmp on glibc) declared DIRECTLY in the native fn for
     // the pushhandler trio so longjmp lands in the native frame.
-    try em.w("; sys_setjmp == _setjmp on glibc (HAVE__SETJMP first).\n");
-    try em.w("declare i32 @_setjmp(ptr) #0\n");
+    try em.wf("; sys_setjmp symbol per target (see setjmp_sym): {s}\n", .{setjmp_sym});
+    try em.wf("declare i32 @{s}(ptr) #0\n", .{setjmp_sym});
     try em.w("attributes #0 = { nounwind returns_twice }\n");
     // FDO: `hot` function attribute for profile-identified hot fns
     // (LLVM layout hint).  Emitted unconditionally; #1 is only
@@ -2960,12 +2969,13 @@ fn emitPushHandler(em: *Emitter, type_raw: u64, target: u32, fall_off: u32) !voi
     const zbase = try em.zargsSlot(0);
     // push_handler + field setup; returns the sys_jmp_buf* as a raw i64.
     const jmpbuf_i64 = try em.frelocCallI64(IDX_PUSHHANDLER, 3, zbase);
-    // _setjmp DIRECTLY in the native fn (NOT in the shim): the longjmp
-    // resumes here, in this preserved frame.  inttoptr the raw i64 -> ptr.
+    // setjmp (target-symbol, see setjmp_sym) DIRECTLY in the native fn
+    // (NOT in the shim): the longjmp resumes here, in this preserved
+    // frame.  inttoptr the raw i64 -> ptr.
     const jbptr = em.fresh();
     try em.wif("%{d} = inttoptr i64 %{d} to ptr\n", .{ jbptr, jmpbuf_i64 });
     const sj = em.fresh();
-    try em.wif("%{d} = call i32 @_setjmp(ptr %{d})\n", .{ sj, jbptr });
+    try em.wif("%{d} = call i32 @{s}(ptr %{d})\n", .{ sj, setjmp_sym, jbptr });
     const cond = em.fresh();
     try em.wif("%{d} = icmp eq i32 %{d}, 0\n", .{ cond, sj });
     // 0 => guarded body; nonzero => resume block (a throw/signal was caught).

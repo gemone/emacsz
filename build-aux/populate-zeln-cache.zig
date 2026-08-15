@@ -312,12 +312,18 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // across worker threads.  The big win is Windows -- zig cc startup is
     // ~7s there vs ~0.2s on Linux, and 1000+ serial spawns used to blow
     // the 120-minute CI step timeout -- but Linux/macOS get the same
-    // speedup.  Cap workers at 8 to bound peak memory (each zeln-compile
-    // loads the full zig toolchain); ZELN_PARALLELISM overrides.
+    // speedup.  The work is SPAWN-BOUND (workers mostly wait on the
+    // child, not burn CPU), so small hosts get a floor above their core
+    // count: a 2-vCPU windows runner at cpu-count workers spent ~47 min
+    // just on 812 x 7s spawns; 6 workers cut that to ~16 min with no
+    // CPU saturation.  Cap stays 8 to bound peak memory (each
+    // zeln-compile loads the full zig toolchain); ZELN_PARALLELISM
+    // overrides.
     const worker_count: usize = blk: {
         if (env_map.get("ZELN_PARALLELISM")) |v|
             break :blk std.fmt.parseInt(usize, v, 10) catch 4;
-        break :blk @min(std.Thread.getCpuCount() catch 4, 8);
+        const cpu = std.Thread.getCpuCount() catch 4;
+        break :blk @min(@max(cpu * 3, 6), 8);
     };
     const results = gpa.alloc(WorkerResult, worker_count) catch @panic("OOM");
     defer gpa.free(results);
