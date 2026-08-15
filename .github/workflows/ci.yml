@@ -112,11 +112,15 @@ jobs:
             libgpm-dev \
             libdbus-1-dev
 
-      # Build ONCE in ReleaseFast.  Every later step passes
-      # -Doptimize=ReleaseFast so it reuses this exact build via the
-      # in-workspace zig cache instead of rebuilding.
+      # Build ONCE in ReleaseFast.  Every later step passes the SAME flag
+      # set (-Dnative-comp-zig=true -Doptimize=ReleaseFast) so it reuses
+      # this exact build via the in-workspace zig cache instead of
+      # rebuilding.  The compz flag MUST be here too: the .zeln step
+      # enables it, and a flag flip invalidates the whole graph (temacs
+      # -> dump -> compile-lisp -> dump-compiled -> loaddefs), forcing a
+      # full second rebuild inside the 180-min .zeln step budget.
       - name: Build
-        run: zig build -Doptimize=ReleaseFast
+        run: zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast
 
       # Verify + smoke: the binary name and dump handling differ per OS, so
       # run each in its native shell.  The --eval arg is single-quoted so the
@@ -169,7 +173,7 @@ jobs:
         env:
           ZIG_COMPILE_LISP_PROBE: ${{ runner.os == 'Windows' && '1' || '' }}
         timeout-minutes: 90
-        run: zig build -Doptimize=ReleaseFast check
+        run: zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast check
 
       # .zeln native-comp feature tests, identical on all three platforms.
       # ZELN_PGO_HAMMER is set in the step env (shell-agnostic) instead of the
