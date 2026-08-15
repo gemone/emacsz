@@ -80,6 +80,41 @@
 	(error
 	 (push (format "%s\tserialize-error: %S" elc err) zeln-pop--skips))))))
 
+(defconst zeln-pop--bc-state-dir "zig-out/zeln-cache"
+  "Directory holding the byte-compile watchdog state files.
+BC-DEFER lists files whose batch compile was killed by the outer
+timeout (deferred, NOT skipped); BC-CURRENT names the file being
+compiled right now, so the driver can defer it before respawning.  The
+driver later retries every deferred file in its OWN emacs process with a
+fresh timeout, and hard-fails the step (naming the file) if it cannot
+compile standalone -- coverage is never silently reduced.")
+
+(defun zeln-pop--bc-skip-list ()
+  "Return the BC-DEFER list as a hash of file names."
+  (let ((h (make-hash-table :test #'equal))
+        (f (expand-file-name "BC-DEFER" zeln-pop--bc-state-dir)))
+    (when (file-exists-p f)
+      (with-temp-buffer
+        (insert-file-contents f)
+        (goto-char (point-min))
+        (while (not (eobp))
+          (let ((line (buffer-substring
+                       (line-beginning-position) (line-end-position))))
+            (when (> (length line) 0)
+              (puthash line t h)))
+          (forward-line 1))))
+    h))
+
+(defun zeln-pop--set-bc-current (file)
+  "Record FILE as the test file being compiled right now."
+  (let ((f (expand-file-name "BC-CURRENT" zeln-pop--bc-state-dir)))
+    (make-directory (file-name-directory f) t)
+    (with-temp-file f (insert file))))
+
+(defun zeln-pop--clear-bc-current ()
+  (let ((f (expand-file-name "BC-CURRENT" zeln-pop--bc-state-dir)))
+    (when (file-exists-p f) (delete-file f))))
+
 (defun zeln-pop--byte-compile-tests ()
   "Byte-compile the whole test tree (test/**/*.el -> .elc), per-file tolerant.
 The dumped emacs's load-path already has lisp/; the test dirs are added
@@ -90,15 +125,19 @@ harness, and without an .elc it simply has no .zeln (interpreter path)."
   (let ((load-path (append '("test/src" "test/lisp" "test/lisp/emacs-lisp"
 			     "test/lisp/calendar")
 			   load-path))
+	(skip (zeln-pop--bc-skip-list))
 	(n 0) (nfail 0))
     (dolist (el (directory-files-recursively "test" "\\.el\\'"))
-      (unless (file-exists-p (concat el "c"))
+      (unless (or (file-exists-p (concat el "c"))
+		  (gethash el skip))
 	(setq n (1+ n))
 	(message "zeln-pop bc %s" el)
+	(zeln-pop--set-bc-current el)
 	(condition-case err
 	    (byte-compile-file el)
 	  (error (setq nfail (1+ nfail))
 		 (message "zeln-populate: test compile skip %s: %S" el err)))))
+    (zeln-pop--clear-bc-current)
     (message "zeln-populate: byte-compiled %d test files, %d skipped"
 	     n nfail)))
 
@@ -131,7 +170,16 @@ Writes <cache-root>/JOBS and <cache-root>/SKIPS-LISP.  Exits 0."
 	     n (length zeln-pop--jobs) (length zeln-pop--skips))))
 
 (when noninteractive
-  (zeln-populate-run)
-  (kill-emacs 0))
+  (if (equal (getenv "ZELN_BC_ONLY") "1")
+      ;; Watchdog batch mode: compile the (remaining) test tree only
+      ;; (files on BC-DEFER are left for the driver's standalone retry),
+      ;; then exit 0 so the outer driver can respawn until everything
+      ;; else is compiled; phase (b) (the serialize walk) then runs once
+      ;; in a final clean invocation without the env var.
+      (progn
+        (zeln-pop--byte-compile-tests)
+        (kill-emacs 0))
+    (zeln-populate-run)
+    (kill-emacs 0)))
 
 ;;; zeln-populate.el ends here

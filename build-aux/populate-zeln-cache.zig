@@ -54,9 +54,181 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     const staging = "zig-out/zeln-cache/staging";
 
     // ---- (a) serialize phase: emacs --batch -l build-aux/zeln-populate.el.
-    // The helper walks lisp/**/*.elc, calls comp-z-write-file-zunit per
-    // file (condition-case -> skips on signal), and writes JOBS +
-    // SKIPS-LISP.  It exits 0 even when every file skips.
+    // The helper byte-compiles the test tree first (per-file tolerant),
+    // then walks lisp/**/*.elc, calls comp-z-write-file-zunit per file
+    // (condition-case -> skips on signal), and writes JOBS + SKIPS-LISP.
+    // It exits 0 even when every file skips.
+    //
+    // Watchdog: a single test-file compile has been observed to hang for
+    // 60+ minutes on the 2-vCPU windows runner (while completing in
+    // milliseconds everywhere else), silently burning the whole CI step
+    // budget.  So phase (a) runs in respawn batches: each emacs invocation
+    // gets ZELN_BC_ONLY=1 (compile the remaining test files, then exit)
+    // and a hard timeout.  On timeout the driver DEFERS the file named in
+    // BC-CURRENT (written by the elisp side right before each compile) and
+    // respawns, so the batch always makes progress past the hang.  After
+    // the batch completes, every deferred file is retried in its OWN fresh
+    // emacs process; one that still cannot compile standalone HARD-FAILS
+    // the step naming the file -- coverage is never silently reduced.
+    const bc_state_dir = "zig-out/zeln-cache";
+    const bc_defer_path = bc_state_dir ++ "/BC-DEFER";
+    const bc_current_path = bc_state_dir ++ "/BC-CURRENT";
+    // Per-batch budget: generous for a legitimate slow compile (the whole
+    // cold tree needs ~1 min locally; Windows runners are slower), short
+    // enough that a hang costs minutes, not the step.
+    const bc_batch_secs: i64 = blk: {
+        if (env_map.get("ZELN_BC_TIMEOUT")) |v|
+            break :blk std.fmt.parseInt(i64, v, 10) catch 600;
+        break :blk 600;
+    };
+    const BC_MAX_DEFERS: usize = 100;
+    {
+        // Start from a clean slate: a stale BC-DEFER from an aborted run
+        // would silently drop files that may compile fine now.
+        cwd.deleteFile(io, bc_defer_path) catch {};
+        cwd.deleteFile(io, bc_current_path) catch {};
+
+        var bc_defers: usize = 0;
+        batch: while (true) {
+            // If the previous batch was killed mid-compile, defer
+            // exactly that file so the respawn makes progress past it.
+            const cur = cwd.readFileAlloc(io, bc_current_path, gpa, .limited(4096)) catch null;
+            if (cur) |c| {
+                defer gpa.free(c);
+                const trimmed = std.mem.trim(u8, c, " \t\r\n");
+                if (trimmed.len > 0) {
+                    if (bc_defers >= BC_MAX_DEFERS) {
+                        std.debug.print("populate-zeln-cache: BC-DEFER limit ({d}) reached at '{s}' -- the batch cannot make progress\n", .{ BC_MAX_DEFERS, trimmed });
+                        std.process.exit(1);
+                    }
+                    // Append via read-modify-write (small file, avoids
+                    // seek-based append API differences across hosts).
+                    const old = cwd.readFileAlloc(io, bc_defer_path, gpa, .limited(1 << 20)) catch null;
+                    defer {
+                        if (old) |o| gpa.free(o);
+                    }
+                    var buf: std.ArrayList(u8) = .empty;
+                    defer buf.deinit(gpa);
+                    if (old) |o| buf.appendSlice(gpa, o) catch {};
+                    buf.appendSlice(gpa, trimmed) catch {};
+                    buf.append(gpa, '\n') catch {};
+                    cwd.writeFile(io, .{ .sub_path = bc_defer_path, .data = buf.items }) catch {};
+                    bc_defers += 1;
+                    std.debug.print("populate-zeln-cache: compile watchdog timeout on '{s}' -- deferred for standalone retry ({d}/{d})\n", .{ trimmed, bc_defers, BC_MAX_DEFERS });
+                }
+            }
+
+            var bc_env = env_map;
+            try bc_env.put("ZELN_BC_ONLY", "1");
+            const bc_argv = [_][]const u8{
+                "./zig-out/bin/emacs", "--batch",
+                "-l", "build-aux/zeln-populate.el",
+            };
+            const res = std.process.run(gpa, io, .{
+                .argv = &bc_argv,
+                .environ_map = &bc_env,
+                .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromSeconds(bc_batch_secs), .clock = .awake } },
+                .stdout_limit = .unlimited,
+                .stderr_limit = .unlimited,
+            }) catch |err| switch (err) {
+                error.Timeout => {
+                    std.debug.print("populate-zeln-cache: batch timed out after {d}s; respawning\n", .{bc_batch_secs});
+                    continue :batch;
+                },
+                else => {
+                    std.debug.print("populate-zeln-cache: batch spawn failed: {s}\n", .{@errorName(err)});
+                    std.process.exit(1);
+                },
+            };
+            if (res.stdout.len > 0) {
+                std.debug.print("{s}", .{res.stdout});
+                gpa.free(res.stdout);
+            }
+            if (res.stderr.len > 0) {
+                std.debug.print("{s}", .{res.stderr});
+                gpa.free(res.stderr);
+            }
+            switch (res.term) {
+                .exited => |code| if (code != 0) {
+                    std.debug.print("populate-zeln-cache: byte-compile batch exited {d}\n", .{code});
+                    std.process.exit(1);
+                },
+                else => {
+                    std.debug.print("populate-zeln-cache: byte-compile batch died\n", .{});
+                    std.process.exit(1);
+                },
+            }
+            // Exit 0: every remaining file is either compiled (has an
+            // .elc) or on BC-DEFER for the standalone retry below.
+            break :batch;
+        }
+
+        // Standalone retry: every deferred file gets its OWN fresh emacs
+        // process with the full batch budget.  This is exactly the shape
+        // that completes in milliseconds locally; CI's hang appears to
+        // need the accumulated in-process state.  Zero silent coverage
+        // loss: a file that still cannot compile standalone hard-fails
+        // the step, naming it.
+        const defer_data = cwd.readFileAlloc(io, bc_defer_path, gpa, .limited(1 << 20)) catch null;
+        defer {
+            if (defer_data) |d| gpa.free(d);
+        }
+        if (defer_data) |dd| {
+            var dit = std.mem.splitScalar(u8, dd, '\n');
+            while (dit.next()) |line| {
+                const trimmed = std.mem.trim(u8, line, " \t\r");
+                if (trimmed.len == 0) continue;
+                const eval_expr = std.fmt.allocPrint(gpa,
+                    "(progn (when (eq system-type 'windows-nt) (setq file-name-coding-system 'utf-8 default-file-name-coding-system 'utf-8)) (if (byte-compile-file \"{s}\") (kill-emacs 0) (kill-emacs 1)))", .{trimmed}) catch @panic("OOM");
+                defer gpa.free(eval_expr);
+                const one_argv = [_][]const u8{
+                    "./zig-out/bin/emacs", "--batch",
+                    "-L", "lisp", "-L", "test/src", "-L", "test/lisp",
+                    "-L", "test/lisp/emacs-lisp", "-L", "test/lisp/calendar",
+                    "--eval", eval_expr,
+                };
+                std.debug.print("populate-zeln-cache: standalone retry: {s}\n", .{trimmed});
+                const res = std.process.run(gpa, io, .{
+                    .argv = &one_argv,
+                    .environ_map = &env_map,
+                    .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromSeconds(bc_batch_secs), .clock = .awake } },
+                    .stdout_limit = .unlimited,
+                    .stderr_limit = .unlimited,
+                }) catch |err| switch (err) {
+                    error.Timeout => {
+                        std.debug.print("populate-zeln-cache: HARD-FAIL: '{s}' still hangs in a standalone process after {d}s -- refusing to silently reduce coverage\n", .{ trimmed, bc_batch_secs });
+                        std.process.exit(1);
+                    },
+                    else => {
+                        std.debug.print("populate-zeln-cache: standalone retry spawn failed: {s}\n", .{@errorName(err)});
+                        std.process.exit(1);
+                    },
+                };
+                if (res.stdout.len > 0) {
+                    std.debug.print("{s}", .{res.stdout});
+                    gpa.free(res.stdout);
+                }
+                if (res.stderr.len > 0) {
+                    std.debug.print("{s}", .{res.stderr});
+                    gpa.free(res.stderr);
+                }
+                switch (res.term) {
+                    .exited => |code| if (code != 0) {
+                        std.debug.print("populate-zeln-cache: HARD-FAIL: '{s}' exited {d} in the standalone retry\n", .{ trimmed, code });
+                        std.process.exit(1);
+                    },
+                    else => {
+                        std.debug.print("populate-zeln-cache: HARD-FAIL: '{s}' died in the standalone retry\n", .{trimmed});
+                        std.process.exit(1);
+                    },
+                }
+                std.debug.print("populate-zeln-cache: standalone retry ok: {s}\n", .{trimmed});
+            }
+        }
+    }
+
+    // Final invocation: no ZELN_BC_ONLY -- compiles any straggler test
+    // files (normally zero; all done above) and runs the serialize walk.
     const ser_argv = [_][]const u8{
         "./zig-out/bin/emacs", "--batch",
         "-l", "build-aux/zeln-populate.el",
