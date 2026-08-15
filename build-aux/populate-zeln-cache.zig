@@ -124,32 +124,30 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                 "./zig-out/bin/emacs", "--batch",
                 "-l", "build-aux/zeln-populate.el",
             };
-            const res = std.process.run(gpa, io, .{
+            // std.process.run's .timeout does NOT fire on the 2-vCPU
+            // windows-latest runner when the child hangs with its pipes open
+            // (established in commit 68191acd / generate-loaddefs); a wedged
+            // byte-compile batch would then block forever with the step going
+            // to the full timeout.  Spawn + waitBounded instead: the watchdog
+            // force-terminates the batch after bc_batch_secs, stdio is
+            // inherited so progress streams live (reliably visible), and the
+            // caller either defers the current file and respawns (batch) or
+            // hard-fails (standalone).
+            var bc_child = try std.process.spawn(io, .{
                 .argv = &bc_argv,
                 .environ_map = &bc_env,
-                .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromSeconds(bc_batch_secs), .clock = .awake } },
-                .stdout_limit = .unlimited,
-                .stderr_limit = .unlimited,
-            }) catch |err| switch (err) {
-                error.Timeout => {
-                    std.debug.print("populate-zeln-cache: batch timed out after {d}s; respawning\n", .{bc_batch_secs});
-                    continue :batch;
-                },
-                else => {
-                    std.debug.print("populate-zeln-cache: batch spawn failed: {s}\n", .{@errorName(err)});
-                    std.process.exit(1);
-                },
-            };
-            if (res.stdout.len > 0) {
-                std.debug.print("{s}", .{res.stdout});
-                gpa.free(res.stdout);
-            }
-            if (res.stderr.len > 0) {
-                std.debug.print("{s}", .{res.stderr});
-                gpa.free(res.stderr);
-            }
-            switch (res.term) {
+                .stdin = .inherit,
+                .stdout = .inherit,
+                .stderr = .inherit,
+            });
+            var bc_timed_out = false;
+            const bc_term = waitBounded(io, gpa, &bc_child, bc_batch_secs, &bc_timed_out);
+            switch (bc_term) {
                 .exited => |code| if (code != 0) {
+                    if (bc_timed_out) {
+                        std.debug.print("populate-zeln-cache: batch drove to timeout after {d}s; respawning\n", .{bc_batch_secs});
+                        continue :batch;
+                    }
                     std.debug.print("populate-zeln-cache: byte-compile batch exited {d}\n", .{code});
                     std.process.exit(1);
                 },
@@ -188,34 +186,29 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                     "--eval", eval_expr,
                 };
                 std.debug.print("populate-zeln-cache: standalone retry: {s}\n", .{trimmed});
-                const res = std.process.run(gpa, io, .{
+                // std.process.run's .timeout does not fire on the windows
+                // runner for a wedged child; use spawn + waitBounded so a
+                // stuck standalone compile hard-fails after bc_batch_secs
+                // instead of hanging the whole step.
+                var one_child = try std.process.spawn(io, .{
                     .argv = &one_argv,
                     .environ_map = &env_map,
-                    .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromSeconds(bc_batch_secs), .clock = .awake } },
-                    .stdout_limit = .unlimited,
-                    .stderr_limit = .unlimited,
-                }) catch |err| switch (err) {
-                    error.Timeout => {
-                        std.debug.print("populate-zeln-cache: HARD-FAIL: '{s}' still hangs in a standalone process after {d}s -- refusing to silently reduce coverage\n", .{ trimmed, bc_batch_secs });
-                        std.process.exit(1);
-                    },
-                    else => {
-                        std.debug.print("populate-zeln-cache: standalone retry spawn failed: {s}\n", .{@errorName(err)});
-                        std.process.exit(1);
-                    },
-                };
-                if (res.stdout.len > 0) {
-                    std.debug.print("{s}", .{res.stdout});
-                    gpa.free(res.stdout);
-                }
-                if (res.stderr.len > 0) {
-                    std.debug.print("{s}", .{res.stderr});
-                    gpa.free(res.stderr);
-                }
-                switch (res.term) {
-                    .exited => |code| if (code != 0) {
-                        std.debug.print("populate-zeln-cache: HARD-FAIL: '{s}' exited {d} in the standalone retry\n", .{ trimmed, code });
-                        std.process.exit(1);
+                    .stdin = .inherit,
+                    .stdout = .inherit,
+                    .stderr = .inherit,
+                });
+                var one_timed_out = false;
+                const one_term = waitBounded(io, gpa, &one_child, bc_batch_secs, &one_timed_out);
+                switch (one_term) {
+                    .exited => |code| {
+                        if (code != 0) {
+                            if (one_timed_out) {
+                                std.debug.print("populate-zeln-cache: HARD-FAIL: '{s}' still hangs in a standalone process after {d}s -- refusing to silently reduce coverage\n", .{ trimmed, bc_batch_secs });
+                            } else {
+                                std.debug.print("populate-zeln-cache: HARD-FAIL: '{s}' exited {d} in the standalone retry\n", .{ trimmed, code });
+                            }
+                            std.process.exit(1);
+                        }
                     },
                     else => {
                         std.debug.print("populate-zeln-cache: HARD-FAIL: '{s}' died in the standalone retry\n", .{trimmed});
@@ -247,9 +240,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         // output -- exactly the "one hour+ with no output" symptom.  The
         // watchdog thread force-terminates the child after bc_batch_secs so
         // the step fails loudly instead of silently wedging.
-        const term = waitBounded(io, gpa, &child, bc_batch_secs);
+        var ser_timed_out = false;
+        const term = waitBounded(io, gpa, &child, bc_batch_secs, &ser_timed_out);
         switch (term) {
             .exited => |code| if (code != 0) {
+                if (ser_timed_out) {
+                    std.debug.print("populate-zeln-cache: serialize phase timed out after {d}s; killed\n", .{bc_batch_secs});
+                }
                 std.debug.print("populate-zeln-cache: serialize phase exited {d}\n", .{code});
                 std.process.exit(1);
             },
@@ -516,7 +513,7 @@ fn waitThreadFn(w: *WaitState) void {
     w.done.store(true, .release);
 }
 
-fn waitBounded(io: std.Io, gpa: std.mem.Allocator, child: *std.process.Child, timeout_secs: i64) std.process.Child.Term {
+fn waitBounded(io: std.Io, gpa: std.mem.Allocator, child: *std.process.Child, timeout_secs: i64, timed_out: *bool) std.process.Child.Term {
     var state: WaitState = .{ .gpa = gpa, .child = child };
     const t = std.Thread.spawn(.{ .allocator = gpa }, waitThreadFn, .{&state}) catch |err| {
         std.debug.print("populate-zeln-cache: watchdog thread spawn failed: {s}\n", .{@errorName(err)});
@@ -532,11 +529,12 @@ fn waitBounded(io: std.Io, gpa: std.mem.Allocator, child: *std.process.Child, ti
     while (!state.done.load(.acquire)) {
         if (std.Io.Timestamp.now(io, clock).durationTo(deadline).nanoseconds <= 0 and !killed) {
             killed = true;
-            std.debug.print("populate-zeln-cache: serialize watchdog timed out after {d}s; killing\n", .{timeout_secs});
+            std.debug.print("populate-zeln-cache: watchdog timed out after {d}s; killing\n", .{timeout_secs});
             child.kill(io);
         }
         io.sleep(std.Io.Duration.fromMilliseconds(500), std.Io.Clock.awake) catch {};
     }
     t.join();
+    timed_out.* = killed;
     return state.term;
 }
