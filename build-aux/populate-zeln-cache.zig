@@ -28,16 +28,15 @@ const env = @import("env.zig");
 
 pub fn main(minimal: std.process.Init.Minimal) !void {
     const gpa = std.heap.smp_allocator;
-    // Default async_limit is cpu_count-1 (Io.Threaded.init).  On a
-    // 2-vCPU Windows runner that is 1, which serializes every concurrent
-    // child-process operation back to one -- so the N worker threads'
-    // std.process.run calls above would run one-at-a-time and the compile
-    // phase never finished within the CI step timeout.  Raise the limit so
-    // the parallel spawns actually run concurrently.
-    var io_threaded: std.Io.Threaded = .init(gpa, .{
-        .async_limit = .unlimited,
-        .concurrent_limit = .unlimited,
-    });
+    // Main-thread Io for the serialize-phase child + the file IO below.
+    // The compile phase's worker threads each build their OWN Io.Threaded
+    // (inside processJobs): std.Io.Threaded is a single-threaded async
+    // facade, and sharing one instance across the N workers made their
+    // concurrent pipe reads + child waits race on Windows -- one waiter
+    // consumes another's completion, a wait never returns, and the whole
+    // phase deadlocks silently until the CI step timeout (POSIX happened
+    // to survive because child waiting is waitpid-based there).
+    var io_threaded: std.Io.Threaded = .init(gpa, .{});
     const io = io_threaded.io();
     const cwd = std.Io.Dir.cwd();
 
@@ -157,7 +156,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         defer gpa.free(threads);
         for (0..worker_count) |w| {
             threads[w] = std.Thread.spawn(.{ .allocator = gpa }, processJobs, .{
-                gpa, io, &env_map, zeln_compile, jobs.items, w, worker_count, &results[w],
+                gpa, &env_map, zeln_compile, jobs.items, w, worker_count, &results[w],
             }) catch |err| {
                 std.debug.print("populate-zeln-cache: thread spawn failed: {s}\n", .{@errorName(err)});
                 std.process.exit(1);
@@ -165,7 +164,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         }
         for (threads) |t| t.join();
     } else if (n_jobs > 0) {
-        processJobs(gpa, io, &env_map, zeln_compile, jobs.items, 0, 1, &results[0]);
+        processJobs(gpa, &env_map, zeln_compile, jobs.items, 0, 1, &results[0]);
     }
 
     // Merge per-worker tallies in order.
@@ -267,7 +266,6 @@ const WorkerResult = struct {
 /// failure just drops the skip-list line.
 fn processJobs(
     gpa: std.mem.Allocator,
-    io: std.Io,
     env_map: *const std.process.Environ.Map,
     zeln_compile: []const u8,
     jobs: []const Job,
@@ -275,6 +273,13 @@ fn processJobs(
     stride: usize,
     result: *WorkerResult,
 ) void {
+    // Private Io.Threaded per worker (see the comment in main): each
+    // thread drives its own children through its own instance, so there
+    // is no shared completion state to race on.  A worker runs one child
+    // at a time, so the default async_limit suffices.
+    var io_threaded: std.Io.Threaded = .init(gpa, .{});
+    defer io_threaded.deinit();
+    const io = io_threaded.io();
     var i = start;
     while (i < jobs.len) : (i += stride) {
         const job = jobs[i];
