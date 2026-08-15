@@ -92,7 +92,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         "--eval", "(setq make-backup-files nil create-lockfiles nil write-region-inhibit-fsync t)",
         "-l", "finder",
         "--eval", finder_eval,
-        "-f", "finder-compile-keywords-make-dist",
+        // drive finder-compile-keywords over the trailing DIRS and let batch
+        // mode exit normally (no explicit `kill-emacs').
+        "--eval", "(apply #'finder-compile-keywords command-line-args-left)",
     }, finder_dirs);
 
     // Record the post-run fingerprint + the outputs that must survive

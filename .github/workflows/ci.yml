@@ -182,15 +182,11 @@ jobs:
         env:
           ZELN_PGO_HAMMER: '30000'
         # Hard bound for genuinely-stuck runs.  The old 180-minute budget
-        # silently burned hours on the Defender-induced finder write-hang;
-        # that hang is now fixed (finder writes via write-region) and the
-        # step runs clean to populate/check/diff/pgo.  Windows is still the
-        # slow pole -- zig-cc spawn-bound native-comp of ~2300 .elc takes
-        # over 30 min alone on the 2-vCPU runner -- so a healthy Windows run
-        # needs well over that; this bound fails only a real stall, far
-        # sooner than the historical 180m.  Linux/macOS finish the whole step
-        # in ~6 min.
-        timeout-minutes: 90
+        # silently burned hours; with the finder hang eliminated this leaves
+        # room for the (slow but healthy) 2-vCPU Windows native-comp and
+        # still fails a real stall ~6x sooner than the historical 180m.
+        # Linux/macOS finish the whole step in ~6 min.
+        timeout-minutes: 30
         run: |
           zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast populate-zeln-cache
           zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast check-zeln
