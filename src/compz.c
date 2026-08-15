@@ -1269,12 +1269,22 @@ zeln_fdo_gc_check (void)
       if (maxc < threshold)
 	continue;		/* nothing hot: wait for the next interval */
 
-      /* Build <path>/<rel>.zeln (round 1: --profile; round 2: --final).  */
-      char *out = xmalloc (SBYTES (Vzeln_auto_fdo_path)
-			   + SBYTES (u->rel_name) + 8);
-      sprintf (out, "%s/%s", SSDATA (Vzeln_auto_fdo_path),
-	       SSDATA (u->rel_name));
+      /* Build <path>/<rel>.r<N>.zeln -- the ROUND NUMBER is in the name:
+	 Windows (and only Windows) locks a loaded DLL, so round 2 must
+	 never write over round 1's .zeln while this process still holds it
+	 dlopen'd (zig cc's link step renames over the old file and fails
+	 with "Removing old name: Permission denied"; POSIX just unlinks
+	 the old inode and both remain valid).  Each round therefore gets
+	 its own file; the superseded ones are simply abandoned (the OS
+	 reclaims them at process exit).  The .zunit/.manifest/.zprofile
+	 sidecars are derived from OUT by suffix, so they round-split too,
+	 and the profile filename already encodes the round, keeping the
+	 elisp harness's name-based profile lookup working.  */
       bool final = (u->rounds + 1 >= ZELN_FDO_MAX_ROUNDS);
+      char *out = xmalloc (SBYTES (Vzeln_auto_fdo_path)
+			   + SBYTES (u->rel_name) + 16);
+      sprintf (out, "%s/%s.r%d", SSDATA (Vzeln_auto_fdo_path),
+	       SSDATA (u->rel_name), u->rounds + 1);
       if (zeln_fdo_recompile (u, out, final))
 	{
 	  if (zeln_fdo_swap (u, out))

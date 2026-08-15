@@ -244,8 +244,12 @@ of assertions that failed."
                         name (funcall hot-sym hammer-arg) expected))))
 
       ;; ---- Artifact assertions on the final (round-2) .zeln. ----
-      (let ((cache-zeln (expand-file-name (concat name ".zeln") fdo-dir))
-            (cache-ll (expand-file-name (concat name ".zeln.ll") fdo-dir)))
+      ;; The C side writes each round to <name>.zeln.r<N> (the round
+      ;; suffix lands after rel_name's own .zeln; Windows locks the
+      ;; loaded DLL, so round 2 cannot overwrite round 1's file);
+      ;; ZELN_FDO_MAX_ROUNDS is 2, so the final artifact is .zeln.r2.
+      (let ((cache-zeln (expand-file-name (concat name ".zeln.r2") fdo-dir))
+            (cache-ll (expand-file-name (concat name ".zeln.r2.ll") fdo-dir)))
         (if (not (file-exists-p cache-ll))
             (progn
               (message "  zeln-pgo[%s]: FAIL: recompiled .ll not under fdo path"
@@ -315,4 +319,9 @@ of assertions that failed."
             (message "zeln-pgo: FAILED (%d assertion(s) across %d fixtures)"
                      fails (length zeln-pgo-fixtures))
             (kill-emacs 1)))
-      (delete-directory dir t))))
+      ;; Best-effort cleanup: the .r1/.r2 round DLLs are still
+      ;; dlopen-locked by THIS process on Windows (loaded code cannot
+      ;; be deleted there), so the recursive delete legitimately
+      ;; fails; the OS reclaims the temp dir anyway.  Never let a
+      ;; cleanup error fail the harness after all assertions passed.
+      (ignore-errors (delete-directory dir t)))))

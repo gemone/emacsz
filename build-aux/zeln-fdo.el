@@ -108,8 +108,10 @@
           ;; ---- 6. Assertions. ----
           ;; The recompiled (PGO) artifact lives under the FDO path, not
           ;; the original zelnfile (which stays the instrumented unit).
-          (let ((cache-zeln (expand-file-name "fdo.zeln" fdo-dir))
-                (cache-ll (expand-file-name "fdo.zeln.ll" fdo-dir)))
+          ;; Rounds are round-suffixed on the C side (Windows locks the
+          ;; loaded DLL; ZELN_FDO_MAX_ROUNDS = 2 -> final is .r2).
+          (let ((cache-zeln (expand-file-name "fdo.zeln.r2" fdo-dir))
+                (cache-ll (expand-file-name "fdo.zeln.r2.ll" fdo-dir)))
             ;; (a) profile file written under the fdo path.
             (let ((profs (directory-files fdo-dir t "\\.zprofile\\'")))
               (if profs
@@ -148,4 +150,6 @@
               (message "zeln-fdo: PASS (auto-collect + recompile + hot-swap + stop)")
             (message "zeln-fdo: FAILED (%d assertion(s))" fails)
             (kill-emacs 1)))
-      (delete-directory dir t))))
+      ;; Best-effort cleanup: round DLLs stay dlopen-locked on
+      ;; Windows (see zeln-pgo.el); the OS reclaims the temp dir.
+      (ignore-errors (delete-directory dir t)))))
