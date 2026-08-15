@@ -120,7 +120,18 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // Make the binary self-contained: load_pdump auto-loads "<argv0>.pdmp"
     // from the executable's directory, so subprocess re-invocations start
     // the dumped emacs instead of re-running loadup from source.
-    const pdmp_link = try std.fs.path.join(gpa, &.{ bin_dir, "temacs.pdmp" });
+    //
+    // The companion must be named <temacs-name>.pdmp: on Windows that is
+    // temacs.exe.pdmp (argv[0] is temacs.exe), which is also exactly what
+    // the dump.stamp records below -- before this fix the link/copy used
+    // the hard-coded "temacs.pdmp" (a Unix-only name), so the recorded
+    // output never existed, dump.stamp reported 'recorded output missing'
+    // forever, and every CI run re-dumped, which re-ran the loaddefs final
+    // pass (its stamp fingerprints the dump), which re-ran the finder scan
+    // that hangs on windows-latest.
+    const pdmp_name = try std.mem.concat(gpa, u8, &.{ temacs_path.name, ".pdmp" });
+    defer gpa.free(pdmp_name);
+    const pdmp_link = try std.fs.path.join(gpa, &.{ bin_dir, pdmp_name });
     defer gpa.free(pdmp_link);
     std.Io.Dir.deleteFileAbsolute(io, pdmp_link) catch {};
     cwd.symLink(io, "bootstrap-emacs.pdmp", pdmp_link, .{}) catch |err| switch (err) {
