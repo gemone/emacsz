@@ -27,7 +27,7 @@
 |---|---|---|
 | `zig build` 替代 configure+Make | ✅ | 无需 `./configure`、`make`、shell 步骤；`src/config.h` 由 `build.zig` 的 `b.addConfigHeader` 生成 |
 | 全流程（配置/编译/链接） | ✅ | `zig build` 成功产出 `temacs.exe` + `emacs.exe`；`zig build generate-config` 退出 0 |
-| 输出 `emacs.exe` / `emacs.pdb` 等 | ✅ | `zig build install -p <dir>` 在自定义目录产出 `temacs.exe/emacs.exe/emacsclient.exe/etags.exe` 及对应 `*.pdb` |
+| 输出 `emacs.exe` / `emacs.pdb` 等 | ✅ | `zig build install -p <dir>` 在自定义目录产出 `temacs.exe/emacs.exe/emacsclient.exe/etags.exe` + `bootstrap-emacs.pdmp` 及对应 `*.pdb`（转储镜像随前缀 install；整体可运行性见 §6） |
 | `zig build test` ≈ `make check` | ✅ | `zig build check`（别名 `test`）运行 582 个内置 ert 测试，全绿（`check_exit=0`） |
 | `zig build install` 到指定目录 | ✅ | `zig build install -p <temp>` 实测成功，产物完整 |
 | `-Dwith-*` 对应 `--with-*` | ✅ | 见 §3 选项对照表；`-Dwith-*=false` 已修复并实测可构建 |
@@ -141,7 +141,7 @@
 | **CI 双后端覆盖**（验收 5.3） | 已实现：`.github/workflows/ci.yml` 新增 `build-and-test-msvc` job（windows-latest，`-Dtarget=x86_64-windows-msvc` 构建 + smoke + 全量 check），与 GNU 矩阵并列 | 本地已验证上述命令全绿；CI job 的实际徽章结果需在 GitHub runner 上确认（依赖 windows-latest 自带的 VS/BuildTools） |
 | **libpng/libjpeg/libtiff/giflib vendoring**（目标 3.5） | GUI/图像子系统不在当前 console/TTY 范围 | 推进 GUI（或用 `-Dnative-comp` 之外需要图像读入的路径真实调用 `image.c`）后再 vendoring |
 | 二进制与上游 MSYS2 构建**一致**（验收 5.1/5.3） | 无 MSYS2 基准 | 建立 MSYS2 参考构建产物做 diff |
-| **`install -p <dir>` 自定义前缀只装二进制** | 转储镜像 `bootstrap-emacs.pdmp` 由 dump 步骤写在默认 `zig-out/bin/`（`emacs` 启动器按自身位置找 pdmp） | 默认 `zig-out` 安装完整可运行（已实测）；自定义 `-p` 目录需手动连同 `zig-out/bin` 的 pdmp（以及 `etc/`、loaddefs）一起拷贝才可运行。如要 `-p` 也产出完整可运行 Emacs，需在 build.zig 中把转储镜像及运行时数据一并 install 到前缀（涉及 pdmp 内嵌路径 / sibling etc / loaddefs 的迁移，属较复杂改动）|
+| **`install -p <dir>` 自定义前缀** | 已改进：`build.zig` 现在把转储镜像 `bootstrap-emacs.pdmp` 一并 install 到前缀的 `bin/`（与 `zig-out` 文件集一致），自定义目录不再止步于二进制 | **可运行性仍受限**：`emacs.exe`（启动器）从任意前缀运行 temacs 装载该 pdmp 时实测段错误（0xC0000005）——pdmp 内嵌绝对路径/重定位表（epaths.h 的构建树路径 + ASLR 基址），与 `zig-out` 规范布局绑定。默认 `zig-out` 安装完整可运行（实测 `emacs.exe --batch --load` 打印版本、退出 0）。要做到任意 `-p` 前缀自包含可运行，需重构 pdmp 的内嵌路径 / sibling `etc` / loaddefs 的相对化迁移，属较复杂改动，留作后续 |
 
 ---
 
@@ -154,5 +154,5 @@ install`（`zig-out/` 完整可运行，实测 `emacs.exe --version` 正常）�
 **`zig build check -Dtarget=x86_64-windows-msvc` 全量 132 测试 0 unexpected**，与 GNU 后端一致；
 关键位域修复（`bool_bf`/`ENUM_BF` 对 `_MSC_VER` 用 `unsigned int`）消除了 clang-msvc 有符号位域
 导致的源转储崩溃。GNU 后端全程不回归。剩余主要是：CI 双后端 job 的 GitHub 徽章确认、GUI 范围外的图像库
-vendoring，以及 `install -p <自定义目录>` 只装了二进制、转储镜像需手动补齐——这些都受
+vendoring，以及 `install -p <自定义目录>` 的 pdmp 内嵌路径相对化（默认 `zig-out` 已完整可运行）——这些都受
 当前宿主环境（无 GUI、CI 仅在本地验证过命令）或改动复杂度限制，不是默认构建流程的缺口。

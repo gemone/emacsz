@@ -3184,6 +3184,24 @@ pub fn build(b: *std.Build) void {
         target.result.abi == b.graph.host.result.abi;
     if (is_native_target) b.getInstallStep().dependOn(dump_compiled_step);
 
+    // `zig build install -p <dir>` must yield a runnable emacs, not just
+    // the binaries.  bootstrap-dump.zig writes the dumped image
+    // (bootstrap-emacs.pdmp) next to the installed temacs (zig-out/bin, its
+    // hard-coded output dir), but that file is not part of any install
+    // artifact, so a custom prefix install stopped at emacs/temacs/etags/
+    // emacsclient and the binary could not load its dump.  Copy the dumped
+    // image into the prefix's bin as well (native only, matching the dump
+    // gate above -- a cross build has no pdmp to install).
+    if (is_native_target) {
+        const install_pdmp = b.addInstallFileWithDir(
+            b.path("zig-out/bin/bootstrap-emacs.pdmp"),
+            .bin,
+            "bootstrap-emacs.pdmp",
+        );
+        install_pdmp.step.dependOn(&run_dump_compiled.step);
+        b.getInstallStep().dependOn(&install_pdmp.step);
+    }
+
     // Final loaddefs generation for check/check-all: dump-compiled
     // scrubbed the loaddefs, and suites (require 'foo-loaddefs) at
     // runtime. Same tool as gen_loaddefs, gated on the final dump.
