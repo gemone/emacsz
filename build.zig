@@ -3701,17 +3701,12 @@ pub fn build(b: *std.Build) void {
         // race between populating and consuming the cache).
         const run_check_zeln = b.addRunArtifact(run_check_tool);
         run_check_zeln.setCwd(b.path("."));
-        // ABSOLUTE path: run-check hands ZELN_LOAD_PATH to the dumped emacs,
-        // which expand-file-name's it against ITS default-directory.  The
-        // tool's own cwd is the repo, but the spawned emacs may start
-        // elsewhere (observed on the MSVC backend), so a relative
-        // "zig-out/zeln-cache" resolved against the wrong directory and every
-        // .elc's sibling resource failed to load.  build.root getPath gives
-        // the canonical absolute repo path at build time.
-        const zeln_cache_abs = b.pathJoin(&.{
-            b.path("zig-out/zeln-cache").getPath2(b, &run_check_zeln.step),
-        });
-        run_check_zeln.setEnvironmentVariable("ZELN_LOAD_PATH", zeln_cache_abs);
+        // Relative path (resolved by the dumped emacs's expand-file-name
+        // against ITS default-directory, which run-check sets to the repo
+        // root via cwd).  An ABSOLUTE path here was tried and REGRESSED
+        // check-zeln on the GNU backend (8 resource-load failures, the
+        // same signature CI shows): keep the original relative form.
+        run_check_zeln.setEnvironmentVariable("ZELN_LOAD_PATH", "zig-out/zeln-cache");
         run_check_zeln.step.dependOn(&run_populate.step);
         run_check_zeln.step.dependOn(&run_dump_compiled.step);
         run_check_zeln.step.dependOn(&run_loaddefs_final.step);
