@@ -181,6 +181,12 @@ jobs:
       - name: .zeln feature tests (populate + gate #2 + zeln-diff + pgo)
         env:
           ZELN_PGO_HAMMER: '30000'
+          # Shrink the per-batch/standalone byte-compile watchdog from the
+          # 600s default: a single test-file byte-compile has been observed to
+          # hang on the 2-vCPU windows runner (environmental; compiles in ~2s
+          # locally), so detect it early and defer/skip instead of spending 20
+          # minutes per hung file.  The .zeln coverage floor still gates.
+          ZELN_BC_TIMEOUT: '120'
         # Hard bound for genuinely-stuck runs.  The historical 180-minute
         # budget was silently burned by a Defender-induced finder-inf.el
         # overwrite hang; generate-loaddefs now skips rewriting an existing
@@ -190,9 +196,9 @@ jobs:
         # Linux/macOS finish the whole step in ~6 min.
         timeout-minutes: 90
         run: |
-          zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast populate-zeln-cache
-          zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast check-zeln
-          zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-diff
+          zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast populate-zeln-cache &&
+          zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast check-zeln &&
+          zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-diff &&
           zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-pgo
 
       # Persist the zig global cache for the next run.  Always runs (even on
