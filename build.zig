@@ -3184,6 +3184,32 @@ pub fn build(b: *std.Build) void {
         target.result.abi == b.graph.host.result.abi;
     if (is_native_target) b.getInstallStep().dependOn(dump_compiled_step);
 
+    // `zig build install -p <dir>` must yield a self-consistent, runnable
+    // emacs.  bootstrap-dump.zig writes the dumped image
+    // (bootstrap-emacs.pdmp) next to the temacs it runs (zig-out/bin), so
+    // those two are a matched pair whose GC layout agrees.  install_temacs
+    // (exe.getEmittedBin) can be a different artifact than the one the dump
+    // ran, which makes a relocated -p prefix crash on pdmp load.  Install the
+    // dump's matched pair (temacs + its pdmp) into the prefix's bin as well,
+    // so the prefix's temacs and dump always agree.  Native only, matching
+    // the dump gate above.
+    if (is_native_target) {
+        const temacs_base: []const u8 = if (target.result.os.tag == .windows)
+            "temacs.exe"
+        else
+            "temacs";
+        // The dump writes both files into zig-out/bin as a matched pair.
+        for ([_][]const u8{ temacs_base, "bootstrap-emacs.pdmp" }) |base| {
+            const install_matched = b.addInstallFileWithDir(
+                b.path(b.pathJoin(&.{ "zig-out", "bin", base })),
+                .bin,
+                base,
+            );
+            install_matched.step.dependOn(&run_dump_compiled.step);
+            b.getInstallStep().dependOn(&install_matched.step);
+        }
+    }
+
     // Final loaddefs generation for check/check-all: dump-compiled
     // scrubbed the loaddefs, and suites (require 'foo-loaddefs) at
     // runtime. Same tool as gen_loaddefs, gated on the final dump.

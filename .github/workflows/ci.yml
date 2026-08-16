@@ -248,17 +248,45 @@ jobs:
             zig-global-msvc-
 
       - name: Build (MSVC)
-        run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast
+        id: build-msvc
+        run: |
+          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast
+          # is_native_target runs the dump, writing bootstrap-emacs.pdmp; a
+          # cross build (host ABI gnu) does not.  Record whether we are native
+          # (via $GITHUB_OUTPUT) so later steps gate the dump-dependent checks.
+          if (Test-Path 'zig-out/bin/bootstrap-emacs.pdmp') {
+            "native=true" | Out-File $env:GITHUB_OUTPUT -Append
+          } else {
+            "native=false" | Out-File $env:GITHUB_OUTPUT -Append
+          }
 
+      # The MSVC backend on windows-latest is usually a CROSS build: Zig
+      # reports the runner's host ABI as gnu (the default `zig build` there is
+      # the GNU backend), so target msvc != host gnu -> is_native_target is
+      # false -> no dump, no bootstrap-emacs.pdmp.  A cross build verifies the
+      # toolchain compiles+links the MSVC binaries; the runnable dumped emacs
+      # (and the ert suite) require a native MSVC host.  Smoke the standalone
+      # tools (no dump needed) when not native.
       - name: Verify & smoke (MSVC)
         run: |
-          if (-not (Test-Path 'zig-out/bin/temacs.exe')) {
-            Write-Host '✗ temacs.exe not found'; exit 1
+          foreach ($bin in 'temacs.exe','emacs.exe','emacsclient.exe','etags.exe') {
+            if (-not (Test-Path "zig-out/bin/$bin")) {
+              Write-Host "✗ $bin not found"; exit 1
+            }
           }
-          Write-Host '✓ MSVC temacs.exe built successfully'
-          ./zig-out/bin/temacs.exe --batch --dump-file=./zig-out/bin/bootstrap-emacs.pdmp --eval '(progn (message "MSVC Zig build working!") (kill-emacs 0))'
+          Write-Host '✓ MSVC build produced all four binaries'
+          if ('${{ steps.build-msvc.outputs.native }}' -eq 'true') {
+            Write-Host '✓ native MSVC dump present; smoke the dumped emacs'
+            ./zig-out/bin/emacs.exe --no-site-file --no-init-file --batch --eval '(princ (format "msvc %s\n" emacs-version))'
+          } else {
+            Write-Host 'ℹ cross MSVC build (host ABI gnu): verified via etags/emacsclient'
+            ./zig-out/bin/etags.exe --version
+            ./zig-out/bin/emacsclient.exe --version
+          }
 
-      - name: Built-in ert tests (MSVC)
+      # Full ert only for a native MSVC dump.
+      - name: Built-in ert tests (MSVC, native only)
+        if: steps.build-msvc.outputs.native == 'true'
         timeout-minutes: 90
         run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast check
 
