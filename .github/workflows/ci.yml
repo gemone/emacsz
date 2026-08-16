@@ -211,3 +211,61 @@ jobs:
         with:
           path: ${{ env.ZIG_GLOBAL_CACHE }}
           key: zig-global-${{ matrix.os }}-${{ hashFiles('build.zig.zon', 'tools/**/build.zig.zon') }}
+
+  # MSVC backend (acceptance 5.3 / objective 3.4): a second Windows job that
+  # builds and tests with -Dtarget=x86_64-windows-msvc.  The windows-latest
+  # runner ships Visual Studio Build Tools + Windows SDK preinstalled, which
+  # the MSVC ABI requires.  Kept as its own job so the default GNU matrix
+  # above is untouched and stays green; a missing toolchain surfaces via
+  # zig's own WindowsSdkNotFound rather than a hard-coded path probe.
+  build-and-test-msvc:
+    name: windows-latest (MSVC ABI)
+    runs-on: windows-latest
+    env:
+      ZIG_GLOBAL_CACHE: C:\Users\runneradmin\AppData\Local\zig
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Restore zig global cache
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: ${{ env.ZIG_GLOBAL_CACHE }}
+          key: zig-global-msvc-${{ hashFiles('build.zig.zon', 'tools/**/build.zig.zon') }}
+          restore-keys: |
+            zig-global-msvc-
+
+      - name: Build (MSVC)
+        run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast
+
+      - name: Verify & smoke (MSVC)
+        run: |
+          if (-not (Test-Path 'zig-out/bin/temacs.exe')) {
+            Write-Host '✗ temacs.exe not found'; exit 1
+          }
+          Write-Host '✓ MSVC temacs.exe built successfully'
+          ./zig-out/bin/temacs.exe --batch --dump-file=./zig-out/bin/bootstrap-emacs.pdmp --eval '(progn (message "MSVC Zig build working!") (kill-emacs 0))'
+
+      - name: Built-in ert tests (MSVC)
+        timeout-minutes: 90
+        run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast check
+
+      - name: Save zig global cache (MSVC)
+        uses: actions/cache/save@v4
+        if: always()
+        continue-on-error: true
+        with:
+          path: ${{ env.ZIG_GLOBAL_CACHE }}
+          key: zig-global-msvc-${{ hashFiles('build.zig.zon', 'tools/**/build.zig.zon') }}
