@@ -137,8 +137,8 @@
 
 | 项 | 阻塞 | 需要的环境/工作 |
 |---|---|---|
-| **MSVC 后端完整构建+测试** | ✅ **已达成（本轮）**：`zig build -Dtarget=x86_64-windows-msvc` 全量编译+链接+转储成功，`zig build check -Dtarget=x86_64-windows-msvc` 全量 132 测试 **0 unexpected**；`etags/emacsclient --version` 与 `emacs.exe --batch --load` 实测可运行 | 已从 ~327 编译错误推进到全绿，且经 `bool_bf`/`ENUM_BF` 位域修复后源转储 + 测试全通过；剩余仅是 CI 双后端门禁化 |
-| **CI 双后端覆盖**（验收 5.3） | MSVC ABI 只能在 Windows 且有 VS 的 runner 上跑 | 在 CI `windows-latest`（自带 VS）加一个 MSVC `zig build -Dtarget=x86_64-windows-msvc` job（构建 + `zig build check`）验证 
+| **MSVC 后端完整构建+测试** | ✅ **已达成（本轮）**：`zig build -Dtarget=x86_64-windows-msvc` 全量编译+链接+转储成功，`zig build check -Dtarget=x86_64-windows-msvc` 全量 132 测试 **0 unexpected**；`etags/emacsclient --version` 与 `emacs.exe --batch --load` 实测可运行 | 已从 ~327 编译错误推进到全绿，且经 `bool_bf`/`ENUM_BF` 位域修复后源转储 + 测试全通过（与 GNU 后端持平）；CI 双后端已加 job，待 GitHub 徽章确认 |
+| **CI 双后端覆盖**（验收 5.3） | 已实现：`.github/workflows/ci.yml` 新增 `build-and-test-msvc` job（windows-latest，`-Dtarget=x86_64-windows-msvc` 构建 + smoke + 全量 check），与 GNU 矩阵并列 | 本地已验证上述命令全绿；CI job 的实际徽章结果需在 GitHub runner 上确认（依赖 windows-latest 自带的 VS/BuildTools） |
 | **libpng/libjpeg/libtiff/giflib vendoring**（目标 3.5） | GUI/图像子系统不在当前 console/TTY 范围 | 推进 GUI（或用 `-Dnative-comp` 之外需要图像读入的路径真实调用 `image.c`）后再 vendoring |
 | 二进制与上游 MSYS2 构建**一致**（验收 5.1/5.3） | 无 MSYS2 基准 | 建立 MSYS2 参考构建产物做 diff |
 | **`install -p <dir>` 自定义前缀只装二进制** | 转储镜像 `bootstrap-emacs.pdmp` 由 dump 步骤写在默认 `zig-out/bin/`（`emacs` 启动器按自身位置找 pdmp） | 默认 `zig-out` 安装完整可运行（已实测）；自定义 `-p` 目录需手动连同 `zig-out/bin` 的 pdmp（以及 `etc/`、loaddefs）一起拷贝才可运行。如要 `-p` 也产出完整可运行 Emacs，需在 build.zig 中把转储镜像及运行时数据一并 install 到前缀（涉及 pdmp 内嵌路径 / sibling etc / loaddefs 的迁移，属较复杂改动）|
@@ -153,6 +153,6 @@ install`（`zig-out/` 完整可运行，实测 `emacs.exe --version` 正常）�
 已提为完整可运行：** `zig build -Dtarget=x86_64-windows-msvc` 全量编译+链接+转储成功，且
 **`zig build check -Dtarget=x86_64-windows-msvc` 全量 132 测试 0 unexpected**，与 GNU 后端一致；
 关键位域修复（`bool_bf`/`ENUM_BF` 对 `_MSC_VER` 用 `unsigned int`）消除了 clang-msvc 有符号位域
-导致的源转储崩溃。GNU 后端全程不回归。剩余主要是：CI 双后端门禁覆盖、GUI 范围外的图像库
+导致的源转储崩溃。GNU 后端全程不回归。剩余主要是：CI 双后端 job 的 GitHub 徽章确认、GUI 范围外的图像库
 vendoring，以及 `install -p <自定义目录>` 只装了二进制、转储镜像需手动补齐——这些都受
-当前宿主环境（无 GUI、CI 未加 MSVC job）或改动复杂度限制，不是默认构建流程的缺口。
+当前宿主环境（无 GUI、CI 仅在本地验证过命令）或改动复杂度限制，不是默认构建流程的缺口。
