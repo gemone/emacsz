@@ -89,6 +89,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         cwd.deleteFile(io, bc_current_path) catch {};
 
         var bc_defers: usize = 0;
+        // Deep-clone the parent env ONCE so the per-batch `put` below grows
+        // an independently-owned map.  A plain `var bc_env = env_map' struct
+        // copy aliases env_map's internal buffer; when `put` grows it on the
+        // respawn iteration it reallocates that shared buffer, leaving
+        // env_map dangling -> the next batch iteration crashes in getOrPut.
+        var bc_env = try env_map.clone(gpa);
+        defer bc_env.deinit();
         batch: while (true) {
             // If the previous batch was killed mid-compile, defer
             // exactly that file so the respawn makes progress past it.
@@ -118,7 +125,6 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                 }
             }
 
-            var bc_env = env_map;
             try bc_env.put("ZELN_BC_ONLY", "1");
             const bc_argv = [_][]const u8{
                 "./zig-out/bin/emacs", "--batch",
