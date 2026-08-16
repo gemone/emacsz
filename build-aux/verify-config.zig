@@ -45,7 +45,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     for (checks) |c| {
         var found = false;
         var lines = std.mem.splitScalar(u8, text, '\n');
-        while (lines.next()) |line| {
+        while (lines.next()) |lineRaw| {
+            // The generated config.h may carry CRLF line endings (the
+            // src/config.h.in template is checked out with CRLF on Windows),
+            // leaving a trailing \r on every line.  Strip one so exact-match
+            // checks against the LF-shaped patterns succeed regardless of the
+            // template's line-ending convention.
+            const line = if (lineRaw.len > 0 and lineRaw[lineRaw.len - 1] == '\r') lineRaw[0 .. lineRaw.len - 1] else lineRaw;
             if (c.line_exact) {
                 if (std.mem.eql(u8, line, c.pattern)) {
                     found = true;

@@ -24,48 +24,18 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 # include_next <stdint.h> /* use stdint.h if available */
 #else	/* !__GNUC__ */
 
-/* Minimum definitions to allow compilation with tool chains where
-   stdint.h is not available, e.g. Microsoft Visual Studio.  */
-
-#ifdef _WIN64
-typedef __int64 intptr_t;
-typedef unsigned int uint32_t;
-typedef unsigned __int64 uint64_t;
-#define UINT64_MAX (18446744073709551615i64)
-#define UINT64_MIN 0
-/* "i64" is the non-standard suffix used by MSVC for 64-bit constants.  */
-#define INT64_MAX 9223372036854775807i64
-#define INT64_MIN (~INT64_MAX)
-#define INTPTR_MAX INT64_MAX
-#define INTPTR_MIN INT64_MIN
-#define UINTPTR_MAX UINT64_MAX
-#define UINTMAX_MAX UINT64_MAX
-#define UINTMAX_MIN UINT64_MIN
-#define INTMAX_MAX INT64_MAX
-#define INTMAX_MIN INT64_MIN
-#define uintmax_t unsigned __int64
-#define intmax_t __int64
-#else
-typedef int intptr_t;
-typedef unsigned int uint32_t;
-#define UINT32_MAX 4294967295
-#define UINT32_MIN 0
-#define INT32_MAX 2147483647
-#define INT32_MIN (~INT32_MAX)
-#define INTPTR_MAX INT32_MAX
-#define INTPTR_MIN INT32_MIN
-#define UINTPTR_MAX UINT32_MAX
-#define UINTMAX_MAX UINT32_MAX
-#define UINTMAX_MIN UINT32_MIN
-#define INTMAX_MAX INT32_MAX
-#define INTMAX_MIN INT32_MIN
-#define uintmax_t unsigned long
-#define intmax_t long
-#endif
-
-#define PTRDIFF_MAX INTPTR_MAX
-#define PTRDIFF_MIN INTPTR_MIN
-#define SIZE_MAX UINTPTR_MAX
+/* MSVC ABI (zig cc -target *-windows-msvc defines _MSC_VER, not
+   __GNUC__, so this branch is reached).  The bundled stdint.h that zig's
+   clang ships is complete and correctly sized for the LLP64 MSVC ABI
+   (int64_t/uint64_t are 64-bit, long stays 32-bit, SIZE_MAX/PTRDIFF_MAX
+   fit __int64, INT32_MIN/MAX, UINT32_MAX, INT_LEAST32_MIN/MAX etc. are
+   all present).  Just fall through to it via include_next instead of
+   hand-rolling a partial reimplementation that used to shadow the real
+   stdint.h and left uint8_t/int32_t/int64_t/uintptr_t and the *_MAX/_MIN
+   macros undefined across the tree-sitter/sha3/u64 consumers.  The
+   #ifndef SIZE_MAX/PTRDIFF_MAX guards below are then no-ops (the bundled
+   header defines them), but are kept as a safety net.  */
+# include_next <stdint.h>
 
 #endif	/* !__GNUC__ */
 

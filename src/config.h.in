@@ -862,6 +862,12 @@
                 && defined __GNUC__ && ! defined __cplusplus))))
 # define _GL_EXTERN_INLINE_STDHEADER_BUG
 #endif
+/* The MSVC ABI is clang without __GNUC__; its C23 `inline` emits an
+   external definition for every header-inline function (unlike GCC's
+   extern-inline semantic), which duplicates the external symbols the Zig
+   gnulib packages (gnulib-timespec, gnulib-io set_binary_mode, ...) already
+   provide.  Excluding _MSC_VER below drops to the static-inline fallback so
+   the Zig packages own those symbols, exactly as on the GNU backend.  */
 #if ((__GNUC__ \
       ? (defined __GNUC_STDC_INLINE__ && __GNUC_STDC_INLINE__ \
          && !defined __PCC__) \
@@ -869,7 +875,8 @@
          && !defined __HP_cc \
          && !defined __PGI \
          && !(defined __SUNPRO_C && __STDC__))) \
-     && !defined _GL_EXTERN_INLINE_STDHEADER_BUG)
+     && !defined _GL_EXTERN_INLINE_STDHEADER_BUG \
+     && !defined _MSC_VER)
 # define _GL_INLINE inline
 # define _GL_EXTERN_INLINE extern inline
 # define _GL_EXTERN_INLINE_IN_USE

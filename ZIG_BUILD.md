@@ -2,6 +2,13 @@
 
 这是GNU Emacs的Zig原生构建系统，作为Phase 2的一部分，提供TUI-only构建。
 
+> **从 MSYS2/MinGW 迁移到 Zig 构建？** 见 [MIGRATING_MSYS2_TO_ZIG.md](MIGRATING_MSYS2_TO_ZIG.md)
+> （分步迁移指南、构建选项对照、Windows GNU/MSVC 后端安装指南、`build.zig.zon`
+> 依赖管理说明）。
+>
+> **技术验证报告**：见 [TECHNICAL_VERIFICATION.md](TECHNICAL_VERIFICATION.md)
+> （逐项对照目标文档的验证状态、已验证与未验证清单）。
+
 ## 快速开始
 
 ```bash
@@ -40,7 +47,14 @@ compile-lisp → dump-compiled → 最终 loaddefs 生成 → smoke，因此
 ## 构建选项
 
 - `-Doptimize=Debug` - 调试模式（默认，**目前唯一可靠**）
-- `-Dtarget=<triple>` - 交叉编译（例如：x86_64-linux-gnu）
+- `-Dtarget=<triple>` - 选择目标后端（arch+OS+ABI，Zig 标准机制）：
+  - 默认后端 = 本机目标；Windows 本机默认即 `x86_64-windows-gnu`（GNU/MinGW，
+    用 Zig 内置的 MinGW 头文件与库）。
+  - **MSVC 后端**（目标 3.4）：`-Dtarget=x86_64-windows-msvc`，调用
+    Visual Studio / Windows SDK 工具链（仅 Windows 宿主可用，且需要已安装
+    VS Build Tools / Windows SDK；缺 SDK 时 `zig build` 会打印 `choco install`
+    安装提醒，工具链是否真的缺失由 zig 检测决定）。
+  不需要额外的 ABI 专用开关——`-Dtarget` 已完整编码 arch+OS+ABI。
 - `-Dnative-comp=[bool]` - gccjit 原生编译路径（.eln，`HAVE_NATIVE_COMP`，
   `src/comp.c`）。默认 OFF。仅在本机 glibc-Linux 上生效（libgccjit 是宿主
   库，不能交叉编译）；非本机/musl/windows/macos 自动关闭。开启需要系统
@@ -49,6 +63,10 @@ compile-lisp → dump-compiled → 最终 loaddefs 生成 → smoke，因此
 - `-Dnative-comp-zig=[bool]` - Zig/LLVM 原生编译路径（.zeln，
   `HAVE_NATIVE_COMP_ZIG`，`src/compz.c`）。默认 OFF。仅在本机 glibc-Linux 上
   生效。与 `-Dnative-comp` **相互独立**，两者可同时开启（M2.5 共存）。
+- `-Dwith-tree-sitter=[bool]` - 是否启用 tree-sitter（`HAVE_TREE_SITTER`，
+  vendored via `zig fetch`），对照上游 `--with-tree-sitter`。默认 ON；设
+  `false` 时不链接 vendored 库并把 `HAVE_TREE_SITTER` undef（`treesit-available-p`
+  报不可用，`src/treesit.c` 照常编译）。
 
 ### 原生编译共存与优先级（M2.5）
 
@@ -73,6 +91,45 @@ compile-lisp → dump-compiled → 最终 loaddefs 生成 → smoke，因此
 注意：`ReleaseFast`/`ReleaseSafe` 目前会让 temacs 在加载转储时崩溃
 （clang -O1+ 暴露了 pdumper 单-delta 重定位的缺陷）。在深层 pdumper
 多-delta 修复完成之前，请使用默认的 Debug（-O0）。
+
+## Windows 构建（无 MSYS2）
+
+Windows 后端（`x86_64-windows-gnu`，默认）只依赖一个 **Zig 0.16.0**，
+无需 MSYS2 / MinGW / Cygwin；所有第三方 C 依赖（zlib、libxml2、sqlite3、
+lcms2、tree-sitter）都在 `build.zig.zon` 里声明并通过 `zig fetch` 自动下载、
+编译为静态库链接。这是纯本机构建——在当前 Windows 主机上运行 `zig build`
+即用 GNU 后端构建出可运行的 `temacs.exe` + `emacs.exe`（w32 console
+模块已实现；GUI 仍在范围之外）：
+
+```bash
+# GNU/MinGW 后端（默认）：本机 Windows 目标即 x86_64-windows-gnu
+zig build
+# 或显式写出（目标 3.4 双后端选择）
+zig build -Dtarget=x86_64-windows-gnu
+
+# MSVC 后端（可选，目标 3.4）：
+# 需要本机已安装 Visual Studio Build Tools / Windows SDK。
+zig build -Dtarget=x86_64-windows-msvc
+
+# 验证产物
+zig-out\bin\emacs.exe --version
+```
+
+MSVC 后端已实测全量跑通：`zig build -Dtarget=x86_64-windows-msvc` 编译+链接+转储成功，
+产出 `temacs.exe / emacs.exe / emacsclient.exe / etags.exe` 及完整 `bootstrap-emacs.pdmp`；
+`etags --version` / `emacsclient --version` 可运行。MSVC 适配集中在"符号替换"层：完整
+`nt/inc/stdint.h`（include_next 到 Zig stdint）、`nt/inc/sys/types.h`/`ms-w32.h` shim、
+`build.zig` 的 MSVC 宏（`_USE_MATH_DEFINES`/`WINBOOL`/`ftello`/`__PRIPTR_PREFIX`）、
+`alloc.c`/`config.h.in` 的 `_MSC_VER` 分支，以及提供 UCRT 缺失 POSIX 名的 Zig 包
+`tools/msvc-posix`（详见 `TECHNICAL_VERIFICATION.md` §2.4）。GNU 后端全程不回归。
+
+注意：`zig build help`、`zig build smoke`、`zig build check` 等步骤在
+Windows 上通过 Zig 原生实现（不依赖 `/bin/echo` 或 shell），因此干净
+Windows 环境即可运行端点步骤。MSVC 后端只能在 Windows 宿主上工作且必须
+已安装 Windows SDK / VS Build Tools；选择 `-Dtarget=x86_64-windows-msvc` 时
+`build.zig` 会打印一段 `choco install visualstudio2022buildtools
+windows-sdk-10` 的安装提醒（不阻断构建；是否真缺工具链由 zig 自己的检测
+决定，缺失时报 `WindowsSdkNotFound`）。
 
 ## 目录结构
 

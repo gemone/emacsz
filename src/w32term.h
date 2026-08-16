@@ -39,6 +39,12 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 # else
 #  define ALIGN_STACK
 # endif	 /* USE_STACK_LISP_OBJECTS */
+#else
+/* Non-GNU (e.g. the MSVC ABI, where __GNUC__ is not defined): there is no
+   force_align_arg_pointer equivalent; also, leaving ALIGN_STACK UNDEFINED
+   would leave the bare identifier in "BOOL CALLBACK ALIGN_STACK fn (...)" and
+   break parsing.  Define it empty so those declarations stay valid.  */
+# define ALIGN_STACK
 #endif
 
 

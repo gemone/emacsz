@@ -134,6 +134,7 @@ PCONTEXT ctxrec;
 
 #include <tlhelp32.h>
 #include <psapi.h>
+#ifdef __MINGW32__
 #include <w32api.h>
 #if _WIN32_WINNT < 0x0500
 #if !defined (__MINGW32__) || __W32API_MAJOR_VERSION < 3 || (__W32API_MAJOR_VERSION == 3 && __W32API_MINOR_VERSION < 15)
@@ -155,6 +156,7 @@ typedef struct _PROCESS_MEMORY_COUNTERS_EX {
 } PROCESS_MEMORY_COUNTERS_EX,*PPROCESS_MEMORY_COUNTERS_EX;
 #endif
 #endif
+#endif /* __MINGW32__ (PSAPI_PROESS_COUNTERS_EX is native in MSVC psapi.h) */
 
 #include <winioctl.h>
 #include <aclapi.h>

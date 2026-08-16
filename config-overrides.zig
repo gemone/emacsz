@@ -117,6 +117,17 @@ pub const windows_overrides = [_]Override{
     // GUI/image version vars that w32fns.c et al. define only under
     // HAVE_NTGUI.)
     .{ .name = "SYSTEM_TYPE", .value = "\"windows-nt\"" },
+    // The committed Linux config_values.txt advertises Linux-only subsystems
+    // (DBUS, GPM, INOTIFY, SECCOMP, SOUND, XIM) in EMACS_CONFIG_FEATURES, but
+    // the Windows console build provides none of them, and it also undefs
+    // HAVE_GNUTLS (the vendored GnuTLS is macOS-only; Windows does not link
+    // it).  Advertise only what the Windows build actually provides, all in
+    // one clean CR-free string: ACL (USE_ACL via the Zig gnulib-acl package),
+    // GMP, LCMS2, LIBXML2, NOTIFY, PDUMPER, SQLITE3, THREADS, TREE_SITTER,
+    // ZLIB.  This deliberately omits GNUTLS (undef'd above) and replaces the
+    // raw value so the -Dwith-*=false feature-token rewrite (which
+    // strips/requotes this value) cannot corrupt config.h.
+    .{ .name = "EMACS_CONFIG_FEATURES", .value = "\"ACL GMP LCMS2 LIBXML2 NOTIFY PDUMPER SQLITE3 THREADS TREE_SITTER ZLIB\"" },
     .{ .name = "HAVE_BCRYPT_H", .value = "1" },
     .{ .name = "HAVE_LIB_BCRYPT", .value = "1" },
     .{ .name = "USE_UNLOCKED_IO" },

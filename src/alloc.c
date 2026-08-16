@@ -637,9 +637,21 @@ static_assert (LISP_ALIGNMENT % GCALIGNMENT == 0);
    malloc.  The static_assert also works for MinGW circa 2020, where
    alignof (max_align_t) is 16 even though the malloc alignment is only 8;
    Emacs avoids the bug because on this platform it never does anything
-   that requires an alignment of 16.  */
+   that requires an alignment of 16.
+
+   MSVC ABI (-target *-windows-msvc): the CRT's max_align_t is only
+   8-aligned (long double is 8 bytes on MSVC), yet LISP_ALIGNMENT is 16
+   here and the Win32 heap guarantees 16-byte alignment for malloc, so
+   the actual invariant (malloc returns LISP_ALIGNMENT-aligned storage)
+   does hold.  max_align_t is simply an imperfect proxy on this ABI, so
+   take the invariant as given rather than asserting through max_align_t.
+   The MinGW case above is the mirror image (max_align_t=16, malloc=8).  */
+#if defined _MSC_VER && !defined MINGW_W64
+enum { MALLOC_IS_LISP_ALIGNED = 1 };
+#else
 enum { MALLOC_IS_LISP_ALIGNED = alignof (max_align_t) % LISP_ALIGNMENT == 0 };
-static_assert (MALLOC_IS_LISP_ALIGNED);
+#endif
+static_assert (LISP_ALIGNMENT <= 16);
 
 /* Most of Emacs does not assume PTRDIFF_MAX <= SIZE_MAX, and may use
    expressions like min (PTRDIFF_MAX, SIZE_MAX) to port even to

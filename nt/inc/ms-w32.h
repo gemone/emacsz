@@ -142,7 +142,17 @@ extern char *getenv ();
    lower than 0x0500, so leave it alone.  */
 #ifndef MINGW_W64
 # undef _WIN32_WINNT
-# define _WIN32_WINNT 0x0400
+# if defined _MSC_VER
+/* MSVC ABI: the CRT/SDK gate a number of Windows APIs Emacs's w32 code
+   uses on _WIN32_WINNT, and 0x0400 (WinNT4) hides them: GetThreadLocale
+   /SetThreadLocale/EnumSystemLocales (winnls.h, >=0x060x), FSCTL_
+   GET_REPARSE_POINT/REPARSE_DATA_BUFFER (winioctl.h, >=0x0500) and
+   PROCESS_MEMORY_COUNTERS_EX (psapi.h, >=0x0501) are all 0x0400-excluded.
+   Modern Emacs targets Windows 10+, so pin the MSVC build to Win10.  */
+#  define _WIN32_WINNT _WIN32_WINNT_WIN10
+# else
+#  define _WIN32_WINNT 0x0400
+# endif
 #endif
 
 /* Make a leaner executable.  */
@@ -356,6 +366,39 @@ int sys_read (int, char *, unsigned int);
 #ifndef _POSIX
 typedef _sigset_t sigset_t;
 #endif
+#endif
+
+/* MSVC CRT shims.  When compiling with zig cc for the MSVC ABI
+   (-target x86_64-windows-msvc, which defines _MSC_VER and not
+   __MINGW32__), the MSVC CRT lacks the POSIX names Emacs's MinGW-oriented
+   w32 code uses (sigset_t, pid_t, mode_t, ssize_t) and the C99 stdint
+   least/fast types were left undefined.  Those base types are now provided
+   centrally by the committed replacements nt/inc/sys/types.h (pid_t/ssize_t
+   /mode_t/sigset_t, including the CRT's <sys/types.h>) and by
+   nt/inc/stdint.h's include_next to zig's complete stdint.h (the
+   int_least and int_fast widths and every INT/UINT limit macro).  What
+   remains to define here is only the POSIX string helpers the MSVC CRT
+   names differently.  */
+#if defined _MSC_VER && !defined __MINGW32__
+# include <sys/types.h>     /* pid_t/ssize_t/mode_t/sigset_t shim (nt/inc) */
+# include <BaseTsd.h>       /* SSIZE_T */
+# include <stdint.h>        /* complete integer types via nt/inc/stdint.h */
+# include <signal.h>        /* NSIG etc. */
+/* POSIX string helpers the MSVC CRT lacks: strcasecmp (MSVC names it
+   _stricmp) and mempcpy (no MSVC equivalent; provide a small portable
+   implementation like glibc's, returning dst+len).  The gnulib string.h
+   declares mempcpy expecting the OS to have it; MinGW does, MSVC doesn't.  */
+# ifndef strcasecmp
+#  define strcasecmp _stricmp
+# endif
+# ifndef strncasecmp
+#  define strncasecmp _strnicmp
+# endif
+static __inline void *
+mempcpy (void *__dst, const void *__src, size_t __len)
+{
+  return (char *)__builtin_memcpy (__dst, __src, __len) + __len;
+}
 #endif
 
 typedef void (_CALLBACK_ *signal_handler) (int);

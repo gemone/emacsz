@@ -900,10 +900,17 @@ struct stat
 
 /* If any of the following are undefined,
    define them to their de facto standard values.  */
-#if !S_ISUID
+/* Guard with #ifndef, not #if !S_ISUID: on Windows nt/inc/sys/stat.h
+   intentionally defines S_ISUID/S_ISGID to 0 (Windows has no setuid bits).
+   The old `#if !S_ISUID` read that 0 as "undefined" and redefined them to
+   the POSIX 04000/02000 (wrong for Windows, and a "macro redefined" error
+   under the MSVC ABI).  Respect a pre-existing definition (like the
+   S_ISVTX block below already does).  POSIX platforms where they are
+   genuinely undefined still get the standard values.  */
+#ifndef S_ISUID
 # define S_ISUID 04000
 #endif
-#if !S_ISGID
+#ifndef S_ISGID
 # define S_ISGID 02000
 #endif
 

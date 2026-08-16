@@ -71,6 +71,81 @@ fn gnutlsGlCollision(src: []const u8) bool {
     return false;
 }
 
+// Apply MSVC-CRT / Winsock deprecation suppressions to a module, so every
+// translation unit in it compiles without the CRT turning legitimate POSIX/
+// ANSI names (open/close/fopen/strcpy/getenv/strerror/unlink/wcrtomb) or the
+// winsock inet_addr/inet_ntoa into hard deprecation errors.  Mirrors upstream
+// Emacs's MSVC build (_CRT_SECURE_NO_WARNINGS / _CRT_NONSTDC_NO_WARNINGS) plus
+// the winsock equivalent.  Called at the module level so it reaches all TUs
+// regardless of per-file compile flags; no effect on the MinGW ABI.
+fn applyMsvcCrtWarnings(mod: *std.Build.Module) void {
+    mod.addCMacro("_CRT_SECURE_NO_WARNINGS", "1");
+    mod.addCMacro("_CRT_NONSTDC_NO_WARNINGS", "1");
+    mod.addCMacro("_WINSOCK_DEPRECATED_NO_WARNINGS", "1");
+    // MSVC CRT <math.h> only exposes M_PI and friends when _USE_MATH_DEFINES
+    // is defined before it is included; src/lcms.c uses M_PI directly.
+    mod.addCMacro("_USE_MATH_DEFINES", "1");
+    // DirectWrite mirrors its structs with a plain `int` WINBOOL (distinct
+    // from winbase BOOL and not defined by the current SDK headers);
+    // src/w32dwrite.c uses it in the manually-declared DWrite structs.
+    mod.addCMacro("WINBOOL", "int");
+    // The MSVC CRT has no ftello (it spells the 64-bit variant _ftelli64 and
+    // its ftell returns long).  HAVE_FSEEKO is set (src/lread.c then says
+    // `#define file_tell ftello`, file_offset=off_t); map ftello to the CRT
+    // ftell, whose long return matches this config's 32-bit off_t exactly.
+    mod.addCMacro("ftello", "ftell");
+    // The committed gnulib lib/inttypes.h defines PRIdPTR/PRIuPTR/... as
+    // `__PRIPTR_PREFIX "d"` / `... "u"` / etc., and it defines the companion
+    // 64-bit prefixes `_PRI64_PREFIX`/`_PRIu64_PREFIX` to "I64" for _MSC_VER
+    // on its own (lines 727/742).  But `__PRIPTR_PREFIX` itself it never
+    // defines, and the MSVC ABI's headers do not either (lib/inttypes.h
+    // shadows the CRT's <inttypes.h> which would), so the token stays literal
+    // and any `"...%"PRIdPTR"\n"` string-join fails with "expected ')'".
+    // ptrdiff_t is 64-bit under the LLP64 MSVC ABI, so pin it to "I64" to
+    // match lib/inttypes.h's own MSVC convention for the 64-bit prefixes.
+    mod.addCMacro("__PRIPTR_PREFIX", "\"I64\"");
+    // bool consistency for the MSVC ABI.  On MinGW `bool` is `signed char`,
+    // and Emacs's w32 code freely mixes `bool *` with `signed char *` and
+    // declares cross-file bool params.  Under the MSVC ABI clang's native
+    // `_Bool` is a DIFFERENT type (same 1-byte size, distinct type), so w32
+    // sources get "conflicting types" / "incompatible pointer types".
+    // Defining `bool` to `signed char` (as MinGW does) restores the type
+    // Emacs's w32 code is written against.  The MSVC CRT <stdbool.h> would
+    // `#define bool _Bool` and clash with this, so also pre-set its `_STDBOOL`
+    // include guard (the CRT stdbool's entire body is inside #ifndef _STDBOOL)
+    // so it becomes empty and never redefines bool.  No effect on MinGW.
+    mod.addCMacro("bool", "signed char");
+    mod.addCMacro("_STDBOOL", "1");
+}
+
+
+// MSVC-backend toolchain hint (goal 3.6).  When the selected target uses the
+// Windows MSVC C ABI (-Dtarget=x86_64-windows-msvc), the build needs the
+// Windows SDK + a Visual Studio C/C++ toolchain.  zig itself performs the
+// authoritative detection (a bare "failed to find libc installation:
+// WindowsSdkNotFound" surfaces at the first C compile).  We do NOT hard-code
+// install paths or abort the build here -- VS/Build Tools may legitimately
+// live anywhere (e.g. installed via choco to a custom path).  Instead we
+// print a one-time reminder of the choco installation commands and let the
+// build proceed so zig's own real detection is the gate.  Developers who
+// already installed the toolchain are never blocked.
+fn probeMsvcToolchain(b: *std.Build) void {
+    const host_windows = b.graph.host.result.os.tag == .windows;
+    if (!host_windows) return; // Only relevant on a Windows host.
+    std.debug.print(
+        \\
+        \\build.zig: the MSVC backend (-Dtarget=x86_64-windows-msvc) needs the
+        \\Windows SDK and a Visual Studio C/C++ toolchain.
+        \\If they are not already installed, install them with (admin PowerShell):
+        \\  choco install -y visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools"
+        \\  choco install -y windows-sdk-10
+        \\Then re-run `zig build`.  A missing toolchain is detected by zig itself
+        \\("failed to find libc installation: WindowsSdkNotFound") -- this message
+        \\is only a reminder.
+        \\
+    , .{});
+}
+
 const ConfigOut = struct {
     file: std.Build.LazyPath,
     step: *std.Build.Step,
@@ -117,7 +192,12 @@ fn makeConfigHeader(b: *std.Build, tag: ?[]const u8, triple: ?[]const u8, disabl
     var values = std.StringHashMap([]const u8).init(alloc);
     {
         var it = std.mem.splitScalar(u8, values_text, '\n');
-        while (it.next()) |line| {
+        while (it.next()) |raw_line| {
+            // config_values.txt may be checked out with CRLF line endings on
+            // Windows; strip one trailing \r so no value silently carries a
+            // hidden carriage return (which has broken the quoted-string
+            // feature-token rewrite below).
+            const line = if (raw_line.len > 0 and raw_line[raw_line.len - 1] == '\r') raw_line[0 .. raw_line.len - 1] else raw_line;
             if (line.len == 0) continue;
             if (std.mem.indexOfScalar(u8, line, '=')) |eq| {
                 values.put(b.dupe(line[0..eq]), b.dupe(line[eq + 1 ..])) catch @panic("OOM");
@@ -171,6 +251,7 @@ fn makeConfigHeader(b: *std.Build, tag: ?[]const u8, triple: ?[]const u8, disabl
                 .{ .knob = "HAVE_LIBXML2", .token = "LIBXML2" },
                 .{ .knob = "HAVE_LCMS2", .token = "LCMS2" },
                 .{ .knob = "HAVE_ZLIB", .token = "ZLIB" },
+                .{ .knob = "HAVE_TREE_SITTER", .token = "TREE_SITTER" },
                 .{ .knob = "USE_ACL", .token = "ACL" },
             };
             var drop = std.StringHashMap(void).init(alloc);
@@ -223,6 +304,11 @@ fn makeConfigHeader(b: *std.Build, tag: ?[]const u8, triple: ?[]const u8, disabl
 }
 
 pub fn build(b: *std.Build) void {
+    // Target selection uses zig's standard -Dtarget (e.g.
+    // x86_64-windows-gnu for the default Windows GNU/MinGW backend, or
+    // x86_64-windows-msvc for the MSVC backend).  No extra ABI shorthand is
+    // added: -Dtarget already encodes arch+OS+ABI in full, so a second
+    // switch would be a redundant, overlapping entry point.
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     // `-Dshow-sources=true`: print the parsed base/lib source lists to stderr
@@ -251,6 +337,12 @@ pub fn build(b: *std.Build) void {
     // there too; only libm and ncurses (terminal support) remain.
     const is_windows = target.result.os.tag == .windows;
     const is_musl = target.result.os.tag == .linux and target.result.abi == .musl;
+    // MSVC backend pre-flight (goal 3.6): when the selected target uses the
+    // Windows MSVC ABI, fail fast with install guidance if the Windows SDK /
+    // VS C++ toolchain is missing on this Windows host (instead of zig's opaque
+    // "WindowsSdkNotFound").  Only fires for the msvc ABI; gnu backend is
+    // self-contained on Windows.
+    if (target.result.abi == .msvc) probeMsvcToolchain(b);
     // modules_runtime: the SHARED module runtime turns on once when EITHER
     // module switch is on AND the target can actually dlopen.  Gates the
     // shared runtime -- HAVE_MODULES macro, emacs-module.c compile,
@@ -408,6 +500,14 @@ pub fn build(b: *std.Build) void {
     const with_xml2 = b.option(bool, "with-xml2", "Enable libxml2 (HAVE_LIBXML2)") orelse true;
     const with_lcms2 = b.option(bool, "with-lcms2", "Enable Little CMS (HAVE_LCMS2)") orelse true;
     const with_zlib = b.option(bool, "with-zlib", "Enable zlib (HAVE_ZLIB)") orelse true;
+    // Tree-sitter (HAVE_TREE_SITTER), mirroring upstream --with-tree-sitter /
+    // --without-tree-sitter.  Default on: tree-sitter is vendored via
+    // build.zig.zon -> tree_sitter URL dep and built from source, so there is
+    // no system dependency.  When off, the vendored libtree-sitter is not
+    // linked and HAVE_TREE_SITTER is undef'd; src/treesit.c always compiles (as
+    // upstream does) so `treesit-available-p' reports unavailable rather than
+    // the symbol table disappearing.
+    const with_tree_sitter = b.option(bool, "with-tree-sitter", "Enable tree-sitter (HAVE_TREE_SITTER, vendored)") orelse true;
 
     // Knobs forced by the switches, collected into DisabledKnob entries.
     var disabled_knobs: std.ArrayList(DisabledKnob) = .empty;
@@ -426,6 +526,7 @@ pub fn build(b: *std.Build) void {
             .{ .on = with_xml2, .name = "HAVE_LIBXML2" },
             .{ .on = with_lcms2, .name = "HAVE_LCMS2" },
             .{ .on = with_zlib, .name = "HAVE_ZLIB" },
+            .{ .on = with_tree_sitter, .name = "HAVE_TREE_SITTER" },
         };
         for (feats) |f| {
             if (!f.on) disabled_knobs.append(b.allocator, .{ .name = f.name, .value = f.value }) catch @panic("OOM");
@@ -864,6 +965,18 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    // MSVC ABI: the CRT/Windows SDK promote a huge number of POSIX/ANSI
+    // function names and deprecated APIs to hard deprecation ERRORS
+    // (open/close/fopen/strcpy/getenv/strerror/unlink/wcrtomb, and winsock
+    // inet_addr/inet_ntoa).  Emacs's w32 code uses the POSIX/ANSI names on
+    // purpose (upstream's MSVC build does exactly this), so suppress all of
+    // them at the module level -- this reaches EVERY TU in the module
+    // regardless of per-file compile flags (the per-file -D only filters
+    // some paths).  No effect on the MinGW ABI (its CRT doesn't gate these
+    // on the same macros).
+    if (target.result.abi == .msvc) {
+        applyMsvcCrtWarnings(exe.root_module);
+    }
     // The 8MB default main-thread stack overflows during deep batch Lisp
     // work in Debug builds (-O0 eval frames are large): the darwin
     // loadup dump died at cus-start (handle_sigsegv longjmps back to the
@@ -1092,6 +1205,52 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkLibrary(gnulib_tempname_lib);
     if (target.result.os.tag == .windows)
         gnulib_tempname_mod.linkSystemLibrary("bcrypt", .{}); // Windows RNG
+
+    // msvc-posix: MSVC-backend-only provider of the POSIX-name file/dir
+    // functions the UCRT does not export (_open/_close/_mkdir/_unlink/
+    // _getcwd/_stati64 aliases), needed by the MSVC command-line tools
+    // (emacsclient, etags), the Zig gnulib-tempname package, and temacs.
+    // Built only when the target selects the MSVC ABI; a Zig package (not a
+    // C shim) is used because Emacs's w32 headers macro-map these very
+    // names, which would rewrite a C wrapper's body.
+    //
+    // Two consumer flavors, differing only in whether getcwd/stat/fstat/
+    // lstat are exported: temacs's own src/w32.c defines all four, so
+    // exporting them there would duplicate symbols; the lib-src tools do not
+    // link w32.c and rely on this package for them.
+    const msvc_posix_mod = blk: {
+        const opts = b.addOptions();
+        opts.addOption(bool, "include_file_status_fns", true);
+        const m = b.createModule(.{
+            .root_source_file = b.dependency("msvc_posix", .{}).path("src/posix.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true, // every wrapper is a thin CRT call
+        });
+        m.addOptions("build_options", opts);
+        break :blk m;
+    };
+    const msvc_posix_lib =
+        b.addLibrary(.{ .name = "msvc-posix", .root_module = msvc_posix_mod });
+
+    // Temacs flavor: exclude the getcwd/stat/fstat/lstat exports that
+    // src/w32.c already provides.  Linked only on the MSVC ABI.
+    const msvc_posix_temacs_mod = blk: {
+        const opts = b.addOptions();
+        opts.addOption(bool, "include_file_status_fns", false);
+        const m = b.createModule(.{
+            .root_source_file = b.dependency("msvc_posix", .{}).path("src/posix.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        m.addOptions("build_options", opts);
+        break :blk m;
+    };
+    const msvc_posix_temacs_lib =
+        b.addLibrary(.{ .name = "msvc-posix-temacs", .root_module = msvc_posix_temacs_mod });
+    if (target.result.os.tag == .windows and target.result.abi == .msvc)
+        exe.root_module.linkLibrary(msvc_posix_temacs_lib);
 
     // gnulib-fsusage: an independent Zig package (tools/gnulib-fsusage)
     // providing gnulib's file-system space query (get_fs_usage,
@@ -1795,7 +1954,7 @@ pub fn build(b: *std.Build) void {
         // is upstream's native Windows header set (ms-w32.h pulls it in
         // via conf_post.h once config.h defines WINDOWSNT).  The search
         // order mirrors the autotools Windows build (-I../lib -I../nt/inc).
-        const base_flags = &[_][]const u8{
+        const base_flags_core_w32 = [_][]const u8{
             "-std=gnu2x",
             "-fno-common",
         "-fno-strict-aliasing",
@@ -1816,14 +1975,42 @@ pub fn build(b: *std.Build) void {
             "-Ilib/w32",
             "-Int/inc",
         };
+        // The MSVC CRT turns a huge number of perfectly-fine POSIX/ANSI names
+        // (open/fdopen/strcpy/getenv/...) into hard deprecation ERRORS.  Emacs
+        // deliberately uses the POSIX names (the vendored build.zig ports keep
+        // them), so suppress those CRT warnings for the MSVC ABI exactly as
+        // upstream's MSVC build does (_CRT_SECURE_NO_WARNINGS /
+        // _CRT_NONSTDC_NO_WARNINGS).  Zero effect on the MinGW ABI.
+        const base_flags: []const []const u8 = if (target.result.abi == .msvc)
+            &(base_flags_core_w32 ++ [_][]const u8{
+                "-D_CRT_SECURE_NO_WARNINGS",
+                "-D_CRT_NONSTDC_NO_WARNINGS",
+                // MSVC promotes the Windows SDK's __declspec(deprecated)
+                // (e.g. GetVersion/GetVersionExA) to hard errors; the w32
+                // code legitimately uses them for OS detection.  Suppress
+                // deprecation warnings for the MSVC ABI, like the macOS
+                // branch already does (-Wno-deprecated-declarations), plus
+                // the w32 bit-field pattern (bare `int : N` with constant
+                // values that truncate) which clang-msvc flags.
+                "-Wno-deprecated-declarations",
+                "-Wno-bitfield-constant-conversion",
+            })
+        else
+            &base_flags_core_w32;
 
         // src/timefns.c:monotonic_coarse_timespec is provided by the
         // emacs-time Zig package (Windows QueryPerformanceCounter backend,
         // no msvcrt) instead of C; the body is #ifndef'd out when
         // EMACS_USE_ZIG_MONOTONIC_COARSE is defined. See the Unix branch
         // above for the full rationale.
-        const timefns_flags = base_flags ++
-            [_][]const u8{"-DEMACS_USE_ZIG_MONOTONIC_COARSE"};
+        // base_flags is a runtime slice (MSVC-ABI appends CRT-warning
+        // defines), so append the per-file flag at runtime, not with `++`.
+        const timefns_flags = blk: {
+            const out = b.allocator.alloc([]const u8, base_flags.len + 1) catch @panic("OOM");
+            @memcpy(out[0..base_flags.len], base_flags);
+            out[base_flags.len] = "-DEMACS_USE_ZIG_MONOTONIC_COARSE";
+            break :blk out;
+        };
 
         for (base_sources) |src| {
             const flags: []const []const u8 =
@@ -1842,7 +2029,7 @@ pub fn build(b: *std.Build) void {
         }
 
         // Add Gnulib sources
-        const libgnu_flags = &[_][]const u8{
+        const libgnu_flags_core = [_][]const u8{
             "-std=gnu2x",
             "-fno-common",
         "-fno-strict-aliasing",
@@ -1859,6 +2046,16 @@ pub fn build(b: *std.Build) void {
             "-Ilib/w32",
             "-Int/inc",
         };
+        // Same MSVC-ABI CRT/SDK-warning suppression as base_flags above.
+        const libgnu_flags: []const []const u8 = if (target.result.abi == .msvc)
+            &(libgnu_flags_core ++ [_][]const u8{
+                "-D_CRT_SECURE_NO_WARNINGS",
+                "-D_CRT_NONSTDC_NO_WARNINGS",
+                "-Wno-deprecated-declarations",
+                "-Wno-bitfield-constant-conversion",
+            })
+        else
+            &libgnu_flags_core;
 
         for (libgnu_sources) |src| {
             // Modules omitted on Windows (nt/gnulib-cfg.mk): w32.c or the
@@ -1874,7 +2071,18 @@ pub fn build(b: *std.Build) void {
                 std.mem.eql(u8, src, "lib/issymlinkat.c") or
                 std.mem.eql(u8, src, "lib/malloc.c") or
                 std.mem.eql(u8, src, "lib/realloc.c") or
-                std.mem.eql(u8, src, "lib/fpending.c"))
+                std.mem.eql(u8, src, "lib/fpending.c") or
+                // strtol/strtoll/strtoimax/strnlen (lib/{strtol,strtoll,
+                // strtoimax,strnlen}.c) are provided natively by libucrt.lib
+                // on the MSVC ABI; the gnulib copies would duplicate those
+                // UCRT symbols at link.  MinGW's msvcrt lacks strnlen (and
+                // its strtol lives in the DLL, overridable), so keep them
+                // for the GNU backend.
+                (target.result.abi == .msvc and
+                    (std.mem.eql(u8, src, "lib/strtol.c") or
+                     std.mem.eql(u8, src, "lib/strtoll.c") or
+                     std.mem.eql(u8, src, "lib/strtoimax.c") or
+                     std.mem.eql(u8, src, "lib/strnlen.c"))))
                 continue;
             exe.root_module.addCSourceFile(.{
                 .file = b.path(src),
@@ -1940,7 +2148,11 @@ pub fn build(b: *std.Build) void {
     }
 
     // Link system libraries (phase 2: based on src/Makefile)
-    exe.root_module.linkSystemLibrary("m", .{});
+    // libm: the POSIX math library.  The MSVC CRT provides the math
+    // functions in the CRT itself (no separate libm), so skip it for the
+    // MSVC ABI target.
+    if (target.result.abi != .msvc)
+        exe.root_module.linkSystemLibrary("m", .{});
     // gccjit native-comp (-Dnative-comp): libgccjit.so.  ldconfig resolves it
     // (verified present on the build host).  Gated to native_comp_target so
     // off-path / cross builds never look for it.
@@ -2089,9 +2301,16 @@ pub fn build(b: *std.Build) void {
         "gzlib.c", "gzread.c", "gzwrite.c", "infback.c", "inffast.c",
         "inflate.c", "inftrees.c", "trees.c", "uncompr.c", "zutil.c",
     };
-    const zlib_flags = [_][]const u8{ "-O2", "-DHAVE_UNISTD_H" };
+    // zlib compiles standalone.  -DHAVE_UNISTD_H is correct where unistd.h
+    // exists (MinGW/glibc); the MSVC CRT has no unistd.h, and giving zlib
+    // that define makes zconf.h include it and fail.  For the MSVC ABI,
+    // build zlib without it (zconf.h degrades to its own off_t handling).
+    const zlib_flags: []const []const u8 = if (target.result.abi == .msvc)
+        &[_][]const u8{ "-O2" }
+    else
+        &[_][]const u8{ "-O2", "-DHAVE_UNISTD_H" };
     for (zlib_sources) |zsrc| {
-        zlib_mod.addCSourceFile(.{ .file = zlib_src.path(zsrc), .flags = &zlib_flags });
+        zlib_mod.addCSourceFile(.{ .file = zlib_src.path(zsrc), .flags = zlib_flags });
     }
     const zlib_lib = b.addLibrary(.{ .name = "z", .root_module = zlib_mod });
     exe.root_module.linkLibrary(zlib_lib);
@@ -2159,13 +2378,19 @@ pub fn build(b: *std.Build) void {
     // Built from source as a Zig-managed dependency (build.zig.zon ->
     // tree_sitter URL dep, pinned master commit 308aee0c9 / version
     // 0.27.0) using tree-sitter's own Zig 0.16 build.zig, replacing the
-    // system-installed library on every platform.
+    // system-installed library on every platform.  Gated on -Dwith-tree-sitter
+    // (default on) so `zig build -Dwith-tree-sitter=false` mirrors upstream
+    // --without-tree-sitter: the vendored lib is not linked and HAVE_TREE_SITTER
+    // is undef'd, while src/treesit.c still compiles (its ts_* bodies are
+    // #if HAVE_TREE_SITTER-gated out) to keep treesit-available-p present.
+    if (with_tree_sitter) {
     const tree_sitter = b.dependency("tree_sitter", .{
         .target = target,
         .optimize = optimize,
     });
     exe.root_module.linkLibrary(tree_sitter.artifact("tree-sitter"));
     exe.root_module.addIncludePath(tree_sitter.path("lib/include"));
+    }
 
     // GnuTLS (HAVE_GNUTLS): gnutls_* symbols from src/gnutls.c.  Built
     // from source as a Zig-managed dependency (build.zig.zon -> gnutls_src
@@ -2392,6 +2617,12 @@ pub fn build(b: *std.Build) void {
         // init_environment AppData HOME fallback (SHGetFolderPathA) is
         // skipped and ShellExecuteEx (browse-url) is unavailable.
         exe.root_module.linkSystemLibrary("shell32", .{});
+        // advapi32: the Crypt* / Reg* / GetUserNameA / token-privilege calls
+        // in src/w32.c+w32proc.c.  MinGW's emacsclient-like linker pulls
+        // these in transitively; the MSVC lld link resolves each dllimport
+        // explicitly and needs the .lib named, so state it for the MSVC ABI.
+        if (target.result.abi == .msvc)
+            exe.root_module.linkSystemLibrary("advapi32", .{});
     }
 
     // lib-src tools (emacsclient, etags) — the user-facing programs the
@@ -2522,6 +2753,7 @@ pub fn build(b: *std.Build) void {
                     .link_libc = true,
                 }),
             });
+            if (target.result.abi == .msvc) applyMsvcCrtWarnings(tool_exe.root_module);
             tool_exe.root_module.addCSourceFile(.{
                 .file = b.path(t.src),
                 .flags = libsrc_flags,
@@ -2542,12 +2774,27 @@ pub fn build(b: *std.Build) void {
                 // w32_window_app (emacsclient.c:412) calls InitCommonControls.
                 tool_exe.root_module.linkSystemLibrary("comctl32", .{});
                 tool_exe.root_module.linkSystemLibrary("ws2_32", .{});
+                // The MSVC link (lld) resolves each DLL import explicitly:
+                // emacsclient calls MessageBox (user32) and the Reg* API
+                // (advapi32); MinGW's emacsclient links these transitively
+                // via its libs, the MSVC ABI does not, so state them.
+                if (target.result.abi == .msvc) {
+                    tool_exe.root_module.linkSystemLibrary("user32", .{});
+                    tool_exe.root_module.linkSystemLibrary("advapi32", .{});
+                }
             }
             // etags's mkostemp on Windows comes from the Zig gnulib-tempname
             // package (same provider the temacs build links); the mingw CRT
             // has no mkostemp.
             if (is_windows and std.mem.eql(u8, t.name, "etags"))
                 tool_exe.root_module.linkLibrary(gnulib_tempname_lib);
+            // MSVC ABI: the UCRT does not export the POSIX file/dir names the
+            // tools (and the gnulib-tempname package above) call; provide them
+            // via the Zig msvc-posix package.  MinGW/msvcrt exports both
+            // spellings, so this is MSVC-only.
+            if (is_windows and target.result.abi == .msvc and
+                (std.mem.eql(u8, t.name, "emacsclient") or std.mem.eql(u8, t.name, "etags")))
+                tool_exe.root_module.linkLibrary(msvc_posix_lib);
             tool_exe.root_module.addIncludePath(target_config_h_file.file.dirname());
             tool_exe.step.dependOn(target_config_h_file.step);
             // macOS tools: resolve #include <getopt.h> against the
@@ -2558,6 +2805,25 @@ pub fn build(b: *std.Build) void {
             {
                 tool_exe.root_module.addIncludePath(b.path("lib/macos-tool"));
                 tool_exe.root_module.addIncludePath(b.path("lib"));
+            }
+            // MSVC-ABI tools (emacsclient, etags): the MSVC CRT has no
+            // <getopt.h>/getopt_long at all (MinGW's CRT does).  Provide the
+            // same full gnulib getopt substitute the macOS tools use:
+            // lib/macos-tool/getopt.h on the include path, and link the gnulib
+            // getopt.c+getopt1.c implementation (verified to compile for the
+            // MSVC ABI).  lib/getopt.h requires <config.h> first, which the
+            // flags' -DHAVE_CONFIG_H + target-config include path satisfy.
+            if (target.result.abi == .msvc and (std.mem.eql(u8, t.name, "emacsclient") or std.mem.eql(u8, t.name, "etags")))
+            {
+                tool_exe.root_module.addIncludePath(b.path("lib/macos-tool"));
+                tool_exe.root_module.addCSourceFile(.{
+                    .file = b.path("lib/getopt.c"),
+                    .flags = libsrc_flags,
+                });
+                tool_exe.root_module.addCSourceFile(.{
+                    .file = b.path("lib/getopt1.c"),
+                    .flags = libsrc_flags,
+                });
             }
             const install_tool = b.addInstallArtifact(tool_exe, .{});
             b.getInstallStep().dependOn(&install_tool.step);
@@ -3466,53 +3732,84 @@ pub fn build(b: *std.Build) void {
         );
         bench_step.dependOn(&run_bench.step);
     }
+    // The help step below prints only a static banner.  Avoid the `echo`
+    // system command that the Unix shell implies: on a bare Windows host
+    // (no MSYS2, per the migration goal) `echo` is a cmd.exe builtin with no
+    // echo.exe binary, so spawning it via addSystemCommand fails with
+    // FileNotFound.  Instead a small custom step prints the banner directly
+    // through std.debug.print, which is cross-platform and needs only the
+    // Zig runtime.  The banner text uses the same wording as the prior echo.
+    const helptext = std.fmt.allocPrint(b.allocator,
+            \\Emacs Zig Native Build
+            \\======================
+            \\
+            \\Available steps:
+            \\  zig build                   - Build temacs + emacs wrapper
+            \\  zig build dump              - Dump a runnable bootstrap-emacs.pdmp
+            \\  zig build compile-lisp      - Byte-compile lisp/ (incremental)
+            \\  zig build dump-compiled     - Re-dump with compiled lisp loaded
+            \\  zig build smoke             - Verify dumped emacs runs
+            \\  zig build check             - Run built-in ert test suites (582 tests across 40 suites)
+            \\  zig build test              - Alias of check
+            \\  zig build check-all         - Run ALL ert suites (no skip; classify failures for planning)
+            \\  zig build generate-headers  - Generate Gnulib .gl.h headers
+            \\  zig build generate-unidata  - Generate charscript/emoji-zwj.el
+            \\  zig build generate-charsets - Generate charset maps
+            \\  zig build generate-charprop - Generate unicode charprop/uni-*.el
+            \\  zig build generate-loaddefs - Generate autoload files
+            \\  zig build generate-cedet-grammars - Generate cedet parser files
+            \\  zig build help              - Show this message
+            \\
+            \\Windows backends (via -Dtarget, Windows host only):
+            \\  -Dtarget=x86_64-windows-gnu   - GNU/MinGW backend (default; zig's bundled headers+libs)
+            \\  -Dtarget=x86_64-windows-msvc  - MSVC backend (requires Visual Studio / Windows SDK)
+            \\
+            \\Native-comp Zig path (opt-in: -Dnative-comp-zig=true, glibc-Linux):
+            \\  zig build zeln-compile-spike - M0 spike: build test-spike.zeln
+            \\  zig build zeln-diff         - M1/M2 differential test (N/N identical)
+            \\  zig build populate-zeln-cache - M2b: populate .zeln-cache from lisp/
+            \\  zig build check-zeln        - M2b: 582 built-in tests via .zeln
+            \\  zig build zeln-fdo          - Z5: auto profile-guided recompile loop
+            \\  zig build zeln-pgo          - Z7: multi-fixture PGO test (6 workload shapes)
+            \\
+            \\Native-comp gccjit path (opt-in: -Dnative-comp=true, native glibc-Linux;
+            \\  requires libgccjit). Coexists with -Dnative-comp-zig: when both are on,
+            \\  `native-comp-z-prefer' (nil=prefer .eln, t=prefer .zeln) picks the
+            \\  artifact loaded where a .elc has both a .eln and a .zeln.
+            \\
+            \\Runnable commands (after `zig build dump`):
+            \\  zig-out/bin/temacs          - raw temacs (needs --dump-file=...)
+            \\  zig-out/bin/emacs           - wrapper that locates temacs+pdmp and
+            \\                               forwards args (e.g. `--version`)
+            \\
+            \\Status: Linux TTY build works
+            \\  - zig build: temacs (non-PIE, -O0) + emacs wrapper
+            \\  - zig build dump: runnable emacs (32.0.50)
+            \\  - zig build check: 582/582 built-in tests pass
+            \\
+        , .{}) catch @panic("OOM");
     const help_step = b.step("help", "Show build information");
-    const help_cmd = b.addSystemCommand(&[_][]const u8{
-        "echo",
-        \\Emacs Zig Native Build
-        \\======================
-        \\
-        \\Available steps:
-        \\  zig build                   - Build temacs + emacs wrapper
-        \\  zig build dump              - Dump a runnable bootstrap-emacs.pdmp
-        \\  zig build compile-lisp      - Byte-compile lisp/ (incremental)
-        \\  zig build dump-compiled     - Re-dump with compiled lisp loaded
-        \\  zig build smoke             - Verify dumped emacs runs
-        \\  zig build check             - Run built-in ert test suites (582 tests across 40 suites)
-        \\  zig build test              - Alias of check
-        \\  zig build check-all         - Run ALL ert suites (no skip; classify failures for planning)
-        \\  zig build generate-headers  - Generate Gnulib .gl.h headers
-        \\  zig build generate-unidata  - Generate charscript/emoji-zwj.el
-        \\  zig build generate-charsets - Generate charset maps
-        \\  zig build generate-charprop - Generate unicode charprop/uni-*.el
-        \\  zig build generate-loaddefs - Generate autoload files
-        \\  zig build generate-cedet-grammars - Generate cedet parser files
-        \\  zig build help              - Show this message
-        \\
-        \\Native-comp Zig path (opt-in: -Dnative-comp-zig=true, glibc-Linux):
-        \\  zig build zeln-compile-spike - M0 spike: build test-spike.zeln
-        \\  zig build zeln-diff         - M1/M2 differential test (N/N identical)
-        \\  zig build populate-zeln-cache - M2b: populate .zeln-cache from lisp/
-        \\  zig build check-zeln        - M2b: 582 built-in tests via .zeln
-        \\  zig build zeln-fdo          - Z5: auto profile-guided recompile loop
-        \\  zig build zeln-pgo          - Z7: multi-fixture PGO test (6 workload shapes)
-        \\
-        \\Native-comp gccjit path (opt-in: -Dnative-comp=true, native glibc-Linux;
-        \\  requires libgccjit). Coexists with -Dnative-comp-zig: when both are on,
-        \\  `native-comp-z-prefer' (nil=prefer .eln, t=prefer .zeln) picks the
-        \\  artifact loaded where a .elc has both a .eln and a .zeln.
-        \\
-        \\Runnable commands (after `zig build dump`):
-        \\  zig-out/bin/temacs          - raw temacs (needs --dump-file=...)
-        \\  zig-out/bin/emacs           - wrapper that locates temacs+pdmp and
-        \\                               forwards args (e.g. `--version`)
-        \\
-        \\Status: Linux TTY build works
-        \\  - zig build: temacs (non-PIE, -O0) + emacs wrapper
-        \\  - zig build dump: runnable emacs (32.0.50)
-        \\  - zig build check: 582/582 built-in tests pass
-    });
-    help_step.dependOn(&help_cmd.step);
+    const HelpStep = struct {
+        step: std.Build.Step,
+        text: []const u8,
+        fn make(step: *std.Build.Step, options: std.Build.Step.MakeOptions) anyerror!void {
+            _ = options;
+            const self: *@This() = @fieldParentPtr("step", step);
+            std.debug.print("{s}", .{self.text});
+            return;
+        }
+    };
+    const hs = b.allocator.create(HelpStep) catch @panic("OOM");
+    hs.* = .{
+        .step = std.Build.Step.init(.{
+            .id = .custom,
+            .name = "help-print",
+            .owner = b,
+            .makeFn = HelpStep.make,
+        }),
+        .text = helptext,
+    };
+    help_step.dependOn(&hs.step);
 }
 
 /// Parse the `base_obj =` block from src/Makefile.in (lines ~450-469) into the

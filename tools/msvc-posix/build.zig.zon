@@ -1,0 +1,15 @@
+.{
+    // MSVC-backend-only provider of POSIX-name file/dir functions the UCRT
+    // does not export (_open/_close/_mkdir/_unlink/_getcwd/_stati64 aliases),
+    // for the command-line tools.  See src/posix.zig.
+    .name = .msvc_posix,
+    .fingerprint = 0x5c5949895f3492c,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src/posix.zig",
+    },
+}

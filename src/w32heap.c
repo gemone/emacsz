@@ -89,8 +89,12 @@ heap_realloc (void *ptr, size_t size)
 /* Heap creation.  */
 
 /* We want to turn on Low Fragmentation Heap for XP and older systems.
-   MinGW32 lacks those definitions.  */
-#ifndef MINGW_W64
+   MinGW32 lacks those definitions (and older w32api).  MinGW-w64 and the
+   MSVC/Windows SDK define HEAP_INFORMATION_CLASS / HeapSetInformation
+   natively, so this dynamic-load fallback is only needed on MinGW32 --
+   gating it on __MINGW32__ keeps MSVC (which rejects dllimport on a
+   function-pointer typedef: "the WINBASEAPI here is such a use") off it.  */
+#if defined __MINGW32__ && !defined MINGW_W64
 typedef enum _HEAP_INFORMATION_CLASS {
   HeapCompatibilityInformation
 } HEAP_INFORMATION_CLASS;
@@ -116,7 +120,7 @@ init_heap (void)
   /* Create the private heap.  */
   heap = HeapCreate (0, 0, 0);
 
-#ifndef MINGW_W64
+#if defined __MINGW32__ && !defined MINGW_W64
   unsigned long enable_lfh = 2;
   /* Set the low-fragmentation heap for OS before Vista.  */
   HMODULE hm_kernel32dll = LoadLibrary ("kernel32.dll");
