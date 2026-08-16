@@ -27,7 +27,7 @@
 |---|---|---|
 | `zig build` 替代 configure+Make | ✅ | 无需 `./configure`、`make`、shell 步骤；`src/config.h` 由 `build.zig` 的 `b.addConfigHeader` 生成 |
 | 全流程（配置/编译/链接） | ✅ | `zig build` 成功产出 `temacs.exe` + `emacs.exe`；`zig build generate-config` 退出 0 |
-| 输出 `emacs.exe` / `emacs.pdb` 等 | ✅ | `zig build install -p <dir>` 在自定义目录产出 `temacs.exe/emacs.exe/emacsclient.exe/etags.exe` + `bootstrap-emacs.pdmp` 及对应 `*.pdb`（转储镜像随前缀 install；整体可运行性见 §6） |
+| 输出 `emacs.exe` / `emacs.pdb` 等 | ✅ | `zig build install -p <dir>` 在自定义目录产出 `temacs.exe/emacs.exe/emacsclient.exe/etags.exe` 及对应 `*.pdb`（自包含可运行性见 §6） |
 | `zig build test` ≈ `make check` | ✅ | `zig build check`（别名 `test`）运行 582 个内置 ert 测试，全绿（`check_exit=0`） |
 | `zig build install` 到指定目录 | ✅ | `zig build install -p <temp>` 实测成功，产物完整 |
 | `-Dwith-*` 对应 `--with-*` | ✅ | 见 §3 选项对照表；`-Dwith-*=false` 已修复并实测可构建 |
@@ -141,7 +141,7 @@
 | **CI 双后端覆盖**（验收 5.3） | 已实现：`.github/workflows/ci.yml` 新增 `build-and-test-msvc` job（windows-latest，`-Dtarget=x86_64-windows-msvc` 构建 + smoke + 全量 check），与 GNU 矩阵并列 | 本地已验证上述命令全绿；CI job 的实际徽章结果需在 GitHub runner 上确认（依赖 windows-latest 自带的 VS/BuildTools） |
 | **libpng/libjpeg/libtiff/giflib vendoring**（目标 3.5） | GUI/图像子系统不在当前 console/TTY 范围 | 推进 GUI（或用 `-Dnative-comp` 之外需要图像读入的路径真实调用 `image.c`）后再 vendoring |
 | 二进制与上游 MSYS2 构建**一致**（验收 5.1/5.3） | 无 MSYS2 基准 | 建立 MSYS2 参考构建产物做 diff |
-| **`install -p <dir>` 自定义前缀** | 已改进：`build.zig` 现在把转储镜像 `bootstrap-emacs.pdmp` 一并 install 到前缀的 `bin/`（与 `zig-out` 文件集一致），自定义目录不再止步于二进制 | **可运行性仍受限**：`emacs.exe`（启动器）从任意前缀运行 temacs 装载该 pdmp 时实测段错误（0xC0000005）——pdmp 内嵌绝对路径/重定位表（epaths.h 的构建树路径 + ASLR 基址），与 `zig-out` 规范布局绑定。默认 `zig-out` 安装完整可运行（实测 `emacs.exe --batch --load` 打印版本、退出 0）。要做到任意 `-p` 前缀自包含可运行，需重构 pdmp 的内嵌路径 / sibling `etc` / loaddefs 的相对化迁移，属较复杂改动，留作后续 |
+| **`install -p <dir>` 自定义前缀** | ✅ 安装到自定义目录（产物放置）| 二进制（`temacs/emacs/emacsclient/etags.exe`+pdb）会装到前缀 `bin/`；但**自包含可运行**尚未达成——本机实测：同一 `bootstrap-emacs.pdmp` 用 `zig-out/bin/temacs.exe` 装载成功（退出 0），而用 `-p` 前缀的 `temacs.exe` 装载则 `mem_insert` 空指针段错误（binary/pdmp 不一致：`-p` 安装的 temacs 与 dump 产物可能来自不同构建变体，pdmp 内嵌的 mem_node/Gc 布局不匹配）。默认 `zig-out`（dump 与 temacs 同源）完整可运行。要做到任意 `-p` 前缀可运行，需"按前缀重新 dump"（让 dumped pdmp 与安装到该前缀的 temacs 严格同源），属较复杂改动，留作后续 |
 
 ---
 
