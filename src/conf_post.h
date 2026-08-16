@@ -70,7 +70,16 @@ extern void *memrchr (void const *s, int c_in, size_t n);
 #if NS_IMPL_GNUSTEP || defined __MINGW32__
 typedef unsigned int bool_bf;
 #else
+/* clang-msvc (-target *-windows-msvc) declares `: 1` bit-fields as signed,
+   so a signed 1-bit `bool_bf` field holding 1 reads back as -1 (exactly the
+   ENUM_BF problem in lisp.h).  `bool` is itself mapped to `signed char` on
+   the MSVC ABI, making bool_bf a 1-bit signed field.  Use unsigned int so
+   bitfield values round-trip as 0/1.  */
+# if defined _MSC_VER && !defined __MINGW32__
+typedef unsigned int bool_bf;
+# else
 typedef bool bool_bf;
+# endif
 #endif
 
 /* A substitute for __has_attribute on compilers that lack it.

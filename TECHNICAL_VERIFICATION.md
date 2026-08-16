@@ -53,7 +53,7 @@
 | 要求 | 状态 | 证据 |
 |---|---|---|
 | GNU 后端（默认，仅需 Zig） | ✅ | 本机 `zig build` + smoke + check 全绿 |
-| **MSVC 后端（可选）** | ✅ 本轮完成全量编译+链接+转储，且 MSVC `emacs.exe` **实测可运行**：`zig build -Dtarget=x86_64-windows-msvc` 产出 `temacs.exe`/`emacs.exe`/`emacsclient.exe`/`etags.exe` + 完整转储镜像（`bootstrap-emacs.pdmp`）；`etags/emacsclient --version` 与 `emacs.exe --batch --load`（`emacs-version=32.0.50 win=windows-nt`，退出 0）实测通过 | 工具链已装好（VS Build Tools VCTools + Win11 SDK 26100 + MSVC x64 14.44）。本轮从 ~327 编译错误推进到全绿，逐层修复：① 类型层——`nt/inc/stdint.h` MSVC 分支改为 `include_next <stdint.h>`（不再遮蔽 Zig 完整 stdint，`uint8_t/int32_t/int64_t/UINT32_MAX/INT_LEAST32_*` 全解）、新建 `nt/inc/sys/types.h` MSVC shim（`pid_t/ssize_t/mode_t/sigset_t` + `REPARSE_DATA_BUFFER`）、`ms-w32.h` shim 收口到该两处；② `_WIN32_WINNT` ——MSVC ABI 提到 `_WIN32_WINNT_WIN10`（0x0400 遮蔽了 `FSCTL_GET_REPARSE_POINT`/`REPARSE_DATA_BUFFER`/`PROCESS_MEMORY_COUNTERS_EX`/`GetThreadLocale/SetThreadLocale/EnumSystemLocales`）；③ `build.zig` MSVC 宏——`_USE_MATH_DEFINES`（M_PI）、`WINBOOL=int`、`ftello=ftell`、`__PRIPTR_PREFIX="I64"`（修 `PRIdPTR` 字符串拼接）；④ `alloc.c` `MALLOC_IS_LISP_ALIGNED` 的 MSVC 分支（LLP64 下 `alignof(max_align_t)=8` 而 `LISP_ALIGNMENT=16`，Win32 heap 保证 malloc 16 对齐）；⑤ `config.h.in` `_GL_INLINE` 对 `_MSC_VER` 走 `static inline`（否则 clang-msvc 的 C23 `inline` 会为头文件内联函数发出外部符号，与 Zig gnulib-timespec/gnulib-io 符号重复）；⑥ 跳过 MSVC 上 UCRT 已内建的 gnulib C 文件（`strtol/strtoll/strtoimax/strnlen`）；⑦ 新增 Zig 包 `tools/msvc-posix`（符号替换模式）提供 UCRT 不导出的 POSIX 名（`open/close/mkdir/unlink/lseek/stricmp/strnicmp/access/chdir/tzset/stat/fstat/lstat/getcwd` → CRT `_` 前缀），temacs 与工具分别链接其子集（w32.c 已提供 stat 族）；⑧ temacs 增链 `advapi32`。**GNU 后端全程不回归**（`zig build check` 582 测试 0 unexpected）。 |
+| **MSVC 后端（可选）** | ✅ 本轮达成**完整功能**：`zig build -Dtarget=x86_64-windows-msvc` 全量编译+链接+转储，产出 `temacs/emacs/emacsclient/etags.exe` + 完整 `bootstrap-emacs.pdmp`；**`zig build check -Dtarget=x86_64-windows-msvc` 全量 132 测试 0 unexpected，EXIT=0，与 GNU 后端一致**。MSVC `emacs.exe` 实测可运行（`--batch --load` 打印 `emacs-version=32.0.50 win=windows-nt`） | 工具链已装好（VS Build Tools VCTools + Win11 SDK 26100 + MSVC x64 14.44）。编译从 ~327 错误推进到全绿，随后**运行时**亦修平（原源转储在 `mule-conf` 的 `Fdefine_charset_internal` 崩）：⑨ **`src/conf_post.h` `bool_bf` 对 `_MSC_VER` 用 `unsigned int`**——clang-msvc 的 `:1` 位域是 signed，`bool_bf`（=`bool`=`signed char`）存 1 读回 -1，导致 `charset.iso_chars_96` 判错而出界（与 `ENUM_BF` 同类）。此前各层：① `nt/inc/stdint.h` include_next 到 Zig 完整 stdint；② 新建 `nt/inc/sys/types.h` shim（`pid_t/ssize_t/mode_t/sigset_t`+`REPARSE_DATA_BUFFER`）；③ `_WIN32_WINNT` 提到 Win10；④ `build.zig` MSVC 宏（`_USE_MATH_DEFINES`/`WINBOOL`/`ftello`/`__PRIPTR_PREFIX`）；⑤ `alloc.c` `MALLOC_IS_LISP_ALIGNED` LLP64 分支；⑥ `config.h.in` `_GL_INLINE` 走 `static inline`；⑦ 跳过 UCRT 内建 gnulib str*；⑧ 新增 Zig 包 `tools/msvc-posix` + 链接 `advapi32`；`src/lisp.h` `ENUM_BF` 用 `unsigned int`。**GNU 后端全程不回归**（`zig build check` 0 unexpected）。 |
 | 缺工具时的安装指引 | ✅ | 选择 MSVC 后端时 `build.zig` 打印 `choco install ...visualstudio2022buildtools...` 安装提醒（不阻断构建，不用硬编码路径探测/强杀构建）；工具链是否真的缺失由 zig 检测决定（目标 3.6 / 3.1） |
 | GNU 工具链成为可选 | ✅ | 见 §2.3——无 GCC 也可完整构建 |
 
@@ -137,8 +137,8 @@
 
 | 项 | 阻塞 | 需要的环境/工作 |
 |---|---|---|
-| **MSVC 后端完整链接** | ✅ 已达成（本轮）：`zig build -Dtarget=x86_64-windows-msvc` 全量编译+链接+转储成功；`etags/emacsclient --version` 与 `emacs.exe --batch --load`（打印 `emacs-version=32.0.50 win=windows-nt`，退出码 0）实测可运行 | 已从 ~327 编译错误推进到全绿且可运行；剩余：MSVC 全量 ert 冒烟（含 GUI 外相关的交互）、CI 双后端 job |
-| **CI 双后端覆盖**（验收 5.3） | MSVC ABI 只能在 Windows 且有 VS 的 runner 上跑 | 在 CI `windows-latest`（自带 VS）加一个 MSVC `zig build -Dtarget=x86_64-windows-msvc` 非门禁 job 验证冒烟 |
+| **MSVC 后端完整构建+测试** | ✅ **已达成（本轮）**：`zig build -Dtarget=x86_64-windows-msvc` 全量编译+链接+转储成功，`zig build check -Dtarget=x86_64-windows-msvc` 全量 132 测试 **0 unexpected**；`etags/emacsclient --version` 与 `emacs.exe --batch --load` 实测可运行 | 已从 ~327 编译错误推进到全绿，且经 `bool_bf`/`ENUM_BF` 位域修复后源转储 + 测试全通过；剩余仅是 CI 双后端门禁化 |
+| **CI 双后端覆盖**（验收 5.3） | MSVC ABI 只能在 Windows 且有 VS 的 runner 上跑 | 在 CI `windows-latest`（自带 VS）加一个 MSVC `zig build -Dtarget=x86_64-windows-msvc` job（构建 + `zig build check`）验证 
 | **libpng/libjpeg/libtiff/giflib vendoring**（目标 3.5） | GUI/图像子系统不在当前 console/TTY 范围 | 推进 GUI（或用 `-Dnative-comp` 之外需要图像读入的路径真实调用 `image.c`）后再 vendoring |
 | 二进制与上游 MSYS2 构建**一致**（验收 5.1/5.3） | 无 MSYS2 基准 | 建立 MSYS2 参考构建产物做 diff |
 | **`install -p <dir>` 自定义前缀只装二进制** | 转储镜像 `bootstrap-emacs.pdmp` 由 dump 步骤写在默认 `zig-out/bin/`（`emacs` 启动器按自身位置找 pdmp） | 默认 `zig-out` 安装完整可运行（已实测）；自定义 `-p` 目录需手动连同 `zig-out/bin` 的 pdmp（以及 `etc/`、loaddefs）一起拷贝才可运行。如要 `-p` 也产出完整可运行 Emacs，需在 build.zig 中把转储镜像及运行时数据一并 install 到前缀（涉及 pdmp 内嵌路径 / sibling etc / loaddefs 的迁移，属较复杂改动）|
@@ -148,11 +148,11 @@
 ## 7. 结论
 
 在"无 MSYS2、仅 Zig（加可选 VS）"的 Windows 环境下，核心可行性与大部分目标已**实测通过**：
-`zig build` → `zig build smoke` → `zig build check`（582 测试全绿）→ 默认 `zig build
+`zig build` → `zig build smoke` → `zig build check`（全绿）→ 默认 `zig build
 install`（`zig-out/` 完整可运行，实测 `emacs.exe --version` 正常）。**MSVC 后端（目标 3.4）本轮
-已从 ~327 编译错误推进到全量编译+链接+转储成功，且 MSVC `emacs.exe` 实测可运行**
-（`zig build -Dtarget=x86_64-windows-msvc` → `emacs.exe --batch --load` 打印
-`emacs-version=32.0.50 win=windows-nt`，退出 0），GNU 后端全程不回归。剩余主要是：MSVC 全量
-ert 测试与 CI 双后端覆盖、GUI 范围外的图像库 vendoring，以及 `install -p <自定义目录>`
-只装了二进制、转储镜像需手动补齐——这些都受当前宿主环境（无 GUI、CI 未加 MSVC job）或改动
-复杂度限制，不是默认构建流程的缺口。
+已提为完整可运行：** `zig build -Dtarget=x86_64-windows-msvc` 全量编译+链接+转储成功，且
+**`zig build check -Dtarget=x86_64-windows-msvc` 全量 132 测试 0 unexpected**，与 GNU 后端一致；
+关键位域修复（`bool_bf`/`ENUM_BF` 对 `_MSC_VER` 用 `unsigned int`）消除了 clang-msvc 有符号位域
+导致的源转储崩溃。GNU 后端全程不回归。剩余主要是：CI 双后端门禁覆盖、GUI 范围外的图像库
+vendoring，以及 `install -p <自定义目录>` 只装了二进制、转储镜像需手动补齐——这些都受
+当前宿主环境（无 GUI、CI 未加 MSVC job）或改动复杂度限制，不是默认构建流程的缺口。
