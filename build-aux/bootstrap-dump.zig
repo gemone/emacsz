@@ -36,6 +36,43 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // path (the dumped emacs consults ../etc at runtime too).
     linkEtc(io, cwd);
 
+    // ABI-suffixed stamp name (see stampName): build.zig passes the target
+    // ABI as the first extra argv arg (before the tracked file args), so
+    // the gnu and msvc backends keep separate dump stamps in the shared
+    // .zig-cache.  The SECOND argv arg is this target's emitted temacs
+    // (build.zig's addFileArg(exe.getEmittedBin())): stage it into
+    // zig-out/bin so the dump below always runs the REQUESTED backend's
+    // binary even when a -p prefix install left the OTHER backend's stale
+    // binary there.
+    var stamp_suffix: ?[]const u8 = null;
+    var stage_src: ?[]const u8 = null;
+    {
+        var arg_it = try std.process.Args.Iterator.initAllocator(minimal.args, gpa);
+        defer arg_it.deinit();
+        _ = arg_it.next(); // argv[0]
+        // Copy out of the iterator's buffer before deinit (no manual free
+        // of `a`: the iterator owns it and frees it in deinit).
+        if (arg_it.next()) |a|
+            stamp_suffix = std.heap.smp_allocator.dupe(u8, a) catch null;
+        if (arg_it.next()) |a|
+            stage_src = std.heap.smp_allocator.dupe(u8, a) catch null;
+    }
+    // Stage the target's temacs into zig-out/bin (the loadup CWD), BEFORE
+    // the freshness check: the stamp is keyed on the temacs CONTENT, so a
+    // backend flip changes it and the dump re-runs.  copyFileAbsolute
+    // asserts on relative paths (build.zig passes ./.zig-cache/...), so
+    // absolutize against the repo root first.
+    if (stage_src) |src_rel| {
+        const src_abs = try std.fs.path.join(gpa, &.{ root, src_rel });
+        defer gpa.free(src_abs);
+        const dst = try std.fs.path.join(gpa, &.{ bin_dir, temacs_path.name });
+        defer gpa.free(dst);
+        std.Io.Dir.copyFileAbsolute(src_abs, dst, io, .{ .replace = true }) catch |err| {
+            std.debug.print("bootstrap-dump: staging temacs failed: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+    }
+
     // Freshness stamp: loadup embeds the temacs binary's subrs plus the
     // preloaded lisp state (loadup.el + the lisp tree, .el sources and
     // .elc whichever is newer) and snarfs etc/DOC, with the charset maps
@@ -48,7 +85,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // scrub below deletes them) and they are regenerated downstream.
     {
         var f = try freshFinger(io, gpa, cwd, temacs);
-        if (stamp.isFresh(io, gpa, cwd, stampName, f.final())) {
+        if (stamp.isFresh(io, gpa, cwd, stampName(stamp_suffix), f.final())) {
             std.debug.print("bootstrap-dump: dump up to date (stamp); skipping loadup\n", .{});
             return;
         }
@@ -150,13 +187,26 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // <temacs>.pdmp companion).  Computed AFTER loadup so a re-dump that
     // nothing upstream moved converges on the next run.
     var f = try freshFinger(io, gpa, cwd, temacs);
-    stamp.mark(io, gpa, cwd, stampName, f.final(), &.{
+    stamp.mark(io, gpa, cwd, stampName(stamp_suffix), f.final(), &.{
         "zig-out/bin/bootstrap-emacs.pdmp",
         "zig-out/bin/" ++ temacs_path.name ++ ".pdmp",
     });
 }
 
-const stampName = "dump.stamp";
+/// Stamp name, ABI-suffixed when DUMP_STAMP_SUFFIX is set (build.zig passes
+/// the target ABI).  The gnu and msvc backends share one .zig-cache, so a
+/// single "dump.stamp" made the SECOND backend's dump skip ("up to date")
+/// and reuse the FIRST backend's temacs+pdmp pair -- an msvc-ABI prefix
+/// then shipped gnu binaries and crashed/miss-behaving on load.  Suffixing
+/// the stamp per ABI forces each backend to dump its own artifacts.
+fn stampName(suffix: ?[]const u8) []const u8 {
+    if (suffix) |sfx| {
+        if (std.mem.concat(std.heap.smp_allocator, u8, &.{ "dump.", sfx, ".stamp" })) |out| {
+            return out;
+        } else |_| {}
+    }
+    return "dump.stamp";
+}
 
 /// Fingerprint of every loadup input: the temacs binary (subrs land in
 /// the dump), src/loadup.el (the preload script), the lisp tree minus

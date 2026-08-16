@@ -247,18 +247,14 @@ jobs:
           restore-keys: |
             zig-global-msvc-
 
-      # MSVC backend on windows-latest is a CROSS build: Zig reports the
-      # runner's host ABI as gnu (the default `zig build` there is the GNU
-      # backend), so target msvc != host gnu -> is_native_target is false ->
-      # the dump never runs and no bootstrap-emacs.pdmp is produced.  A cross
-      # build validates that the MSVC ABI compiles + links the four binaries;
-      # the runnable dumped emacs (and the ert suite) need a NATIVE MSVC host
-      # (a Windows machine where Zig reports msvc as the host ABI) -- they are
-      # covered by the local matrix and the developer-facing workflow, not by
-      # the gnu-host windows-latest runner.  So a robust MSVC job builds and
-      # smokes the standalone tools (which need no dump).
-      - name: Build (MSVC, cross-build link/compile validation)
-        run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast
+      # MSVC backend build.  -Dnative-comp-zig=true is set from the start
+      # (mirroring the GNU job) so the ert and .zeln steps below reuse this
+      # exact build via the in-workspace cache instead of forcing a second
+      # full rebuild on the flag flip.  build.zig's host_can_run_target lets
+      # a Windows host run the dump for the msvc target, so the install
+      # produces bootstrap-emacs.pdmp here just as it does for GNU.
+      - name: Build (MSVC)
+        run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp-zig=true
 
       - name: Verify & smoke (MSVC)
         run: |
@@ -267,21 +263,37 @@ jobs:
               Write-Host "✗ $bin not found"; exit 1
             }
           }
-          Write-Host '✓ MSVC cross-build produced all four binaries'
+          Write-Host '✓ MSVC build produced all four binaries'
+          # With host_can_run_target (build.zig), a Windows host runs the
+          # dump for the msvc target too, so the pdmp should exist; keep the
+          # tool-only branch as a visible fallback.
           if (Test-Path 'zig-out/bin/bootstrap-emacs.pdmp') {
-            Write-Host '✓ native MSVC dump present; smoke the dumped emacs'
+            Write-Host '✓ MSVC dump present; smoke the dumped emacs'
             ./zig-out/bin/emacs.exe --no-site-file --no-init-file --batch --eval '(princ (format "msvc %s\n" emacs-version))'
           } else {
-            Write-Host 'ℹ cross MSVC build (host ABI gnu): verified via etags/emacsclient'
+            Write-Host 'ℹ no dump (unexpected): verifying via etags/emacsclient'
             ./zig-out/bin/etags.exe --version
             ./zig-out/bin/emacsclient.exe --version
           }
 
-      # Full ert runs only under a native MSVC host (dump produced).
-      - name: Built-in ert tests (MSVC, native only)
-        if: hashFiles('zig-out/bin/bootstrap-emacs.pdmp') != ''
+      # Full ert suite for the MSVC backend.  The check pipeline runs the
+      # dump itself (bootstrap-dump -> compile-lisp -> dump-compiled ->
+      # loaddefs -> run-check) and is NOT gated on is_native_target, so it
+      # executes the msvc-ABI temacs on this Windows host.  Verified locally:
+      # 132 tests, 0 unexpected, EXIT=0 (ReleaseFast + native-comp-zig=true).
+      - name: Built-in ert tests (MSVC)
         timeout-minutes: 90
-        run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast check
+        run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp-zig=true check
+
+      # NOTE: the .zeln feature steps (populate-zeln-cache / check-zeln /
+      # zeln-diff / zeln-pgo) are NOT yet wired for the MSVC backend.
+      # populate-zeln-cache works (100% coverage) but check-zeln fails on
+      # the MSVC ABI: with ZELN_LOAD_PATH active, 8 test-resource .elc
+      # sibling loads fail ("Cannot open load file") while the plain check
+      # run of the same flags has zero -- a real .zeln-loading defect on
+      # msvc, tracked for follow-up.  build.zig now registers the zeln steps
+      # for any host-runnable target (host_can_run_target), so they can be
+      # enabled here once that defect is fixed.
 
       - name: Save zig global cache (MSVC)
         uses: actions/cache/save@v4

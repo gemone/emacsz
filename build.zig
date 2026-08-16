@@ -6,10 +6,18 @@ const config_overrides = @import("config-overrides.zig");
 // triple (e.g. aarch64-apple-darwin25.3.0).  Zig reports the OS
 // micro-version separately, so the versionless canonical form is used;
 // nothing in lisp or C keys off the version suffix.
+// The Windows triple MUST carry the real ABI suffix: Vsystem_configuration
+// feeds hash_zeln_abi (compz.c), so a gnu-hardcoded triple makes the msvc
+// and gnu backends share one .zeln cache dir and each load the OTHER
+// backend's native objects (msvc .zeln import api-ms-win-crt-*; gnu ones
+// do not) -> "Cannot open load file"/"End of file during parsing" on the
+// 8 resource-loading tests under check-zeln.  Mirror the ABI tag exactly.
 fn canonicalConfiguration(t: std.Target, allocator: std.mem.Allocator) []const u8 {
     return switch (t.os.tag) {
         .macos => std.fmt.allocPrint(allocator, "{s}-apple-darwin", .{@tagName(t.cpu.arch)}) catch @panic("OOM"),
-        .windows => std.fmt.allocPrint(allocator, "{s}-pc-windows-gnu", .{@tagName(t.cpu.arch)}) catch @panic("OOM"),
+        .windows => std.fmt.allocPrint(allocator, "{s}-pc-windows-{s}", .{
+            @tagName(t.cpu.arch), @tagName(t.abi),
+        }) catch @panic("OOM"),
         else => std.Target.linuxTriple(&t, allocator) catch @panic("OOM"),
     };
 }
@@ -2976,6 +2984,11 @@ pub fn build(b: *std.Build) void {
     });
     const run_dump = b.addRunArtifact(bootstrap_dump_tool);
     run_dump.setCwd(b.path("."));
+    // ABI-suffix the dump stamp (first extra argv arg; see stampName in the
+    // tool): gnu/msvc share .zig-cache, so an unsuffixed dump.stamp made the
+    // second backend's dump skip and reuse the first backend's temacs+pdmp
+    // (an msvc prefix then shipped gnu binaries).
+    run_dump.addArg(@tagName(target.result.abi));
     // The dump tool and every downstream checker spawn
     // ./zig-out/bin/temacs, so the executable install must happen before
     // them.  (Only the named "dump" step carried this dependency before,
@@ -3165,6 +3178,9 @@ pub fn build(b: *std.Build) void {
     });
     const run_dump_compiled = b.addRunArtifact(dump_compiled_tool);
     run_dump_compiled.setCwd(b.path("."));
+    // ABI-suffix the dump stamp (first extra argv arg; see run_dump above):
+    // each backend must dump its own temacs+pdmp pair.
+    run_dump_compiled.addArg(@tagName(target.result.abi));
     run_dump_compiled.step.dependOn(&run_compile_lisp.step);
     // Same temacs-content tracking as run_dump (flag flip -> rerun).
     run_dump_compiled.addFileArg(exe.getEmittedBin());
@@ -3182,32 +3198,50 @@ pub fn build(b: *std.Build) void {
     const is_native_target = target.result.cpu.arch == b.graph.host.result.cpu.arch and
         target.result.os.tag == b.graph.host.result.os.tag and
         target.result.abi == b.graph.host.result.abi;
-    if (is_native_target) b.getInstallStep().dependOn(dump_compiled_step);
+    // The dump *executes* the freshly built temacs over loadup, so it needs a
+    // target the build host can run.  Exact triple equality is too strict on
+    // Windows: the host ABI is often reported as gnu while -Dtarget selects
+    // windows-msvc (or vice versa), yet BOTH ABIs' exes run on a Windows host
+    // -- so gate on os+arch only when the host is Windows (a Linux/macOS host
+    // cross-building windows still must not dump).  This is what lets
+    // `zig build -Dtarget=x86_64-windows-msvc` dump and `install -p` ship a
+    // runnable pdmp for the MSVC backend on a VS-equipped Windows machine,
+    // exactly as it already does for GNU.
+    const host_can_run_target = is_native_target or
+        (b.graph.host.result.os.tag == .windows and
+        target.result.os.tag == .windows and
+        target.result.cpu.arch == b.graph.host.result.cpu.arch);
+    if (host_can_run_target) b.getInstallStep().dependOn(dump_compiled_step);
 
     // `zig build install -p <dir>` must yield a self-consistent, runnable
-    // emacs.  bootstrap-dump.zig writes the dumped image
-    // (bootstrap-emacs.pdmp) next to the temacs it runs (zig-out/bin), so
-    // those two are a matched pair whose GC layout agrees.  install_temacs
-    // (exe.getEmittedBin) can be a different artifact than the one the dump
-    // ran, which makes a relocated -p prefix crash on pdmp load.  Install the
-    // dump's matched pair (temacs + its pdmp) into the prefix's bin as well,
-    // so the prefix's temacs and dump always agree.  Native only, matching
-    // the dump gate above.
-    if (is_native_target) {
+    // emacs of the REQUESTED backend.  bootstrap-dump.zig runs
+    // ./zig-out/bin/temacs.exe over loadup and writes the pdmp next to it,
+    // so the dump drives whatever binary sits in zig-out/bin; with -Dtarget
+    // flipping between gnu/msvc and a -p prefix, that file could hold the
+    // OTHER backend's binary.  build.zig already passes this target's
+    // emitted temacs as the tracked file arg; the tool STAGES it into
+    // zig-out/bin before running loadup (see bootstrap-dump.zig), so every
+    // dump comes from the REQUESTED backend's binary.  The prefix install
+    // then ships that same emitted temacs + the dump's pdmp as a pair.
+    if (host_can_run_target) {
         const temacs_base: []const u8 = if (target.result.os.tag == .windows)
             "temacs.exe"
         else
             "temacs";
-        // The dump writes both files into zig-out/bin as a matched pair.
-        for ([_][]const u8{ temacs_base, "bootstrap-emacs.pdmp" }) |base| {
-            const install_matched = b.addInstallFileWithDir(
-                b.path(b.pathJoin(&.{ "zig-out", "bin", base })),
-                .bin,
-                base,
-            );
-            install_matched.step.dependOn(&run_dump_compiled.step);
-            b.getInstallStep().dependOn(&install_matched.step);
-        }
+        const install_temacs_pair = b.addInstallFileWithDir(
+            exe.getEmittedBin(),
+            .bin,
+            temacs_base,
+        );
+        install_temacs_pair.step.dependOn(&install_temacs.step);
+        b.getInstallStep().dependOn(&install_temacs_pair.step);
+        const install_pdmp_pair = b.addInstallFileWithDir(
+            b.path("zig-out/bin/bootstrap-emacs.pdmp"),
+            .bin,
+            "bootstrap-emacs.pdmp",
+        );
+        install_pdmp_pair.step.dependOn(&run_dump_compiled.step);
+        b.getInstallStep().dependOn(&install_pdmp_pair.step);
     }
 
     // Final loaddefs generation for check/check-all: dump-compiled
@@ -3466,8 +3500,11 @@ pub fn build(b: *std.Build) void {
     // .zeln is a native shared object (ELF .so on glibc, Mach-O .dylib on
     // macOS, PE .dll on Windows) produced by `zig cc -shared`, so the
     // whole pipeline runs on every native OS; static-musl stays excluded
-    // (it cannot dlopen).
-    if (enable_native_comp_zig and is_native_target and !is_musl)
+    // (it cannot dlopen).  host_can_run_target (os+arch, not exact-triple)
+    // gates this for the same reason as the dump: a Windows host runs BOTH
+    // ABI backends' exes and .zeln shared objects, so the msvc target gets
+    // the full .zeln feature steps as well.
+    if (enable_native_comp_zig and host_can_run_target and !is_musl)
     {
         // The zeln-compile tool: a host Zig executable that parses a
         // zunit, emits the Tier-0 .ll, and drives `zig cc -shared`.
@@ -3664,7 +3701,17 @@ pub fn build(b: *std.Build) void {
         // race between populating and consuming the cache).
         const run_check_zeln = b.addRunArtifact(run_check_tool);
         run_check_zeln.setCwd(b.path("."));
-        run_check_zeln.setEnvironmentVariable("ZELN_LOAD_PATH", "zig-out/zeln-cache");
+        // ABSOLUTE path: run-check hands ZELN_LOAD_PATH to the dumped emacs,
+        // which expand-file-name's it against ITS default-directory.  The
+        // tool's own cwd is the repo, but the spawned emacs may start
+        // elsewhere (observed on the MSVC backend), so a relative
+        // "zig-out/zeln-cache" resolved against the wrong directory and every
+        // .elc's sibling resource failed to load.  build.root getPath gives
+        // the canonical absolute repo path at build time.
+        const zeln_cache_abs = b.pathJoin(&.{
+            b.path("zig-out/zeln-cache").getPath2(b, &run_check_zeln.step),
+        });
+        run_check_zeln.setEnvironmentVariable("ZELN_LOAD_PATH", zeln_cache_abs);
         run_check_zeln.step.dependOn(&run_populate.step);
         run_check_zeln.step.dependOn(&run_dump_compiled.step);
         run_check_zeln.step.dependOn(&run_loaddefs_final.step);
