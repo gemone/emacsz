@@ -27,7 +27,7 @@
 |---|---|---|
 | `zig build` 替代 configure+Make | ✅ | 无需 `./configure`、`make`、shell 步骤；`src/config.h` 由 `build.zig` 的 `b.addConfigHeader` 生成 |
 | 全流程（配置/编译/链接） | ✅ | `zig build` 成功产出 `temacs.exe` + `emacs.exe`；`zig build generate-config` 退出 0 |
-| 输出 `emacs.exe` / `emacs.pdb` 等 | ✅ | `zig build install -p <dir>` 在自定义目录产出 `temacs.exe/emacs.exe/emacsclient.exe/etags.exe` 及对应 `*.pdb`（自包含可运行性见 §6） |
+| 输出 `emacs.exe` / `emacs.pdb` 等 | ✅ | `zig build install -p <dir>` 在自定义目录产出 `temacs.exe/emacs.exe/emacsclient.exe/etags.exe` + `bootstrap-emacs.pdmp` 及对应 `*.pdb`；原生安装自包含可运行（前缀 `emacs.exe` 实测可运行） |
 | `zig build test` ≈ `make check` | ✅ | `zig build check`（别名 `test`）运行 582 个内置 ert 测试，全绿（`check_exit=0`） |
 | `zig build install` 到指定目录 | ✅ | `zig build install -p <temp>` 实测成功，产物完整 |
 | `-Dwith-*` 对应 `--with-*` | ✅ | 见 §3 选项对照表；`-Dwith-*=false` 已修复并实测可构建 |
@@ -138,10 +138,10 @@
 | 项 | 阻塞 | 需要的环境/工作 |
 |---|---|---|
 | **MSVC 后端完整构建+测试** | ✅ **已达成（本轮）**：`zig build -Dtarget=x86_64-windows-msvc` 全量编译+链接+转储成功，`zig build check -Dtarget=x86_64-windows-msvc` 全量 132 测试 **0 unexpected**；`etags/emacsclient --version` 与 `emacs.exe --batch --load` 实测可运行 | 已从 ~327 编译错误推进到全绿，且经 `bool_bf`/`ENUM_BF` 位域修复后源转储 + 测试全通过（与 GNU 后端持平）；CI 双后端已加 job，待 GitHub 徽章确认 |
-| **CI 双后端覆盖**（验收 5.3） | 已实现：`.github/workflows/ci.yml` 新增 `build-and-test-msvc` job（windows-latest，`-Dtarget=x86_64-windows-msvc` 构建 + smoke + 全量 check），与 GNU 矩阵并列 | 本地已验证上述命令全绿；CI job 的实际徽章结果需在 GitHub runner 上确认（依赖 windows-latest 自带的 VS/BuildTools） |
+| **CI 双后端覆盖**（验收 5.3） | 已实现并**实测绿**：`.github/workflows/ci.yml` 新增 `build-and-test-msvc` job。关键发现：windows-latest 上 Zig 宿主 ABI 是 **gnu**（默认 `zig build`=GNU 后端），故 `x86_64-windows-msvc` 是**交叉编译**（`is_native_target=false`，不转储、无 pdmp）。所以该 job 做 MSVC **交叉构建验证**（编译+链接出四个二进制 + 对无需 dump 的 `etags/emacsclient` 冒烟），**已验证绿（completed/success）**。**MSVC 完整 native 测试（转储+全量 ert）需要宿主 ABI 为 msvc 的 Windows 主机**（本机已实测全绿：`zig build check -Dtarget=x86_64-windows-msvc` 0 unexpected），windows-latest 的 gnu 宿主跑不了。装更多 SDK 组件不会翻转 Zig 宿主 ABI，故 CI 不为此硬装 SDK |
 | **libpng/libjpeg/libtiff/giflib vendoring**（目标 3.5） | GUI/图像子系统不在当前 console/TTY 范围 | 推进 GUI（或用 `-Dnative-comp` 之外需要图像读入的路径真实调用 `image.c`）后再 vendoring |
 | 二进制与上游 MSYS2 构建**一致**（验收 5.1/5.3） | 无 MSYS2 基准 | 建立 MSYS2 参考构建产物做 diff |
-| **`install -p <dir>` 自定义前缀** | ✅ 安装到自定义目录（产物放置）| 二进制会装到前缀 `bin/`；自包含可运行未达成。已定位根因：`install_temacs` 安装的 `exe` 构件与 dump 生成 pdmp 所跑的 `zig-out/bin/temacs.exe` 非同一构建产物（即使全新安装也 hash 不同），pdmp 内嵌的 GC 布局因此不匹配 → 装载段错误。默认 `zig-out`（dump 与 temacs 同源）完整可运行。正确修法：让原生安装以"dump 产出的 temacs+pdmp 同一源"为单位（或按前缀重新 dump），属较复杂 build 图改造，留作后续 |
+| **`install -p <dir>` 自定义前缀** | ✅ **已修复**：`build.zig` 现在（native 目标）把 dump 产出的匹配对 `zig-out/bin` 下的 `temacs`+`bootstrap-emacs.pdmp` 一并 install 到前缀 `bin/`（覆盖 `install_temacs` 的 `exe` 构件），保证前缀 temacs 与其 pdmp 同源 | 根因（此前已定位）是 `install_temacs` 装的 `exe` 构件与 dump 生成 pdmp 所跑的 temacs 非同一产物，pdmp 内嵌 GC 布局不匹配 → 前缀装载段错误。修复后实测：前缀 `emacs.exe` 可运行（`--batch` 退出 0），前缀 temacs+pdmp 与 `zig-out` 哈希一致。GNU/MSVC `check` 均不回归 |
 
 ---
 
@@ -153,8 +153,11 @@ install`（`zig-out/` 完整可运行，实测 `emacs.exe --version` 正常）�
 已提为完整可运行：** `zig build -Dtarget=x86_64-windows-msvc` 全量编译+链接+转储成功，且
 **`zig build check -Dtarget=x86_64-windows-msvc` 全量 132 测试 0 unexpected**，与 GNU 后端一致；
 关键位域修复（`bool_bf`/`ENUM_BF` 对 `_MSC_VER` 用 `unsigned int`）消除了 clang-msvc 有符号位域
-导致的源转储崩溃。GNU 后端全程不回归。剩余主要是：CI 双后端 job 的 GitHub 徽章确认、GUI 范围外的图像库
-链接、以及 `install -p <自定义目录>` 的可运行性（已定位根因：`install_temacs` 安装的 `exe` 构件与
-dump 用于生成 pdmp 的 `zig-out/bin/temacs.exe` 不是同一构建产物，pdmp 内嵌的 GC 布局因此不匹配；
-默认 `zig-out` 已完整可运行）。这些受
-当前宿主环境（无 GUI、CI 仅在本地验证过命令）或改动复杂度限制，不是默认构建流程的缺口。
+导致的源转储崩溃。GNU 后端全程不回归。**CI 双后端覆盖已实测绿**：MSVC job 在 windows-latest 上作为
+交叉构建验证通过（宿主 ABI 为 gnu，故不转储；对 `etags/emacsclient` 冒烟），GNU/macOS/ubuntu 全量
+ert 常绿。**`install -p <自定义目录>` 已修复**：`build.zig` 现把 dump 产出的"匹配对"（`zig-out/bin`
+的 `temacs`+`bootstrap-emacs.pdmp`）一并装入前缀（覆盖 `install_temacs` 的 `exe` 构件，二者本就应
+同源），实测前缀 `emacs.exe` 可运行（退出 0）。剩余主要是：GUI 范围外图像库的**链接**（libpng/jpeg/
+tiff 已 vendoring+哈希锁定）、以及 MSVC **完整 native 测试在 CI 上的覆盖**（需宿主 ABI 为 msvc 的
+自托管 runner；本机已实测全绿）——这些受当前宿主环境（无 GUI / windows-latest 宿主为 gnu）或改动
+复杂度限制，不是默认构建流程的缺口。
