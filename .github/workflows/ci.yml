@@ -238,6 +238,22 @@ jobs:
         with:
           version: 0.16.0
 
+      # The MSVC backend needs the Windows SDK + a VS C/C++ toolchain (the
+      # Windows SDK is NOT guaranteed preinstalled on windows-latest).  Install
+      # them via choco so the runner is able to build the MSVC ABI natively
+      # (so the dump runs and the ert suite can execute), not just cross-link.
+      # choco is the managed toolchain path (objective 3.6); the VS installer
+      # resolves its canonical components, and choco is idempotent when the
+      # packages are already present.
+      - name: Install MSVC toolchain + Windows SDK
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install -y visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK.26100 --passive --norestart"
+          choco install -y windows-sdk-10 --package-parameters "--allworkloads --no-progress"
+        env:
+          CHOCOLATEY_USE_WINDOWS_COMPRESSION: 'true'
+
       - name: Restore zig global cache
         uses: actions/cache/restore@v4
         continue-on-error: true
@@ -260,13 +276,13 @@ jobs:
             "native=false" | Out-File $env:GITHUB_OUTPUT -Append
           }
 
-      # The MSVC backend on windows-latest is usually a CROSS build: Zig
-      # reports the runner's host ABI as gnu (the default `zig build` there is
-      # the GNU backend), so target msvc != host gnu -> is_native_target is
-      # false -> no dump, no bootstrap-emacs.pdmp.  A cross build verifies the
-      # toolchain compiles+links the MSVC binaries; the runnable dumped emacs
-      # (and the ert suite) require a native MSVC host.  Smoke the standalone
-      # tools (no dump needed) when not native.
+      # We install the MSVC toolchain + Windows SDK above so this is normally
+      # a NATIVE MSVC build (is_native_target true -> the dump runs and the
+      # dumped emacs + ert execute, matching local capability).  Keep the
+      # native/cross detection as a safety net: if Zig still reports the host
+      # ABI as gnu (so MSVC is a cross build with no pdmp), degrade gracefully
+      # to verifying the four binaries and the standalone tools (which need no
+      # dump) instead of failing the job.
       - name: Verify & smoke (MSVC)
         run: |
           foreach ($bin in 'temacs.exe','emacs.exe','emacsclient.exe','etags.exe') {
