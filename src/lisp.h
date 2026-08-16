@@ -476,7 +476,14 @@ typedef EMACS_INT Lisp_Word;
 /* Idea stolen from GDB.  Although all known Emacs targets support enum
    bitfields, the C standard does not require support, and they cause too
    many diagnostics on xlc 16.1 and on Oracle Studio 12.6 'cc -Xc'.  */
-#if defined __IBMC__ || (defined __SUNPRO_C && __STDC__)
+/* clang-msvc (-target *-windows-msvc) declares enum bit-fields with the MSVC
+   ABI rule, i.e. as signed int rather than unsigned.  A 2-bit field holding
+   `symbol_redirect::SYMBOL_FORWARDED = 3` (0b11) then reads back as -1, so
+   `redirect == SYMBOL_FORWARDED` (and every enum-bitfield check) is false
+   and the source dump aborts in SET_SYMBOL_FWD.  Treat _MSC_VER like IBM/Sun
+   above and use an unsigned int bit-field so the values round-trip.  */
+#if defined __IBMC__ || (defined __SUNPRO_C && __STDC__) \
+    || (defined _MSC_VER && !defined __MINGW32__)
 #define ENUM_BF(TYPE) unsigned int
 #else
 #define ENUM_BF(TYPE) enum TYPE
