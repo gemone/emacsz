@@ -238,13 +238,21 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         }
     }
 
-    // Final invocation: no ZELN_BC_ONLY -- compiles any straggler test
-    // files (normally zero; all done above) and runs the serialize walk.
+    // Final invocation: no ZELN_BC_ONLY -- runs the serialize walk over every
+    // .elc (skipping anything the driver deferred).  A per-file serialize can
+    // hang on the 2-vCPU windows runner (Defender/I-O, e.g. ediff-ptch.elc),
+    // so on a watchdog timeout the driver defers the in-flight SER-CURRENT
+    // file and respawns the walk; the Elisp side then skips deferred .elc.
     const ser_argv = [_][]const u8{
         "./zig-out/bin/emacs", "--batch",
         "-l", "build-aux/zeln-populate.el",
     };
-    {
+    const ser_defer_path = bc_state_dir ++ "/SER-DEFER";
+    const ser_current_path = bc_state_dir ++ "/SER-CURRENT";
+    cwd.deleteFile(io, ser_defer_path) catch {};
+    cwd.deleteFile(io, ser_current_path) catch {};
+    var ser_attempt: usize = 0;
+    ser: while (true) {
         var child = try std.process.spawn(io, .{
             .argv = &ser_argv,
             .environ_map = &env_map,
@@ -252,19 +260,38 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             .stdout = .inherit,
             .stderr = .inherit,
         });
-        // Bound the serialize pass with a watchdog too: on the 2-vCPU
-        // windows-latest runner the serialize emacs can hang (Defender /
-        // I/O), and `child.wait` alone would block forever with zero log
-        // output -- exactly the "one hour+ with no output" symptom.  The
-        // watchdog thread force-terminates the child after bc_batch_secs so
-        // the step fails loudly instead of silently wedging.
         var ser_timed_out = false;
         const term = waitBounded(io, gpa, &child, bc_batch_secs, &ser_timed_out);
+        if (ser_timed_out) {
+            ser_attempt += 1;
+            std.debug.print("populate-zeln-cache: serialize timeout {d}s (attempt {d}); deferring in-flight file\n", .{ bc_batch_secs, ser_attempt });
+            // Defer the file that was mid-serialize so the respawn skips it.
+            if (cwd.readFileAlloc(io, ser_current_path, gpa, .limited(4096)) catch null) |cur| {
+                defer gpa.free(cur);
+                const trimmed = std.mem.trim(u8, cur, " \t\r\n");
+                if (trimmed.len > 0) {
+                    const old = cwd.readFileAlloc(io, ser_defer_path, gpa, .limited(1 << 20)) catch null;
+                    defer {
+                        if (old) |o| gpa.free(o);
+                    }
+                    var buf: std.ArrayList(u8) = .empty;
+                    defer buf.deinit(gpa);
+                    if (old) |o| buf.appendSlice(gpa, o) catch {};
+                    buf.appendSlice(gpa, trimmed) catch {};
+                    buf.append(gpa, '\n') catch {};
+                    cwd.writeFile(io, .{ .sub_path = ser_defer_path, .data = buf.items }) catch {};
+                }
+            }
+            // Bound the number of respawns; many serial hangs would be a real
+            // regression the coverage floor should surface, not hide forever.
+            if (ser_attempt >= 10) {
+                std.debug.print("populate-zeln-cache: serialize defers exceeded {d}; failing\n", .{ser_attempt});
+                std.process.exit(1);
+            }
+            continue :ser;
+        }
         switch (term) {
             .exited => |code| if (code != 0) {
-                if (ser_timed_out) {
-                    std.debug.print("populate-zeln-cache: serialize phase timed out after {d}s; killed\n", .{bc_batch_secs});
-                }
                 std.debug.print("populate-zeln-cache: serialize phase exited {d}\n", .{code});
                 std.process.exit(1);
             },
@@ -273,6 +300,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                 std.process.exit(1);
             },
         }
+        break :ser;
     }
 
     // ---- Read JOBS + SKIPS-LISP. ----

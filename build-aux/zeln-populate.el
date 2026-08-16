@@ -151,23 +151,47 @@ Writes <cache-root>/JOBS and <cache-root>/SKIPS-LISP.  Exits 0."
   (setq zeln-pop--cache-root (expand-file-name "zig-out/zeln-cache")
 	zeln-pop--staging (expand-file-name "staging" "zig-out/zeln-cache"))
   (make-directory zeln-pop--staging t)
-  ;; The test tree is not byte-compiled by compile-lisp (it covers lisp/
-  ;; only); compile it here so every test case gets an .elc -> .zeln.
-  (zeln-pop--byte-compile-tests)
-  (let ((n 0))
-    (dolist (dir zeln-pop--walk-dirs)
-      (dolist (elc (directory-files-recursively dir "\\.elc\\'"))
-	(message "zeln-pop ser %s" elc)
-	(zeln-pop--handle elc)
-	(setq n (1+ n))))
-    (with-temp-file (expand-file-name "JOBS" zeln-pop--cache-root)
-      (insert (mapconcat #'identity (nreverse zeln-pop--jobs) "\n"))
-      (unless (null zeln-pop--jobs) (insert "\n")))
-    (with-temp-file (expand-file-name "SKIPS-LISP" zeln-pop--cache-root)
-      (insert (mapconcat #'identity (nreverse zeln-pop--skips) "\n"))
-      (unless (null zeln-pop--skips) (insert "\n")))
-    (message "zeln-populate: %d .elc walked, %d jobs, %d skips"
-	     n (length zeln-pop--jobs) (length zeln-pop--skips))))
+  ;; Skip .elc deferred by the driver's serialize watchdog (a per-file
+  ;; serialize hung on the 2-vCPU windows runner and was deferred).
+  (let ((ser-defer (make-hash-table :test #'equal))
+	(ser-f (expand-file-name "SER-DEFER" zeln-pop--cache-root)))
+    (when (file-exists-p ser-f)
+      (with-temp-buffer
+        (insert-file-contents ser-f)
+        (goto-char (point-min))
+        (while (not (eobp))
+          (let ((line (buffer-substring
+                       (line-beginning-position) (line-end-position))))
+            (when (> (length line) 0)
+              (puthash line t ser-defer)))
+          (forward-line 1))))
+    (let ((n 0))
+      (dolist (dir zeln-pop--walk-dirs)
+	(dolist (elc (directory-files-recursively dir "\\.elc\\'"))
+          (when (not (gethash (file-name-nondirectory elc) ser-defer))
+            (message "zeln-pop ser %s" elc)
+            (zeln-pop--set-ser-current elc)
+            (zeln-pop--handle elc))
+	  (setq n (1+ n))))
+      (zeln-pop--clear-ser-current)
+      (with-temp-file (expand-file-name "JOBS" zeln-pop--cache-root)
+	(insert (mapconcat #'identity (nreverse zeln-pop--jobs) "\n"))
+	(unless (null zeln-pop--jobs) (insert "\n")))
+      (with-temp-file (expand-file-name "SKIPS-LISP" zeln-pop--cache-root)
+	(insert (mapconcat #'identity (nreverse zeln-pop--skips) "\n"))
+	(unless (null zeln-pop--skips) (insert "\n")))
+      (message "zeln-populate: %d .elc walked, %d jobs, %d skips"
+	       n (length zeln-pop--jobs) (length zeln-pop--skips)))))
+
+(defun zeln-pop--set-ser-current (elc)
+  "Record ELC as the file being serialized right now."
+  (let ((f (expand-file-name "SER-CURRENT" zeln-pop--cache-root)))
+    (make-directory (file-name-directory f) t)
+    (with-temp-file f (insert (file-name-nondirectory elc)))))
+
+(defun zeln-pop--clear-ser-current ()
+  (let ((f (expand-file-name "SER-CURRENT" zeln-pop--cache-root)))
+    (when (file-exists-p f) (delete-file f))))
 
 (when noninteractive
   (if (equal (getenv "ZELN_BC_ONLY") "1")
