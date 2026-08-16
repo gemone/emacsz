@@ -181,13 +181,18 @@ zig-out\bin\emacs.exe --version   # 验证产物
 先按 §2.2 安装 VS Build Tools + Windows SDK，然后：
 
 ```powershell
-zig build -Dtarget=x86_64-windows-msvc
+zig build -Dtarget=x86_64-windows-msvc            # 构建 + 链接 + 转储
+zig build -Dtarget=x86_64-windows-msvc check      # 全量内置 ert 测试
 ```
 
 - 只能在 **Windows** 宿主上工作，且必须已安装 Visual Studio / Windows SDK。
 - 选择 MSVC 后端时 `build.zig` 会打印 `choco install visualstudio2022buildtools
   windows-sdk-10` 的安装提醒（不阻断构建）；工具链是否真的缺失由 zig 自己的检测决定，
   缺失时报 `WindowsSdkNotFound`。
+- **已实测**：`x86_64-windows-msvc` 后端编出 `temacs/emacs/emacsclient/etags.exe` +
+  完整 `bootstrap-emacs.pdmp`，`zig build check` 全量 132 测试 0 unexpected，与 GNU 后端持平
+  （MSVC 适配含 `nt/inc/stdint.h`/`sys/types.h` shim、`_WIN32_WINNT`、`build.zig` MSVC 宏、
+  `ENUM_BF`/`bool_bf` 位域、`tools/msvc-posix` 符号替换包，详见 `TECHNICAL_VERIFICATION.md` §2.4）。
 
 显式指定 GNU 后端写法等价：`zig build -Dtarget=x86_64-windows-gnu`。
 
@@ -265,7 +270,7 @@ zig build -Dtarget=x86_64-windows-msvc
 - [ ] 纯 Windows 干净环境（无 MSYS2/MinGW/GCC），仅 Zig → `zig build` 成功出 `emacs.exe`
 - [ ] `zig build check` 全绿
 - [ ] 产物 `emacs.exe` 可正常运行
-- [ ] 可选 MSVC 后端（装了 VS 工具链后）`zig build -Dtarget=x86_64-windows-msvc` 可尝试
+- [ ] 可选 MSVC 后端（装了 VS 工具链后）`zig build -Dtarget=x86_64-windows-msvc` 构建 + `check` 全绿
 
 ---
 

@@ -117,11 +117,13 @@ zig-out\bin\emacs.exe --version
 
 MSVC 后端已实测全量跑通：`zig build -Dtarget=x86_64-windows-msvc` 编译+链接+转储成功，
 产出 `temacs.exe / emacs.exe / emacsclient.exe / etags.exe` 及完整 `bootstrap-emacs.pdmp`；
-`etags --version` / `emacsclient --version` 可运行。MSVC 适配集中在"符号替换"层：完整
+`etags --version` / `emacsclient --version` 可运行，且
+**`zig build check -Dtarget=x86_64-windows-msvc` 全量 132 内置测试 0 unexpected，与 GNU 后端持平**。
+MSVC 适配集中在"符号替换"层：完整
 `nt/inc/stdint.h`（include_next 到 Zig stdint）、`nt/inc/sys/types.h`/`ms-w32.h` shim、
 `build.zig` 的 MSVC 宏（`_USE_MATH_DEFINES`/`WINBOOL`/`ftello`/`__PRIPTR_PREFIX`）、
-`alloc.c`/`config.h.in` 的 `_MSC_VER` 分支，以及提供 UCRT 缺失 POSIX 名的 Zig 包
-`tools/msvc-posix`（详见 `TECHNICAL_VERIFICATION.md` §2.4）。GNU 后端全程不回归。
+`alloc.c`/`config.h.in` 的 `_MSC_VER` 分支、`ENUM_BF`/`bool_bf` 与符号位域，以及提供 UCRT 缺失
+POSIX 名的 Zig 包 `tools/msvc-posix`（详见 `TECHNICAL_VERIFICATION.md` §2.4）。GNU 后端全程不回归。
 
 注意：`zig build help`、`zig build smoke`、`zig build check` 等步骤在
 Windows 上通过 Zig 原生实现（不依赖 `/bin/echo` 或 shell），因此干净
