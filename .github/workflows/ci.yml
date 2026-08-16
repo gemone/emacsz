@@ -238,22 +238,6 @@ jobs:
         with:
           version: 0.16.0
 
-      # The MSVC backend needs the Windows SDK + a VS C/C++ toolchain (the
-      # Windows SDK is NOT guaranteed preinstalled on windows-latest).  Install
-      # them via choco so the runner is able to build the MSVC ABI natively
-      # (so the dump runs and the ert suite can execute), not just cross-link.
-      # choco is the managed toolchain path (objective 3.6); the VS installer
-      # resolves its canonical components, and choco is idempotent when the
-      # packages are already present.
-      - name: Install MSVC toolchain + Windows SDK
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          choco install -y visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK.26100 --passive --norestart"
-          choco install -y windows-sdk-10 --package-parameters "--allworkloads --no-progress"
-        env:
-          CHOCOLATEY_USE_WINDOWS_COMPRESSION: 'true'
-
       - name: Restore zig global cache
         uses: actions/cache/restore@v4
         continue-on-error: true
@@ -263,26 +247,19 @@ jobs:
           restore-keys: |
             zig-global-msvc-
 
-      - name: Build (MSVC)
-        id: build-msvc
-        run: |
-          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast
-          # is_native_target runs the dump, writing bootstrap-emacs.pdmp; a
-          # cross build (host ABI gnu) does not.  Record whether we are native
-          # (via $GITHUB_OUTPUT) so later steps gate the dump-dependent checks.
-          if (Test-Path 'zig-out/bin/bootstrap-emacs.pdmp') {
-            "native=true" | Out-File $env:GITHUB_OUTPUT -Append
-          } else {
-            "native=false" | Out-File $env:GITHUB_OUTPUT -Append
-          }
+      # MSVC backend on windows-latest is a CROSS build: Zig reports the
+      # runner's host ABI as gnu (the default `zig build` there is the GNU
+      # backend), so target msvc != host gnu -> is_native_target is false ->
+      # the dump never runs and no bootstrap-emacs.pdmp is produced.  A cross
+      # build validates that the MSVC ABI compiles + links the four binaries;
+      # the runnable dumped emacs (and the ert suite) need a NATIVE MSVC host
+      # (a Windows machine where Zig reports msvc as the host ABI) -- they are
+      # covered by the local matrix and the developer-facing workflow, not by
+      # the gnu-host windows-latest runner.  So a robust MSVC job builds and
+      # smokes the standalone tools (which need no dump).
+      - name: Build (MSVC, cross-build link/compile validation)
+        run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast
 
-      # We install the MSVC toolchain + Windows SDK above so this is normally
-      # a NATIVE MSVC build (is_native_target true -> the dump runs and the
-      # dumped emacs + ert execute, matching local capability).  Keep the
-      # native/cross detection as a safety net: if Zig still reports the host
-      # ABI as gnu (so MSVC is a cross build with no pdmp), degrade gracefully
-      # to verifying the four binaries and the standalone tools (which need no
-      # dump) instead of failing the job.
       - name: Verify & smoke (MSVC)
         run: |
           foreach ($bin in 'temacs.exe','emacs.exe','emacsclient.exe','etags.exe') {
@@ -290,8 +267,8 @@ jobs:
               Write-Host "✗ $bin not found"; exit 1
             }
           }
-          Write-Host '✓ MSVC build produced all four binaries'
-          if ('${{ steps.build-msvc.outputs.native }}' -eq 'true') {
+          Write-Host '✓ MSVC cross-build produced all four binaries'
+          if (Test-Path 'zig-out/bin/bootstrap-emacs.pdmp') {
             Write-Host '✓ native MSVC dump present; smoke the dumped emacs'
             ./zig-out/bin/emacs.exe --no-site-file --no-init-file --batch --eval '(princ (format "msvc %s\n" emacs-version))'
           } else {
@@ -300,9 +277,9 @@ jobs:
             ./zig-out/bin/emacsclient.exe --version
           }
 
-      # Full ert only for a native MSVC dump.
+      # Full ert runs only under a native MSVC host (dump produced).
       - name: Built-in ert tests (MSVC, native only)
-        if: steps.build-msvc.outputs.native == 'true'
+        if: hashFiles('zig-out/bin/bootstrap-emacs.pdmp') != ''
         timeout-minutes: 90
         run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast check
 
