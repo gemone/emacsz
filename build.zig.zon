@@ -346,6 +346,28 @@
             .hash = "N-V-__8AAHWSEwGDuK7Qx8Q-Mx6pjeYBBX9g8I6uJ9r5DZ9L",
             .lazy = true,
         },
+        // Image-library sources (objective 3.5), fetched by zig and compiled
+        // with zig cc.  These back src/image.c, which the current console/TTY
+        // build does not compile (GUI is out of the console scope), so they
+        // are declared here -- versions + content hashes locked, fetchable on
+        // demand -- and will be wired (compile + link) when the GUI/image path
+        // is enabled.  lazy = true: not downloaded unless build.zig calls
+        // b.dependency() on them, so a console build pays no cost.
+        .png_src = .{
+            .url = "https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.47.tar.gz",
+            .hash = "N-V-__8AALj-XgA044hQcz2biR55YBJHsz1kKk5UkLAWkI-Z",
+            .lazy = true,
+        },
+        .jpeg_src = .{
+            .url = "https://www.ijg.org/files/jpegsrc.v9f.tar.gz",
+            .hash = "N-V-__8AAB8MRQC7z9yHiE9h4hkpythIQIYO9BkbbEAO27AL",
+            .lazy = true,
+        },
+        .tiff_src = .{
+            .url = "https://download.osgeo.org/libtiff/tiff-4.7.0.tar.gz",
+            .hash = "N-V-__8AAAM81QCqAQGOVIXueDuVtaj5gRptG5zJ4QoGrHLQ",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

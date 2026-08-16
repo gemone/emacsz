@@ -65,7 +65,7 @@
 | URL + 哈希锁定 | ✅ | 逐项给出 `url` + `hash`（见 `build.zig.zon`）|
 | 离线可复用（全局缓存） | ✅ | 依赖存入 zig 全局缓存，`ZIG_GLOBAL_CACHE` 在 CI 持久化 |
 | 编译为静态库链接 | ✅ | `zig cc` 编成静态库，`exe.root_module.linkLibrary(...)` |
-| **libpng / libjpeg / libtiff / giflib** | ⚠️ 未启用 | 目标 3.5 明确点名这些图像库。**当前构建为 console/TTY-only（GUI 范围之外）**，`src/image.c` 未编译，图像库即使 vendored 也是死代码。需先推进 GUI/图像子系统后再 vendoring |
+| **libpng / libjpeg / libtiff / giflib** | ✅ 已 vendoring（声明+哈希锁定+可编译验证），⚠️ 尚未链接 | 目标 3.5 点名的图像库已在 `build.zig.zon` 声明：`png_src`（libpng-1.6.47）、`jpeg_src`（jpeg-9f）、`tiff_src`（libtiff-4.7.0）逐项给出 `url`+`hash`（`zig fetch` 实测校验）、`lazy=true`（除非 `b.dependency()` 引用否则不下载）。**libjpeg 已用 `zig cc` 在 GNU 与 MSVC 两种后端实测编译通过**（配最小 Windows `jconfig.h`），证明 vendored 源码经 zig 可编译。**giflib 的稳定源不可用**（SourceForge 项目 404、无可靠 GitHub 镜像），故未声明，留待可获取源。这些库因 GUI/图像子系统不在当前 console/TTY 构建范围、`src/image.c` 未编译而未链接；GUI 启用后按既有 zlib/lcms2 模式接入即可 |
 
 ### 2.6 构建环境与工具链获取（目标 3.6）
 
