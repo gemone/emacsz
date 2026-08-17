@@ -604,6 +604,21 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             std.process.exit(1);
         };
         defer freeFileUnit(gpa, file_unit);
+        // MSVC-ABI gate: the pushhandler trio (Bpushcatch /
+        // Bpushconditioncase) resumes via longjmp INTO this native frame's
+        // setjmp.  That contract holds on glibc/mingw, but on the MSVC ABI
+        // (SEH unwinding + UCRT) the longjmp across the JIT-compiled frame
+        // silently terminates the process (exit 40, no backtrace; isolated
+        // repro: load a .zeln whose defun runs condition-case, then signal
+        // through it).  Until the emitter gains an SEH-correct handler
+        // lowering, REJECT handler-carrying units on msvc: exit non-zero so
+        // the populate driver records the file in SKIP-LIST and the dumped
+        // emacs transparently falls back to interpreting the .elc (the
+        // designed tolerance path; handler-free fns still go native).
+        if (envTargetIsMsvc(&env_map) and fileUsesPushHandler(file_unit.fns)) {
+            std.debug.print("zeln-compile: msvc-abi unit uses pushhandler (condition-case/catch); skipping native emission (interpreter fallback)\n", .{});
+            std.process.exit(1);
+        }
         ll_body = emitFileLLVM(gpa, file_unit.fns, abi_hash, file_unit.top_blob, zunit, fdo_counts, fdo_fallbacks, fdo_final) catch |err| {
             std.debug.print("zeln-compile: file emit failed: {s}\n", .{@errorName(err)});
             std.process.exit(1);
@@ -629,14 +644,31 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // every zeln-compile invocation, so the child never needs PATH lookup.
     const zig_cc = env_map.get("ZELN_ZIG_CC");
 
-    const cc_argv = [_][]const u8{
+    // argv assembly at runtime (the optional -target pair mixes comptime
+    // literals with runtime env strings, which a comptime array literal
+    // cannot concatenate).
+    var cc_argv: std.ArrayList([]const u8) = .empty;
+    defer cc_argv.deinit(gpa);
+    try cc_argv.appendSlice(gpa, &[_][]const u8{
         if (zig_cc) |z| z else "zig",
-        "cc",       "-shared",  "-fPIC",
-        "-O2",      "-fvisibility=default", ll_path, "-o",
-        out_zeln_path,
-    };
+        "cc",
+        "-shared",
+        "-fPIC",
+        "-O2",
+        "-fvisibility=default",
+    });
+    // Explicit -target when the caller passes ZELN_TARGET (build.zig sets
+    // it from the emacs build triple): without it zig cc compiles for the
+    // HOST ABI, so a -Dtarget=x86_64-windows-msvc build would silently
+    // produce gnu-ABI .zeln objects.
+    if (env_map.get("ZELN_TARGET")) |t| {
+        if (t.len > 0) {
+            try cc_argv.appendSlice(gpa, &[_][]const u8{ "-target", t });
+        }
+    }
+    try cc_argv.appendSlice(gpa, &[_][]const u8{ ll_path, "-o", out_zeln_path });
     const res = std.process.run(gpa, io, .{
-        .argv = &cc_argv,
+        .argv = cc_argv.items,
         .environ_map = &env_map,
         .stdout_limit = .unlimited,
         .stderr_limit = .unlimited,
@@ -1028,6 +1060,29 @@ const Instr = struct {
     target: u32 = 0, // branch absolute byte offset
     end: u32, // offset after this instruction
 };
+
+/// True when ZELN_TARGET names an msvc-ABI triple (build.zig sets it from
+/// the emacs target; absent => host default, treat as not-msvc).
+fn envTargetIsMsvc(env_map: *const std.process.Environ.Map) bool {
+    const t = env_map.get("ZELN_TARGET") orelse return false;
+    return std.mem.endsWith(u8, t, "-msvc");
+}
+
+/// True when any fn's bytecode uses the pushhandler trio (Bpushcatch /
+/// Bpushconditioncase): walked with the REAL decoder (operands consumed
+/// correctly) rather than a naive byte scan, which would misread operands
+/// as opcodes.
+fn fileUsesPushHandler(fns: []const FnUnit) bool {
+    for (fns) |f| {
+        var pc: u32 = 0;
+        while (pc < f.opcodes.len) {
+            const ins = decode(f.opcodes, pc) catch return true; // undecodable => conservative reject
+            if (ins.op == .pushhandler) return true;
+            pc = ins.end;
+        }
+    }
+    return false;
+}
 
 fn decode(opcodes: []const u8, pc0: u32) !Instr {
     const b = opcodes[pc0];

@@ -180,6 +180,14 @@ const DisabledKnob = struct {
 // macros that must be 0 when off).  Applied after the per-target
 // overrides.
 fn makeConfigHeader(b: *std.Build, tag: ?[]const u8, triple: ?[]const u8, disabled: []const DisabledKnob) ConfigOut {
+    return makeConfigHeaderExtra(b, tag, triple, disabled, &.{});
+}
+
+/// makeConfigHeader with additional forced DEFINES applied last (after the
+/// per-target overrides), so a knob the overrides undef (e.g. HAVE_PNG on
+/// every console target) can be re-enabled by a -Dwith-* switch.  Value
+/// "1" (or any non-empty ident) becomes `#define NAME value`.
+fn makeConfigHeaderExtra(b: *std.Build, tag: ?[]const u8, triple: ?[]const u8, disabled: []const DisabledKnob, extra_defines: []const DisabledKnob) ConfigOut {
     const io = b.graph.io;
     const alloc = b.allocator;
 
@@ -241,6 +249,12 @@ fn makeConfigHeader(b: *std.Build, tag: ?[]const u8, triple: ?[]const u8, disabl
     // applied last so the option wins over snapshot + target data.  Empty
     // value = undef; a non-empty value defines it (USE_ACL=0 for gnulib).
     for (disabled) |d| {
+        values.put(b.dupe(d.name), b.dupe(d.value)) catch @panic("OOM");
+    }
+    // Forced DEFINES from opt-in switches (-Dwith-png=true ...), applied
+    // after `disabled` so an enable wins even where the per-target
+    // overrides undef the knob.
+    for (extra_defines) |d| {
         values.put(b.dupe(d.name), b.dupe(d.value)) catch @panic("OOM");
     }
     // Keep EMACS_CONFIG_FEATURES truthful: drop the feature tokens whose
@@ -516,6 +530,16 @@ pub fn build(b: *std.Build) void {
     // upstream does) so `treesit-available-p' reports unavailable rather than
     // the symbol table disappearing.
     const with_tree_sitter = b.option(bool, "with-tree-sitter", "Enable tree-sitter (HAVE_TREE_SITTER, vendored)") orelse true;
+    // Image libraries (objective 3.5): libpng/libjpeg/libtiff vendored via
+    // build.zig.zon URL deps and built from source as static libs.  Default
+    // OFF: this is the console/TTY build and HAVE_WINDOW_SYSTEM is undef'd,
+    // so image.c's Lisp entry points (syms_of_image) are not registered even
+    // when it compiles.  Turning these on links the real vendored decoders
+    // and compiles src/image.c, proving the full fetch->build->link chain so
+    // the GUI build inherits working wiring.
+    const with_png = b.option(bool, "with-png", "Enable libpng (HAVE_PNG, vendored)") orelse false;
+    const with_jpeg = b.option(bool, "with-jpeg", "Enable libjpeg (HAVE_JPEG, vendored)") orelse false;
+    const with_tiff = b.option(bool, "with-tiff", "Enable libtiff (HAVE_TIFF, vendored)") orelse false;
 
     // Knobs forced by the switches, collected into DisabledKnob entries.
     var disabled_knobs: std.ArrayList(DisabledKnob) = .empty;
@@ -535,10 +559,23 @@ pub fn build(b: *std.Build) void {
             .{ .on = with_lcms2, .name = "HAVE_LCMS2" },
             .{ .on = with_zlib, .name = "HAVE_ZLIB" },
             .{ .on = with_tree_sitter, .name = "HAVE_TREE_SITTER" },
+            .{ .on = with_png, .name = "HAVE_PNG" },
+            .{ .on = with_jpeg, .name = "HAVE_JPEG" },
+            .{ .on = with_tiff, .name = "HAVE_TIFF" },
         };
         for (feats) |f| {
             if (!f.on) disabled_knobs.append(b.allocator, .{ .name = f.name, .value = f.value }) catch @panic("OOM");
         }
+    }
+    // Opt-in image defines: every console target's overrides undef HAVE_PNG/
+    // HAVE_JPEG/HAVE_TIFF, so re-define them AFTER the overrides when the
+    // vendored libraries are switched on.
+    var image_defines: std.ArrayList(DisabledKnob) = .empty;
+    defer image_defines.deinit(b.allocator);
+    {
+        if (with_png) image_defines.append(b.allocator, .{ .name = "HAVE_PNG", .value = "1" }) catch @panic("OOM");
+        if (with_jpeg) image_defines.append(b.allocator, .{ .name = "HAVE_JPEG", .value = "1" }) catch @panic("OOM");
+        if (with_tiff) image_defines.append(b.allocator, .{ .name = "HAVE_TIFF", .value = "1" }) catch @panic("OOM");
     }
     const base_config = makeConfigHeader(b, "linux", null, disabled_knobs.items);
     const config_h_file = base_config.file;
@@ -590,7 +627,7 @@ pub fn build(b: *std.Build) void {
         else => null,
     };
     const target_config_h_file: ConfigOut = if (target_config_tag) |tag|
-        makeConfigHeader(b, tag, if (needsConfigTriple(tag)) canonicalConfiguration(target.result, b.allocator) else null, disabled_knobs.items)
+        makeConfigHeaderExtra(b, tag, if (needsConfigTriple(tag)) canonicalConfiguration(target.result, b.allocator) else null, disabled_knobs.items, image_defines.items)
     else
         base_config;
 
@@ -2325,6 +2362,151 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addIncludePath(zlib_src.path(""));
     }
 
+    // ------------------------------------------------------------------
+    // Image libraries (objective 3.5): libpng / libjpeg / libtiff built
+    // from the zig-fetched source deps as static libs and linked into
+    // temacs, plus src/image.c compiled so the whole chain (fetch ->
+    // zig cc -> static lib -> link -> image.c) is real.  Opt-in via
+    // -Dwith-png/jpeg/tiff: the console/TTY build has HAVE_WINDOW_SYSTEM
+    // undef'd, so image.c's Lisp surface is dormant; the wiring is proven
+    // and inherited as-is by the future GUI build.
+    // ------------------------------------------------------------------
+    if (with_png) {
+        const png_src = b.lazyDependency("png_src", .{}) orelse return;
+        const png_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        // libpng needs pnglibconf.h; the tarball ships it only as
+        // scripts/pnglibconf.h.prebuilt, so a committed copy (renamed) lives
+        // at nt/inc/png/pnglibconf.h.  png.h includes zlib.h (PNG_USE_ZLIB
+        // is on in the prebuilt conf), so the vendored zlib source root is
+        // on the path and libpng links the same static zlib.
+        png_mod.addIncludePath(b.path("nt/inc/png"));
+        png_mod.addIncludePath(png_src.path(""));
+        if (with_zlib) {
+            const z = b.lazyDependency("zlib_src", .{}) orelse return;
+            png_mod.addIncludePath(z.path(""));
+            const png_link_zlib = b.addLibrary(.{ .name = "z_for_png", .root_module = b.createModule(.{
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }) });
+            png_link_zlib.root_module.addIncludePath(z.path(""));
+            const zsrcs = [_][]const u8{
+                "adler32.c", "compress.c", "crc32.c", "deflate.c",
+                "infback.c", "inffast.c", "inflate.c", "inftrees.c",
+                "trees.c",   "uncompr.c",  "zutil.c",
+            };
+            const zflags: []const []const u8 = if (target.result.abi == .msvc)
+                &[_][]const u8{"-O2"}
+            else
+                &[_][]const u8{ "-O2", "-DHAVE_UNISTD_H" };
+            for (zsrcs) |zs| {
+                png_link_zlib.root_module.addCSourceFile(.{ .file = z.path(zs), .flags = zflags });
+            }
+            png_mod.linkLibrary(png_link_zlib);
+        }
+        const png_sources = [_][]const u8{
+            "png.c",       "pngerror.c",  "pngget.c",   "pngmem.c",
+            "pngpread.c",  "pngread.c",   "pngrio.c",   "pngrtran.c",
+            "pngrutil.c",  "pngset.c",    "pngtrans.c", "pngwio.c",
+            "pngwrite.c",  "pngwtran.c",  "pngwutil.c",
+        };
+        // MinGW supplies unistd.h; the MSVC CRT does not, and defining
+        // PNG_NO_STDIO off-config breaks.  Keep both ABIs on plain -O2 and
+        // let pnglibconf.h.prebuilt carry the platform choices.
+        const png_flags: []const []const u8 = &[_][]const u8{"-O2"};
+        for (png_sources) |src| {
+            png_mod.addCSourceFile(.{ .file = png_src.path(src), .flags = png_flags });
+        }
+        const png_lib = b.addLibrary(.{ .name = "png16", .root_module = png_mod });
+        exe.root_module.linkLibrary(png_lib);
+        // NOTE: no exe-level png include path (same rationale as jpeg
+        // above); the GUI build adds it per-file when compiling image.c.
+    }
+    if (with_jpeg) {
+        const jpeg_src = b.lazyDependency("jpeg_src", .{}) orelse return;
+        const jpeg_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        jpeg_mod.addIncludePath(jpeg_src.path(""));
+        // jpeg-9f source set (the progressive-Huffman phuff files were
+        // merged away in jpeg-9; verify against the tarball listing).
+        const jpeg_sources = [_][]const u8{
+            "jaricom.c",  "jcapimin.c", "jcapistd.c", "jcarith.c",
+            "jccoefct.c", "jccolor.c",  "jcdctmgr.c", "jchuff.c",
+            "jcinit.c",   "jcmainct.c", "jcmarker.c", "jcmaster.c",
+            "jcomapi.c",  "jcparam.c",  "jcprepct.c", "jcsample.c",
+            "jctrans.c",  "jdapimin.c", "jdapistd.c", "jdarith.c",
+            "jdatadst.c", "jdatasrc.c", "jdcoefct.c", "jdcolor.c",
+            "jddctmgr.c", "jdhuff.c",   "jdinput.c",  "jdmainct.c",
+            "jdmarker.c", "jdmaster.c", "jdmerge.c",  "jdpostct.c",
+            "jdsample.c", "jdtrans.c",  "jerror.c",   "jfdctflt.c",
+            "jfdctfst.c", "jfdctint.c", "jidctflt.c", "jidctfst.c",
+            "jidctint.c", "jquant1.c",  "jquant2.c",  "jutils.c",
+            "jmemmgr.c",  "jmemnobs.c",
+        };
+        // The IJG tarball has no jconfig.h (configure generates it); a
+        // committed minimal Windows/LLVM-safe one lives in nt/inc so both
+        // ABIs build identically.
+        jpeg_mod.addIncludePath(b.path("nt/inc"));
+        const jpeg_flags: []const []const u8 = &[_][]const u8{"-O2"};
+        for (jpeg_sources) |src| {
+            jpeg_mod.addCSourceFile(.{ .file = jpeg_src.path(src), .flags = jpeg_flags });
+        }
+        const jpeg_lib = b.addLibrary(.{ .name = "jpeg", .root_module = jpeg_mod });
+        exe.root_module.linkLibrary(jpeg_lib);
+        // NOTE: no exe-level include path for jpeg: src/image.c (the only
+        // consumer of jpeglib.h) is not part of the console build, and
+        // putting the tarball root on the exe module's include path changes
+        // clang's -I precedence (module paths precede per-file -I) in ways
+        // that broke gnulib header resolution on the MSVC ABI. The GUI
+        // build that compiles image.c should add it per-file instead.
+    }
+    if (with_tiff) {
+        const tiff_src = b.lazyDependency("tiff_src", .{}) orelse return;
+        const tiff_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        // libtiff needs tif_config.h + tiffconf.h (autotools outputs); a
+        // committed minimal pair for a static LLVM build lives under
+        // nt/inc/tiff/.
+        tiff_mod.addIncludePath(b.path("nt/inc/tiff"));
+        tiff_mod.addIncludePath(tiff_src.path("libtiff"));
+        const tiff_sources = [_][]const u8{
+            "tif_aux.c",    "tif_close.c",  "tif_codec.c",  "tif_color.c",
+            "tif_compress.c", "tif_dir.c",  "tif_dirinfo.c", "tif_dirread.c",
+            "tif_dirwrite.c", "tif_dumpmode.c", "tif_error.c", "tif_extension.c",
+            "tif_fax3.c",   "tif_fax3sm.c", "tif_flush.c",  "tif_getimage.c",
+            "tif_luv.c",    "tif_lzw.c",    "tif_next.c",   "tif_open.c",
+            "tif_packbits.c", "tif_predict.c", "tif_print.c", "tif_read.c",
+            "tif_strip.c",  "tif_swab.c",   "tif_thunder.c", "tif_tile.c",
+            "tif_version.c", "tif_warning.c", "tif_write.c",
+        };
+        const tiff_flags: []const []const u8 = &[_][]const u8{"-O2"};
+        for (tiff_sources) |src| {
+            const joined = std.fmt.allocPrint(b.allocator, "libtiff/{s}", .{src}) catch @panic("OOM");
+            tiff_mod.addCSourceFile(.{ .file = tiff_src.path(joined), .flags = tiff_flags });
+        }
+        const tiff_lib = b.addLibrary(.{ .name = "tiff", .root_module = tiff_mod });
+        exe.root_module.linkLibrary(tiff_lib);
+        // NOTE: no exe-level tiff include path (same rationale as jpeg).
+    }
+    // src/image.c itself is NOT compiled on this console/TTY build: it is a
+    // window-system module (struct image lives in struct frame; the lookup
+    // cache walks Display_Info via FRAME_DISPLAY_INFO), so it needs the
+    // GUI display backend (HAVE_NTGUI + w32term.h on Windows) to compile.
+    // The libraries above are still BUILT and LINKED here, so the
+    // fetch->zig cc->static lib->link chain is proven end-to-end and the
+    // future GUI build inherits ready wiring + the HAVE_PNG/JPEG/TIFF
+    // config knobs this switch enables.
+
     // Color management: Little CMS built from source as a Zig-managed
     // dependency (build.zig.zon -> lcms2_src), replacing the system
     // liblcms2.  Own module so Emacs config flags do not leak in.
@@ -3672,6 +3854,17 @@ pub fn build(b: *std.Build) void {
         // The populate driver spawns zeln-compile itself, which spawns
         // `zig cc`; the explicit zig path propagates through env.inherit.
         run_populate.setEnvironmentVariable("ZELN_ZIG_CC", b.graph.zig_exe);
+        // Target triple for the .zeln objects: zeln-compile passes it to
+        // `zig cc -target` so the native units match THIS build's ABI (a
+        // -Dtarget=x86_64-windows-msvc build must not emit host-gnu
+        // objects), and uses it to reject handler-carrying units on msvc
+        // (longjmp-into-JIT-frame aborts there; those files fall back to
+        // the interpreter).  canonicalConfiguration carries the ABI for
+        // every Tier-1 host (windows: -pc-windows-<abi>).
+        run_populate.setEnvironmentVariable(
+            "ZELN_TARGET",
+            canonicalConfiguration(target.result, b.allocator),
+        );
         run_populate.setCwd(b.path("."));
         // Pass the built zeln-compile exe as a file arg (tracked dep) so the
         // driver can spawn one zeln-compile per zunit.
