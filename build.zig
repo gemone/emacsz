@@ -3859,11 +3859,13 @@ pub fn build(b: *std.Build) void {
         // -Dtarget=x86_64-windows-msvc build must not emit host-gnu
         // objects), and uses it to reject handler-carrying units on msvc
         // (longjmp-into-JIT-frame aborts there; those files fall back to
-        // the interpreter).  canonicalConfiguration carries the ABI for
-        // every Tier-1 host (windows: -pc-windows-<abi>).
+        // the interpreter).  MUST be zig's own triple spelling
+        // (target.zigTriple, e.g. aarch64-macos / x86_64-windows-msvc) --
+        // canonicalConfiguration's autoconf form (aarch64-apple-darwin) is
+        // not a valid -target value and failed every compile on macOS.
         run_populate.setEnvironmentVariable(
             "ZELN_TARGET",
-            canonicalConfiguration(target.result, b.allocator),
+            target.result.zigTriple(b.allocator) catch @panic("OOM"),
         );
         run_populate.setCwd(b.path("."));
         // Pass the built zeln-compile exe as a file arg (tracked dep) so the
