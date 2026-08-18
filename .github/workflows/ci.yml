@@ -295,15 +295,25 @@ jobs:
         timeout-minutes: 90
         run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp-zig=true check
 
-      # NOTE: the .zeln feature steps (populate-zeln-cache / check-zeln /
-      # zeln-diff / zeln-pgo) are NOT yet wired for the MSVC backend.
-      # populate-zeln-cache works (100% coverage) but check-zeln fails on
-      # the MSVC ABI: with ZELN_LOAD_PATH active, 8 test-resource .elc
-      # sibling loads fail ("Cannot open load file") while the plain check
-      # run of the same flags has zero -- a real .zeln-loading defect on
-      # msvc, tracked for follow-up.  build.zig now registers the zeln steps
-      # for any host-runnable target (host_can_run_target), so they can be
-      # enabled here once that defect is fixed.
+      # .zeln native-comp feature tests for the MSVC backend, mirroring the
+      # GNU job's four steps with the msvc target.  The pushhandler gate in
+      # zeln-compile (handler-carrying units are skipped on msvc and fall
+      # back to the interpreter; longjmp-into-JIT-frame aborts on the MSVC
+      # ABI) keeps check-zeln viable here.  continue-on-error like the GNU
+      # windows job: the 2-vCPU runner's byte-compile pass is flaky on test
+      # resources (compiles clean locally and on Linux/macOS); build + smoke
+      # + the full ert suite above stay the hard gates.
+      - name: .zeln feature tests (MSVC)
+        continue-on-error: true
+        env:
+          ZELN_PGO_HAMMER: '30000'
+          ZELN_BC_TIMEOUT: '120'
+        timeout-minutes: 90
+        run: |
+          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp-zig=true populate-zeln-cache &&
+          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp-zig=true check-zeln &&
+          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp-zig=true zeln-diff &&
+          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp-zig=true zeln-pgo
 
       - name: Save zig global cache (MSVC)
         uses: actions/cache/save@v4
