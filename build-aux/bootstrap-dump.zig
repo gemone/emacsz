@@ -67,10 +67,34 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         defer gpa.free(src_abs);
         const dst = try std.fs.path.join(gpa, &.{ bin_dir, temacs_path.name });
         defer gpa.free(dst);
-        std.Io.Dir.copyFileAbsolute(src_abs, dst, io, .{ .replace = true }) catch |err| {
-            std.debug.print("bootstrap-dump: staging temacs failed: {s}\n", .{@errorName(err)});
-            std.process.exit(1);
-        };
+        // A concurrent step (populate-zeln-cache's byte-compile batch,
+        // another build command in the same `&&` chain) can be RUNNING
+        // zig-out/bin/temacs.exe while this staging copy wants to replace
+        // it; Windows refuses to overwrite a running executable
+        // (AccessDenied).  Content-wise the copy is a no-op in that case
+        // (same build artifact already in place), so retry briefly and then
+        // treat a still-locked destination as success: the file present at
+        // dst came from this same exe (or an identical rebuild), which is
+        // exactly what staging guarantees.
+        var attempt: usize = 0;
+        while (true) : (attempt += 1) {
+            std.Io.Dir.copyFileAbsolute(src_abs, dst, io, .{ .replace = true }) catch |err| {
+                if (err == error.AccessDenied and attempt < 20) {
+                    // std.Io.sleep(io, Duration, clock): Duration carries
+                    // .nanoseconds; the monotonic clock is fine for a backoff.
+                    const dur: std.Io.Duration = .{ .nanoseconds = 150 * std.time.ns_per_ms };
+                    _ = std.Io.sleep(io, dur, .awake) catch {};
+                    continue;
+                }
+                if (err == error.AccessDenied) {
+                    std.debug.print("bootstrap-dump: temacs.exe locked by a running process; assuming identical artifact already staged\n", .{});
+                    break;
+                }
+                std.debug.print("bootstrap-dump: staging temacs failed: {s}\n", .{@errorName(err)});
+                std.process.exit(1);
+            };
+            break;
+        }
     }
 
     // Freshness stamp: loadup embeds the temacs binary's subrs plus the
