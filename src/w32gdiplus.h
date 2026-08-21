@@ -1,4 +1,8 @@
 #ifdef WINDOWSNT
+/* The gdiplus types this header builds on.  On the MSVC ABI the SDK's
+   gdiplus.h is C++-only, so the minimal C-compatible mirror under
+   nt/inc (found earlier on the include path) provides them instead.  */
+#include <gdiplus.h>
 typedef GpStatus (WINGDIPAPI *GdiplusStartup_Proc)
   (ULONG_PTR *, GdiplusStartupInput *, GdiplusStartupOutput *);
 typedef VOID (WINGDIPAPI *GdiplusShutdown_Proc) (ULONG_PTR);

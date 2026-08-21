@@ -1344,7 +1344,15 @@ struct image_type
   defined HAVE_NS || defined HAVE_HAIKU || defined HAVE_PGTK || \
   defined HAVE_WEBP || defined HAVE_ANDROID
 # ifdef WINDOWSNT
-#  define IMAGE_TYPE_INIT(f) f
+#  ifdef EMACS_STATIC_IMAGE_LIBS
+/* The zig build links the image libraries STATICALLY (zig cc builds them
+   from the zig-fetched sources), so the runtime LoadLibrary dance in the
+   init_*_functions helpers must not gate type availability: a NULL init
+   makes initialize_image_type accept the type immediately.  */
+#   define IMAGE_TYPE_INIT(f)
+#  else
+#   define IMAGE_TYPE_INIT(f) f
+#  endif
 # else
 #  define IMAGE_TYPE_INIT(f)
 # endif
@@ -8016,7 +8024,8 @@ png_image_p (Lisp_Object object)
 
 #ifdef HAVE_PNG
 
-# ifdef WINDOWSNT
+# if defined(WINDOWSNT) && !defined(EMACS_STATIC_IMAGE_LIBS)
+
 /* PNG library details.  */
 
 DEF_DLL_FN (png_voidp, png_get_io_ptr, (png_structp));
@@ -8711,7 +8720,7 @@ jpeg_image_p (Lisp_Object object)
 # include <jpeglib.h>
 # include <jerror.h>
 
-# ifdef WINDOWSNT
+# if defined(WINDOWSNT) && !defined(EMACS_STATIC_IMAGE_LIBS)
 
 /* JPEG library details.  */
 DEF_DLL_FN (void, jpeg_CreateDecompress, (j_decompress_ptr, int, size_t));
@@ -9255,7 +9264,7 @@ tiff_image_p (Lisp_Object object)
 # define UINT32 uint32
 #endif
 
-# ifdef WINDOWSNT
+# if defined(WINDOWSNT) && !defined(EMACS_STATIC_IMAGE_LIBS)
 
 /* TIFF library details.  */
 DEF_DLL_FN (TIFFErrorHandler, TIFFSetErrorHandler, (TIFFErrorHandler));

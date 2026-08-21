@@ -80,8 +80,11 @@ typedef int (WINAPI * MessageBoxW_Proc) (
     IN const WCHAR *caption,
     IN UINT type);
 
-#ifndef MINGW_W64
-/* mingw.org's MinGW doesn't have this in its header files.  */
+/* Local TASKDIALOG definitions for headers that lack them.  mingw-w64
+   provides them in commctrl.h; the MSVC SDK also does (so redefine
+   errors there), so only mingw.org's MinGW and other deficient headers
+   need the local copies.  MINGW_W64 is defined by mingw-w64's headers. */
+#if !defined MINGW_W64 && !defined _MSC_VER
   typedef int TASKDIALOG_COMMON_BUTTON_FLAGS;
 
   typedef int TASKDIALOG_FLAGS;

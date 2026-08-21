@@ -131,6 +131,11 @@ pub const windows_overrides = [_]Override{
     .{ .name = "HAVE_BCRYPT_H", .value = "1" },
     .{ .name = "HAVE_LIB_BCRYPT", .value = "1" },
     .{ .name = "USE_UNLOCKED_IO" },
+    // HAVE_STACK_OVERFLOW_HANDLING: undef for the console build (its
+    // keyboard.c consumer would call w32_reset_stack_overflow_guard from
+    // w32fns.c, a -Dgui module); build.zig's -Dgui defines re-enable it
+    // together with the GUI modules.  The Linux snapshot has it =1, so the
+    // undef must be explicit here.
     .{ .name = "HAVE_STACK_OVERFLOW_HANDLING" },
     .{ .name = "HAVE_TIMERFD" },
     .{ .name = "HAVE__SETJMP" },

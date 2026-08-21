@@ -41,6 +41,11 @@
 #define STRIP_SIZE_DEFAULT 8192
 #define TIFF_MAX_DIR_COUNT 1048576
 
+/* x86-64 and aarch64 are IEEE-754 hosts: without HAVE_IEEEFP,
+   tif_dirread/tif_dirwrite declare extern TIFFCvt* conversion functions
+   nobody defines (they only exist on VAX/old Cray floats). */
+#define HAVE_IEEEFP 1
+
 #define PACKAGE "tiff"
 #define PACKAGE_NAME "LibTIFF"
 #define PACKAGE_VERSION "4.7.0"

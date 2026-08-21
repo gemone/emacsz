@@ -287,39 +287,6 @@ term_w32select (void)
 {
 }
 
-/* getrandom over the Windows CSPRNG (fns.c secure-random).  */
-ssize_t
-getrandom (void *buffer, size_t length, unsigned int flags)
-{
-  if (BCryptGenRandom (NULL, buffer, length,
-		       BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0)
-    {
-      errno = EIO;
-      return -1;
-    }
-  return length;
-}
-
-/* binary-io / close-stream for mingw: lib/binary-io.c only serves
-   DJGPP/EMX and gnulib-io is not linked on Windows.  */
-int
-set_binary_mode (int fd, int mode)
-{
-  return _setmode (fd, mode);
-}
-
-int
-close_stream (FILE *stream)
-{
-  const bool some_pending = (__fpending (stream) != 0);
-  const bool prev_fail = (ferror (stream) != 0);
-  const bool fclose_fail = (fclose (stream) != 0);
-
-  if (prev_fail || (fclose_fail && (some_pending || errno != EBADF)))
-    {
-      if (!prev_fail && !(fclose_fail && errno == 0))
-	errno = fclose_fail ? errno : 0;
-      return EOF;
-    }
-  return 0;
-}
+/* getrandom / set_binary_mode / close_stream moved to src/w32-compat.c:
+   they are mingw-generic (not GUI stubs) and must link in both the
+   console and the -Dgui build (which drops this file).  */

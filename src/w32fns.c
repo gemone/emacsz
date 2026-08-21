@@ -10307,6 +10307,11 @@ static BOOL (WINAPI *pfnShell_NotifyIconW) (DWORD, PNOTIFYICONDATAW);
 			  Tray notifications
  ***********************************************************************/
 /* A private struct declaration to avoid compile-time limits.  */
+#ifndef _ANONYMOUS_UNION
+/* mingw's headers define this as a no-op extension marker; the MSVC SDK
+   does not, so provide the neutral expansion.  */
+#define _ANONYMOUS_UNION
+#endif
 typedef struct MY_NOTIFYICONDATAW {
   DWORD cbSize;
   HWND hWnd;
@@ -10318,10 +10323,19 @@ typedef struct MY_NOTIFYICONDATAW {
   DWORD dwState;
   DWORD dwStateMask;
   WCHAR szInfo[256];
+#ifdef _MSC_VER
+  /* C11 anonymous union: avoids the mingw DUMMYUNIONNAME dance entirely
+     (uTimeout is directly reachable, matching the mingw build).  */
+  union {
+    UINT uTimeout;
+    UINT uVersion;
+  };
+#else
   _ANONYMOUS_UNION union {
     UINT uTimeout;
     UINT uVersion;
   } DUMMYUNIONNAME;
+#endif
   WCHAR szInfoTitle[64];
   DWORD dwInfoFlags;
   GUID guidItem;
@@ -10544,7 +10558,9 @@ add_tray_notification (struct frame *f, const char *icon, const char *tip,
 	      goto done;
 	    }
 	  wcscpy (nidw.szInfo, msgw);
-	  nidw.uTimeout = timeout;
+	  nidw.uTimeout = timeout;	/* anonymous union on MSVC, mingw
+					   _ANONYMOUS_UNION reaches it the
+					   same way */
 	  slen = pMultiByteToWideChar (CP_UTF8, multiByteToWideCharFlags,
 				       title, utf8_mbslen_lim (title, 63),
 				       titlew, 64);
@@ -12063,8 +12079,15 @@ stack_overflow_handler (void)
   if (gc_in_progress)
     terminate_due_to_signal (SIGSEGV, 40);
 #ifdef _WIN64
-  /* See ms-w32.h: MinGW64's longjmp crashes if invoked in this context.  */
+  /* See ms-w32.h: MinGW64's longjmp crashes if invoked in this context.
+     This relies on GCC/clang builtin 5-arg __builtin_longjmp semantics;
+     with the MSVC CRT (and zig cc's MSVC ABI), sys_longjmp on the
+     sigjmp_buf is the portable route instead.  */
+# ifdef __GNUC__
   __builtin_longjmp (return_to_command_loop, 1);
+# else
+  sys_longjmp (return_to_command_loop, 1);
+# endif
 #else
   sys_longjmp (return_to_command_loop, 1);
 #endif

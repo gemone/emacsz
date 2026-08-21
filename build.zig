@@ -540,6 +540,13 @@ pub fn build(b: *std.Build) void {
     const with_png = b.option(bool, "with-png", "Enable libpng (HAVE_PNG, vendored)") orelse false;
     const with_jpeg = b.option(bool, "with-jpeg", "Enable libjpeg (HAVE_JPEG, vendored)") orelse false;
     const with_tiff = b.option(bool, "with-tiff", "Enable libtiff (HAVE_TIFF, vendored)") orelse false;
+    // The w32 GUI backend (objective: full GUI compilation).  Opt-in while
+    // the console/TTY build stays the default: adds the W32 GUI display
+    // modules (w32fns/w32term/w32menu/w32font/... + fontset/fringe/image),
+    // defines HAVE_NTGUI/HAVE_WINDOW_SYSTEM/POLL_FOR_INPUT, links the GUI
+    // system libraries (usp10 for uniscribe, comdlg32/comctl32/ole32/
+    // winspool), and drops the w32-stubs.c console stand-ins.
+    const with_gui = b.option(bool, "gui", "Enable the w32 GUI backend (HAVE_NTGUI, w32 display modules)") orelse false;
 
     // Knobs forced by the switches, collected into DisabledKnob entries.
     var disabled_knobs: std.ArrayList(DisabledKnob) = .empty;
@@ -576,6 +583,24 @@ pub fn build(b: *std.Build) void {
         if (with_png) image_defines.append(b.allocator, .{ .name = "HAVE_PNG", .value = "1" }) catch @panic("OOM");
         if (with_jpeg) image_defines.append(b.allocator, .{ .name = "HAVE_JPEG", .value = "1" }) catch @panic("OOM");
         if (with_tiff) image_defines.append(b.allocator, .{ .name = "HAVE_TIFF", .value = "1" }) catch @panic("OOM");
+        // The w32 GUI backend (mirrors configure.ac's HAVE_W32=yes branch:
+        // AC_DEFINE HAVE_NTGUI, and window_system=w32 implies
+        // HAVE_WINDOW_SYSTEM + POLL_FOR_INPUT + WINDOW_SYSTEM_OBJ).
+        if (with_gui and is_windows) {
+            image_defines.append(b.allocator, .{ .name = "HAVE_NTGUI", .value = "1" }) catch @panic("OOM");
+            image_defines.append(b.allocator, .{ .name = "HAVE_WINDOW_SYSTEM", .value = "1" }) catch @panic("OOM");
+            image_defines.append(b.allocator, .{ .name = "POLL_FOR_INPUT", .value = "1" }) catch @panic("OOM");
+            // TERM_HEADER (config.h) selects the per-window-system terminal
+            // header every HAVE_WINDOW_SYSTEM TU includes (configure sets
+            // w32term.h for HAVE_W32): src/alloc.c et al do
+            // `#include TERM_HEADER`.
+            image_defines.append(b.allocator, .{ .name = "TERM_HEADER", .value = "\"w32term.h\"" }) catch @panic("OOM");
+            // Upstream defines HAVE_STACK_OVERFLOW_HANDLING for mingw; its
+            // keyboard.c consumer calls w32_reset_stack_overflow_guard,
+            // defined in w32fns.c — so it may only be on with the GUI
+            // modules (the console build leaves it undef'd).
+            image_defines.append(b.allocator, .{ .name = "HAVE_STACK_OVERFLOW_HANDLING", .value = "1" }) catch @panic("OOM");
+        }
     }
     const base_config = makeConfigHeader(b, "linux", null, disabled_knobs.items);
     const config_h_file = base_config.file;
@@ -772,6 +797,21 @@ pub fn build(b: *std.Build) void {
             "w32term.c",
         };
         for (windows_doc_sources) |name| run_mdf.addArg(name);
+        // -Dgui: the GUI modules' DEFVAR/DEFUN surface (fringe.c's
+        // Voverflow_newline_into_fringe, fontset.c's Fquery_fontset,
+        // w32fns.c's Qauto/QCrelief, menu.c/xfaces.c consumers, ...) must
+        // be in globals.h or every HAVE_WINDOW_SYSTEM TU fails to compile.
+        if (with_gui) {
+            const gui_doc_sources = [_][]const u8{
+                "w32menu.c", "w32select.c", "w32uniscribe.c",
+                "w32xfns.c", "fontset.c", "fringe.c", "image.c",
+                // w32image.c carries Fw32image_create_thumbnail and
+                // w32cygwinx.c Fw32_battery_status (both referenced by
+                // their own DEFUN bodies via globals.h declarations).
+                "w32image.c", "w32cygwinx.c",
+            };
+            for (gui_doc_sources) |name| run_mdf.addArg(name);
+        }
     }
     // emacs-module.c (when -Dmodules=true) carries the module runtime's
     // DEFSYM/DEFVAR/DEFUN declarations (Qmodule_function_p, Fmodule_load,
@@ -2150,14 +2190,104 @@ pub fn build(b: *std.Build) void {
             });
         }
 
-        // Windows console build: the w32 native modules.  GUI-only
-        // modules (w32fns/w32term/w32menu/w32select/w32font/...) are
-        // intentionally omitted; the few GUI symbols they would provide
-        // are stubbed by w32-stubs.c instead.
+        // Windows native modules.  The console build omits the GUI-only
+        // modules (w32fns/w32term/...) and stubs the few GUI symbols they
+        // would provide via w32-stubs.c; with -Dgui=true the REAL modules
+        // are compiled instead (mirrors configure.ac's W32_OBJ list for
+        // mingw: w32fns w32menu w32reg w32font w32term w32xfns w32select
+        // w32uniscribe w32dwrite + w32 w32console w32heap w32inevt w32proc,
+        // plus WINDOW_SYSTEM_OBJ = fontset fringe image) and the stubs are
+        // dropped (they would duplicate the real symbols at link).
         // TREE_SITTER_STATIC: tree-sitter is linked statically (vendored
         // dep), so treesit.c must NOT take its WINDOWSNT LoadLibrary
         // path (no tree-sitter.dll to load).
         exe.root_module.addCMacro("TREE_SITTER_STATIC", "1");
+        if (with_gui) {
+            // The MSVC SDK's gdiplus.h is C++-only (mingw-w64's is C), so
+            // src/w32image.c (the GDI+ native-image API, an optional
+            // feature beyond the vendored png/jpeg/tiff decoders) cannot
+            // compile there; link no-op syms/globals hooks instead.
+            const msvc_abi = target.result.abi == .msvc;
+            for ([_][]const u8{
+                "src/w32.c",
+                "src/w32console.c",
+                "src/w32heap.c",
+                "src/w32inevt.c",
+                "src/w32proc.c",
+                "src/w32reg.c",
+                "src/w32dwrite.c",
+                "src/w32fns.c",
+                "src/w32menu.c",
+                "src/w32font.c",
+                "src/w32term.c",
+                "src/w32xfns.c",
+                "src/w32select.c",
+                "src/w32uniscribe.c",
+                // w32cygwinx.c: the X-focus shim emacs.c references under
+                // `#if defined HAVE_NTGUI || defined CYGWIN`.
+                "src/w32cygwinx.c",
+                "src/fontset.c",
+                "src/fringe.c",
+                "src/dynlib.c",
+                // mingw-generic helpers (getrandom/set_binary_mode/
+                // close_stream) shared with the console build.
+                "src/w32-compat.c",
+                if (msvc_abi) "src/w32image-stubs.c" else "src/w32image.c",
+            }) |w32src| {
+                exe.root_module.addCSourceFile(.{
+                    .file = b.path(w32src),
+                    .flags = libgnu_flags,
+                });
+            }
+            // image.c: the only consumer of the vendored image headers, so
+            // its -I paths ride on the per-file flags (module-level
+            // include paths would reorder clang's search order and break
+            // gnulib resolution on MSVC -- see the image-libs block above).
+            var image_c_flags: std.ArrayList([]const u8) = .empty;
+            defer image_c_flags.deinit(b.allocator);
+            image_c_flags.appendSlice(b.allocator, libgnu_flags) catch @panic("OOM");
+            if (with_png) {
+                const p = b.lazyDependency("png_src", .{}) orelse return;
+                const ip = std.fmt.allocPrint(b.allocator, "-I{s}", .{p.path("").getPath(b)}) catch @panic("OOM");
+                image_c_flags.append(b.allocator, ip) catch @panic("OOM");
+                image_c_flags.append(b.allocator, "-Int/inc/png") catch @panic("OOM");
+            }
+            if (with_jpeg) {
+                const j = b.lazyDependency("jpeg_src", .{}) orelse return;
+                const ip = std.fmt.allocPrint(b.allocator, "-I{s}", .{j.path("").getPath(b)}) catch @panic("OOM");
+                image_c_flags.append(b.allocator, ip) catch @panic("OOM");
+            }
+            if (with_tiff) {
+                const t = b.lazyDependency("tiff_src", .{}) orelse return;
+                const tp = std.fmt.allocPrint(b.allocator, "-I{s}", .{t.path("libtiff").getPath(b)}) catch @panic("OOM");
+                image_c_flags.append(b.allocator, tp) catch @panic("OOM");
+                image_c_flags.append(b.allocator, "-Int/inc/tiff") catch @panic("OOM");
+            }
+            exe.root_module.addCSourceFile(.{
+                .file = b.path("src/image.c"),
+                .flags = image_c_flags.items,
+            });
+            // The image libraries are STATICALLY linked (zig cc builds
+            // from the zig-fetched sources), so image.c's WINDOWSNT
+            // LoadLibrary gate (init_*_functions) must not run: a NULL
+            // type init makes initialize_image_type accept immediately.
+            if (with_png or with_jpeg or with_tiff)
+                exe.root_module.addCMacro("EMACS_STATIC_IMAGE_LIBS", "1");
+            // GUI system libraries (configure.ac W32_LIBS, mingw branch):
+            // usp10 backs w32uniscribe's Script* calls; comdlg32/comctl32/
+            // ole32/winspool back the common dialogs, tooltips and OLE
+            // drag-drop in w32fns/w32menu/w32select.
+            exe.root_module.linkSystemLibrary("usp10", .{});
+            exe.root_module.linkSystemLibrary("comdlg32", .{});
+            exe.root_module.linkSystemLibrary("comctl32", .{});
+            exe.root_module.linkSystemLibrary("ole32", .{});
+            exe.root_module.linkSystemLibrary("winspool", .{});
+            // gdi32 backs every GetDC/CreateFont/... call in w32term/
+            // w32fns/w32font; gdiplus backs w32image.c's GDI+ API set
+            // (the fn_Gdip* function pointers resolve at load).
+            exe.root_module.linkSystemLibrary("gdi32", .{});
+            exe.root_module.linkSystemLibrary("gdiplus", .{});
+        } else {
         for ([_][]const u8{
             "src/w32.c",
             "src/w32console.c",
@@ -2168,11 +2298,13 @@ pub fn build(b: *std.Build) void {
             "src/w32dwrite.c",
             "src/dynlib.c",
             "src/w32-stubs.c",
+            "src/w32-compat.c",
         }) |w32src| {
             exe.root_module.addCSourceFile(.{
                 .file = b.path(w32src),
                 .flags = libgnu_flags,
             });
+        }
         }
 
         // Phase-2.1 subsystem switches, Windows branch (mirrors the Unix
@@ -2484,12 +2616,22 @@ pub fn build(b: *std.Build) void {
             "tif_compress.c", "tif_dir.c",  "tif_dirinfo.c", "tif_dirread.c",
             "tif_dirwrite.c", "tif_dumpmode.c", "tif_error.c", "tif_extension.c",
             "tif_fax3.c",   "tif_fax3sm.c", "tif_flush.c",  "tif_getimage.c",
+            "tif_hash_set.c",
             "tif_luv.c",    "tif_lzw.c",    "tif_next.c",   "tif_open.c",
             "tif_packbits.c", "tif_predict.c", "tif_print.c", "tif_read.c",
             "tif_strip.c",  "tif_swab.c",   "tif_thunder.c", "tif_tile.c",
-            "tif_version.c", "tif_warning.c", "tif_write.c",
+            "tif_unix.c",   "tif_version.c", "tif_warning.c", "tif_write.c",
+            // tif_hash_set.c: the custom hash-set (TIFFHashSet*).
+            // tif_unix.c: the POSIX fd-based platform IO layer --
+            // TIFFOpen/_TIFFmalloc/_TIFFcalloc & friends (image.c calls
+            // them directly under EMACS_STATIC_IMAGE_LIBS).
         };
-        const tiff_flags: []const []const u8 = &[_][]const u8{"-O2"};
+        // On the MSVC ABI tif_unix.c's POSIX read/write calls must map to
+        // the CRT's _read/_write (mingw's unistd.h does this itself).
+        const tiff_flags: []const []const u8 = if (target.result.abi == .msvc)
+            &[_][]const u8{ "-O2", "-Dread=_read", "-Dwrite=_write", "-Dclose=_close" }
+        else
+            &[_][]const u8{"-O2"};
         for (tiff_sources) |src| {
             const joined = std.fmt.allocPrint(b.allocator, "libtiff/{s}", .{src}) catch @panic("OOM");
             tiff_mod.addCSourceFile(.{ .file = tiff_src.path(joined), .flags = tiff_flags });
