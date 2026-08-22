@@ -322,3 +322,84 @@ jobs:
         with:
           path: ${{ env.ZIG_GLOBAL_CACHE }}
           key: zig-global-msvc-${{ hashFiles('build.zig.zon', 'tools/**/build.zig.zon') }}
+
+  # Full w32 GUI backend (-Dgui with the vendored image decoders) on BOTH
+  # Windows ABIs.  Builds the GUI emacs and verifies the frame + image
+  # surface: a batch probe checks system-configuration, (featurep 'w32)
+  # and image-type-available-p for png/jpeg/tiff.  The GUI frame itself
+  # needs an interactive desktop session, which this headless job cannot
+  # provide, so the C-level proof is the full compile+link of the
+  # W32_OBJ/WINDOW_SYSTEM_OBJ module set (verified frame+decode locally).
+  gui-build:
+    name: GUI ${{ matrix.abi }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [ gnu, msvc ]
+    env:
+      ZIG_GLOBAL_CACHE: C:\Users\runneradmin\AppData\Local\zig
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Restore zig global cache
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: ${{ env.ZIG_GLOBAL_CACHE }}
+          key: zig-global-gui-${{ matrix.abi }}-${{ hashFiles('build.zig.zon', 'tools/**/build.zig.zon') }}
+          restore-keys: |
+            zig-global-gui-${{ matrix.abi }}-
+            zig-global-windows-latest-
+
+      # -Dgui + the three vendored image decoders; a SEPARATE cache dir so
+      # the GUI config/header generation cannot pollute the console jobs.
+      - name: Build GUI emacs
+        run: >
+          zig build -Dgui -Dwith-png -Dwith-jpeg -Dwith-tiff
+          -Doptimize=ReleaseFast
+          ${{ matrix.abi == 'msvc' && '-Dtarget=x86_64-windows-msvc' || '' }}
+          --cache-dir .zig-cache-gui
+
+      # Batch probe (headless-safe): the w32 backend must be registered and
+      # all three vendored decoders available.
+      - name: Verify w32 + image surface
+        run: |
+          $probe = @'
+          (progn
+            (princ (format "conf=%S w32=%S png=%S jpeg=%S tiff=%S"
+                           system-configuration
+                           (featurep 'w32)
+                           (image-type-available-p 'png)
+                           (image-type-available-p 'jpeg)
+                           (image-type-available-p 'tiff)))
+            (kill-emacs (if (and (featurep 'w32)
+                                  (image-type-available-p 'png)
+                                  (image-type-available-p 'jpeg)
+                                  (image-type-available-p 'tiff))
+                            0 1)))
+          '@
+          Set-Content gui-probe.el $probe
+          & .\zig-out\bin\emacs.exe --no-init-file --no-site-file --batch `
+            --dump-file=.\zig-out\bin\bootstrap-emacs.pdmp `
+            --load "$PWD\gui-probe.el"
+          if ($LASTEXITCODE -ne 0) { throw "GUI probe failed (exit $LASTEXITCODE)" }
+
+      - name: Save zig global cache (GUI)
+        uses: actions/cache/save@v4
+        if: always()
+        continue-on-error: true
+        with:
+          path: ${{ env.ZIG_GLOBAL_CACHE }}
+          key: zig-global-gui-${{ matrix.abi }}-${{ hashFiles('build.zig.zon', 'tools/**/build.zig.zon') }}
