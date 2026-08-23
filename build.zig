@@ -540,6 +540,9 @@ pub fn build(b: *std.Build) void {
     const with_png = b.option(bool, "with-png", "Enable libpng (HAVE_PNG, vendored)") orelse false;
     const with_jpeg = b.option(bool, "with-jpeg", "Enable libjpeg (HAVE_JPEG, vendored)") orelse false;
     const with_tiff = b.option(bool, "with-tiff", "Enable libtiff (HAVE_TIFF, vendored)") orelse false;
+    const with_gif = b.option(bool, "with-gif", "Enable giflib (HAVE_GIF, vendored)") orelse false;
+    const with_webp = b.option(bool, "with-webp", "Enable libwebp (HAVE_WEBP, vendored)") orelse false;
+    const with_xpm = b.option(bool, "with-xpm", "Enable libXpm via its FOR_MSW layer (HAVE_XPM, vendored, no X11)") orelse false;
     // The w32 GUI backend (objective: full GUI compilation).  Opt-in while
     // the console/TTY build stays the default: adds the W32 GUI display
     // modules (w32fns/w32term/w32menu/w32font/... + fontset/fringe/image),
@@ -569,6 +572,9 @@ pub fn build(b: *std.Build) void {
             .{ .on = with_png, .name = "HAVE_PNG" },
             .{ .on = with_jpeg, .name = "HAVE_JPEG" },
             .{ .on = with_tiff, .name = "HAVE_TIFF" },
+            .{ .on = with_gif, .name = "HAVE_GIF" },
+            .{ .on = with_webp, .name = "HAVE_WEBP" },
+            .{ .on = with_xpm, .name = "HAVE_XPM" },
         };
         for (feats) |f| {
             if (!f.on) disabled_knobs.append(b.allocator, .{ .name = f.name, .value = f.value }) catch @panic("OOM");
@@ -583,6 +589,9 @@ pub fn build(b: *std.Build) void {
         if (with_png) image_defines.append(b.allocator, .{ .name = "HAVE_PNG", .value = "1" }) catch @panic("OOM");
         if (with_jpeg) image_defines.append(b.allocator, .{ .name = "HAVE_JPEG", .value = "1" }) catch @panic("OOM");
         if (with_tiff) image_defines.append(b.allocator, .{ .name = "HAVE_TIFF", .value = "1" }) catch @panic("OOM");
+        if (with_gif) image_defines.append(b.allocator, .{ .name = "HAVE_GIF", .value = "1" }) catch @panic("OOM");
+        if (with_webp) image_defines.append(b.allocator, .{ .name = "HAVE_WEBP", .value = "1" }) catch @panic("OOM");
+        if (with_xpm) image_defines.append(b.allocator, .{ .name = "HAVE_XPM", .value = "1" }) catch @panic("OOM");
         // The w32 GUI backend (mirrors configure.ac's HAVE_W32=yes branch:
         // AC_DEFINE HAVE_NTGUI, and window_system=w32 implies
         // HAVE_WINDOW_SYSTEM + POLL_FOR_INPUT + WINDOW_SYSTEM_OBJ).
@@ -2263,6 +2272,31 @@ pub fn build(b: *std.Build) void {
                 image_c_flags.append(b.allocator, tp) catch @panic("OOM");
                 image_c_flags.append(b.allocator, "-Int/inc/tiff") catch @panic("OOM");
             }
+            if (with_gif) {
+                const g = b.lazyDependency("gif_src", .{}) orelse return;
+                const ip = std.fmt.allocPrint(b.allocator, "-I{s}", .{g.path("").getPath(b)}) catch @panic("OOM");
+                image_c_flags.append(b.allocator, ip) catch @panic("OOM");
+            }
+            if (with_webp) {
+                const w = b.lazyDependency("webp_src", .{}) orelse return;
+                const ip = std.fmt.allocPrint(b.allocator, "-I{s}", .{w.path("").getPath(b)}) catch @panic("OOM");
+                image_c_flags.append(b.allocator, ip) catch @panic("OOM");
+                // webp headers live in src/: <webp/decode.h> etc.
+                const ip2 = std.fmt.allocPrint(b.allocator, "-I{s}", .{w.path("src").getPath(b)}) catch @panic("OOM");
+                image_c_flags.append(b.allocator, ip2) catch @panic("OOM");
+            }
+            if (with_xpm) {
+                const x = b.lazyDependency("xpm_src", .{}) orelse return;
+                // image.c defines FOR_MSW itself before #include
+                // "X11/xpm.h" (and renames XImage/XColor/Display to
+                // xpm_*), so only the include paths are needed here:
+                // include/ for X11/xpm.h, src/ for simx.h (pulled by
+                // xpm.h under FOR_MSW).
+                const ip = std.fmt.allocPrint(b.allocator, "-I{s}", .{x.path("include").getPath(b)}) catch @panic("OOM");
+                image_c_flags.append(b.allocator, ip) catch @panic("OOM");
+                const ip2 = std.fmt.allocPrint(b.allocator, "-I{s}", .{x.path("src").getPath(b)}) catch @panic("OOM");
+                image_c_flags.append(b.allocator, ip2) catch @panic("OOM");
+            }
             exe.root_module.addCSourceFile(.{
                 .file = b.path("src/image.c"),
                 .flags = image_c_flags.items,
@@ -2271,7 +2305,7 @@ pub fn build(b: *std.Build) void {
             // from the zig-fetched sources), so image.c's WINDOWSNT
             // LoadLibrary gate (init_*_functions) must not run: a NULL
             // type init makes initialize_image_type accept immediately.
-            if (with_png or with_jpeg or with_tiff)
+            if (with_png or with_jpeg or with_tiff or with_gif or with_webp or with_xpm)
                 exe.root_module.addCMacro("EMACS_STATIC_IMAGE_LIBS", "1");
             // GUI system libraries (configure.ac W32_LIBS, mingw branch):
             // usp10 backs w32uniscribe's Script* calls; comdlg32/comctl32/
@@ -2639,6 +2673,122 @@ pub fn build(b: *std.Build) void {
         const tiff_lib = b.addLibrary(.{ .name = "tiff", .root_module = tiff_mod });
         exe.root_module.linkLibrary(tiff_lib);
         // NOTE: no exe-level tiff include path (same rationale as jpeg).
+    }
+    if (with_gif) {
+        const gif_src = b.lazyDependency("gif_src", .{}) orelse return;
+        const gif_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        gif_mod.addIncludePath(gif_src.path(""));
+        // Library files only; the CLI tools (gif2rgb, gifbuild, ...) are
+        // excluded -- they have their own mains.
+        const gif_sources = [_][]const u8{
+            "dgif_lib.c", "egif_lib.c", "gif_err.c", "gif_font.c",
+            "gif_hash.c", "gifalloc.c", "openbsd-reallocarray.c",
+        };
+        const gif_flags: []const []const u8 = &[_][]const u8{"-O2"};
+        for (gif_sources) |src| {
+            gif_mod.addCSourceFile(.{ .file = gif_src.path(src), .flags = gif_flags });
+        }
+        const gif_lib = b.addLibrary(.{ .name = "gif", .root_module = gif_mod });
+        exe.root_module.linkLibrary(gif_lib);
+        // NOTE: no exe-level include path (same rationale as the others).
+    }
+    if (with_webp) {
+        const webp_src = b.lazyDependency("webp_src", .{}) orelse return;
+        const webp_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        webp_mod.addIncludePath(webp_src.path(""));
+        // libwebp without -DHAVE_CONFIG_H takes its defaults (plain-C dsp
+        // fallback; no threading).  Everything under src/{dec,demux,dsp,
+        // enc,mux,utils} is compiled -- emacs uses the anim decoder
+        // (demux+mux) as well as plain decode/encode.  Walked with a
+        // build-time glob (the same pattern as parseLibgnuSources) because
+        // the dsp directory alone carries ~80 per-arch files.
+        {
+            const src_dir = webp_src.path("src").getPath(b);
+            var dir = std.Io.Dir.cwd().openDir(io, src_dir, .{ .iterate = true }) catch @panic("build.zig: cannot open webp src");
+            defer dir.close(io);
+            var walker = dir.walk(b.allocator) catch @panic("OOM");
+            defer walker.deinit();
+            const webp_flags: []const []const u8 = &[_][]const u8{"-O2"};
+            while (walker.next(io) catch null) |entry| {
+                if (entry.kind != .file) continue;
+                if (!std.mem.endsWith(u8, entry.basename, ".c")) continue;
+                // only the library subdirs (dec/demux/dsp/enc/mux/utils),
+                // not examples/: match "<dir><sep>..." at path start.  The
+                // walker emits OS-native separators on Windows.
+                const dirs = [_][]const u8{ "dec", "demux", "dsp", "enc", "mux", "utils" };
+                var in_lib_dir = false;
+                for (dirs) |d| {
+                    if (entry.path.len > d.len + 1 and
+                        std.mem.eql(u8, entry.path[0..d.len], d) and
+                        (entry.path[d.len] == '/' or entry.path[d.len] == '\\'))
+                    {
+                        in_lib_dir = true;
+                        break;
+                    }
+                }
+                if (!in_lib_dir) continue;
+                // The walker's path is relative to the src dir; LazyPath
+                // joins use forward slashes.
+                const joined = std.fmt.allocPrint(b.allocator, "src/{s}", .{entry.path}) catch @panic("OOM");
+                for (joined) |*ch| {
+                    if (ch.* == '\\') ch.* = '/';
+                }
+                webp_mod.addCSourceFile(.{
+                    .file = webp_src.path(joined),
+                    .flags = webp_flags,
+                });
+            }
+        }
+        const webp_lib = b.addLibrary(.{ .name = "webp", .root_module = webp_mod });
+        exe.root_module.linkLibrary(webp_lib);
+        // NOTE: no exe-level include path (same rationale as the others).
+    }
+    if (with_xpm) {
+        const xpm_src = b.lazyDependency("xpm_src", .{}) orelse return;
+        const xpm_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        // The upstream FOR_MSW simulation layer: simx.h/simx.c define the
+        // X11 surface over plain C + MSW types, so no X11 headers/libs are
+        // needed.  Under FOR_MSW the whole Pixmap-based API is excluded
+        // ("FOR_MSW, all ..Pixmap.. are excluded, only the ..XImage.. are
+        // used" -- xpm.h), so the *FrP.c/*ToP.c files (Pixmap-input/output
+        // entry points) are not compiled; image.c on WINDOWSNT uses the
+        // XImage variants exclusively.
+        xpm_mod.addCMacro("FOR_MSW", "1");
+        xpm_mod.addIncludePath(b.path("nt/inc/xpm"));
+        xpm_mod.addIncludePath(xpm_src.path("src"));
+        // XpmI.h does #include "xpm.h" (quoted, FOR_MSW style), which
+        // lives at include/X11/xpm.h.
+        xpm_mod.addIncludePath(xpm_src.path("include/X11"));
+        const xpm_sources = [_][]const u8{
+            "Attrib.c",    "CrBufFrI.c", "CrDatFrI.c",
+            "create.c",    "CrIFrBuf.c", "CrIFrDat.c",
+            "data.c",      "hashtab.c",  "Image.c",    "Info.c",
+            "misc.c",      "parse.c",    "RdFToBuf.c", "RdFToDat.c",
+            "RdFToI.c",    "rgb.c",      "scan.c",
+            "simx.c",      "WrFFrBuf.c", "WrFFrDat.c", "WrFFrI.c",
+        };
+        // K&R-era old-style function definitions (simx.c hexCharToInt)
+        // need gnu89; the rest of the lib is plain C89-compatible.
+        const xpm_flags: []const []const u8 = &[_][]const u8{ "-O2", "-std=gnu89" };
+        for (xpm_sources) |src| {
+            const joined = std.fmt.allocPrint(b.allocator, "src/{s}", .{src}) catch @panic("OOM");
+            xpm_mod.addCSourceFile(.{ .file = xpm_src.path(joined), .flags = xpm_flags });
+        }
+        const xpm_lib = b.addLibrary(.{ .name = "Xpm", .root_module = xpm_mod });
+        exe.root_module.linkLibrary(xpm_lib);
+        // NOTE: no exe-level include path (same rationale as the others).
     }
     // src/image.c itself is NOT compiled on this console/TTY build: it is a
     // window-system module (struct image lives in struct frame; the lookup

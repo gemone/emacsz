@@ -5442,6 +5442,11 @@ static bool xpm_load (struct frame *f, struct image *img);
 #define XColor xpm_XColor
 #define XImage xpm_XImage
 #define Display xpm_Display
+/* mingw's io.h already #defines close/open as CRT-underscore macros;
+   simx.h (pulled by xpm.h below) redefines them, which clang rejects.
+   Drop the io.h ones first -- simx.h's map to the same _close/_open.  */
+#undef close
+#undef open
 #ifdef CYGWIN
 #include "noX/xpm.h"
 #else  /* not CYGWIN */
@@ -5451,6 +5456,19 @@ static bool xpm_load (struct frame *f, struct image *img);
 #undef XColor
 #undef XImage
 #undef Display
+/* simx.h (pulled in by xpm.h under FOR_MSW) also defines CRT-renaming
+   macros (close/open/strdup/index/...) that would leak into the rest of
+   this file -- e.g. `cache->index' gets macro-expanded into
+   `cache->strchr'.  Drop them right after the include, like the X*
+   renames above.  O_RDONLY stays: simx.h maps it to the real
+   _O_RDONLY and later code uses it.  */
+#undef close
+#undef open
+#undef fdopen
+#undef strdup
+#undef index
+#undef rindex
+#undef bzero
 #else  /* not HAVE_NTGUI */
 #include "X11/xpm.h"
 #endif /* not HAVE_NTGUI */
@@ -5678,7 +5696,7 @@ xpm_free_colors (Display *dpy, Colormap cmap, Pixel *pixels, int npixels, void *
 #endif /* ALLOC_XPM_COLORS */
 
 
-#ifdef WINDOWSNT
+#if defined(WINDOWSNT) && !defined(EMACS_STATIC_IMAGE_LIBS)
 
 /* XPM library details.  */
 
@@ -9737,7 +9755,7 @@ gif_image_p (Lisp_Object object)
    may be incorrect.  */
 # define HAVE_GIFERRORSTRING (5 < GIFLIB_MAJOR + (1 <= GIFLIB_MINOR))
 
-# ifdef WINDOWSNT
+# if defined(WINDOWSNT) && !defined(EMACS_STATIC_IMAGE_LIBS)
 
 /* GIF library details.  */
 #  if GIFLIB_MAJOR + (GIFLIB_MINOR >= 1) > 5
@@ -10420,7 +10438,7 @@ webp_image_p (Lisp_Object object)
   return fmt[WEBP_FILE].count + fmt[WEBP_DATA].count == 1;
 }
 
-#ifdef WINDOWSNT
+#if defined(WINDOWSNT) && !defined(EMACS_STATIC_IMAGE_LIBS)
 
 /* WebP library details.  */
 

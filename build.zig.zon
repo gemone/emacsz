@@ -368,6 +368,28 @@
             .hash = "N-V-__8AAAM81QCqAQGOVIXueDuVtaj5gRptG5zJ4QoGrHLQ",
             .lazy = true,
         },
+        // giflib 5.2.2: GIF decode/encode (HAVE_GIF; -Dwith-gif).
+        .gif_src = .{
+            .url = "https://sourceforge.net/projects/giflib/files/giflib-5.2.2.tar.gz/download",
+            .hash = "N-V-__8AAI4GIwD_4QAQ2PcKUSZ8F2XH_vDa4da8cUxuuOU9",
+            .lazy = true,
+        },
+        // libwebp 1.5.0: WebP decode/encode + animations (HAVE_WEBP;
+        // -Dwith-webp).  Compiled WITHOUT -DHAVE_CONFIG_H: the sources
+        // take their defaults (plain-C dsp fallback).
+        .webp_src = .{
+            .url = "https://github.com/webmproject/libwebp/archive/refs/tags/v1.5.0.tar.gz",
+            .hash = "N-V-__8AAOM4egDNF1p7XMh92AC7yc-Da9ArradyeGsfMXkm",
+            .lazy = true,
+        },
+        // libXpm 3.5.17: XPM pixmaps.  Built through the upstream FOR_MSW
+        // simulation layer (src/simx.c + -DFOR_MSW) so no X11 headers or
+        // libraries are needed (HAVE_XPM; -Dwith-xpm).
+        .xpm_src = .{
+            .url = "https://gitlab.freedesktop.org/xorg/lib/libxpm/-/archive/libXpm-3.5.17/libxpm-libXpm-3.5.17.tar.gz",
+            .hash = "N-V-__8AAFkzEQBoBsPMLmBbyonJiJLqs_At-sIguLGm_xP5",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",
