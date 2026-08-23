@@ -46,7 +46,7 @@ compile-lisp → dump-compiled → 最终 loaddefs 生成 → smoke，因此
 
 ## 构建选项
 
-- `-Doptimize=Debug` - 调试模式（默认，**目前唯一可靠**）
+- `-Doptimize=Debug` - 调试模式（默认）
 - `-Dtarget=<triple>` - 选择目标后端（arch+OS+ABI，Zig 标准机制）：
   - 默认后端 = 本机目标；Windows 本机默认即 `x86_64-windows-gnu`（GNU/MinGW，
     用 Zig 内置的 MinGW 头文件与库）。
@@ -67,6 +67,15 @@ compile-lisp → dump-compiled → 最终 loaddefs 生成 → smoke，因此
   vendored via `zig fetch`），对照上游 `--with-tree-sitter`。默认 ON；设
   `false` 时不链接 vendored 库并把 `HAVE_TREE_SITTER` undef（`treesit-available-p`
   报不可用，`src/treesit.c` 照常编译）。
+- `-Dgui=[bool]` - 编译完整 w32 GUI 后端（`HAVE_NTGUI`，仅 Windows）。
+  默认 OFF（console/TTY 构建）。详见上文"GUI 构建与图像格式"。
+- `-Dwith-png / -Dwith-jpeg / -Dwith-tiff / -Dwith-gif / -Dwith-webp /
+  -Dwith-xpm=[bool]` - 六种图像格式的 vendored 解码器（对照上游
+  `--with-png` 等），全部默认 OFF。源码经 `zig fetch` 下载（哈希锁定）、
+  编译为静态库链入 temacs——不需要系统库也不需要运行期 DLL。
+- 其余 `-Dwith-*`（gnutls/dbus/gpm/alsa/acl/sqlite3/xml2/lcms2/zlib）与
+  上游同名选项一一对应；Windows 目标会自动关闭不适用的（DBUS/GPM/ALSA
+  等见 `config-overrides.zig`）。
 
 ### 原生编译共存与优先级（M2.5）
 
@@ -88,18 +97,18 @@ compile-lisp → dump-compiled → 最终 loaddefs 生成 → smoke，因此
 因此优先的构件**先执行**并胜出。仅在 `HAVE_NATIVE_COMP_ZIG` 下生效；关掉该
 宏时 `openp` 与原先逐字节一致（默认 `nil` 分支正是 HEAD 顺序：eln 先、zeln 后）。
 
-注意：`ReleaseFast`/`ReleaseSafe` 目前会让 temacs 在加载转储时崩溃
-（clang -O1+ 暴露了 pdumper 单-delta 重定位的缺陷）。在深层 pdumper
-多-delta 修复完成之前，请使用默认的 Debug（-O0）。
+注意：早期的 `ReleaseFast` 在加载转储时崩溃的问题（pdumper 单-delta
+重定位缺陷）已修复——如今 CI 与本机验证全部使用
+`-Doptimize=ReleaseFast`（构建、dump、582 测试、GUI、zeln 门禁均绿）。
 
 ## Windows 构建（无 MSYS2）
 
 Windows 后端（`x86_64-windows-gnu`，默认）只依赖一个 **Zig 0.16.0**，
 无需 MSYS2 / MinGW / Cygwin；所有第三方 C 依赖（zlib、libxml2、sqlite3、
-lcms2、tree-sitter）都在 `build.zig.zon` 里声明并通过 `zig fetch` 自动下载、
+lcms2、tree-sitter，以及可选的 libpng/libjpeg/libtiff/giflib/libwebp/
+libXpm）都在 `build.zig.zon` 里声明并通过 `zig fetch` 自动下载、
 编译为静态库链接。这是纯本机构建——在当前 Windows 主机上运行 `zig build`
-即用 GNU 后端构建出可运行的 `temacs.exe` + `emacs.exe`（w32 console
-模块已实现；GUI 仍在范围之外）：
+即用 GNU 后端构建出可运行的 `temacs.exe` + `emacs.exe`：
 
 ```bash
 # GNU/MinGW 后端（默认）：本机 Windows 目标即 x86_64-windows-gnu
@@ -114,6 +123,40 @@ zig build -Dtarget=x86_64-windows-msvc
 # 验证产物
 zig-out\bin\emacs.exe --version
 ```
+
+### GUI 构建与图像格式（可选）
+
+`-Dgui` 编译完整的 w32 GUI 后端（HAVE_NTGUI：w32fns/w32term/w32font/
+w32menu/w32select/w32uniscribe/w32xfns/w32cygwinx + fontset/fringe/image，
+双 ABI 均支持）。图像格式按需开启（默认关，全部 zig fetch 自动下载源码、
+哈希锁定、编译为静态库直接链入，无 DLL）：
+
+```bash
+# 全部六种格式 + GUI：
+zig build -Dgui -Dwith-png -Dwith-jpeg -Dwith-tiff -Dwith-gif -Dwith-webp -Dwith-xpm
+
+# MSVC 后端的 GUI（同样支持）：
+zig build -Dgui -Dwith-png -Dwith-jpeg -Dwith-tiff -Dwith-gif -Dwith-webp -Dwith-xpm \
+          -Dtarget=x86_64-windows-msvc
+```
+
+实测（双 ABI）：`image-type-available-p` 六种全 `t`，真实解码验证
+png/jpeg/tiff/gif 1×1 → `(1 . 1)`、webp 550×368 样图 → `(550 . 368)`；
+交互窗口正常打开（`-Q` 后 Win32 实测 689×671 可见窗口，与 MSYS2
+参考构建形态一致）。libXpm 走上游 FOR_MSW 模拟层，无需任何 X11。
+
+### 依赖版本更新（build.zig.zon）
+
+所有第三方源码依赖集中在 `build.zig.zon` 的 `.dependencies` 表：每项
+`.{ .url = ..., .hash = ..., .lazy = true }`（`lazy = true` 表示仅在
+build.zig 实际用到时才下载）。更新版本三步：
+
+1. 把 `.url` 改为新版本的 tarball 地址；
+2. 删掉 `.hash` 行后运行 `zig fetch <新url>`——它下载源码并打印新的
+   哈希字符串；
+3. 把该字符串填回 `.hash`（保证可重现构建，离线缓存生效）。
+
+镜像依赖同理（`tools/*/build.zig.zon` 各自维护自己的依赖）。
 
 MSVC 后端已实测全量跑通：`zig build -Dtarget=x86_64-windows-msvc` 编译+链接+转储成功，
 产出 `temacs.exe / emacs.exe / emacsclient.exe / etags.exe` 及完整 `bootstrap-emacs.pdmp`；
