@@ -2291,7 +2291,13 @@ pub fn build(b: *std.Build) void {
                 // "X11/xpm.h" (and renames XImage/XColor/Display to
                 // xpm_*), so only the include paths are needed here:
                 // include/ for X11/xpm.h, src/ for simx.h (pulled by
-                // xpm.h under FOR_MSW).
+                // xpm.h under FOR_MSW).  nt/inc/xpm carries a patched
+                // simx.h whose FUNC macro always takes the ANSI branch
+                // (the stock one keys off __STDC__, which is 0 in
+                // clang's MSVC mode -> K&R zero-arg prototypes that
+                // break the arity-checked calls); it must precede src/.
+                const ip0 = "-Int/inc/xpm";
+                image_c_flags.append(b.allocator, ip0) catch @panic("OOM");
                 const ip = std.fmt.allocPrint(b.allocator, "-I{s}", .{x.path("include").getPath(b)}) catch @panic("OOM");
                 image_c_flags.append(b.allocator, ip) catch @panic("OOM");
                 const ip2 = std.fmt.allocPrint(b.allocator, "-I{s}", .{x.path("src").getPath(b)}) catch @panic("OOM");
@@ -2683,12 +2689,18 @@ pub fn build(b: *std.Build) void {
         });
         gif_mod.addIncludePath(gif_src.path(""));
         // Library files only; the CLI tools (gif2rgb, gifbuild, ...) are
-        // excluded -- they have their own mains.
+        // excluded -- they have their own mains.  gif_font.c (GifDrawText
+        // & friends) is a utility-layer file that uses strtok_r (absent
+        // from the MSVC CRT) and that no Emacs code references; excluded
+        // so both ABIs build identically.
         const gif_sources = [_][]const u8{
-            "dgif_lib.c", "egif_lib.c", "gif_err.c", "gif_font.c",
+            "dgif_lib.c", "egif_lib.c", "gif_err.c",
             "gif_hash.c", "gifalloc.c", "openbsd-reallocarray.c",
         };
-        const gif_flags: []const []const u8 = &[_][]const u8{"-O2"};
+        const gif_flags: []const []const u8 = if (target.result.abi == .msvc)
+            &[_][]const u8{ "-O2", "-D_CRT_SECURE_NO_WARNINGS", "-Dfdopen=_fdopen" }
+        else
+            &[_][]const u8{"-O2"};
         for (gif_sources) |src| {
             gif_mod.addCSourceFile(.{ .file = gif_src.path(src), .flags = gif_flags });
         }
@@ -2703,6 +2715,16 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .link_libc = true,
         });
+        // libwebp built WITH a minimal committed config.h (nt/inc/webp):
+        // HAVE_CONFIG_H makes cpu.h's WEBP_USE_* gating depend on the
+        // explicit WEBP_HAVE_* macros (absent -> all off).  That keeps
+        // every source file compiling (the *_sse*.c bodies are #if'd
+        // out) while cpu.h auto-defines no HAVE_* on its own -- on an
+        // MSVC-ABI target the stock cpu.h DEFINES WEBP_USE_SSE41 via
+        // WEBP_MSC_SSE41, which then makes dsp.c reference
+        // VP8LDspInitSSE41 etc. with no definition available.
+        webp_mod.addIncludePath(b.path("nt/inc/webp"));
+        webp_mod.addCMacro("HAVE_CONFIG_H", "1");
         webp_mod.addIncludePath(webp_src.path(""));
         // libwebp without -DHAVE_CONFIG_H takes its defaults (plain-C dsp
         // fallback; no threading).  Everything under src/{dec,demux,dsp,

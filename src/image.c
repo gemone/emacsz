@@ -5696,9 +5696,14 @@ xpm_free_colors (Display *dpy, Colormap cmap, Pixel *pixels, int npixels, void *
 #endif /* ALLOC_XPM_COLORS */
 
 
-#if defined(WINDOWSNT) && !defined(EMACS_STATIC_IMAGE_LIBS)
+#if defined(WINDOWSNT)
 
-/* XPM library details.  */
+/* XPM library details.  The DEF_DLL_FN block doubles as the ANSI
+   prototypes (xpm.h's simx.h declares these K&R-style -- extern void
+   XImageFree() -- under FOR_MSW, and __STDC__ is 0 in clang's MSVC
+   mode, so without them clang rejects the arity-checked calls below).
+   Under EMACS_STATIC_IMAGE_LIBS the fn_* binding layer is dropped but
+   the prototypes stay.  */
 
 DEF_DLL_FN (void, XpmFreeAttributes, (XpmAttributes *));
 DEF_DLL_FN (int, XpmCreateImageFromBuffer,
@@ -5709,6 +5714,7 @@ DEF_DLL_FN (int, XpmReadFileToImage,
 	     xpm_XImage **, XpmAttributes *));
 DEF_DLL_FN (void, XImageFree, (xpm_XImage *));
 
+# if !defined(EMACS_STATIC_IMAGE_LIBS)
 static bool
 init_xpm_functions (void)
 {
@@ -5733,6 +5739,8 @@ init_xpm_functions (void)
 # define XpmCreateImageFromBuffer fn_XpmCreateImageFromBuffer
 # define XpmFreeAttributes fn_XpmFreeAttributes
 # define XpmReadFileToImage fn_XpmReadFileToImage
+
+# endif /* !EMACS_STATIC_IMAGE_LIBS */
 
 #endif /* WINDOWSNT */
 
