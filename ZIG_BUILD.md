@@ -101,6 +101,35 @@ Emacs）；其他平台默认 OFF。源码经 `zig fetch` 下载（哈希锁定�
   与 gate #2（`.zeln` 执行崩溃）解耦。
 - `t` = 优先 `.zeln`（opt-in；显式测试 `.zeln` 路径，即 gate #2 领域）。
 
+### zeln-only 构建：eln 配置兼容 + 交互式编译（零 gcc 依赖）
+
+`zig build -Dnative-comp-zig=true -Dnative-comp=false` 得到完全不带
+libgccjit 的原生编译 Emacs：gccjit 的 C/Lisp 接口面由 zeln 后端透明接管——
+
+- **配置兼容**：`native-comp-eln-load-path`（驱动 zeln 缓存搜索与产出
+  路径）、`comp-el-to-eln-filename`（返回 zeln 缓存路径，含可写目录
+  搜索）、`native-elisp-load`、`comp-native-version-dir`、
+  `comp-subr-arities-h` 等标准变量/函数全部可用；`(featurep
+  'native-compile)` 与 `(native-comp-available-p)` 均为真，loadup/startup
+  的标准接线与既有用户配置无需改动（`native-comp-jit-compilation` 为
+  兼容占位，行为如 nil）。
+- **交互式编译**：`lisp/emacs-lisp/zeln-run.el` 提供
+  `zeln-compile-file` / `zeln-compile-async`——进程内完成 byte-compile →
+  序列化（`comp-z-write-file-zunit`）→ 调用 `zeln-compile` 工具（zig
+  内置 clang 生成 LLVM IR → `.zeln`，**无 gcc/libgccjit 参与**）→ 产物
+  落在 `maybe_swap_for_zeln` 搜索路径，下一次 `load`/`require` 透明走
+  原生代码。容错：不可序列化/编译失败的文件保持解释器行为。
+
+**实测性能**（zeln-only 构建，2026-08 测量）：
+
+| 负载 | 解释器 | .zeln | 加速比 |
+|---|---|---|---|
+| fib 24（字节码密集，best-of-3×3 次） | ~1.25s | ~0.024s | **~53×** |
+| 582 内置测试套件整体（bench-check，多次采样 0.81–1.03） | ~0.18s | ~0.16-0.19s | 持平~快 20%（套件大半时间为 C 层与 IO） |
+
+`zig build -Dnative-comp-zig=true -Dnative-comp=false bench-check` 可
+复现套件级对比；微基准中纯字节码热点函数获得数量级提升。
+
 实现：`src/lread.c` 的 `openp` 在两个调用点（普通路径 + newest/save_fd 路径）
 依据 `native_comp_z_prefer` 重排 `maybe_swap_for_eln` / `maybe_swap_for_zeln`
 的顺序——每个 swap 都以文件名以 `.elc` 结尾为前置条件，命中后会把它改写成
