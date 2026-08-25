@@ -384,10 +384,13 @@
         },
         // libXpm 3.5.17: XPM pixmaps.  Built through the upstream FOR_MSW
         // simulation layer (src/simx.c + -DFOR_MSW) so no X11 headers or
-        // libraries are needed (HAVE_XPM; -Dwith-xpm).
+        // libraries are needed (HAVE_XPM; -Dwith-xpm).  Fetched from the
+        // official x.org release archive: gitlab.freedesktop.org's
+        // tarballs intermittently fail on GitHub CI runners
+        // (HttpConnectionClosing), the x.org archive mirror is stable.
         .xpm_src = .{
-            .url = "https://gitlab.freedesktop.org/xorg/lib/libxpm/-/archive/libXpm-3.5.17/libxpm-libXpm-3.5.17.tar.gz",
-            .hash = "N-V-__8AAFkzEQBoBsPMLmBbyonJiJLqs_At-sIguLGm_xP5",
+            .url = "https://xorg.freedesktop.org/archive/individual/lib/libXpm-3.5.17.tar.gz",
+            .hash = "N-V-__8AAC4KKwAgFNbcsl3aZWqQ75uUpUrSAeLtfkKcxA3u",
             .lazy = true,
         },
     },
