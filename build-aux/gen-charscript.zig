@@ -45,9 +45,13 @@ pub fn main() !void {
         // awk's substr length arithmetic: $1 is "0000..007F;" (the ';' is
         // part of the first field), so the end excludes the trailing ';'.
         const e = range[sep + 2 .. range.len - 1];
-        // Name is everything after the "; " separator.
+        // Name is everything after the "; " separator.  Trim CR too:
+        // Windows checkouts (core.autocrlf) give Blocks.txt CRLF line
+        // endings, and a trailing '\r' would defeat the endsWith
+        // "forms"/"tiles" shortening below (e.g. "Mahjong Tiles\r" never
+        // shortens to "Mahjong Tile").
         const semi = std.mem.indexOfScalar(u8, line, ';') orelse continue;
-        const name = std.mem.trim(u8, line[semi + 1 ..], " \t");
+        const name = std.mem.trim(u8, line[semi + 1 ..], " \t\r");
         if (std.mem.eql(u8, s, "0080")) s = "00A0"; // fix_start
 
         try starts.append(gpa, try gpa.dupe(u8, s));
