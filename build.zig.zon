@@ -376,9 +376,12 @@
         },
         // libwebp 1.5.0: WebP decode/encode + animations (HAVE_WEBP;
         // -Dwith-webp).  Compiled WITHOUT -DHAVE_CONFIG_H: the sources
-        // take their defaults (plain-C dsp fallback).
+        // take their defaults (plain-C dsp fallback).  Fetched from
+        // codeload (GitHub's download CDN) because the plain archive/
+        // path intermittently fails on GitHub CI runners with
+        // HttpConnectionClosing.
         .webp_src = .{
-            .url = "https://github.com/webmproject/libwebp/archive/refs/tags/v1.5.0.tar.gz",
+            .url = "https://codeload.github.com/webmproject/libwebp/tar.gz/refs/tags/v1.5.0",
             .hash = "N-V-__8AAOM4egDNF1p7XMh92AC7yc-Da9ArradyeGsfMXkm",
             .lazy = true,
         },
