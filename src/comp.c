@@ -5584,6 +5584,10 @@ DEFUN ("native-comp-available-p", Fnative_comp_available_p,
 {
 #ifdef HAVE_NATIVE_COMP
   return load_gccjit_if_necessary (false) ? Qt : Qnil;
+#elif defined HAVE_NATIVE_COMP_ZIG
+  /* Zig/LLVM (.zeln) native compilation is built in (compz.c); no
+     libgccjit is needed or probed.  */
+  return Qt;
 #else
   return Qnil;
 #endif
@@ -5849,9 +5853,18 @@ verification of the native compiler.  */);
   DEFVAR_LISP ("comp--#$", Vcomp__hashdollar,
     doc: /* Special value which will print as "#$".  */);
   Vcomp__hashdollar = build_string ("#$");
+#endif /* HAVE_NATIVE_COMP */
 
+#if defined HAVE_NATIVE_COMP || defined HAVE_NATIVE_COMP_ZIG
+  /* The `native-compile' feature gates loadup.el's comp-subr-arities-h
+     population, startup.el's eln-cache wiring and most user configs.
+     The Zig/LLVM (.zeln) build provides the same Lisp surface via
+     compz.c's compat layer, so it provides the feature too.  NOTE: this
+     must stay OUTSIDE the #ifdef HAVE_NATIVE_COMP region above --
+     nested inside it the preprocessor skips the provide whenever gccjit
+     is off, which is exactly the zeln-only case it exists for.  */
   Fprovide (intern_c_string ("native-compile"), Qnil);
-#endif /* #ifdef HAVE_NATIVE_COMP */
+#endif
 
   defsubr (&Snative_comp_available_p);
 }

@@ -1862,8 +1862,16 @@ maybe_swap_for_zeln (bool no_native, Lisp_Object *filename, int *fd,
 
   compute_z_version_dir ();
 
-  /* Search zeln in the zeln-cache directories.  */
+  /* Search zeln in the zeln-cache directories.  In a zeln-ONLY build
+     (no gccjit), the user-facing `native-comp-eln-load-path' (compz.c's
+     Vzeln_eln_load_path_compat) steers the zeln cache as well: search
+     it FIRST so user config wins over the built-in zeln list.  */
+#ifndef HAVE_NATIVE_COMP
+  Lisp_Object zeln_path_tail =
+    CALLN (Fappend, Vzeln_eln_load_path_compat, Vnative_comp_zeln_load_path);
+#else
   Lisp_Object zeln_path_tail = Vnative_comp_zeln_load_path;
+#endif
   Lisp_Object src_name =
     Fsubstring (*filename, Qnil, make_fixnum (-1));
   if (NILP (Ffile_exists_p (src_name)))
