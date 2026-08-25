@@ -68,7 +68,18 @@ compile-lisp → dump-compiled → 最终 loaddefs 生成 → smoke，因此
   `false` 时不链接 vendored 库并把 `HAVE_TREE_SITTER` undef（`treesit-available-p`
   报不可用，`src/treesit.c` 照常编译）。
 - `-Dgui=[bool]` - 编译完整 w32 GUI 后端（`HAVE_NTGUI`，仅 Windows）。
-  默认 OFF（console/TTY 构建）。详见上文"GUI 构建与图像格式"。
+  默认 OFF（console/TTY 构建）。详见下文"GUI 构建与图像格式"。
+- `-Dpgtk=[bool]` - 在本机 glibc-Linux 上编译 PGTK（GTK3+cairo）GUI 后端
+  （`HAVE_PGTK`：pgtkterm/pgtkfns/pgtkmenu/pgtkselect/pgtkim/xsettings +
+  gtkutil/emacsgtkfixed + fontset/fringe/image + ftfont/ftcrfont/hbfont，
+  对照上游 `--with-pgtk`；`TERM_HEADER` 为 `gtkutil.h`，同上游 GTK 链接
+  构建）。**默认自动开启**：本机 glibc-Linux 且系统装有 GTK3 开发文件
+  （在标准 pkg-config 目录含 `$PKG_CONFIG_PATH` 中探测 `gtk+-3.0.pc`）
+  时默认构建即 GUI；探测不到则自动退回 TTY 构建，`-Dpgtk=false` 可强制
+  console 构建。系统库经 pkg-config 链接（gtk+-3.0/glib/pango/cairo/
+  harfbuzz/freetype2/fontconfig）。实测默认 `zig build` 全链路（temacs →
+  dump → compile-lisp → dump-compiled → smoke → check 0 unexpected）通过，
+  `-d :0` 下 `window-system=pgtk` 的交互窗口可正常创建。
 - `-Dwith-png / -Dwith-jpeg / -Dwith-tiff / -Dwith-gif / -Dwith-webp /
   -Dwith-xpm=[bool]` - 六种图像格式的 vendored 解码器（对照上游
   `--with-png` 等），Windows 目标默认 ON（与 `-Dgui` 一起构成完整 GUI

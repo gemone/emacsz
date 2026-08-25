@@ -159,6 +159,43 @@ const ConfigOut = struct {
     step: *std.Build.Step,
 };
 
+// True when the HOST has the GTK3 development files: a gtk+-3.0.pc is
+// discoverable in a standard pkg-config search dir (or $PKG_CONFIG_PATH).
+// This drives the -Dpgtk AUTO default for the native glibc-Linux build:
+// GUI on where the libraries exist, console TTY fallback where they do
+// not (clean clones, minimal containers).  Filesystem probing only --
+// the single-threaded build Io cannot run a subprocess at config time,
+// same constraint as gccDiscoverGccjit below.
+fn hostHasGtk3PcFile(b: *std.Build) bool {
+    const io = b.graph.io;
+    var dirs: std.ArrayList([]const u8) = .empty;
+    defer dirs.deinit(b.allocator);
+    if (b.graph.environ_map.get("PKG_CONFIG_PATH")) |v| {
+        var it = std.mem.splitScalar(u8, v, ':');
+        while (it.next()) |p| {
+            if (p.len > 0) dirs.append(b.allocator, b.dupe(p)) catch @panic("OOM");
+        }
+    }
+    const fixed = [_][]const u8{
+        "/usr/lib64/pkgconfig",
+        "/usr/lib/x86_64-linux-gnu/pkgconfig",
+        "/usr/lib/aarch64-linux-gnu/pkgconfig",
+        "/usr/lib/pkgconfig",
+        "/usr/local/lib/pkgconfig",
+        "/usr/local/lib64/pkgconfig",
+        "/usr/share/pkgconfig",
+    };
+    for (fixed) |d| dirs.append(b.allocator, d) catch @panic("OOM");
+    for (dirs.items) |d| {
+        var dir = std.Io.Dir.openDirAbsolute(io, d, .{}) catch continue;
+        defer dir.close(io);
+        if (dir.access(io, "gtk+-3.0.pc", .{})) {
+            return true;
+        } else |_| {}
+    }
+    return false;
+}
+
 // A knob forced by a user feature switch (-Dwith-gnutls=false).  Empty
 // `value` = undef the knob; some gnulib switch macros (USE_ACL, ...) are
 // used as C expressions and must be `0`, not undef, when disabled.
@@ -556,6 +593,25 @@ pub fn build(b: *std.Build) void {
     // Options: the imaging/display switches (native-comp, modules,
     // with-*) are still independently toggleable.
     const with_gui = b.option(bool, "gui", "Enable the w32 GUI backend (HAVE_NTGUI, w32 display modules)") orelse gui_on_by_default;
+    // The PGTK GUI backend (native glibc-Linux only).  Mirrors configure.ac's
+    // `--with-pgtk` branch: window_system=pgtk with GTK3 + cairo, i.e.
+    // HAVE_PGTK/HAVE_WINDOW_SYSTEM/POLL_FOR_INPUT, TERM_HEADER=gtkutil.h,
+    // USE_CAIRO (cairo is REQUIRED for pgtk), HAVE_GTK3/USE_GTK, plus the
+    // freetype/harfbuzz font stack.  Compiles the PGTK_OBJ display modules
+    // (pgtkfns pgtkterm pgtkselect pgtkmenu pgtkim xsettings), the
+    // WINDOW_SYSTEM_OBJ (fontset fringe image), xgselect and the cairo
+    // font drivers (ftfont ftcrfont hbfont), linking the system GTK3
+    // stack via pkg-config (zig's linkSystemLibrary consults it).
+    //
+    // DEFAULT ON for the native glibc-Linux build when the system has the
+    // GTK3 development files (detected by looking for gtk+-3.0.pc in the
+    // standard pkg-config dirs, including $PKG_CONFIG_PATH); machines
+    // without them fall back to the TTY build automatically, and
+    // -Dpgtk=false forces the console build everywhere.
+    const pgtk_auto = target.result.os.tag == .linux and !is_musl and
+        b.graph.host.result.os.tag == .linux and hostHasGtk3PcFile(b);
+    const with_pgtk = b.option(bool, "pgtk", "Enable the PGTK (GTK3+cairo) GUI backend on Linux (HAVE_PGTK, pgtk display modules); default auto-on when system GTK3 dev files are found") orelse pgtk_auto;
+    const pgtk_target = with_pgtk and target.result.os.tag == .linux and !is_musl;
 
     // Knobs forced by the switches, collected into DisabledKnob entries.
     var disabled_knobs: std.ArrayList(DisabledKnob) = .empty;
@@ -616,6 +672,40 @@ pub fn build(b: *std.Build) void {
             // modules (the console build leaves it undef'd).
             image_defines.append(b.allocator, .{ .name = "HAVE_STACK_OVERFLOW_HANDLING", .value = "1" }) catch @panic("OOM");
         }
+        // The PGTK backend (mirrors configure.ac's window_system=pgtk
+        // branch + the gtk3/cairo/harfbuzz/fontconfig module checks):
+        // window_system=pgtk implies HAVE_WINDOW_SYSTEM + POLL_FOR_INPUT
+        // + TERM_HEADER=pgtkterm.h; GTK3 found => HAVE_GTK3 + USE_GTK;
+        // cairo is required for pgtk => USE_CAIRO; freetype/fontconfig
+        // are required => HAVE_FREETYPE; harfbuzz present on the host =>
+        // HAVE_HARFBUZZ; glib linked => HAVE_GLIB.  The deprecation
+        // warnings are silenced exactly as configure does by default.
+        if (pgtk_target) {
+            const dk = [_]DisabledKnob{
+                .{ .name = "HAVE_PGTK", .value = "1" },
+                .{ .name = "HAVE_WINDOW_SYSTEM", .value = "1" },
+                .{ .name = "POLL_FOR_INPUT", .value = "1" },
+                // TERM_HEADER: configure sets term_header=gtkterm's
+                // gtkutil.h for every GTK-linked build (HAVE_GTK3 =>
+                // gtk_term_header=gtkutil.h; term_header=$gtk_term_header
+                // in the pkg_check_gtk=yes branch) -- gtkutil.h pulls the
+                // real terminal header itself (pgtkterm.h under HAVE_PGTK)
+                // and declares update_frame_tool_bar et al.
+                .{ .name = "TERM_HEADER", .value = "\"gtkutil.h\"" },
+                .{ .name = "HAVE_GTK3", .value = "1" },
+                .{ .name = "USE_GTK", .value = "1" },
+                .{ .name = "USE_CAIRO", .value = "1" },
+                .{ .name = "HAVE_FREETYPE", .value = "1" },
+                .{ .name = "HAVE_HARFBUZZ", .value = "1" },
+                .{ .name = "HAVE_GLIB", .value = "1" },
+                .{ .name = "GDK_DISABLE_DEPRECATION_WARNINGS", .value = "1" },
+                .{ .name = "GLIB_DISABLE_DEPRECATION_WARNINGS", .value = "1" },
+                // Advertise the GUI toolkit in the runtime feature string
+                // (system-configuration-features), like a pgtk configure.
+                .{ .name = "EMACS_CONFIG_FEATURES", .value = "\"ACL CAIRO DBUS GMP GNUTLS GPM HARFBUZZ LCMS2 LIBXML2 NOTIFY INOTIFY PDUMPER PGTK SECCOMP SOUND SQLITE3 THREADS TREE_SITTER ZLIB\"" },
+            };
+            for (dk) |d| image_defines.append(b.allocator, d) catch @panic("OOM");
+        }
     }
     const base_config = makeConfigHeader(b, "linux", null, disabled_knobs.items);
     const config_h_file = base_config.file;
@@ -668,6 +758,12 @@ pub fn build(b: *std.Build) void {
     };
     const target_config_h_file: ConfigOut = if (target_config_tag) |tag|
         makeConfigHeaderExtra(b, tag, if (needsConfigTriple(tag)) canonicalConfiguration(target.result, b.allocator) else null, disabled_knobs.items, image_defines.items)
+        // Native glibc-Linux carries no target tag (it uses the base
+        // config); re-apply the linux overrides + the opt-in forced
+        // defines (-Dpgtk, -Dwith-png, ...) whenever any exist, so a
+        // GUI/image switch reaches config.h on the native build too.
+    else if (image_defines.items.len > 0)
+        makeConfigHeaderExtra(b, "linux", null, disabled_knobs.items, image_defines.items)
     else
         base_config;
 
@@ -780,6 +876,22 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) {
         const linux_doc_sources = [_][]const u8{ "dbusbind.c", "dynlib.c", "inotify.c" };
         for (linux_doc_sources) |name| run_mdf.addArg(name);
+        // -Dpgtk: the GUI modules' DEFVAR/DEFUN surface (pgtkterm.c's
+        // Vpgtk_* vars, pgtkfns.c's Fpgtk_* / frame parameters, fontset.c's
+        // Fquery_fontset, fringe.c's Voverflow_newline_into_fringe,
+        // image.c's DEFVARs, ftfont/hbfont font-driver symbols, ...) must
+        // be in globals.h or every HAVE_WINDOW_SYSTEM TU fails to compile
+        // -- mirrors the -Dgui windows re-add below.
+        if (pgtk_target) {
+            const pgtk_doc_sources = [_][]const u8{
+                "pgtkfns.c", "pgtkterm.c", "pgtkmenu.c", "pgtkselect.c",
+                "pgtkim.c",  "xsettings.c", "xgselect.c",
+                "fontset.c", "fringe.c",    "image.c",
+                "ftfont.c",  "ftcrfont.c",  "hbfont.c",
+                "gtkutil.c", "emacsgtkfixed.c",
+            };
+            for (pgtk_doc_sources) |name| run_mdf.addArg(name);
+        }
     }
     // kqueue.c is compiled only on BSD/macOS, so its DEFSYM/defsubr
     // symbols (Qcreate/Qdelete/... and Fkqueue_*) never reach globals.h
@@ -2012,6 +2124,44 @@ pub fn build(b: *std.Build) void {
                 .file = b.path("src/dbusbind.c"),
                 .flags = &dbus_flags,
             });
+
+            // -Dpgtk: the PGTK GUI display modules (configure.ac's
+            // PGTK_OBJ + WINDOW_SYSTEM_OBJ + XGSELOBJ + FONT_OBJ for the
+            // cairo/harfbuzz font stack): pgtkterm/pgtkfns/pgtkmenu/
+            // pgtkselect/pgtkim/xsettings, fontset/fringe/image, xgselect,
+            // ftfont/ftcrfont/hbfont.  The GTK3/glib/pango/cairo/harfbuzz
+            // include dirs + libs come from pkg-config via the
+            // linkSystemLibrary calls near the other system libraries.
+            if (pgtk_target) {
+                const pgtk_sources = [_][]const u8{
+                    "src/pgtkterm.c",
+                    "src/pgtkfns.c",
+                    "src/pgtkmenu.c",
+                    "src/pgtkselect.c",
+                    "src/pgtkim.c",
+                    "src/xsettings.c",
+                    "src/xgselect.c",
+                    "src/fontset.c",
+                    "src/fringe.c",
+                    "src/image.c",
+                    "src/ftfont.c",
+                    "src/ftcrfont.c",
+                    "src/hbfont.c",
+                    // GTK_OBJ: USE_GTK makes HAVE_EXT_TOOL_BAR true
+                    // (lisp.h), so xdisp.c/pgtkfns.c call
+                    // update_frame_tool_bar which gtkutil.c provides
+                    // (plus the xg_* widget helpers pgtkmenu.c uses);
+                    // emacsgtkfixed.o is the fixed GTK3 subclass.
+                    "src/gtkutil.c",
+                    "src/emacsgtkfixed.c",
+                };
+                for (pgtk_sources) |gsrc| {
+                    exe.root_module.addCSourceFile(.{
+                        .file = b.path(gsrc),
+                        .flags = base_flags,
+                    });
+                }
+            }
         }
 
         // Add Gnulib sources
@@ -3099,6 +3249,25 @@ pub fn build(b: *std.Build) void {
         if (with_gpm) exe.root_module.linkSystemLibrary("gpm", .{});
         // D-Bus (HAVE_DBUS): dbus_* symbols from src/dbusbind.c.
         if (with_dbus) exe.root_module.linkSystemLibrary("dbus-1", .{});
+        // PGTK GUI stack (-Dpgtk, configure.ac's GTK_LIBS + CAIRO_LIBS +
+        // FREETYPE_LIBS + HARFBUZZ_LIBS): zig's linkSystemLibrary resolves
+        // each through pkg-config, which also contributes the include
+        // dirs the pgtk*/ftcrfont/hbfont TUs need (gtk-3.0, glib, pango,
+        // cairo, harfbuzz, freetype2, fontconfig).
+        if (pgtk_target) {
+            exe.root_module.linkSystemLibrary("gtk+-3.0", .{});
+            exe.root_module.linkSystemLibrary("glib-2.0", .{});
+            exe.root_module.linkSystemLibrary("gobject-2.0", .{});
+            exe.root_module.linkSystemLibrary("gio-2.0", .{});
+            exe.root_module.linkSystemLibrary("pango", .{});
+            exe.root_module.linkSystemLibrary("pangocairo", .{});
+            exe.root_module.linkSystemLibrary("gdk_pixbuf-2.0", .{});
+            exe.root_module.linkSystemLibrary("cairo", .{});
+            exe.root_module.linkSystemLibrary("cairo-gobject", .{});
+            exe.root_module.linkSystemLibrary("harfbuzz", .{});
+            exe.root_module.linkSystemLibrary("freetype2", .{});
+            exe.root_module.linkSystemLibrary("fontconfig", .{});
+        }
     }
 
     if (is_musl) {

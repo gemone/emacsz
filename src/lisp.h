@@ -406,8 +406,17 @@ typedef EMACS_INT Lisp_Word;
 #define lisp_h_XCDR(c) XCONS (c)->u.s.u.cdr
 #define lisp_h_XHASH(a) XUFIXNUM_RAW (a)
 #if USE_LSB_TAG
+/* Local change (zig build): route the compound-literal conversion through
+   EMACS_INT first.  Upstream's compound literal converts a double N (e.g.
+   a negative event->x passed to XSETINT from pgtkterm.c) straight to
+   EMACS_UINT, which is undefined behavior by the C standard for negative
+   values -- silently wrapped by GCC builds, but a hard abort under the
+   UBSan checks zig enables for C code in Debug mode.  The intermediate
+   signed cast produces bit-identical results for every integer input and
+   matches what the non-macro make_fixnum (EMACS_INT) function path (used
+   in optimized builds) already does.  */
 # define lisp_h_make_fixnum_wrap(n) \
-    XIL ((EMACS_INT) (((EMACS_UINT) {(n)} << INTTYPEBITS) + Lisp_Int0))
+    XIL ((EMACS_INT) (((EMACS_UINT) {(EMACS_INT) (n)} << INTTYPEBITS) + Lisp_Int0))
 # if defined HAVE_STATEMENT_EXPRESSIONS && defined HAVE_TYPEOF
 #  define lisp_h_make_fixnum(n) \
      ({ typeof (+(n)) lisp_h_make_fixnum_n = n; \

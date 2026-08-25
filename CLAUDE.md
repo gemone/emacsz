@@ -71,6 +71,18 @@ This repository contains GNU Emacs with an ongoing effort to modernize the build
 - Linux (glibc): full build + all tests green (`zig build check`
   582/582; `check-all` 483/484, the single failure is eglot's
   live-server test).
+- Linux GUI (default auto-on): the PGTK (GTK3+cairo) backend is the
+  DEFAULT `zig build` on native glibc-Linux when the system has the
+  GTK3 dev files (auto-detected via gtk+-3.0.pc in the pkg-config
+  dirs); without them the build falls back to the TTY config, and
+  `-Dpgtk=false` forces the console build.  Compiles
+  pgtkterm/pgtkfns/pgtkmenu/pgtkselect/pgtkim/xsettings +
+  gtkutil/emacsgtkfixed + fontset/fringe/image + ftfont/ftcrfont/
+  hbfont, linked against the system GTK3 stack via pkg-config
+  (TERM_HEADER=gtkutil.h, mirrors upstream `--with-pgtk`).  The full
+  pipeline (build → dump → smoke → `check` 0 unexpected) is verified
+  on the default GUI build, and an interactive frame on a real X
+  display reports `window-system=pgtk`.
 - musl (static): `zig build -Dtarget=x86_64-linux-musl` and
   `aarch64-linux-musl` link fully static binaries with zero system
   libraries (the feature libs are undef'd by the target config;
