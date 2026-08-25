@@ -384,7 +384,12 @@ pub fn build(b: *std.Build) void {
     // decides which native artifact loads where a .elc has both a .eln and a
     // .zeln.  libgccjit is host-specific, so the switch is forced OFF for any
     // non-native / non-glibc-Linux target (see native_comp_target below).
-    const enable_native_comp = b.option(bool, "native-comp", "Enable the gccjit native-comp path (.eln, HAVE_NATIVE_COMP)") orelse false;
+    // DEFAULT AUTO-ON for the native glibc-Linux build when the host has
+    // libgccjit (the private gcc tree is globbed at config time, the same
+    // probe the compile step performs); without it the feature stays off,
+    // and -Dnative-comp=false forces it off.
+    const native_comp_auto = b.graph.host.result.os.tag == .linux and gccjitAvailable(b);
+    const enable_native_comp = b.option(bool, "native-comp", "Enable the gccjit native-comp path (.eln, HAVE_NATIVE_COMP); default auto-on when host libgccjit is found") orelse native_comp_auto;
     const enable_modules = b.option(bool, "modules", "Enable upstream dynamic modules (HAVE_MODULES)") orelse false;
     const enable_modules_zig = b.option(bool, "modules-zig", "Enable the Zig dynamic-module subsystem (HAVE_MODULES_ZIG)") orelse false;
 
@@ -4964,6 +4969,17 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
 /// subdir) and `*out_lib_dir` to the `<version>` dir itself (where
 /// libgccjit.so lives).  Both are left empty if no tree is found (the caller
 /// then falls back to the compiler's default search path).  This is the
+/// True when the HOST has libgccjit's header in a private gcc tree
+/// (/usr/lib/gcc/<triplet>/<version>/include/libgccjit.h).  This drives the
+/// -Dnative-comp AUTO default for the native glibc-Linux build: same
+/// filesystem probe as gccDiscoverGccjit, without duplicating its outputs.
+fn gccjitAvailable(b: *std.Build) bool {
+    var inc: []const u8 = "";
+    var lib: []const u8 = "";
+    gccDiscoverGccjit(b, b.graph.io, &inc, &lib);
+    return inc.len > 0;
+}
+
 /// gcc-host equivalent of `cc -print-file-name=include`/`=libgccjit.so`, done
 /// without a subprocess (the single-threaded build Io cannot run one) by
 /// iterating the directory tree directly.
