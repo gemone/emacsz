@@ -71,7 +71,8 @@ compile-lisp → dump-compiled → 最终 loaddefs 生成 → smoke，因此
   默认 OFF（console/TTY 构建）。详见上文"GUI 构建与图像格式"。
 - `-Dwith-png / -Dwith-jpeg / -Dwith-tiff / -Dwith-gif / -Dwith-webp /
   -Dwith-xpm=[bool]` - 六种图像格式的 vendored 解码器（对照上游
-  `--with-png` 等），全部默认 OFF。源码经 `zig fetch` 下载（哈希锁定）、
+  `--with-png` 等），Windows 目标默认 ON（与 `-Dgui` 一起构成完整 GUI
+Emacs）；其他平台默认 OFF。源码经 `zig fetch` 下载（哈希锁定）、
   编译为静态库链入 temacs——不需要系统库也不需要运行期 DLL。
 - 其余 `-Dwith-*`（gnutls/dbus/gpm/alsa/acl/sqlite3/xml2/lcms2/zlib）与
   上游同名选项一一对应；Windows 目标会自动关闭不适用的（DBUS/GPM/ALSA
@@ -111,18 +112,30 @@ libXpm）都在 `build.zig.zon` 里声明并通过 `zig fetch` 自动下载、
 即用 GNU 后端构建出可运行的 `temacs.exe` + `emacs.exe`：
 
 ```bash
-# GNU/MinGW 后端（默认）：本机 Windows 目标即 x86_64-windows-gnu
+# GNU/MinGW 后端（默认）：Windows 目标默认即 x86_64-windows-gnu。
+# 默认产出完整 GUI Emacs（w32 显示后端 + 六种 vendored 图像格式）。
+# 无参数即可：
 zig build
+
 # 或显式写出（目标 3.4 双后端选择）
 zig build -Dtarget=x86_64-windows-gnu
 
-# MSVC 后端（可选，目标 3.4）：
+# 退回纯 console/TTY 构建（无 GUI、无图像库）：
+zig build -Dgui=false -Dwith-png=false -Dwith-jpeg=false -Dwith-tiff=false \
+          -Dwith-gif=false -Dwith-webp=false -Dwith-xpm=false
+
+# MSVC 后端（可选，目标 3.4）：同样默认 GUI + 六图像格式。
 # 需要本机已安装 Visual Studio Build Tools / Windows SDK。
 zig build -Dtarget=x86_64-windows-msvc
 
 # 验证产物
 zig-out\bin\emacs.exe --version
 ```
+
+Windows 目标的 `-Dgui` 与六个 `-Dwith-*` 图像开关默认均为 **on**
+（与 MSYS2 参考构建的默认行为一致：GUI + 完整图像支持）；Linux /
+macOS 无 w32 GUI，保持 console 默认。可用上述 `-Dgui=false -Dwith-*=false`
+显式退回 console-only 构建。
 
 ### GUI 构建与图像格式（可选）
 

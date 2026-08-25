@@ -513,6 +513,11 @@ pub fn build(b: *std.Build) void {
     // -Dwith-gnutls=false undefs HAVE_GNUTLS in config.h AND skips linking
     // the library.  Default on; each is applied after the per-target
     // overrides so the user's choice always wins.
+    // GUI/image defaults: plain `zig build` on a Windows target should
+    // yield the full GUI emacs with the complete vendored image surface
+    // (the behavior of the MSYS2 reference build).  is_windows is defined
+    // above (line ~360); gui_on_by_default guards the image defaults too.
+    const gui_on_by_default = is_windows;
     const with_gnutls = b.option(bool, "with-gnutls", "Link GnuTLS (HAVE_GNUTLS)") orelse true;
     const with_dbus = b.option(bool, "with-dbus", "Link D-Bus (HAVE_DBUS)") orelse true;
     const with_gpm = b.option(bool, "with-gpm", "Link GPM console mouse (HAVE_GPM)") orelse true;
@@ -530,26 +535,27 @@ pub fn build(b: *std.Build) void {
     // upstream does) so `treesit-available-p' reports unavailable rather than
     // the symbol table disappearing.
     const with_tree_sitter = b.option(bool, "with-tree-sitter", "Enable tree-sitter (HAVE_TREE_SITTER, vendored)") orelse true;
-    // Image libraries (objective 3.5): libpng/libjpeg/libtiff vendored via
-    // build.zig.zon URL deps and built from source as static libs.  Default
-    // OFF: this is the console/TTY build and HAVE_WINDOW_SYSTEM is undef'd,
-    // so image.c's Lisp entry points (syms_of_image) are not registered even
-    // when it compiles.  Turning these on links the real vendored decoders
-    // and compiles src/image.c, proving the full fetch->build->link chain so
-    // the GUI build inherits working wiring.
-    const with_png = b.option(bool, "with-png", "Enable libpng (HAVE_PNG, vendored)") orelse false;
-    const with_jpeg = b.option(bool, "with-jpeg", "Enable libjpeg (HAVE_JPEG, vendored)") orelse false;
-    const with_tiff = b.option(bool, "with-tiff", "Enable libtiff (HAVE_TIFF, vendored)") orelse false;
-    const with_gif = b.option(bool, "with-gif", "Enable giflib (HAVE_GIF, vendored)") orelse false;
-    const with_webp = b.option(bool, "with-webp", "Enable libwebp (HAVE_WEBP, vendored)") orelse false;
-    const with_xpm = b.option(bool, "with-xpm", "Enable libXpm via its FOR_MSW layer (HAVE_XPM, vendored, no X11)") orelse false;
-    // The w32 GUI backend (objective: full GUI compilation).  Opt-in while
-    // the console/TTY build stays the default: adds the W32 GUI display
-    // modules (w32fns/w32term/w32menu/w32font/... + fontset/fringe/image),
-    // defines HAVE_NTGUI/HAVE_WINDOW_SYSTEM/POLL_FOR_INPUT, links the GUI
-    // system libraries (usp10 for uniscribe, comdlg32/comctl32/ole32/
-    // winspool), and drops the w32-stubs.c console stand-ins.
-    const with_gui = b.option(bool, "gui", "Enable the w32 GUI backend (HAVE_NTGUI, w32 display modules)") orelse false;
+    // Image libraries (objective 3.5): libpng/libjpeg/libtiff/giflib/
+    // libwebp/libXpm vendored via build.zig.zon URL deps and built from
+    // source as static libs.  Default ON for the Windows GUI build (the
+    // MSYS2 reference ships the full image surface); explicitly OFF
+    // otherwise unless the user passes -Dwith-*=true.  On non-Windows
+    // targets they default off (no GUI), and -Dgui=false plus
+    // -Dwith-*=false reproduces the original console-only build.
+    const with_png = b.option(bool, "with-png", "Enable libpng (HAVE_PNG, vendored)") orelse (is_windows and gui_on_by_default);
+    const with_jpeg = b.option(bool, "with-jpeg", "Enable libjpeg (HAVE_JPEG, vendored)") orelse (is_windows and gui_on_by_default);
+    const with_tiff = b.option(bool, "with-tiff", "Enable libtiff (HAVE_TIFF, vendored)") orelse (is_windows and gui_on_by_default);
+    const with_gif = b.option(bool, "with-gif", "Enable giflib (HAVE_GIF, vendored)") orelse (is_windows and gui_on_by_default);
+    const with_webp = b.option(bool, "with-webp", "Enable libwebp (HAVE_WEBP, vendored)") orelse (is_windows and gui_on_by_default);
+    const with_xpm = b.option(bool, "with-xpm", "Enable libXpm via its FOR_MSW layer (HAVE_XPM, vendored, no X11)") orelse (is_windows and gui_on_by_default);
+    // The w32 GUI backend (objective: full GUI compilation).  DEFAULT ON
+    // for the Windows target: plain `zig build` on Windows now produces
+    // the GUI emacs (matching the MSYS2 reference build), not the
+    // console-only variant.  -Dgui=false restores the console build;
+    // non-Windows targets have no w32 GUI and stay console by default.
+    // Options: the imaging/display switches (native-comp, modules,
+    // with-*) are still independently toggleable.
+    const with_gui = b.option(bool, "gui", "Enable the w32 GUI backend (HAVE_NTGUI, w32 display modules)") orelse gui_on_by_default;
 
     // Knobs forced by the switches, collected into DisabledKnob entries.
     var disabled_knobs: std.ArrayList(DisabledKnob) = .empty;
