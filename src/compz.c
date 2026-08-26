@@ -2506,6 +2506,14 @@ zeln_jit_entry_hook (Lisp_Object fun, ptrdiff_t args_template,
 {
   if (will_dump_p ())
     return false;
+  /* During the zeln serialize capture (comp-z-write-file-zunit's
+     capturing Fload) the loaded closures' constants vectors are
+     capture-scoped; JIT-compiling them ran a closure whose funcall
+     resolved to nil (void-function nil at bovine/scm-by).  Skip the
+     JIT entirely while a capture is active - the interpreter's
+     capture semantics are the contract here.  */
+  if (!NILP (zeln_capture_target))
+    return false;
   Lisp_Object bytestr = AREF (fun, CLOSURE_CODE);
   if (!STRINGP (bytestr))
     return false;
