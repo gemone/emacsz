@@ -2326,6 +2326,9 @@ struct zeln_jit_cache_ent
 {
   const unsigned char *key;	/* bytecode data pointer (0 = free) */
   zeln_jit_entry_t entry;	/* null + key set = rejected */
+  const Lisp_Object *consts;	/* the constants vector the entry baked;
+				   rebuilt closures (same bytecode, fresh
+				   vector) must not reuse the entry.  */
 };
 static struct zeln_jit_cache_ent zeln_jit_cache[ZELN_JIT_CACHE_SIZE];
 /* Diagnostics: compiles accepted / rejected (by stage).  */
@@ -2445,6 +2448,8 @@ zeln_jit_compile (Lisp_Object fun)
   e->entry = entry;
   if (entry != NULL)
     {
+      zeln_jit_cache_lookup (SDATA (bytestr))->consts
+	= XVECTOR (vector)->contents;
       zeln_jit_accepted++;
       /* Pin the closure so the GC never relocates/frees the vector and
 	 bytecode the machine code baked addresses of.  */
@@ -2460,6 +2465,22 @@ zeln_jit_compile (Lisp_Object fun)
    the environment disables compilation entirely (hotness still counts)
    - the diagnostic switch while the J4 integration is young.  */
 static bool zeln_jit_enabled_state = -1;
+
+/* A cached entry is valid only when the closure's constants vector is
+   the one the code baked: cl-generic rebuilds dispatch closures (same
+   bytecode string, FRESH consts vector); reusing the stale entry read
+   the old cached tags - the seq-contains-p nil-after-heat bug.  */
+static zeln_jit_entry_t
+zeln_jit_validated_entry (Lisp_Object fun, Lisp_Object bytestr)
+{
+  struct zeln_jit_cache_ent *e = zeln_jit_cache_lookup (SDATA (bytestr));
+  if (e->key == NULL || e->entry == NULL)
+    return NULL;
+  Lisp_Object vector = AREF (fun, CLOSURE_CONSTANTS);
+  if (!VECTORP (vector) || XVECTOR (vector)->contents != e->consts)
+    return NULL;		/* rebuilt closure: stale entry */
+  return e->entry;
+}
 
 bool
 zeln_jit_should_compile (Lisp_Object fun)
@@ -2520,12 +2541,14 @@ zeln_jit_entry_hook (Lisp_Object fun, ptrdiff_t args_template,
   bool rest_bit = (args_template & 128) != 0;
   ptrdiff_t mandatory = args_template & 127;
   ptrdiff_t nonrest = args_template >> 8;
-  struct zeln_jit_cache_ent *e = zeln_jit_cache_lookup (SDATA (bytestr));
-  if (! rest_bit && mandatory == nonrest && nargs == mandatory
-      && e->key != NULL && e->entry != NULL)
+  if (! rest_bit && mandatory == nonrest && nargs == mandatory)
     {
-      *result = e->entry (nargs, args);
-      return true;
+      zeln_jit_entry_t cached = zeln_jit_validated_entry (fun, bytestr);
+      if (cached != NULL)
+	{
+	  *result = cached (nargs, args);
+	  return true;
+	}
     }
   if (zeln_jit_hot (SDATA (bytestr), 256))
     (void) zeln_jit_should_compile (fun);
