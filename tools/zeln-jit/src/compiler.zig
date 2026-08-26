@@ -166,9 +166,14 @@ const Emitter = struct {
         self.imm32(-@as(i32, @intCast(depth * 8)));
         self.pushRaxNoLoad();
     }
-    /// call [r13 + idx*8] with rdi=n, rsi=ptr; rax = result
+    /// call [r13 + idx*8] with rdi=n, rsi=ptr; rax = result.
+    /// disp32 form (mod=10): the real surface reaches idx 39+
+    /// (SYMBOL_VALUE = 312 bytes) which overflows disp8's signed
+    /// range - the leftover disp8 form here was the loaddefs RIP=0
+    /// crash (gdb: mov 0x18(%r13),%rax reading a wrong/nul slot).
     fn frelocCall(self: *Emitter, idx: u64) void {
-        self.raw(0x49); self.raw(0x8B); self.raw(0x45); self.raw(@intCast(idx * 8)); // mov rax,[r13+d8]
+        self.raw(0x49); self.raw(0x8B); self.raw(0x85);
+        self.imm32(@intCast(idx * 8));
         self.raw(0xFF); self.raw(0xD0); // call rax
     }
     /// unary: v=[r12]; rdi=1; rsi=r12; rax=fn(1,rsi); [r12]=rax

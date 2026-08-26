@@ -2285,6 +2285,7 @@ extern void zeln_jit_stats (unsigned [2]);
 
 /* ------------------------------------------------------------------ */
 static void zeln_freloc_check_fill (void);
+extern bool zeln_jit_hot (const void *, unsigned);
 
 /* J4: the in-process JIT swap.  exec_byte_code's hotness hook (below)
    counts interpreted invocations; when a closure crosses the threshold
@@ -2342,6 +2343,16 @@ zeln_jit_cache_lookup (const unsigned char *key)
 static void *const *zeln_jit_freloc_slot (void)
 {
   static void *base;
+  /* CRITICAL: force a REFILL, not the idempotent early-return.  In a
+     pdump-loaded child the table can carry the DUMP process's
+     addresses (statics restored from the dump where check_fill had
+     already run), so a JIT compile in the child would bake dead
+     pointers.  Resetting size to 0 makes check_fill refill with THIS
+     process's addresses.  (This was also silently breaking the .zeln
+     AOT path whenever a JIT compile ran first - the early forced
+     check_fill in the DUMP process got its result persisted into the
+     dump, and the child then early-returned with stale entries.)  */
+  zeln_freloc.size = 0;
   zeln_freloc_check_fill ();
   base = zeln_freloc.link_table;
   return (void *const *) &base;
@@ -2365,6 +2376,17 @@ zeln_jit_compile (Lisp_Object fun)
   ptrdiff_t nargs_template = FIXNUMP (AREF (fun, CLOSURE_ARGLIST))
       ? XFIXNUM (AREF (fun, CLOSURE_ARGLIST)) : -1;
 
+  /* FULL slot validation before compiling anything: a malformed
+     closure (observed from the dump with a non-string CODE slot)
+     must never reach the emitter - its garbage slots would be baked
+     into machine code that then corrupts memory when run.  */
+  if (!VECTORP (vector) || !FIXNATP (maxdepth))
+    {
+      e->key = SDATA (bytestr);
+      e->entry = NULL;
+      return NULL;
+    }
+
   /* Fixed arity only in v1: MANY/UNEVALLED templates reject outright.  */
   if (! (nargs_template >= 0 && nargs_template <= 8))
     {
@@ -2373,8 +2395,7 @@ zeln_jit_compile (Lisp_Object fun)
       return NULL;
     }
 
-  fprintf (stderr, "ZJ: compiling arity=%ld bc=%zu\n",
-	   (long) nargs_template, (size_t) SBYTES (bytestr));
+
   zeln_jit_entry_t entry
     = zeln_jit_compile_closure
 	(SDATA (bytestr), SBYTES (bytestr),
@@ -2414,6 +2435,52 @@ zeln_jit_should_compile (Lisp_Object fun)
 /* The exec_byte_code entry hook (bytecode.c calls this BEFORE the
    hotness count when a cached entry exists).  Returns true and sets
    *RESULT when the JIT'd entry ran.  */
+/* The one-time JIT gate: true only when ZELN_JIT=1 was in the
+   environment at startup.  byte-code's call site branches on this
+   directly (one predictable load+test, no frame) so deep recursion in
+   tiny-stack build environments is unaffected when the JIT is off.  */
+/* Resolved ONCE during startup (syms_of_compz) so the inline read in
+   bytecode.c never sees the unresolved -1 sentinel (which reads as
+   TRUE and fired the JIT path in builds where the env var was unset).  */
+bool zeln_jit_gate_var;	/* false by default (C zero-init) */
+
+bool
+zeln_jit_gate (void)
+{
+  return zeln_jit_gate_var;
+}
+
+/* Combined entry hook (stack-frugal): exec_byte_code calls ONLY this -
+   one callee frame per interpreted invocation instead of three
+   (will_dump_p + STRINGP are inlined by the compiler; the deep loaddefs
+   scrape recursion sits a few hundred bytes below the guard page and the
+   extra frames of the earlier 3-call shape overflowed it).  Returns true
+   and sets *RESULT when a compiled entry ran.  */
+bool
+zeln_jit_entry_hook (Lisp_Object fun, ptrdiff_t args_template,
+		     ptrdiff_t nargs, Lisp_Object *args,
+		     Lisp_Object *result)
+{
+  if (will_dump_p ())
+    return false;
+  Lisp_Object bytestr = AREF (fun, CLOSURE_CODE);
+  if (!STRINGP (bytestr))
+    return false;
+  bool rest_bit = (args_template & 128) != 0;
+  ptrdiff_t mandatory = args_template & 127;
+  ptrdiff_t nonrest = args_template >> 8;
+  struct zeln_jit_cache_ent *e = zeln_jit_cache_lookup (SDATA (bytestr));
+  if (! rest_bit && mandatory == nonrest && nargs == mandatory
+      && e->key != NULL && e->entry != NULL)
+    {
+      *result = e->entry (nargs, args);
+      return true;
+    }
+  if (zeln_jit_hot (SDATA (bytestr), 256))
+    (void) zeln_jit_should_compile (fun);
+  return false;
+}
+
 bool
 zeln_jit_try_run (Lisp_Object fun, ptrdiff_t nargs, Lisp_Object *args,
 		  Lisp_Object *result)
@@ -2425,11 +2492,8 @@ zeln_jit_try_run (Lisp_Object fun, ptrdiff_t nargs, Lisp_Object *args,
     = zeln_jit_cache_lookup (SDATA (bytestr));
   if (e->key == NULL || e->entry == NULL)
     return false;
-  /* Exact arity only (v1).  */
-  ptrdiff_t tmpl = FIXNUMP (AREF (fun, CLOSURE_ARGLIST))
-      ? XFIXNUM (AREF (fun, CLOSURE_ARGLIST)) : -1;
-  if (tmpl < 0 || nargs != tmpl)
-    return false;
+  /* The caller (exec_byte_code) guarantees the simple fixed-arity
+     shape; run.  */
   *result = e->entry (nargs, args);
   return true;
 }
@@ -2616,6 +2680,15 @@ exactly one native path is active and this variable is ignored.  */);
   /* zeln-jit (J4): the compiled-closures pin list.  */
   staticpro (&Vzeln_jit_pinned_closures);
   Vzeln_jit_pinned_closures = Qnil;
+
+  /* zeln-jit gate: resolved once, here (post-dump the syms don't rerun,
+     but the var's zero-init = off is correct for children; the DUMP
+     process resolves from the env and the value persists only if the
+     dump itself was made with ZELN_JIT=1, which the build never does).  */
+  {
+    const char *e = getenv ("ZELN_JIT");
+    zeln_jit_gate_var = (e && e[0] == '1' && e[1] == '\0');
+  }
   zeln_fdo_names_root = Qnil;
 
   defsubr (&Scomp_z_load_zeln);

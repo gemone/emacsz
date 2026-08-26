@@ -25,13 +25,25 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "window.h"
 
 #ifdef HAVE_NATIVE_COMP_ZIG
-/* tools/zeln-jit (linked into temacs): the J2 hotness hook + the J4
-   in-process compiled-entry swap (both defined in compz.c / the
-   zeln-jit package).  */
-extern bool zeln_jit_hot (const void *, unsigned);
-bool zeln_jit_try_run (Lisp_Object, ptrdiff_t, Lisp_Object *,
-		       Lisp_Object *);
-bool zeln_jit_should_compile (Lisp_Object);
+/* tools/zeln-jit (linked into temacs): the J2/J4 combined hook
+   (compz.c).  zeln_jit_gate is a file-static bool resolved ONCE at
+   startup from ZELN_JIT - when off (the default) the site below costs
+   one predictable branch and NO stack frame; this matters because
+   exec_byte_code is the recursion frame of deep Lisp recursion and
+   even a never-taken call's frame padding overflowed tiny-stack build
+   environments (16 KiB rlimit observed).  */
+bool zeln_jit_entry_hook (Lisp_Object, ptrdiff_t, ptrdiff_t,
+			  Lisp_Object *, Lisp_Object *);
+/* A plain extern BOOL (no function call): the gate site below compiles
+   to a single mov+test with zero frame growth - a call (even never
+   taking the JIT branch) adds a frame per recursion level and tipped
+   the 16 KiB-stack build environment over the guard page.  */
+extern bool zeln_jit_gate_var;
+static inline bool
+zeln_jit_gate_inline (void)
+{
+  return zeln_jit_gate_var;
+}
 #endif
 
 /* Define BYTE_CODE_SAFE true to enable some minor sanity checking,
@@ -504,17 +516,14 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
   Lisp_Object bytestr = AREF (fun, CLOSURE_CODE);
 
 #ifdef HAVE_NATIVE_COMP_ZIG
-  /* zeln-jit (J2/J4): if this closure was already compiled in-process,
-     run the machine code instead of interpreting.  Otherwise count the
-     invocation; the first crossing of the threshold compiles it (any
-     failure marks it nojit and the interpreter keeps it).  */
-  if (!will_dump_p () && STRINGP (bytestr))
+  /* zeln-jit (J2/J4): gated on the one-time ZELN_JIT flag - zero cost
+     and zero frame when off.  */
+  if (zeln_jit_gate_inline ())
     {
       Lisp_Object jit_result;
-      if (zeln_jit_try_run (fun, nargs, args, &jit_result))
+      if (zeln_jit_entry_hook (fun, args_template, nargs, args,
+			       &jit_result))
 	return jit_result;
-      if (zeln_jit_hot (SDATA (bytestr), 256))
-	(void) zeln_jit_should_compile (fun);
     }
 #endif
 
