@@ -417,8 +417,10 @@ pub fn compile(
                     tgt = fetch2(opcodes, p + 1);
                     imm = 2;
                 },
-                BVARREF, 9, 10, 11, 12, 13, BVARSET6, BVARBIND6, BUNBIND6, BSTACK_SET => imm = 1,
-                BVARREF + 7 => imm = 2, // Bvarref7=15
+                9, 10, 11, 12, 13 => imm = 0, // Bvarref1..5: no immediate
+                BVARSET6, BVARBIND6, BUNBIND6, BSTACK_SET => imm = 1,
+                BVARREF => imm = 0, // plain Bvarref: index in opcode
+                15 => imm = 2, // Bvarref7
                 BVARSET7, BVARBIND7, BUNBIND7, BSTACK_SET2 => imm = 2,
                 BCALL6, BLISTN => imm = 1,
                 BCALL7 => imm = 2,
@@ -544,6 +546,7 @@ pub fn compile(
                 em.stackSet(d);
             },
             BVARSET, 17, 18, 19, 20, BVARSET5 => {
+                // index encoded in opcode (op - Bvarset); no immediate.
                 em.varsetConst(b - BVARSET);
             },
             BVARSET6 => {
@@ -613,13 +616,11 @@ pub fn compile(
                 pc += 2;
                 em.callFrelocN(n);
             },
-            BVARREF => {
-                const idx = fetch1(opcodes, pc) orelse return Error.BadBytecode;
-                pc += 1;
-                em.varrefConst(idx);
-            },
-            9, 10, 11, 12, 13 => {
-                // Bvarref1..5: value = consts[op-8]
+            BVARREF, 9, 10, 11, 12, 13 => {
+                // Bvarref..Bvarref5: the const index is ENCODED IN THE
+                // OPCODE (op - Bvarref); NO immediate byte.  (The old
+                // fetch1 here consumed the NEXT byte as a bogus index -
+                // varref consts[196] garbage -> symbolp errors.)
                 em.varrefConst(b - 8);
             },
             // ---- branches ----
