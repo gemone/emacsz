@@ -54,6 +54,9 @@ pub const IDX_SYMBOL_VALUE: u64 = 38;
 pub const IDX_LIST: u64 = 26;
 pub const IDX_CONCAT: u64 = 44;
 pub const IDX_LENGTH: u64 = 35;
+pub const IDX_VARSET: u64 = 91;
+pub const IDX_VARBIND: u64 = 92;
+pub const IDX_UNBIND: u64 = 93;
 
 // ---- opcode numbers (mirror zeln-compile; mirror src/bytecode.c) -----
 const BSTACK_REF1: u8 = 1;
@@ -72,6 +75,20 @@ const BCONS: u8 = 66;
 const BSUB1: u8 = 83;
 const BADD1: u8 = 84;
 const BNEGATE: u8 = 91;
+const BVARSET: u8 = 16; // Bvarset..Bvarset5 = 16..21
+const BVARSET5: u8 = 21;
+const BVARSET6: u8 = 22;
+const BVARSET7: u8 = 23;
+const BVARBIND: u8 = 24; // Bvarbind..Bvarbind5 = 24..29
+const BVARBIND5: u8 = 29;
+const BVARBIND6: u8 = 30;
+const BVARBIND7: u8 = 31;
+const BUNBIND: u8 = 40; // Bunbind..Bunbind5 = 40..45
+const BUNBIND5: u8 = 45;
+const BUNBIND6: u8 = 46;
+const BUNBIND7: u8 = 47;
+const BSTACK_SET: u8 = 178; // arg = FETCH: ptr=top[-arg]; *ptr = POP
+const BSTACK_SET2: u8 = 179;
 const BLENGTH: u8 = 71; // 0107 octal
 const BLISTN: u8 = 175;
 const BCONCAT2: u8 = 80;
@@ -225,6 +242,60 @@ const Emitter = struct {
     }
     fn quatFreloc(self: *Emitter, idx: u64) void {
         self.naryFreloc(idx, 4);
+    }
+    /// Bstack_set: ptr = top[-arg]; *ptr = POP.
+    fn stackSet(self: *Emitter, depth: u32) void {
+        // rax = [r12] (value to store); rdx = r12 - depth*8 (slot ptr)
+        self.loadTosRax();
+        self.raw(0x49); self.raw(0x8B); self.raw(0xD4); // mov rdx,r12
+        self.raw(0x48); self.raw(0x81); self.raw(0xEA); self.imm32(@intCast(depth * 8)); // sub rdx,depth*8
+        self.raw(0x48); self.raw(0x89); self.raw(0x02); // [rdx] = rax
+        self.adjustTop(-8); // POP
+    }
+    /// Bvarset: set_internal(consts[idx], POP).  Two scratch words live
+    /// just below the virtual stack base: [rsp-8]=symbol, [rsp-16]=value.
+    fn varsetConst(self: *Emitter, idx: u32) void {
+        // rax = value = [r12]; save below stack
+        self.loadTosRax();
+        self.raw(0x48); self.raw(0x89); self.raw(0x44); self.raw(0x24); self.raw(0xF0); // [rsp-16]=rax
+        // rax = consts[idx] -> [rsp-8]
+        const disp: i32 = @intCast(idx * 8);
+        if (disp < 128) {
+            self.raw(0x49); self.raw(0x8B); self.raw(0x46); self.raw(@intCast(disp));
+        } else {
+            self.raw(0x49); self.raw(0x8B); self.raw(0x86); self.imm32(disp);
+        }
+        self.raw(0x48); self.raw(0x89); self.raw(0x44); self.raw(0x24); self.raw(0xF8); // [rsp-8]=rax
+        // call set_internal(2, rsp-16)
+        self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(2);
+        self.raw(0x48); self.raw(0x89); self.raw(0xE6); // mov rsi,rsp
+        self.raw(0x48); self.raw(0x83); self.raw(0xEE); self.raw(16); // sub rsi,16
+        self.frelocCall(IDX_VARSET);
+        self.adjustTop(-8); // POP
+    }
+    /// Bvarbind: specbind(consts[idx], POP).
+    fn varbindConst(self: *Emitter, idx: u32) void {
+        self.loadTosRax();
+        self.raw(0x48); self.raw(0x89); self.raw(0x44); self.raw(0x24); self.raw(0xF0);
+        const disp: i32 = @intCast(idx * 8);
+        if (disp < 128) {
+            self.raw(0x49); self.raw(0x8B); self.raw(0x46); self.raw(@intCast(disp));
+        } else {
+            self.raw(0x49); self.raw(0x8B); self.raw(0x86); self.imm32(disp);
+        }
+        self.raw(0x48); self.raw(0x89); self.raw(0x44); self.raw(0x24); self.raw(0xF8);
+        self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(2);
+        self.raw(0x48); self.raw(0x89); self.raw(0xE6);
+        self.raw(0x48); self.raw(0x83); self.raw(0xEE); self.raw(16);
+        self.frelocCall(IDX_VARBIND);
+        self.adjustTop(-8);
+    }
+    /// Bunbind n: unbind_to(specpdl_count - n).  The zeln_unbind shim
+    /// takes (n, &n) - C computes the specpdl arithmetic.
+    fn unbindN(self: *Emitter, n: u32) void {
+        self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(@intCast(n));
+        self.raw(0x4C); self.raw(0x89); self.raw(0xE6); // mov rsi,r12
+        self.frelocCall(IDX_UNBIND);
     }
     /// Bcall n: fp = r12 - n*8 (fun below args); r12 = fp; FUNCALL(n+1, fp);
     /// [fp] = rax; r12 = fp (top = result)
@@ -419,6 +490,56 @@ pub fn compile(
             BNOT => em.unaryFreloc(IDX_EQ), // Bnot = eq nil per bytecode.c
             // ---- binary arith: POP v2, TOP=v1, TOP = fn(2,&newtop) ----
             BLENGTH => em.unaryFreloc(IDX_LENGTH),
+            // ---- dynamic binding (let) support ----
+            BSTACK_SET => {
+                const d = fetch1(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 1;
+                em.stackSet(d);
+            },
+            BSTACK_SET2 => {
+                const d = fetch2(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 2;
+                em.stackSet(d);
+            },
+            BVARSET, 17, 18, 19, 20, BVARSET5 => {
+                em.varsetConst(b - BVARSET);
+            },
+            BVARSET6 => {
+                const idx = fetch1(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 1;
+                em.varsetConst(idx);
+            },
+            BVARSET7 => {
+                const idx = fetch2(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 2;
+                em.varsetConst(idx);
+            },
+            BVARBIND, 25, 26, 27, 28, BVARBIND5 => {
+                em.varbindConst(b - BVARBIND);
+            },
+            BVARBIND6 => {
+                const idx = fetch1(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 1;
+                em.varbindConst(idx);
+            },
+            BVARBIND7 => {
+                const idx = fetch2(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 2;
+                em.varbindConst(idx);
+            },
+            BUNBIND, 41, 42, 43, 44, BUNBIND5 => {
+                em.unbindN(b - BUNBIND);
+            },
+            BUNBIND6 => {
+                const n = fetch1(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 1;
+                em.unbindN(n);
+            },
+            BUNBIND7 => {
+                const n = fetch2(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 2;
+                em.unbindN(n);
+            },
             BCONCAT2 => em.binaryFreloc(IDX_CONCAT),
             BCONCAT3 => em.ternaryFreloc(IDX_CONCAT),
             BCONCAT4 => em.quatFreloc(IDX_CONCAT),
