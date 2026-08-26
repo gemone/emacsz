@@ -1362,6 +1362,19 @@ android_emacs_init (int argc, char **argv, char *dump_file)
 
   /* Record (approximately) where the stack begins.  */
   stack_bottom = (char *) &stack_bottom_variable;
+#ifdef HAVE_NATIVE_COMP_ZIG
+  /* zeln-jit gate: resolved ONCE here (main always runs, dump load
+     included) so the zero-cost inline read in exec_byte_code sees the
+     real value in every process - pdump children do NOT rerun
+     syms_of_compz, so resolving there left the gate off in children
+     even with ZELN_JIT=1.  */
+  {
+    extern bool zeln_jit_gate_var;
+    const char *e = getenv ("ZELN_JIT");
+    zeln_jit_gate_var = (e && e[0] == '1' && e[1] == '\0');
+  }
+#endif
+
 
   const char *dump_mode = NULL;
   int skip_args = 0;

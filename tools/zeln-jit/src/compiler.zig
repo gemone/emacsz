@@ -26,23 +26,31 @@
 const std = @import("std");
 const jit = @import("jit.zig");
 
-// ---- freloc indices (the REAL src/compz.c enum order, verified by
-//      enumeration: SETUP_ARGS=0 NILP=1 SWITCH_TARGET=2 FUNCALL=3 ...) ----
+// ---- freloc indices - the REAL src/compz.c enum order (read directly
+//      from the enum at compz.c:418: SETUP_ARGS=0 FUNCALL=1 NILP=2 PLUS=3
+//      MINUS=4 TIMES=5 SUB1=6 ADD1=7 NEGATE=8 ...).  An earlier attempt
+//      "enumerated" these wrong by parsing prose comments; always read
+//      the enum itself.  ----
 pub const IDX_SETUP_ARGS: u64 = 0;
-pub const IDX_NILP: u64 = 1;
-pub const IDX_SWITCH_TARGET: u64 = 2;
-pub const IDX_FUNCALL: u64 = 3;
-pub const IDX_PLUS: u64 = 4;
-pub const IDX_MINUS: u64 = 5;
-pub const IDX_TIMES: u64 = 6;
-pub const IDX_SUB1: u64 = 7;
-pub const IDX_ADD1: u64 = 8;
-pub const IDX_NEGATE: u64 = 9;
-pub const IDX_EQ: u64 = 18;
-pub const IDX_CAR: u64 = 20;
-pub const IDX_CDR: u64 = 21;
-pub const IDX_CONS: u64 = 22;
-pub const IDX_SYMBOL_VALUE: u64 = 39;
+pub const IDX_FUNCALL: u64 = 1;
+pub const IDX_NILP: u64 = 2;
+pub const IDX_PLUS: u64 = 3;
+pub const IDX_MINUS: u64 = 4;
+pub const IDX_TIMES: u64 = 5;
+pub const IDX_SUB1: u64 = 6;
+pub const IDX_ADD1: u64 = 7;
+pub const IDX_NEGATE: u64 = 8;
+pub const IDX_EQLSIGN: u64 = 11;
+pub const IDX_GTR: u64 = 12;
+pub const IDX_LSS: u64 = 13;
+pub const IDX_LEQ: u64 = 14;
+pub const IDX_GEQ: u64 = 15;
+pub const IDX_EQUAL: u64 = 16;
+pub const IDX_EQ: u64 = 17;
+pub const IDX_CAR: u64 = 19;
+pub const IDX_CDR: u64 = 20;
+pub const IDX_CONS: u64 = 21;
+pub const IDX_SYMBOL_VALUE: u64 = 38;
 
 // ---- opcode numbers (mirror zeln-compile; mirror src/bytecode.c) -----
 const BSTACK_REF1: u8 = 1;
@@ -61,6 +69,11 @@ const BCONS: u8 = 66;
 const BSUB1: u8 = 83;
 const BADD1: u8 = 84;
 const BNEGATE: u8 = 91;
+const BEQLSIGN: u8 = 85;
+const BGTR: u8 = 86;
+const BLSS: u8 = 87;
+const BLEQ: u8 = 88;
+const BGEQ: u8 = 89;
 const BPLUS: u8 = 92;
 const BMULT: u8 = 95;
 const BDIFF: u8 = 90;
@@ -194,9 +207,7 @@ const Emitter = struct {
     /// Bcall n: fp = r12 - n*8 (fun below args); r12 = fp; FUNCALL(n+1, fp);
     /// [fp] = rax; r12 = fp (top = result)
     fn callFrelocN(self: *Emitter, n: u32) void {
-        // fp = r12 - n*8
-        self.raw(0x49); self.raw(0x8B); self.raw(0xE7); // mov rbp? no: keep in r15-free reg via rax path
-        // simpler: rdi = n+1, rsi = r12 - n*8 (args+fun group base)
+        // rdi = n+1, rsi = r12 - n*8 (args+fun group base)
         self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(@intCast(n + 1));
         // rsi = r12; rsi -= n*8
         self.raw(0x4C); self.raw(0x89); self.raw(0xE6); // mov rsi,r12 (REX.WR)
@@ -379,6 +390,11 @@ pub fn compile(
             BCDR => em.unaryFreloc(IDX_CDR),
             BNOT => em.unaryFreloc(IDX_EQ), // Bnot = eq nil per bytecode.c
             // ---- binary arith: POP v2, TOP=v1, TOP = fn(2,&newtop) ----
+            BEQLSIGN => em.binaryFreloc(IDX_EQLSIGN),
+            BGTR => em.binaryFreloc(IDX_GTR),
+            BLSS => em.binaryFreloc(IDX_LSS),
+            BLEQ => em.binaryFreloc(IDX_LEQ),
+            BGEQ => em.binaryFreloc(IDX_GEQ),
             BPLUS => em.binaryFreloc(IDX_PLUS),
             BDIFF => em.binaryFreloc(IDX_MINUS),
             BMULT => em.binaryFreloc(IDX_TIMES),
@@ -492,7 +508,7 @@ test "compile and run: arithmetic via freloc (fib-shape call)" {
             return args[0] +% args[1];
         }
     };
-    var freloc_table = [_]*const anyopaque{ undefined, undefined, undefined, &Shim.funcall, &Shim.plus };
+    var freloc_table = [_]*const anyopaque{ undefined, &Shim.funcall, undefined, &Shim.plus };
     var freloc_base: *const anyopaque = &freloc_table;
     const freloc_slot: *const *const anyopaque = &freloc_base;
 
@@ -517,7 +533,7 @@ test "compile and run: loop with branch (countdown)" {
             return args[0] -% 1;
         }
     };
-    var freloc_table = [_]*const anyopaque{ undefined, undefined, undefined, undefined, undefined, undefined, undefined, &Shim.sub1 };
+    var freloc_table = [_]*const anyopaque{ undefined, undefined, undefined, undefined, undefined, undefined, &Shim.sub1 };
     var freloc_base: *const anyopaque = &freloc_table;
     const freloc_slot: *const *const anyopaque = &freloc_base;
 

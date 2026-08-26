@@ -2387,8 +2387,16 @@ zeln_jit_compile (Lisp_Object fun)
       return NULL;
     }
 
-  /* Fixed arity only in v1: MANY/UNEVALLED templates reject outright.  */
-  if (! (nargs_template >= 0 && nargs_template <= 8))
+  /* The ARGLIST slot holds the ENCODED args template (bytecode.c):
+     bits 0..6 mandatory, bit 7 &rest, bits 8..14 max.  Decode and
+     compile only the simple shape (no &rest, min == max, <= 8 args):
+     the JIT entry pushes args[0..n) verbatim, which matches exactly
+     that case; everything else keeps the interpreter's nil-fill /
+     rest-pack setup.  */
+  bool rest_bit = (nargs_template & 128) != 0;
+  unsigned mandatory = nargs_template & 127;
+  unsigned nonrest = (unsigned) (nargs_template >> 8) & 127;
+  if (rest_bit || mandatory != nonrest || nonrest > 8)
     {
       e->key = SDATA (bytestr);
       e->entry = NULL;
@@ -2399,7 +2407,7 @@ zeln_jit_compile (Lisp_Object fun)
   zeln_jit_entry_t entry
     = zeln_jit_compile_closure
 	(SDATA (bytestr), SBYTES (bytestr),
-	 (unsigned) XFIXNAT (maxdepth), (unsigned) nargs_template,
+	 (unsigned) XFIXNAT (maxdepth), nonrest,
 	 XVECTOR (vector)->contents, zeln_jit_freloc_slot ());
   e->key = SDATA (bytestr);
   e->entry = entry;
@@ -2498,6 +2506,18 @@ zeln_jit_try_run (Lisp_Object fun, ptrdiff_t nargs, Lisp_Object *args,
   return true;
 }
 extern unsigned zeln_jit_count (const void *);
+
+DEFUN ("zeln-jit-compiled-p", Fzeln_jit_compiled_p, Szeln_jit_compiled_p, 1, 1, 0,
+       doc: /* Return t when FUNCTION has an in-process JIT entry. */)
+  (Lisp_Object function)
+{
+  CHECK_TYPE (CLOSUREP (function), Qcompiled_function_p, function);
+  Lisp_Object bytestr = AREF (function, CLOSURE_CODE);
+  if (!STRINGP (bytestr))
+    return Qnil;
+  struct zeln_jit_cache_ent *e = zeln_jit_cache_lookup (SDATA (bytestr));
+  return (e->key != NULL && e->entry != NULL) ? Qt : Qnil;
+}
 
 DEFUN ("zeln-jit-count", Fzeln_jit_count, Szeln_jit_count, 1, 1, 0,
        doc: /* Return the zeln-jit invocation count for compiled FUNCTION.
@@ -2681,14 +2701,6 @@ exactly one native path is active and this variable is ignored.  */);
   staticpro (&Vzeln_jit_pinned_closures);
   Vzeln_jit_pinned_closures = Qnil;
 
-  /* zeln-jit gate: resolved once, here (post-dump the syms don't rerun,
-     but the var's zero-init = off is correct for children; the DUMP
-     process resolves from the env and the value persists only if the
-     dump itself was made with ZELN_JIT=1, which the build never does).  */
-  {
-    const char *e = getenv ("ZELN_JIT");
-    zeln_jit_gate_var = (e && e[0] == '1' && e[1] == '\0');
-  }
   zeln_fdo_names_root = Qnil;
 
   defsubr (&Scomp_z_load_zeln);
@@ -2699,6 +2711,7 @@ exactly one native path is active and this variable is ignored.  */);
   defsubr (&Scomp_z_compute_version_dir);
   defsubr (&Szeln_jit_stats);
   defsubr (&Szeln_jit_count);
+  defsubr (&Szeln_jit_compiled_p);
   defsubr (&Scomp_z_el_to_zeln_rel_filename);
 
 #ifndef HAVE_NATIVE_COMP
