@@ -244,6 +244,13 @@
         .emacs_time = .{
             .path = "tools/emacs-time",
         },
+        // zeln-jit: the in-process lightweight JIT engine (LuaJIT-informed
+        // tiering; see docs/zeln-jit.md).  Foundation: executable arena
+        // (W^X dual-map) + x86-64 emitter; bytecode-tiering integrates
+        // under -Dnative-comp-zig builds.
+        .zeln_jit = .{
+            .path = "tools/zeln-jit",
+        },
         // emacs-nanosleep: gnulib's nanosleep (lib/nanosleep.c) provided
         // by an independent Zig package with per-platform NATIVE backends,
         // no libc: Linux std.os.linux.nanosleep raw syscall; Windows

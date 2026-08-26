@@ -1669,6 +1669,23 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "emacs-time", .root_module = emacs_time_mod });
     exe.root_module.linkLibrary(emacs_time_lib);
 
+    // zeln-jit: the in-process lightweight JIT engine (tools/zeln-jit,
+    // docs/zeln-jit.md).  Foundation only for now (executable arena +
+    // x86-64 emitter, unit-tested standalone via `zig build test` in the
+    // package); linked into temacs so the J2+ bytecode-tiering work
+    // (hotness hooks in exec_byte_code) has the engine present at
+    // runtime.  Built ReleaseFast: the emitter is on the hot path when
+    // tiering is active.  Pure Zig, no libc, no external toolchain --
+    // the whole point is NO gcc/libgccjit and NO subprocess.
+    const zeln_jit_mod = b.createModule(.{
+        .root_source_file = b.dependency("zeln_jit", .{}).path("src/jit.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const zeln_jit_lib =
+        b.addLibrary(.{ .name = "zeln-jit", .root_module = zeln_jit_mod });
+    exe.root_module.linkLibrary(zeln_jit_lib);
+
     // emacs-nanosleep: an independent Zig package (tools/emacs-nanosleep)
     // providing the POSIX nanosleep() that lib/nanosleep.c would otherwise
     // provide, via per-platform NATIVE backends with no libc: Linux
