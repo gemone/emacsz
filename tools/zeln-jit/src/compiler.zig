@@ -51,6 +51,9 @@ pub const IDX_CAR: u64 = 19;
 pub const IDX_CDR: u64 = 20;
 pub const IDX_CONS: u64 = 21;
 pub const IDX_SYMBOL_VALUE: u64 = 38;
+pub const IDX_LIST: u64 = 26;
+pub const IDX_CONCAT: u64 = 44;
+pub const IDX_LENGTH: u64 = 35;
 
 // ---- opcode numbers (mirror zeln-compile; mirror src/bytecode.c) -----
 const BSTACK_REF1: u8 = 1;
@@ -69,6 +72,11 @@ const BCONS: u8 = 66;
 const BSUB1: u8 = 83;
 const BADD1: u8 = 84;
 const BNEGATE: u8 = 91;
+const BLENGTH: u8 = 71; // 0107 octal
+const BLISTN: u8 = 175;
+const BCONCAT2: u8 = 80;
+const BCONCAT3: u8 = 81;
+const BCONCAT4: u8 = 82;
 const BEQLSIGN: u8 = 85;
 const BGTR: u8 = 86;
 const BLSS: u8 = 87;
@@ -203,6 +211,20 @@ const Emitter = struct {
         self.raw(0x4C); self.raw(0x89); self.raw(0xE6);
         self.frelocCall(idx);
         self.raw(0x49); self.raw(0x89); self.raw(0x04); self.raw(0x24);
+    }
+    /// n-ary (concat/listN): pop n values, call fn(n, base), push result.
+    fn naryFreloc(self: *Emitter, idx: u64, n: u32) void {
+        self.adjustTop(-@as(i32, @intCast((n - 1) * 8)));
+        self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(@intCast(n));
+        self.raw(0x4C); self.raw(0x89); self.raw(0xE6); // mov rsi,r12
+        self.frelocCall(idx);
+        self.raw(0x49); self.raw(0x89); self.raw(0x04); self.raw(0x24);
+    }
+    fn ternaryFreloc(self: *Emitter, idx: u64) void {
+        self.naryFreloc(idx, 3);
+    }
+    fn quatFreloc(self: *Emitter, idx: u64) void {
+        self.naryFreloc(idx, 4);
     }
     /// Bcall n: fp = r12 - n*8 (fun below args); r12 = fp; FUNCALL(n+1, fp);
     /// [fp] = rax; r12 = fp (top = result)
@@ -390,6 +412,15 @@ pub fn compile(
             BCDR => em.unaryFreloc(IDX_CDR),
             BNOT => em.unaryFreloc(IDX_EQ), // Bnot = eq nil per bytecode.c
             // ---- binary arith: POP v2, TOP=v1, TOP = fn(2,&newtop) ----
+            BLENGTH => em.unaryFreloc(IDX_LENGTH),
+            BCONCAT2 => em.binaryFreloc(IDX_CONCAT),
+            BCONCAT3 => em.ternaryFreloc(IDX_CONCAT),
+            BCONCAT4 => em.quatFreloc(IDX_CONCAT),
+            BLISTN => {
+                const n = fetch1(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 1;
+                em.naryFreloc(IDX_LIST, n);
+            },
             BEQLSIGN => em.binaryFreloc(IDX_EQLSIGN),
             BGTR => em.binaryFreloc(IDX_GTR),
             BLSS => em.binaryFreloc(IDX_LSS),
