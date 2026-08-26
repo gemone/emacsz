@@ -71,6 +71,16 @@ GC 约束。
 注意 shell 栈 rlimit 需正常（本测试机 ulimit -s 65536；16KB 的异常
 环境会限制递归深度，与 JIT 无关）。
 
+## 默认开启（J6）
+
+consts-vector 校验修复后，**JIT 默认开启**（`HAVE_NATIVE_COMP_ZIG` 构建下无需
+任何环境变量；`ZELN_JIT=0` 显式关闭）。验证矩阵：
+
+- 全量 check（40 套件 / 582 测试）：0 unexpected
+- dump-compiled 管线、check-zeln（AOT 门）、serialize walk（2296 文件）：全绿
+- 四基准（无环境变量）：fib 1.7×、let/while 1.7×、cons/mul 2.1×、concat 22×
+- 默认（gccjit）构建不受影响（gate 仅在 zeln 构建编译）
+
 ## 测试
 
 ```

@@ -1367,11 +1367,14 @@ android_emacs_init (int argc, char **argv, char *dump_file)
      included) so the zero-cost inline read in exec_byte_code sees the
      real value in every process - pdump children do NOT rerun
      syms_of_compz, so resolving there left the gate off in children
-     even with ZELN_JIT=1.  */
+     even with ZELN_JIT=1.  DEFAULT ON since the consts-validation fix
+     made the full check suite pass with the JIT active; ZELN_JIT=0
+     opts out (build-time tooling that wants deterministic interpreter
+     behavior sets it explicitly).  */
   {
     extern bool zeln_jit_gate_var;
     const char *e = getenv ("ZELN_JIT");
-    zeln_jit_gate_var = (e && e[0] == '1' && e[1] == '\0');
+    zeln_jit_gate_var = ! (e && e[0] == '0' && e[1] == '\0');
   }
 #endif
 
