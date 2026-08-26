@@ -328,13 +328,19 @@ pub fn compile(
     arity: u32,
 ) Error!Result {
     const slot = try arena.reserve(4096);
-    var em = Emitter{
+    // Heap-allocate the emitter: a stack Emitter hit a Zig-0.16 codegen
+    // vmovaps-alignment fault at deep C-stack recursion (the serialize
+    // scrape) where the frame landed 8-mod-16; on the heap the alignment
+    // is guaranteed.
+    const emp = std.heap.smp_allocator.create(Emitter) catch
+        return Error.OutOfMemory;
+    defer std.heap.smp_allocator.destroy(emp);
+    emp.* = .{
         .buf = slot.w,
         .patches = .empty,
         .blocks = .init(std.heap.smp_allocator),
     };
-    defer em.patches.deinit(std.heap.smp_allocator);
-    defer em.blocks.deinit();
+    const em = &emp.*;
 
     // ---- prologue ----
     em.raw(0x55); // push rbp
@@ -606,6 +612,14 @@ test "compile and run: loop with branch (countdown)" {
 // interpreter).
 // ---------------------------------------------------------------------------
 
+/// ONE shared arena for all compiled entries: each compile reserves a
+/// 4 KiB region from it.  (The earlier per-compile allocation leaked
+/// 256 KiB per closure and exhausted memory after a few thousand
+/// compiles - the serialize phase walks 1547 files and hit exactly
+/// that, crashing inside the emitter's HashMap init under exhaustion.)
+/// The arena grows by reallocation only when full; entries are never
+/// freed (bounded by the hot-closure count, and the process reclaims
+/// everything at exit).
 var g_arena: ?jit.ExecArena = null;
 
 export fn zeln_jit_compile_closure(
@@ -616,7 +630,8 @@ export fn zeln_jit_compile_closure(
     consts: [*]const u64,
     freloc_slot: *const *const anyopaque,
 ) ?*const fn (i64, [*]const u64) callconv(.c) u64 {
-    g_arena = jit.ExecArena.allocate(256 * 1024) catch return null;
+    if (g_arena == null)
+        g_arena = jit.ExecArena.allocate(4 * 1024 * 1024) catch return null;
     const res = compile(&g_arena.?, bc[0..bc_len], stack_depth, freloc_slot, consts, arity) catch return null;
     return res.entry;
 }
