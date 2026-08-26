@@ -2277,6 +2277,40 @@ in `comp-z-native-version-dir'.  For internal use.  */)
   return Vcomp_z_native_version_dir;
 }
 
+/* zeln-jit hotness diagnostics (J2): how many interpreted closures the
+engine is tracking and how many crossed the JIT threshold.  Exposed so
+the hotness hook's effect is observable from Lisp (tests, tuning). */
+extern void zeln_jit_stats (unsigned [2]);
+extern unsigned zeln_jit_count (const void *);
+
+DEFUN ("zeln-jit-count", Fzeln_jit_count, Szeln_jit_count, 1, 1, 0,
+       doc: /* Return the zeln-jit invocation count for compiled FUNCTION.
+0 when not tracked (never invoked through the interpreter).  For
+diagnostics/tuning of the JIT hotness gate.  */)
+  (Lisp_Object function)
+{
+  CHECK_TYPE (CLOSUREP (function),
+	      Qcompiled_function_p, function);
+  Lisp_Object bytestr = AREF (function, CLOSURE_CODE);
+  /* A closure whose body was never byte-compiled (interpreted
+     lambda) carries its form list here, not a string. */
+  if (!STRINGP (bytestr))
+    return make_fixnum (0);
+  return make_fixnum (zeln_jit_count (SDATA (bytestr)));
+}
+
+DEFUN ("zeln-jit-stats", Fzeln_jit_stats, Szeln_jit_stats, 0, 0, 0,
+       doc: /* Return the zeln-jit hotness counters as (TRACKED CROSSED).
+TRACKED is the number of distinct interpreted closures the JIT engine
+is counting; CROSSED how many of them crossed the JIT threshold since
+startup.  Returns nil when the build lacks the engine.  */)
+  (void)
+{
+  unsigned st[2] = { 0, 0 };
+  zeln_jit_stats (st);
+  return list2 (make_fixnum (st[0]), make_fixnum (st[1]));
+}
+
 /* ------------------------------------------------------------------ */
 /* syms_of_compz — called from src/emacs.c under HAVE_NATIVE_COMP_ZIG.  */
 
@@ -2435,6 +2469,8 @@ exactly one native path is active and this variable is ignored.  */);
   defsubr (&Scomp_z_write_file_zunit);
   defsubr (&Szeln_capturing_read);
   defsubr (&Scomp_z_compute_version_dir);
+  defsubr (&Szeln_jit_stats);
+  defsubr (&Szeln_jit_count);
   defsubr (&Scomp_z_el_to_zeln_rel_filename);
 
 #ifndef HAVE_NATIVE_COMP

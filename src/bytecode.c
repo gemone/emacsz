@@ -24,6 +24,11 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "buffer.h"
 #include "window.h"
 
+#ifdef HAVE_NATIVE_COMP_ZIG
+/* tools/zeln-jit (linked into temacs): the J2 hotness hook. */
+extern bool zeln_jit_hot (const void *, unsigned);
+#endif
+
 /* Define BYTE_CODE_SAFE true to enable some minor sanity checking,
    useful for debugging the byte compiler.  It defaults to false.  */
 
@@ -492,6 +497,18 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
   register unsigned char const *pc BC_REG_PC = NULL;
 
   Lisp_Object bytestr = AREF (fun, CLOSURE_CODE);
+
+#ifdef HAVE_NATIVE_COMP_ZIG
+  /* zeln-jit hotness hook (J2): one call per interpreted invocation,
+     keyed on the bytecode string's data pointer (stable under GC).
+     The engine counts and, when this closure crosses the JIT
+     threshold, returns true -- from J3 on that triggers in-process
+     compilation; today we just count (observable via the exported
+     counter table; zero behavioral effect otherwise).  The gate is
+     cheap enough for the interpreter's hot path: one predictable
+     call, a table lookup in the engine.  */
+  zeln_jit_hot (SDATA (bytestr), 256);
+#endif
 
  setup_frame: ;
   eassert (!STRING_MULTIBYTE (bytestr));

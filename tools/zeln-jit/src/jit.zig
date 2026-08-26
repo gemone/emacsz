@@ -219,6 +219,96 @@ pub const X86 = struct {
 };
 
 // ---------------------------------------------------------------------------
+// Hotness accounting (J2): the C side (src/bytecode.c exec_byte_code
+// entry) calls zeln_jit_hot on every closure invocation.  The counter
+// table lives here so the C side pays one call, not a hash lookup.
+//
+// When a closure crosses the threshold the hook returns true and the C
+// side stops counting it (per-closure suppression; J3 wires real
+// compilation).  Identifying the closure by its bytecode string's data
+// pointer keeps this cheap and stable across invocations (the closure
+// object itself may move under GC; the string data does not).
+// ---------------------------------------------------------------------------
+
+pub const default_threshold: u32 = 256;
+
+/// One hotness entry: the closure's bytecode data pointer + count.
+const HotEntry = struct {
+    key: ?*const anyopaque = null,
+    count: u32 = 0,
+};
+
+var hot_table: [16384]HotEntry = [_]HotEntry{.{}} ** 16384;
+const hot_mask: u32 = 16384 - 1;
+
+fn hotHash(key: *const anyopaque) u32 {
+    const v = @intFromPtr(key);
+    // Fibonacci hashing for pointer keys.
+    return @truncate((v >> 4) *% 2654435761);
+}
+
+/// C ABI: number of tracked closures + how many crossed their
+/// threshold (diagnostics for the J2 gate; also proves the hook fires
+/// from inside Emacs at runtime).
+var hot_crossed_total: u32 = 0;
+var hot_tracked_total: u32 = 0;
+
+export fn zeln_jit_stats(out: *[2]u32) void {
+    var tracked: u32 = 0;
+    for (hot_table) |e| {
+        if (e.key != null) tracked += 1;
+    }
+    out[0] = tracked;
+    out[1] = hot_crossed_total;
+}
+
+/// Called from exec_byte_code's entry (C ABI).  Returns true exactly
+/// when THIS call crossed the threshold: the C side should then stop
+/// counting this closure and, from J3 on, trigger compilation.
+export fn zeln_jit_hot(key: *const anyopaque, threshold: u32) bool {
+    var i = hotHash(key) & hot_mask;
+    // Linear probe; an empty slot terminates the run.
+    while (hot_table[i].key) |k| {
+        if (k == key) {
+            const c = hot_table[i].count +% 1;
+            hot_table[i].count = c;
+            if (c == threshold) {
+                hot_crossed_total += 1;
+                return true;
+            }
+            return false;
+        }
+        i = (i + 1) & hot_mask;
+    }
+    // Insert.
+    hot_table[i] = .{ .key = key, .count = 1 };
+    hot_tracked_total += 1;
+    return threshold == 1;
+}
+
+test "hot counter crosses threshold exactly once" {
+    const key: u8 = 0;
+    const kp: *const anyopaque = &key;
+    var crossed: usize = 0;
+    for (0..300) |_| {
+        if (zeln_jit_hot(kp, 256)) crossed += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), crossed);
+}
+
+test "distinct keys tracked independently" {
+    var a: u8 = 0;
+    var b: u8 = 0;
+    for (0..10) |_| {
+        _ = zeln_jit_hot(&a, 5);
+        _ = zeln_jit_hot(&b, 100);
+    }
+    // a crossed at 5; a further call must NOT cross again (one-shot ==
+    // comparison), while b never reaches 100 in 10 calls.
+    try std.testing.expect(!zeln_jit_hot(&a, 5));
+}
+
+// ---------------------------------------------------------------------------
 // Tests: generate + EXECUTE machine code in-process.
 // ---------------------------------------------------------------------------
 
@@ -278,3 +368,34 @@ test "multiple reservations execute independently" {
     try std.testing.expectEqual(@as(u64, 7), f1());
     try std.testing.expectEqual(@as(u64, 9), f2());
 }
+
+/// C ABI diagnostic: the current count for KEY (0 when untracked).
+export fn zeln_jit_count(key: *const anyopaque) u32 {
+    var i = hotHash(key) & hot_mask;
+    while (hot_table[i].key) |k| {
+        if (k == key) return hot_table[i].count;
+        i = (i + 1) & hot_mask;
+    }
+    return 0;
+}
+
+test "count reporting" {
+    // Fresh keys (stack slots unique to this frame) so earlier tests'
+    // table state cannot leak into the expectations.
+    // STATIC storage: stack slots are reused across tests at identical
+    // addresses, so a stack local key would collide with earlier tests'
+    // entries (observed: same address -> continued counting).  A file-scope
+    // variable gives this test a key nothing else can share.
+    k_test_slot = k_test_slot +% 1;
+    const kp: *const anyopaque = &k_test_slot;
+    var crossed: u32 = 0;
+    for (0..300) |_| {
+        if (zeln_jit_hot(kp, 256)) crossed += 1;
+    }
+    // exactly one crossing at call #256, count == calls, both queryable
+    try std.testing.expectEqual(@as(u32, 1), crossed);
+    try std.testing.expectEqual(@as(u32, 300), zeln_jit_count(kp));
+    try std.testing.expectEqual(@as(u32, 0), zeln_jit_count(&stack_canary));
+}
+var stack_canary: u8 = 0;
+var k_test_slot: u8 = 0;
