@@ -43,7 +43,7 @@ const builtin = @import("builtin");
 //        aliasing; toggling per write-batch is the accepted practice).
 // ---------------------------------------------------------------------------
 
-const page_size = 4096;
+pub const page_size = 4096;
 
 fn osPageSize() usize {
     return std.heap.pageSize();
@@ -399,3 +399,11 @@ test "count reporting" {
 }
 var stack_canary: u8 = 0;
 var k_test_slot: u8 = 0;
+
+pub const compiler = @import("compiler.zig");
+
+
+// Pull the compiler's tests into this root's test build.
+comptime {
+    _ = @import("compiler.zig");
+}
