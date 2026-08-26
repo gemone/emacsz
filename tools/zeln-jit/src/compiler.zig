@@ -50,6 +50,7 @@ const BCALL: u8 = 32;
 const BCALL5: u8 = 37;
 const BCALL6: u8 = 38;
 const BCALL7: u8 = 39;
+const BNOT: u8 = 63;
 const BCAR: u8 = 64;
 const BCDR: u8 = 65;
 const BCONS: u8 = 66;
@@ -72,6 +73,16 @@ const BCONSTANT_BASE: u8 = 192;
 
 fn gpa0() std.mem.Allocator {
     return std.heap.smp_allocator;
+}
+
+
+fn fetch1(opcodes: []const u8, pc: u32) ?u32 {
+    if (pc >= opcodes.len) return null;
+    return opcodes[pc];
+}
+fn fetch2(opcodes: []const u8, pc: u32) ?u32 {
+    if (pc + 1 >= opcodes.len) return null;
+    return @as(u32, opcodes[pc]) | (@as(u32, opcodes[pc + 1]) << 8);
 }
 
 pub const Error = error{
@@ -112,6 +123,124 @@ const Emitter = struct {
         std.mem.writeInt(u64, self.buf[self.pos..][0..8], v, .little);
         self.pos += 8;
     }
+    // ---- emit primitives (all REX-verified; see the two bug notes in
+    //      git history: REX.R extends REG, REX.B extends R/M) ----
+
+    /// rax = [r12]
+    fn loadTosRax(self: *Emitter) void {
+        self.raw(0x49); self.raw(0x8B); self.raw(0x04); self.raw(0x24);
+    }
+    /// [r12+8] = rax; r12 += 8  (PUSH rax, TOS already in rax)
+    fn pushRaxNoLoad(self: *Emitter) void {
+        self.raw(0x49); self.raw(0x89); self.raw(0x44); self.raw(0x24); self.raw(8);
+        self.raw(0x49); self.raw(0x83); self.raw(0xC4); self.raw(8);
+    }
+    /// r12 += delta bytes
+    fn adjustTop(self: *Emitter, delta: i32) void {
+        if (delta < 0) {
+            self.raw(0x49); self.raw(0x83); self.raw(0xEC); self.raw(@intCast(-delta));
+        } else {
+            self.raw(0x49); self.raw(0x83); self.raw(0xC4); self.raw(@intCast(delta));
+        }
+    }
+    /// PUSH consts[idx]: mov rax,[r14 + idx*8] with disp8/disp32 as
+    /// needed (idx*8 overflows disp8's signed range at idx 16).
+    fn pushConst(self: *Emitter, idx: u32) void {
+        const disp: i32 = @intCast(idx * 8);
+        if (disp < 128) {
+            self.raw(0x49); self.raw(0x8B); self.raw(0x46); self.raw(@intCast(disp));
+        } else {
+            // mod=10 (disp32), rm=110 r14-with-REXB: 8B /r with SIB-free
+            self.raw(0x49); self.raw(0x8B); self.raw(0x86); self.imm32(disp);
+        }
+        self.pushRaxNoLoad();
+    }
+    /// PUSH top[-depth]
+    fn pushStackRef(self: *Emitter, depth: u32) void {
+        // rax = [r12 - depth*8]
+        self.raw(0x49); self.raw(0x8B); self.raw(0x84); self.raw(0x24);
+        self.imm32(-@as(i32, @intCast(depth * 8)));
+        self.pushRaxNoLoad();
+    }
+    /// call [r13 + idx*8] with rdi=n, rsi=ptr; rax = result
+    fn frelocCall(self: *Emitter, idx: u64) void {
+        self.raw(0x49); self.raw(0x8B); self.raw(0x45); self.raw(@intCast(idx * 8)); // mov rax,[r13+d8]
+        self.raw(0xFF); self.raw(0xD0); // call rax
+    }
+    /// unary: v=[r12]; rdi=1; rsi=r12; rax=fn(1,rsi); [r12]=rax
+    fn unaryFreloc(self: *Emitter, idx: u64) void {
+        self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(1); // mov rdi,1
+        self.raw(0x4C); self.raw(0x89); self.raw(0xE6); // mov rsi,r12 (REX.WR)
+        self.frelocCall(idx);
+        self.raw(0x49); self.raw(0x89); self.raw(0x04); self.raw(0x24); // [r12]=rax
+    }
+    /// binary: v2=[r12]; r12-=8; rdi=2; rsi=r12; rax=fn(2,rsi); [r12]=rax
+    fn binaryFreloc(self: *Emitter, idx: u64) void {
+        self.adjustTop(-8);
+        self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(2);
+        self.raw(0x4C); self.raw(0x89); self.raw(0xE6);
+        self.frelocCall(idx);
+        self.raw(0x49); self.raw(0x89); self.raw(0x04); self.raw(0x24);
+    }
+    /// Bcall n: fp = r12 - n*8 (fun below args); r12 = fp; FUNCALL(n+1, fp);
+    /// [fp] = rax; r12 = fp (top = result)
+    fn callFrelocN(self: *Emitter, n: u32) void {
+        // fp = r12 - n*8
+        self.raw(0x49); self.raw(0x8B); self.raw(0xE7); // mov rbp? no: keep in r15-free reg via rax path
+        // simpler: rdi = n+1, rsi = r12 - n*8 (args+fun group base)
+        self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(@intCast(n + 1));
+        // rsi = r12; rsi -= n*8
+        self.raw(0x4C); self.raw(0x89); self.raw(0xE6); // mov rsi,r12 (REX.WR)
+        self.raw(0x48); self.raw(0x81); self.raw(0xEE); self.imm32(@intCast(n * 8)); // sub rsi,n*8
+        self.frelocCall(IDX_FUNCALL);
+        // [r12 - n*8] = rax ; r12 -= n*8
+        self.raw(0x49); self.raw(0x89); self.raw(0x84); self.raw(0x24);
+        self.imm32(-@as(i32, @intCast(n * 8)));
+        self.adjustTop(-@as(i32, @intCast(n * 8)));
+    }
+    /// jmp to bytecode target (patched later)
+    fn emitJump(self: *Emitter, target_bc: u32) void {
+        self.raw(0xE9);
+        self.patches.append(std.heap.smp_allocator, .{ .at = self.pos, .target_bc = target_bc }) catch {};
+        self.imm32(0);
+    }
+    /// POP v; if (v == 0) [nil when want_nil] jump; else fallthrough
+    fn condJump(self: *Emitter, target_bc: u32, want_nil: bool) void {
+        // rax = [r12]; r12 -= 8; test rax,rax; jz/jnz patch
+        self.loadTosRax();
+        self.adjustTop(-8);
+        self.raw(0x48); self.raw(0x85); self.raw(0xC0); // test rax,rax
+        const jop: u8 = if (want_nil) 0x74 else 0x75; // jz / jnz
+        self.raw(jop);
+        self.patches.append(std.heap.smp_allocator, .{ .at = self.pos, .target_bc = target_bc }) catch {};
+        self.imm32(0);
+    }
+    /// POP v; if nil jump else keep+pop (else-pop variants)
+    fn condJumpKeep(self: *Emitter, target_bc: u32, want_nil: bool) void {
+        // rax = [r12] (no pop yet); test; jz/jnz to KEEP path...
+        // Semantics: goto-if-nil-else-pop: if nil -> jump (keep value);
+        // else pop and fall through.
+        self.loadTosRax();
+        self.raw(0x48); self.raw(0x85); self.raw(0xC0);
+        // jump when (v==0) XOR !want_nil
+        const jop: u8 = if (want_nil) 0x74 else 0x75;
+        self.raw(jop);
+        self.patches.append(std.heap.smp_allocator, .{ .at = self.pos, .target_bc = target_bc }) catch {};
+        self.imm32(0);
+        // fallthrough: pop
+        self.adjustTop(-8);
+    }
+    /// epilogue with rax = TOS
+    fn epilogueFromTos(self: *Emitter) void {
+        self.loadTosRax();
+        self.raw(0x48); self.raw(0x8D); self.raw(0x65); self.raw(0xE8);
+        self.raw(0x41); self.raw(0x5E);
+        self.raw(0x41); self.raw(0x5D);
+        self.raw(0x41); self.raw(0x5C);
+        self.raw(0x5D);
+        self.raw(0xC3);
+    }
+
     /// mov r64, imm64 with REX.W
     fn movImm64(self: *Emitter, dst: u8, v: u64) void {
         self.raw(0x48 | (if (dst >= 8) @as(u8, 1) else @as(u8, 0))); // REX.W(+B)
@@ -157,15 +286,18 @@ pub fn compile(
     // sub rsp, stack_depth*8 (align 16)
     const frame: u32 = ((stack_depth * 8) + 15) & ~@as(u32, 15);
     em.raw(0x48); em.raw(0x81); em.raw(0xEC); em.imm32(@intCast(frame)); // sub rsp, imm32
-    // r12 = top = args-1 (interpreter semantics: slots are 1-based from
-    // args-1; Bconstant does *++top)
-    em.raw(0x49); em.raw(0x89); em.raw(0xF4); // mov r12, rsi
-    em.raw(0x49); em.raw(0x83); em.raw(0xEC); em.raw(8); // sub r12, 8
+    // r12 = top = the RESERVED frame's virtual stack, one below its
+    // first slot (Bconstant does *++top).  The interpreter reuses its
+    // own big stack; we use the frame we just reserved so pushes write
+    // OUR memory, never the caller's args.
+    em.raw(0x4C); em.raw(0x8B); em.raw(0xE4); // mov r12, rsp (8B: rm->reg, reg=r12 via REX.R)
+    em.raw(0x49); em.raw(0x83); em.raw(0xEC); em.raw(8); // sub r12, 8: pushes land [r12+8] = [rsp], inside the reserved frame
     // r13 = [freloc_slot]
     em.movImm64(0, @intFromPtr(freloc_slot)); // mov rax, imm64
     em.raw(0x4C); em.raw(0x8B); em.raw(0x28); // mov r13, [rax] (REX.WR)
     // r14 = consts vector
     em.movImm64(14, @intFromPtr(consts_vec)); // mov r14, imm64 (REX.WB)
+
 
     // ---- body: decode loop ----
     var pc: u32 = 0;
@@ -175,23 +307,78 @@ pub fn compile(
         pc += 1;
         if (b >= BCONSTANT_BASE) {
             const idx: u32 = b - BCONSTANT_BASE;
-            // PUSH consts[idx]:  mov rax,[r14+idx*8]; mov [r12+8],rax; add r12,8
-            em.raw(0x49); em.raw(0x8B); em.raw(0x46); em.raw(@intCast(idx * 8));
-            em.raw(0x49); em.raw(0x89); em.raw(0x44); em.raw(0x24); em.raw(8);
-            em.raw(0x49); em.raw(0x83); em.raw(0xC4); em.raw(8);
+            em.pushConst(idx);
             continue;
         }
         switch (b) {
             BRETURN => {
-                // rax = [r12]; jmp epilogue
-                em.raw(0x49); em.raw(0x8B); em.raw(0x04); em.raw(0x24);
-                // epilogue inline
-                em.raw(0x48); em.raw(0x8D); em.raw(0x65); em.raw(0xE8); // lea rsp,[rbp-0x18]
-                em.raw(0x41); em.raw(0x5E); // pop r14
-                em.raw(0x41); em.raw(0x5D); // pop r13
-                em.raw(0x41); em.raw(0x5C); // pop r12
-                em.raw(0x5D); // pop rbp
-                em.raw(0xC3); // ret
+                em.epilogueFromTos();
+            },
+            // ---- stack discipline ----
+            BDUP => {
+                // PUSH top[0]: rax=[r12]; [r12+8]=rax; r12+=8
+                em.loadTosRax();
+                em.pushRaxNoLoad();
+            },
+            BDISCARD => {
+                // POP: r12 -= 8
+                em.adjustTop(-8);
+            },
+            BSTACK_REF1, 2, 3, 4, BSTACK_REF5 => {
+                const depth: u32 = b; // top[-depth] with depth = op
+                em.pushStackRef(depth);
+            },
+            BSTACK_REF6 => {
+                const d = fetch1(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 1;
+                em.pushStackRef(d);
+            },
+            BSTACK_REF7 => {
+                const d = fetch2(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 2;
+                em.pushStackRef(d);
+            },
+            // ---- unary arith via freloc: POP v, TOP = fn(v) ----
+            BSUB1 => em.unaryFreloc(IDX_SUB1),
+            BADD1 => em.unaryFreloc(IDX_ADD1),
+            BNEGATE => em.unaryFreloc(IDX_NEGATE),
+            BCAR => em.unaryFreloc(IDX_CAR),
+            BCDR => em.unaryFreloc(IDX_CDR),
+            BNOT => em.unaryFreloc(IDX_EQ), // Bnot = eq nil per bytecode.c
+            // ---- binary arith: POP v2, TOP=v1, TOP = fn(2,&newtop) ----
+            BPLUS => em.binaryFreloc(IDX_PLUS),
+            BDIFF => em.binaryFreloc(IDX_MINUS),
+            BMULT => em.binaryFreloc(IDX_TIMES),
+            BCONS => em.binaryFreloc(IDX_CONS),
+            // ---- calls: POP n args + fun -> freloc FUNCALL(n+1,&fun) ----
+            BCALL, 33, 34, 35, 36, BCALL5 => {
+                em.callFrelocN(@intCast(b - BCALL));
+            },
+            BCALL6 => {
+                const n = fetch1(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 1;
+                em.callFrelocN(n);
+            },
+            BCALL7 => {
+                const n = fetch2(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 2;
+                em.callFrelocN(n);
+            },
+            // ---- branches ----
+            BGOTO => {
+                const t = fetch2(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 2;
+                em.emitJump(t);
+            },
+            BGOTOIFNIL, BGOTOIFNONNIL => {
+                const t = fetch2(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 2;
+                em.condJump(t, b == BGOTOIFNIL);
+            },
+            BGOTOIFNILELSEPOP, BGOTOIFNONNILELSEPOP => {
+                const t = fetch2(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 2;
+                em.condJumpKeep(t, b == BGOTOIFNILELSEPOP);
             },
             else => return Error.UnsupportedOpcode,
         }
@@ -227,6 +414,47 @@ test "compile and run: constant then return" {
     try testing.expect(res.rejected == null);
 
     // Call: entry(0, args) — args unused by this bytecode.
+    var args: [1]u64 = .{0};
+    const got = res.entry(0, &args);
+    try testing.expectEqual(@as(u64, 42), got);
+}
+
+test "compile and run: arithmetic via freloc (fib-shape call)" {
+    var arena = try jit.ExecArena.allocate(jit.page_size);
+    defer arena.deinit();
+
+    // A C-ABI freloc shim implementing funcall/plus/sub1 semantics over
+    // plain fixnums (tagged <<3 with LSB-tag 0 like Lisp_Int0=0? Here we
+    // just use raw words; the shim proves the CALL PATH).
+    const Shim = struct {
+        fn funcall(n: i64, args: [*]const u64) callconv(.c) u64 {
+            // last arg = "function" word; here functions are small ints:
+            // f=2 -> recursive identity chain: sum of args[0..n-1]
+            var sum: u64 = 0;
+            var i: u64 = 0;
+            const nargs: u64 = @intCast(@max(n - 1, 0));
+            while (i < nargs) : (i += 1) sum += args[i];
+            return sum + 100; // marker to prove the call happened
+        }
+        fn plus(n: i64, args: [*]const u64) callconv(.c) u64 {
+            _ = n;
+            return args[0] +% args[1];
+        }
+    };
+    var freloc_table = [_]*const anyopaque{
+        undefined, // 0 setup_args
+        &Shim.funcall, // 1 FUNCALL
+        undefined, // 2 nilp
+        &Shim.plus, // 3 PLUS
+    };
+    var freloc_base: *const anyopaque = &freloc_table;
+    const freloc_slot: *const *const anyopaque = &freloc_base;
+
+    // bytecode: Bconstant 0 pushes consts[0]=30; Bconstant 1 pushes
+    // consts[1]=12; Bplus; Breturn.
+    const opcodes = [_]u8{ 0xC0, 0xC0 + 1, BPLUS, BRETURN };
+    var consts = [_]u64{ 30, 12 };
+    const res = try compile(&arena, &opcodes, 8, freloc_slot, &consts);
     var args: [1]u64 = .{0};
     const got = res.entry(0, &args);
     try testing.expectEqual(@as(u64, 42), got);
