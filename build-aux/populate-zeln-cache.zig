@@ -126,6 +126,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             }
 
             try bc_env.put("ZELN_BC_ONLY", "1");
+            // The serialize-phase emacs Floads every .elc with a capturing
+            // reader; hot closures crossing the JIT threshold inside that
+            // machinery hit a known crash (capturing-read replay interplay)
+            // -- keep the in-process JIT off here (the .zeln AOT pipeline
+            // itself is unaffected; JIT stays available for normal runs).
+            try bc_env.put("ZELN_JIT", "0");
             const bc_argv = [_][]const u8{
                 "./zig-out/bin/emacs", "--batch",
                 "-l", "build-aux/zeln-populate.el",
