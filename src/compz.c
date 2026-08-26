@@ -1542,7 +1542,8 @@ zeln_emit_closure_body (FILE *f, Lisp_Object fun, bool emit_switch_tables)
   Lisp_Object bytestr   = AREF (fun, CLOSURE_CODE);		/* slot 1 */
   Lisp_Object vector    = AREF (fun, CLOSURE_CONSTANTS);	/* slot 2 */
   Lisp_Object maxdepth  = AREF (fun, CLOSURE_STACK_DEPTH);	/* slot 3 */
-  ptrdiff_t args_tmpl   = XFIXNUM (AREF (fun, CLOSURE_ARGLIST)); /* slot 0 */
+  ptrdiff_t args_tmpl   = FIXNUMP (AREF (fun, CLOSURE_ARGLIST))
+      ? XFIXNUM (AREF (fun, CLOSURE_ARGLIST)) : -1; /* slot 0 */
   CHECK_TYPE (STRINGP (bytestr), Qstringp, bytestr);
   CHECK_TYPE (VECTORP (vector), Qvectorp, vector);
   CHECK_TYPE (FIXNATP (maxdepth), Qwholenump, maxdepth);
@@ -2283,6 +2284,8 @@ the hotness hook's effect is observable from Lisp (tests, tuning). */
 extern void zeln_jit_stats (unsigned [2]);
 
 /* ------------------------------------------------------------------ */
+static void zeln_freloc_check_fill (void);
+
 /* J4: the in-process JIT swap.  exec_byte_code's hotness hook (below)
    counts interpreted invocations; when a closure crosses the threshold
    we compile it IN-PROCESS with the zeln-jit engine (tools/zeln-jit:
@@ -2330,11 +2333,16 @@ zeln_jit_cache_lookup (const unsigned char *key)
 
 /* The freloc link table base, exposed to the JIT engine through a
    stable address (the engine bakes a load of this slot into each
-   compiled prologue).  */
-static void *const zeln_jit_freloc_slot_var = (void *) 0;
+   compiled prologue).  CRITICAL: force zeln_freloc_check_fill first -
+   in a pdump-loaded child, syms_of_compz ran only in the DUMP process
+   (initialized==true skips it on the load path), so link_table can
+   still be empty here (all-NULL entries -> RIP=0).  check_fill is
+   idempotent (size guard) and fills the table with THIS process's
+   function addresses.  */
 static void *const *zeln_jit_freloc_slot (void)
 {
   static void *base;
+  zeln_freloc_check_fill ();
   base = zeln_freloc.link_table;
   return (void *const *) &base;
 }
@@ -2354,7 +2362,8 @@ zeln_jit_compile (Lisp_Object fun)
 
   Lisp_Object vector = AREF (fun, CLOSURE_CONSTANTS);
   Lisp_Object maxdepth = AREF (fun, CLOSURE_STACK_DEPTH);
-  ptrdiff_t nargs_template = XFIXNUM (AREF (fun, CLOSURE_ARGLIST));
+  ptrdiff_t nargs_template = FIXNUMP (AREF (fun, CLOSURE_ARGLIST))
+      ? XFIXNUM (AREF (fun, CLOSURE_ARGLIST)) : -1;
 
   /* Fixed arity only in v1: MANY/UNEVALLED templates reject outright.  */
   if (! (nargs_template >= 0 && nargs_template <= 8))
@@ -2364,6 +2373,8 @@ zeln_jit_compile (Lisp_Object fun)
       return NULL;
     }
 
+  fprintf (stderr, "ZJ: compiling arity=%ld bc=%zu\n",
+	   (long) nargs_template, (size_t) SBYTES (bytestr));
   zeln_jit_entry_t entry
     = zeln_jit_compile_closure
 	(SDATA (bytestr), SBYTES (bytestr),
@@ -2415,7 +2426,8 @@ zeln_jit_try_run (Lisp_Object fun, ptrdiff_t nargs, Lisp_Object *args,
   if (e->key == NULL || e->entry == NULL)
     return false;
   /* Exact arity only (v1).  */
-  ptrdiff_t tmpl = XFIXNUM (AREF (fun, CLOSURE_ARGLIST));
+  ptrdiff_t tmpl = FIXNUMP (AREF (fun, CLOSURE_ARGLIST))
+      ? XFIXNUM (AREF (fun, CLOSURE_ARGLIST)) : -1;
   if (tmpl < 0 || nargs != tmpl)
     return false;
   *result = e->entry (nargs, args);

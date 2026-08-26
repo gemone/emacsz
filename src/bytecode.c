@@ -508,7 +508,7 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
      run the machine code instead of interpreting.  Otherwise count the
      invocation; the first crossing of the threshold compiles it (any
      failure marks it nojit and the interpreter keeps it).  */
-  if (!will_dump_p ())
+  if (!will_dump_p () && STRINGP (bytestr))
     {
       Lisp_Object jit_result;
       if (zeln_jit_try_run (fun, nargs, args, &jit_result))
