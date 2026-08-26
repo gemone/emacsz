@@ -46,6 +46,7 @@ pub const IDX_LSS: u64 = 13;
 pub const IDX_LEQ: u64 = 14;
 pub const IDX_GEQ: u64 = 15;
 pub const IDX_EQUAL: u64 = 16;
+pub const IDX_NULL: u64 = 18;
 pub const IDX_EQ: u64 = 17;
 pub const IDX_CAR: u64 = 19;
 pub const IDX_CDR: u64 = 20;
@@ -531,7 +532,7 @@ pub fn compile(
             BNEGATE => em.unaryFreloc(IDX_NEGATE),
             BCAR => em.unaryFreloc(IDX_CAR),
             BCDR => em.unaryFreloc(IDX_CDR),
-            BNOT => em.unaryFreloc(IDX_EQ), // Bnot = eq nil per bytecode.c
+            BNOT => em.unaryFreloc(IDX_NULL), // Bnot = NILP? t : nil (bytecode.c:1118; zeln-compile uses IDX_NULL too - the earlier IDX_EQ here was the seq-empty-p t->nil flip)
             // ---- binary arith: POP v2, TOP=v1, TOP = fn(2,&newtop) ----
             BLENGTH => em.unaryFreloc(IDX_LENGTH),
             // ---- dynamic binding (let) support ----

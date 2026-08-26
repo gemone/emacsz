@@ -2550,6 +2550,22 @@ zeln_jit_try_run (Lisp_Object fun, ptrdiff_t nargs, Lisp_Object *args,
 }
 extern unsigned zeln_jit_count (const void *);
 
+DEFUN ("zeln-jit-dump", Fzeln_jit_dump, Szeln_jit_dump, 0, 0, 0,
+       doc: /* Dump every JIT cache entry's bytecode for debugging.  */)
+  (void)
+{
+  Lisp_Object out = Qnil;
+  for (int i = 0; i < ZELN_JIT_CACHE_SIZE; i++)
+    if (zeln_jit_cache[i].key != NULL && zeln_jit_cache[i].entry != NULL)
+      {
+	Lisp_Object bytes = make_uninit_vector (24);
+	for (int k = 0; k < 24; k++)
+	  ASET (bytes, k, make_fixnum (zeln_jit_cache[i].key[k]));
+	out = Fcons (bytes, out);
+      }
+  return out;
+}
+
 DEFUN ("zeln-jit-compiled-p", Fzeln_jit_compiled_p, Szeln_jit_compiled_p, 1, 1, 0,
        doc: /* Return t when FUNCTION has an in-process JIT entry. */)
   (Lisp_Object function)
@@ -2757,6 +2773,7 @@ exactly one native path is active and this variable is ignored.  */);
   defsubr (&Szeln_jit_stats);
   defsubr (&Szeln_jit_count);
   defsubr (&Szeln_jit_compiled_p);
+  defsubr (&Szeln_jit_dump);
   defsubr (&Scomp_z_el_to_zeln_rel_filename);
 
 #ifndef HAVE_NATIVE_COMP
