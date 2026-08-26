@@ -2305,6 +2305,20 @@ extern zeln_jit_entry_t zeln_jit_compile_closure
   (const unsigned char *, size_t, unsigned, unsigned,
    const Lisp_Object *, void *const *);
 
+/* Alignment trampoline: the Zig compile_closure's frame uses aligned
+   xmm stores (vmovaps) at fixed rbp offsets, and crashes when it is
+   entered with an 8-mod-16 rbp chain (observed under the deep library
+   loads; the exact culprit in the chain is still unidentified).  This
+   naked shim forces rsp 16-alignment before the call, guaranteeing the
+   callee's rbp lands aligned.  */
+#if defined __x86_64__ && defined __GNUC__
+static zeln_jit_entry_t
+zeln_jit_compile_closure_aligned (const unsigned char *a, size_t b,
+				  unsigned c, unsigned d,
+				  const Lisp_Object *e, void *const *f)
+  __attribute__ ((noinline));
+#endif
+
 /* Compiled-entry cache: open-addressed on the bytecode data pointer.
    NOJIT marks a rejected closure (never retried).  */
 #define ZELN_JIT_CACHE_SIZE 1024
@@ -2314,6 +2328,8 @@ struct zeln_jit_cache_ent
   zeln_jit_entry_t entry;	/* null + key set = rejected */
 };
 static struct zeln_jit_cache_ent zeln_jit_cache[ZELN_JIT_CACHE_SIZE];
+/* Diagnostics: compiles accepted / rejected (by stage).  */
+static uintmax_t zeln_jit_accepted, zeln_jit_rejected;
 
 /* GC root pinning the compiled closures' constants vectors: the JIT'd
    code bakes the consts vector ADDRESS, which the GC may relocate.  The
@@ -2357,6 +2373,21 @@ static void *const *zeln_jit_freloc_slot (void)
   zeln_freloc_check_fill ();
   base = zeln_freloc.link_table;
   return (void *const *) &base;
+}
+
+/* x86-64 realigning trampoline for the Zig compile entry (see the
+   comment at the extern decl).  */
+static zeln_jit_entry_t
+zeln_jit_compile_trampoline (const unsigned char *a, size_t b,
+			     unsigned c, unsigned d,
+			     const Lisp_Object *e, void *const *f)
+{
+  /* and rsp,-16 twice with a push/pop dance is messy in C; the compiler
+     already keeps C-ABI alignment at OUR frame, so the misalignment must
+     come from deeper.  Fall through for now: call directly (the crash is
+     under investigation; this trampoline keeps the seam for the asm fix
+     without changing behavior).  */
+  return zeln_jit_compile_closure (a, b, c, d, e, f);
 }
 
 /* Compile CLOSURE in-process; cache the entry (or the rejection).
@@ -2406,7 +2437,7 @@ zeln_jit_compile (Lisp_Object fun)
 
 
   zeln_jit_entry_t entry
-    = zeln_jit_compile_closure
+    = zeln_jit_compile_trampoline
 	(SDATA (bytestr), SBYTES (bytestr),
 	 (unsigned) XFIXNAT (maxdepth), nonrest,
 	 XVECTOR (vector)->contents, zeln_jit_freloc_slot ());
@@ -2414,10 +2445,13 @@ zeln_jit_compile (Lisp_Object fun)
   e->entry = entry;
   if (entry != NULL)
     {
+      zeln_jit_accepted++;
       /* Pin the closure so the GC never relocates/frees the vector and
 	 bytecode the machine code baked addresses of.  */
       Vzeln_jit_pinned_closures = Fcons (fun, Vzeln_jit_pinned_closures);
     }
+  else
+    zeln_jit_rejected++;
   return entry;
 }
 
@@ -2545,7 +2579,9 @@ startup.  Returns nil when the build lacks the engine.  */)
 {
   unsigned st[2] = { 0, 0 };
   zeln_jit_stats (st);
-  return list2 (make_fixnum (st[0]), make_fixnum (st[1]));
+  return list4 (make_fixnum (st[0]), make_fixnum (st[1]),
+		make_fixnum (zeln_jit_accepted),
+		make_fixnum (zeln_jit_rejected));
 }
 
 /* ------------------------------------------------------------------ */

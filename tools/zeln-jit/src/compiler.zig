@@ -398,14 +398,51 @@ pub fn compile(
     consts_vec: [*]const u64,
     arity: u32,
 ) Error!Result {
+    // Pre-scan: every branch target must land inside the bytecode.  A
+    // malformed closure (observed from dump'd images with truncated or
+    // inconsistent bytes) would otherwise make the decode loop read past
+    // the buffer and the patch pass jump into garbage.
+    {
+        var p: u32 = 0;
+        while (p < opcodes.len) {
+            const b = opcodes[p];
+            if (b >= BCONSTANT_BASE) {
+                p += 1;
+                continue;
+            }
+            var imm: u32 = 0;
+            var tgt: ?u32 = null;
+            switch (b) {
+                BGOTO, BGOTOIFNIL, BGOTOIFNONNIL, BGOTOIFNILELSEPOP, BGOTOIFNONNILELSEPOP => {
+                    tgt = fetch2(opcodes, p + 1);
+                    imm = 2;
+                },
+                BVARREF, 9, 10, 11, 12, 13, BVARSET6, BVARBIND6, BUNBIND6, BSTACK_SET => imm = 1,
+                BVARREF + 7 => imm = 2, // Bvarref7=15
+                BVARSET7, BVARBIND7, BUNBIND7, BSTACK_SET2 => imm = 2,
+                BCALL6, BLISTN => imm = 1,
+                BCALL7 => imm = 2,
+                BCONSTANT2 => imm = 2,
+                BSTACK_REF6 => imm = 1,
+                BSTACK_REF7 => imm = 2,
+                else => {},
+            }
+            if (tgt) |t| {
+                if (t >= opcodes.len) return Error.BadBytecode;
+            }
+            p += 1 + imm;
+        }
+    }
+
     const slot = try arena.reserve(4096);
-    // Heap-allocate the emitter: a stack Emitter hit a Zig-0.16 codegen
-    // vmovaps-alignment fault at deep C-stack recursion (the serialize
-    // scrape) where the frame landed 8-mod-16; on the heap the alignment
-    // is guaranteed.
-    const emp = std.heap.smp_allocator.create(Emitter) catch
-        return Error.OutOfMemory;
-    defer std.heap.smp_allocator.destroy(emp);
+    // Heap-allocate the emitter ALIGNED TO 16: Zig-0.16 codegen uses
+    // vmovaps on the struct (needs 16-byte alignment); @alignOf(Emitter)
+    // is only 8, so a plain create() can hand back an 8-mod-16 block -
+    // exactly the fault seen in the deep-recursion scrapes.
+    const emp_raw = std.heap.smp_allocator.alignedAlloc(
+        Emitter, .@"16", 1) catch return Error.OutOfMemory;
+    const emp: *Emitter = &emp_raw[0];
+    defer std.heap.smp_allocator.free(emp_raw);
     emp.* = .{
         .buf = slot.w,
         .patches = .empty,
@@ -419,8 +456,13 @@ pub fn compile(
     em.raw(0x41); em.raw(0x54); // push r12
     em.raw(0x41); em.raw(0x55); // push r13
     em.raw(0x41); em.raw(0x56); // push r14
-    // sub rsp, stack_depth*8 (align 16)
-    const frame: u32 = ((stack_depth * 8) + 15) & ~@as(u32, 15);
+    // Reserve the virtual stack frame sized to stack_depth, padded so
+    // that rsp ends up 16-BYTE ALIGNED at call sites: entry rsp is
+    // 8-mod-16 (post-call ABI), push rbp -> 0, three pushes -> 8, so the
+    // sub must be 8-mod-16 to land at 0.  (Every freloc call from JIT
+    // code entered C frames with misaligned rbp before this - the
+    // vmovaps crashes in deep library loads.)
+    const frame: u32 = (((stack_depth * 8) + 15) & ~@as(u32, 15)) + 8;
     em.raw(0x48); em.raw(0x81); em.raw(0xEC); em.imm32(@intCast(frame)); // sub rsp, imm32
     // r12 = top = the RESERVED frame's virtual stack, one below its
     // first slot (Bconstant does *++top).  The interpreter reuses its
