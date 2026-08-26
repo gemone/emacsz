@@ -210,8 +210,10 @@ const Emitter = struct {
         self.loadTosRax();
         self.adjustTop(-8);
         self.raw(0x48); self.raw(0x85); self.raw(0xC0); // test rax,rax
-        const jop: u8 = if (want_nil) 0x74 else 0x75; // jz / jnz
-        self.raw(jop);
+        // two-byte jcc rel32: 0F 84 (jz) / 0F 85 (jnz); the one-byte
+        // 74/75 forms carry only rel8 and would truncate our rel32.
+        self.raw(0x0F);
+        self.raw(if (want_nil) 0x84 else 0x85);
         self.patches.append(std.heap.smp_allocator, .{ .at = self.pos, .target_bc = target_bc }) catch {};
         self.imm32(0);
     }
@@ -222,9 +224,8 @@ const Emitter = struct {
         // else pop and fall through.
         self.loadTosRax();
         self.raw(0x48); self.raw(0x85); self.raw(0xC0);
-        // jump when (v==0) XOR !want_nil
-        const jop: u8 = if (want_nil) 0x74 else 0x75;
-        self.raw(jop);
+        self.raw(0x0F);
+        self.raw(if (want_nil) 0x84 else 0x85);
         self.patches.append(std.heap.smp_allocator, .{ .at = self.pos, .target_bc = target_bc }) catch {};
         self.imm32(0);
         // fallthrough: pop
@@ -385,6 +386,15 @@ pub fn compile(
     }
     if (pc != opcodes.len) return Error.BadBytecode;
 
+    // ---- patch pass: resolve every branch to its block's code offset.
+    // rel32 = target_code - (patch_site + 4).
+    for (em.patches.items) |p| {
+        const target_code = em.blocks.get(p.target_bc) orelse
+            return Error.BadBytecode; // branch to a non-instruction offset
+        const rel: i64 = @as(i64, target_code) - @as(i64, p.at + 4);
+        std.mem.writeInt(i32, slot.w[p.at..][0..4], @intCast(rel), .little);
+    }
+
     const entry_ptr: Fn = @ptrCast(@alignCast(slot.x));
     return .{ .entry = entry_ptr, .size = em.pos };
 }
@@ -458,4 +468,57 @@ test "compile and run: arithmetic via freloc (fib-shape call)" {
     var args: [1]u64 = .{0};
     const got = res.entry(0, &args);
     try testing.expectEqual(@as(u64, 42), got);
+}
+
+test "compile and run: loop with branch (countdown)" {
+    var arena = try jit.ExecArena.allocate(jit.page_size);
+    defer arena.deinit();
+
+    // freloc: IDX_SUB1(6) = a C shim decrementing a fixnum word.
+    const Shim = struct {
+        fn sub1(n: i64, args: [*]const u64) callconv(.c) u64 {
+            _ = n;
+            return args[0] -% 1;
+        }
+    };
+    var freloc_table = [_]*const anyopaque{
+        undefined,      // 0 setup_args
+        undefined,      // 1 funcall
+        undefined,      // 2 nilp
+        undefined,      // 3 plus
+        undefined,      // 4 minus
+        undefined,      // 5 times
+        &Shim.sub1, // 6 sub1
+    };
+    var freloc_base: *const anyopaque = &freloc_table;
+    const freloc_slot: *const *const anyopaque = &freloc_base;
+
+    // countdown(n): [0] Bstack_ref 1? -- layout: arg slots live below the
+    // virtual stack base in the interpreter; for the J4 integration the
+    // shim copies args in.  Here we simulate a 0-arg fn whose TOS is the
+    // counter: bytecode:
+    //   Bconstant 0 (n)   ; push 10
+    // L: Bdup             ; 10 10
+    //    Bgotoifnonnil L2? -- instead simple: Bsub1 pops v pushes v-1,
+    //    then Bgotoifnil(non-nil loop) back to L when nonzero.
+    // Simplest executable loop:
+    //   0: Bconstant(0)=10
+    //   1: L: Bsub1
+    //   3: Bdup
+    //   4: Bgotoifnonnil -> L   (loops until 0)
+    //   6: Breturn         (returns the 0 / final dup)
+    const opcodes = [_]u8{
+        0xC0,             // 0: push consts[0]=10
+        BSUB1,            // 1: L: top--
+        BDUP,             // 2: dup
+        BGOTOIFNONNIL,    // 3: branch imm16=1 (L) -- condJump POPs the dup
+        1, 0,             //    little-endian target=1
+        BRETURN,          // 5: top = the countdown result (0)
+    };
+    var consts = [_]u64{10};
+    const res = try compile(&arena, &opcodes, 8, freloc_slot, &consts);
+    var args: [1]u64 = .{0};
+    const got = res.entry(0, &args);
+    // loop runs 10 decrements -> final top = 0
+    try testing.expectEqual(@as(u64, 0), got);
 }
