@@ -273,13 +273,19 @@ fn waitThread(w: *WaiterState) void {
 fn runEmacs(
     io: std.Io,
     gpa: std.mem.Allocator,
-    env_map: *const std.process.Environ.Map,
+    env_map: *std.process.Environ.Map,
     temacs: []const u8,
     dump: []const u8,
     lisp_path: []const u8,
     fixed: []const []const u8,
     dirs: []const u8,
 ) !void {
+    // The zeln-jit J4 swap is opt-in (ZELN_JIT=1) and NOT yet enabled
+    // inside build-time children: an intermittent crash in the
+    // loaddefs scrape path is under investigation; keep the pipeline
+    // deterministic by forcing it off here.
+    try env_map.put("ZELN_JIT", "0");
+
     const dump_arg = try std.fmt.allocPrint(gpa, "--dump-file={s}", .{dump});
     defer gpa.free(dump_arg);
 

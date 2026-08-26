@@ -25,8 +25,13 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "window.h"
 
 #ifdef HAVE_NATIVE_COMP_ZIG
-/* tools/zeln-jit (linked into temacs): the J2 hotness hook. */
+/* tools/zeln-jit (linked into temacs): the J2 hotness hook + the J4
+   in-process compiled-entry swap (both defined in compz.c / the
+   zeln-jit package).  */
 extern bool zeln_jit_hot (const void *, unsigned);
+bool zeln_jit_try_run (Lisp_Object, ptrdiff_t, Lisp_Object *,
+		       Lisp_Object *);
+bool zeln_jit_should_compile (Lisp_Object);
 #endif
 
 /* Define BYTE_CODE_SAFE true to enable some minor sanity checking,
@@ -499,15 +504,18 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
   Lisp_Object bytestr = AREF (fun, CLOSURE_CODE);
 
 #ifdef HAVE_NATIVE_COMP_ZIG
-  /* zeln-jit hotness hook (J2): one call per interpreted invocation,
-     keyed on the bytecode string's data pointer (stable under GC).
-     The engine counts and, when this closure crosses the JIT
-     threshold, returns true -- from J3 on that triggers in-process
-     compilation; today we just count (observable via the exported
-     counter table; zero behavioral effect otherwise).  The gate is
-     cheap enough for the interpreter's hot path: one predictable
-     call, a table lookup in the engine.  */
-  zeln_jit_hot (SDATA (bytestr), 256);
+  /* zeln-jit (J2/J4): if this closure was already compiled in-process,
+     run the machine code instead of interpreting.  Otherwise count the
+     invocation; the first crossing of the threshold compiles it (any
+     failure marks it nojit and the interpreter keeps it).  */
+  if (!will_dump_p ())
+    {
+      Lisp_Object jit_result;
+      if (zeln_jit_try_run (fun, nargs, args, &jit_result))
+	return jit_result;
+      if (zeln_jit_hot (SDATA (bytestr), 256))
+	(void) zeln_jit_should_compile (fun);
+    }
 #endif
 
  setup_frame: ;

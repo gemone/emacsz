@@ -26,20 +26,23 @@
 const std = @import("std");
 const jit = @import("jit.zig");
 
-// ---- freloc indices (MUST match src/compz.c's frozen enum) -----------
+// ---- freloc indices (the REAL src/compz.c enum order, verified by
+//      enumeration: SETUP_ARGS=0 NILP=1 SWITCH_TARGET=2 FUNCALL=3 ...) ----
 pub const IDX_SETUP_ARGS: u64 = 0;
-pub const IDX_FUNCALL: u64 = 1;
-pub const IDX_NILP: u64 = 2;
-pub const IDX_PLUS: u64 = 3;
-pub const IDX_MINUS: u64 = 4;
-pub const IDX_TIMES: u64 = 5;
-pub const IDX_SUB1: u64 = 6;
-pub const IDX_ADD1: u64 = 7;
-pub const IDX_NEGATE: u64 = 8;
-pub const IDX_EQ: u64 = 17;
-pub const IDX_CAR: u64 = 19;
-pub const IDX_CDR: u64 = 20;
-pub const IDX_CONS: u64 = 21;
+pub const IDX_NILP: u64 = 1;
+pub const IDX_SWITCH_TARGET: u64 = 2;
+pub const IDX_FUNCALL: u64 = 3;
+pub const IDX_PLUS: u64 = 4;
+pub const IDX_MINUS: u64 = 5;
+pub const IDX_TIMES: u64 = 6;
+pub const IDX_SUB1: u64 = 7;
+pub const IDX_ADD1: u64 = 8;
+pub const IDX_NEGATE: u64 = 9;
+pub const IDX_EQ: u64 = 18;
+pub const IDX_CAR: u64 = 20;
+pub const IDX_CDR: u64 = 21;
+pub const IDX_CONS: u64 = 22;
+pub const IDX_SYMBOL_VALUE: u64 = 39;
 
 // ---- opcode numbers (mirror zeln-compile; mirror src/bytecode.c) -----
 const BSTACK_REF1: u8 = 1;
@@ -51,6 +54,7 @@ const BCALL5: u8 = 37;
 const BCALL6: u8 = 38;
 const BCALL7: u8 = 39;
 const BNOT: u8 = 63;
+const BVARREF: u8 = 8; // Bvarref..Bvarref5 = 8..13
 const BCAR: u8 = 64;
 const BCDR: u8 = 65;
 const BCONS: u8 = 66;
@@ -231,6 +235,20 @@ const Emitter = struct {
         // fallthrough: pop
         self.adjustTop(-8);
     }
+    /// Bvarref: PUSH Fsymbol_value(consts[idx]).
+    fn varrefConst(self: *Emitter, idx: u32) void {
+        const disp: i32 = @intCast(idx * 8);
+        if (disp < 128) {
+            self.raw(0x49); self.raw(0x8B); self.raw(0x46); self.raw(@intCast(disp));
+        } else {
+            self.raw(0x49); self.raw(0x8B); self.raw(0x86); self.imm32(disp);
+        }
+        self.pushRaxNoLoad();
+        self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(1);
+        self.raw(0x4C); self.raw(0x89); self.raw(0xE6); // mov rsi,r12
+        self.frelocCall(IDX_SYMBOL_VALUE);
+        self.raw(0x49); self.raw(0x89); self.raw(0x04); self.raw(0x24);
+    }
     /// epilogue with rax = TOS
     fn epilogueFromTos(self: *Emitter) void {
         self.loadTosRax();
@@ -248,12 +266,13 @@ const Emitter = struct {
         self.raw(0xB8 + (dst & 7));
         self.imm64(v);
     }
-    /// call [r13 + idx*8] — the freloc indirection.
+    /// call [r13 + idx*8] — the freloc indirection.  disp32 form: the
+    /// real surface reaches idx 39+ (SYMBOL_VALUE) whose byte offset
+    /// 312 overflows disp8's signed range (the RIP=0 crashes).
     fn callFreloc(self: *Emitter, idx: u64) void {
-        // mov rax, [r13 + idx*8]; call rax
-        self.raw(0x49); self.raw(0x8B); // mov r64, [r13+disp8] REX.WB
-        self.raw(0x45); // modrm: rax <- [r13+disp8]
-        self.raw(@intCast(idx * 8)); // disp8 (surface < 32 entries)
+        // mov rax, [r13 + disp32]: 49 8B 85 <disp32> (mod=10 rm=101+rB)
+        self.raw(0x49); self.raw(0x8B); self.raw(0x85);
+        self.imm32(@intCast(idx * 8));
         self.raw(0xFF); self.raw(0xD0); // call rax
     }
 };
@@ -268,6 +287,7 @@ pub fn compile(
     stack_depth: u32,
     freloc_slot: *const *const anyopaque,
     consts_vec: [*]const u64,
+    arity: u32,
 ) Error!Result {
     const slot = try arena.reserve(4096);
     var em = Emitter{
@@ -299,6 +319,13 @@ pub fn compile(
     // r14 = consts vector
     em.movImm64(14, @intFromPtr(consts_vec)); // mov r14, imm64 (REX.WB)
 
+    // args setup: push args[0..arity] in order (each arg a stack slot,
+    // top = last arg; rsi = args at entry).
+    var ai: u32 = 0;
+    while (ai < arity) : (ai += 1) {
+        em.raw(0x48); em.raw(0x8B); em.raw(0x86); em.imm32(@intCast(ai * 8));
+        em.pushRaxNoLoad();
+    }
 
     // ---- body: decode loop ----
     var pc: u32 = 0;
@@ -365,6 +392,15 @@ pub fn compile(
                 pc += 2;
                 em.callFrelocN(n);
             },
+            BVARREF => {
+                const idx = fetch1(opcodes, pc) orelse return Error.BadBytecode;
+                pc += 1;
+                em.varrefConst(idx);
+            },
+            9, 10, 11, 12, 13 => {
+                // Bvarref1..5: value = consts[op-8]
+                em.varrefConst(b - 8);
+            },
             // ---- branches ----
             BGOTO => {
                 const t = fetch2(opcodes, pc) orelse return Error.BadBytecode;
@@ -420,7 +456,7 @@ test "compile and run: constant then return" {
     var consts = [_]u64{42};
     const consts_ptr: [*]const u64 = &consts;
 
-    const res = try compile(&arena, &opcodes, 8, freloc_slot, consts_ptr);
+    const res = try compile(&arena, &opcodes, 8, freloc_slot, consts_ptr, 0);
     try testing.expect(res.rejected == null);
 
     // Call: entry(0, args) — args unused by this bytecode.
@@ -451,12 +487,7 @@ test "compile and run: arithmetic via freloc (fib-shape call)" {
             return args[0] +% args[1];
         }
     };
-    var freloc_table = [_]*const anyopaque{
-        undefined, // 0 setup_args
-        &Shim.funcall, // 1 FUNCALL
-        undefined, // 2 nilp
-        &Shim.plus, // 3 PLUS
-    };
+    var freloc_table = [_]*const anyopaque{ undefined, undefined, undefined, &Shim.funcall, &Shim.plus };
     var freloc_base: *const anyopaque = &freloc_table;
     const freloc_slot: *const *const anyopaque = &freloc_base;
 
@@ -464,7 +495,7 @@ test "compile and run: arithmetic via freloc (fib-shape call)" {
     // consts[1]=12; Bplus; Breturn.
     const opcodes = [_]u8{ 0xC0, 0xC0 + 1, BPLUS, BRETURN };
     var consts = [_]u64{ 30, 12 };
-    const res = try compile(&arena, &opcodes, 8, freloc_slot, &consts);
+    const res = try compile(&arena, &opcodes, 8, freloc_slot, &consts, 0);
     var args: [1]u64 = .{0};
     const got = res.entry(0, &args);
     try testing.expectEqual(@as(u64, 42), got);
@@ -481,15 +512,7 @@ test "compile and run: loop with branch (countdown)" {
             return args[0] -% 1;
         }
     };
-    var freloc_table = [_]*const anyopaque{
-        undefined,      // 0 setup_args
-        undefined,      // 1 funcall
-        undefined,      // 2 nilp
-        undefined,      // 3 plus
-        undefined,      // 4 minus
-        undefined,      // 5 times
-        &Shim.sub1, // 6 sub1
-    };
+    var freloc_table = [_]*const anyopaque{ undefined, undefined, undefined, undefined, undefined, undefined, undefined, &Shim.sub1 };
     var freloc_base: *const anyopaque = &freloc_table;
     const freloc_slot: *const *const anyopaque = &freloc_base;
 
@@ -516,9 +539,32 @@ test "compile and run: loop with branch (countdown)" {
         BRETURN,          // 5: top = the countdown result (0)
     };
     var consts = [_]u64{10};
-    const res = try compile(&arena, &opcodes, 8, freloc_slot, &consts);
+    const res = try compile(&arena, &opcodes, 8, freloc_slot, &consts, 0);
     var args: [1]u64 = .{0};
     const got = res.entry(0, &args);
     // loop runs 10 decrements -> final top = 0
     try testing.expectEqual(@as(u64, 0), got);
+}
+
+// ---------------------------------------------------------------------------
+// C ABI: the entry src/compz.c's hotness shim calls.  freloc_slot points
+// at a C-side pointer-to-table (compz.c exposes zeln_freloc.link_table
+// through a stable address).  Returns null when the bytecode uses opcodes
+// outside the supported subset (caller silently falls back to the
+// interpreter).
+// ---------------------------------------------------------------------------
+
+var g_arena: ?jit.ExecArena = null;
+
+export fn zeln_jit_compile_closure(
+    bc: [*]const u8,
+    bc_len: usize,
+    stack_depth: u32,
+    arity: u32,
+    consts: [*]const u64,
+    freloc_slot: *const *const anyopaque,
+) ?*const fn (i64, [*]const u64) callconv(.c) u64 {
+    g_arena = jit.ExecArena.allocate(256 * 1024) catch return null;
+    const res = compile(&g_arena.?, bc[0..bc_len], stack_depth, freloc_slot, consts, arity) catch return null;
+    return res.entry;
 }
