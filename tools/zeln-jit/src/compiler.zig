@@ -24,6 +24,7 @@
 //! Args arrive in rdi (nargs) / rsi (args) per SysV.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const jit = @import("jit.zig");
 
 // ---- freloc indices - the REAL src/compz.c enum order (read directly
@@ -153,6 +154,39 @@ const Emitter = struct {
     patches: std.ArrayList(Patch),
     /// bytecode offset -> code offset
     blocks: std.AutoHashMap(u32, u32),
+    /// Calling convention of the HOST process (the C caller and the
+    /// freloc helpers): SysV (rdi/rsi) on Linux/macOS, WinX64 (rcx/rdx)
+    /// on Windows -- mingw and MSVC both use the Microsoft x64 ABI, so
+    /// the generated entry convention and every freloc call must place
+    /// (nargs, args) in the ABI's first two argument registers.
+    win64: bool = false,
+
+    /// mov <arg1reg>, imm32   (rdi on SysV, ecx on WinX64)
+    fn loadArg1Imm(self: *Emitter, n: i32) void {
+        if (self.win64) {
+            self.raw(0x48); self.raw(0xC7); self.raw(0xC1); self.imm32(n); // mov rcx,n
+        } else {
+            self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(n); // mov rdi,n
+        }
+    }
+    /// mov <arg2reg>, r12   (rsi on SysV, rdx on WinX64)
+    fn loadArg2R12(self: *Emitter) void {
+        if (self.win64) {
+            self.raw(0x4C); self.raw(0x89); self.raw(0xE2); // mov rdx,r12
+        } else {
+            self.raw(0x4C); self.raw(0x89); self.raw(0xE6); // mov rsi,r12
+        }
+    }
+    /// mov <arg2reg>, rsp; sub <arg2reg>, imm  (scratch pair handoff)
+    fn loadArg2RspSub(self: *Emitter, imm: i32) void {
+        if (self.win64) {
+            self.raw(0x48); self.raw(0x89); self.raw(0xE2); // mov rdx,rsp
+            self.raw(0x48); self.raw(0x83); self.raw(0xEA); self.raw(@intCast(imm)); // sub rdx,imm
+        } else {
+            self.raw(0x48); self.raw(0x89); self.raw(0xE6); // mov rsi,rsp
+            self.raw(0x48); self.raw(0x83); self.raw(0xEE); self.raw(@intCast(imm)); // sub rsi,imm
+        }
+    }
 
     fn raw(self: *Emitter, b: u8) void {
         self.buf[self.pos] = b;
@@ -215,26 +249,26 @@ const Emitter = struct {
         self.imm32(@intCast(idx * 8));
         self.raw(0xFF); self.raw(0xD0); // call rax
     }
-    /// unary: v=[r12]; rdi=1; rsi=r12; rax=fn(1,rsi); [r12]=rax
+    /// unary: v=[r12]; arg1=1; arg2=r12; rax=fn(1,r12); [r12]=rax
     fn unaryFreloc(self: *Emitter, idx: u64) void {
-        self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(1); // mov rdi,1
-        self.raw(0x4C); self.raw(0x89); self.raw(0xE6); // mov rsi,r12 (REX.WR)
+        self.loadArg1Imm(1);
+        self.loadArg2R12();
         self.frelocCall(idx);
         self.raw(0x49); self.raw(0x89); self.raw(0x04); self.raw(0x24); // [r12]=rax
     }
-    /// binary: v2=[r12]; r12-=8; rdi=2; rsi=r12; rax=fn(2,rsi); [r12]=rax
+    /// binary: v2=[r12]; r12-=8; arg1=2; arg2=r12; rax=fn(2,r12); [r12]=rax
     fn binaryFreloc(self: *Emitter, idx: u64) void {
         self.adjustTop(-8);
-        self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(2);
-        self.raw(0x4C); self.raw(0x89); self.raw(0xE6);
+        self.loadArg1Imm(2);
+        self.loadArg2R12();
         self.frelocCall(idx);
         self.raw(0x49); self.raw(0x89); self.raw(0x04); self.raw(0x24);
     }
     /// n-ary (concat/listN): pop n values, call fn(n, base), push result.
     fn naryFreloc(self: *Emitter, idx: u64, n: u32) void {
         self.adjustTop(-@as(i32, @intCast((n - 1) * 8)));
-        self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(@intCast(n));
-        self.raw(0x4C); self.raw(0x89); self.raw(0xE6); // mov rsi,r12
+        self.loadArg1Imm(@intCast(n));
+        self.loadArg2R12();
         self.frelocCall(idx);
         self.raw(0x49); self.raw(0x89); self.raw(0x04); self.raw(0x24);
     }
@@ -268,9 +302,8 @@ const Emitter = struct {
         }
         self.raw(0x48); self.raw(0x89); self.raw(0x44); self.raw(0x24); self.raw(0xF8); // [rsp-8]=rax
         // call set_internal(2, rsp-16)
-        self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(2);
-        self.raw(0x48); self.raw(0x89); self.raw(0xE6); // mov rsi,rsp
-        self.raw(0x48); self.raw(0x83); self.raw(0xEE); self.raw(16); // sub rsi,16
+        self.loadArg1Imm(2);
+        self.loadArg2RspSub(16);
         self.frelocCall(IDX_VARSET);
         self.adjustTop(-8); // POP
     }
@@ -285,27 +318,30 @@ const Emitter = struct {
             self.raw(0x49); self.raw(0x8B); self.raw(0x86); self.imm32(disp);
         }
         self.raw(0x48); self.raw(0x89); self.raw(0x44); self.raw(0x24); self.raw(0xF8);
-        self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(2);
-        self.raw(0x48); self.raw(0x89); self.raw(0xE6);
-        self.raw(0x48); self.raw(0x83); self.raw(0xEE); self.raw(16);
+        self.loadArg1Imm(2);
+        self.loadArg2RspSub(16);
         self.frelocCall(IDX_VARBIND);
         self.adjustTop(-8);
     }
     /// Bunbind n: unbind_to(specpdl_count - n).  The zeln_unbind shim
     /// takes (n, &n) - C computes the specpdl arithmetic.
     fn unbindN(self: *Emitter, n: u32) void {
-        self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(@intCast(n));
-        self.raw(0x4C); self.raw(0x89); self.raw(0xE6); // mov rsi,r12
+        self.loadArg1Imm(@intCast(n));
+        self.loadArg2R12();
         self.frelocCall(IDX_UNBIND);
     }
     /// Bcall n: fp = r12 - n*8 (fun below args); r12 = fp; FUNCALL(n+1, fp);
     /// [fp] = rax; r12 = fp (top = result)
     fn callFrelocN(self: *Emitter, n: u32) void {
-        // rdi = n+1, rsi = r12 - n*8 (args+fun group base)
-        self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(@intCast(n + 1));
-        // rsi = r12; rsi -= n*8
-        self.raw(0x4C); self.raw(0x89); self.raw(0xE6); // mov rsi,r12 (REX.WR)
-        self.raw(0x48); self.raw(0x81); self.raw(0xEE); self.imm32(@intCast(n * 8)); // sub rsi,n*8
+        // arg1 = n+1, arg2 = r12 - n*8 (args+fun group base)
+        self.loadArg1Imm(@intCast(n + 1));
+        // arg2 = r12; arg2 -= n*8
+        self.loadArg2R12();
+        if (self.win64) {
+            self.raw(0x48); self.raw(0x81); self.raw(0xEA); self.imm32(@intCast(n * 8)); // sub rdx,n*8
+        } else {
+            self.raw(0x48); self.raw(0x81); self.raw(0xEE); self.imm32(@intCast(n * 8)); // sub rsi,n*8
+        }
         self.frelocCall(IDX_FUNCALL);
         // [r12 - n*8] = rax ; r12 -= n*8
         self.raw(0x49); self.raw(0x89); self.raw(0x84); self.raw(0x24);
@@ -354,8 +390,8 @@ const Emitter = struct {
             self.raw(0x49); self.raw(0x8B); self.raw(0x86); self.imm32(disp);
         }
         self.pushRaxNoLoad();
-        self.raw(0x48); self.raw(0xC7); self.raw(0xC7); self.imm32(1);
-        self.raw(0x4C); self.raw(0x89); self.raw(0xE6); // mov rsi,r12
+        self.loadArg1Imm(1);
+        self.loadArg2R12();
         self.frelocCall(IDX_SYMBOL_VALUE);
         self.raw(0x49); self.raw(0x89); self.raw(0x04); self.raw(0x24);
     }
@@ -450,6 +486,9 @@ pub fn compile(
         .buf = slot.w,
         .patches = .empty,
         .blocks = .init(std.heap.smp_allocator),
+        // The JIT code runs inside THIS process: Windows hosts (mingw or
+        // MSVC ABI) need the WinX64 calling convention.
+        .win64 = builtin.os.tag == .windows,
     };
     const em = &emp.*;
 
@@ -480,10 +519,16 @@ pub fn compile(
     em.movImm64(14, @intFromPtr(consts_vec)); // mov r14, imm64 (REX.WB)
 
     // args setup: push args[0..arity] in order (each arg a stack slot,
-    // top = last arg; rsi = args at entry).
+    // top = last arg; arg2 reg = args pointer at entry: rsi SysV / rdx WinX64).
     var ai: u32 = 0;
     while (ai < arity) : (ai += 1) {
-        em.raw(0x48); em.raw(0x8B); em.raw(0x86); em.imm32(@intCast(ai * 8));
+        if (em.win64) {
+            // mov rax, [rdx + ai*8]
+            em.raw(0x48); em.raw(0x8B); em.raw(0x92); em.imm32(@intCast(ai * 8));
+        } else {
+            // mov rax, [rsi + ai*8]
+            em.raw(0x48); em.raw(0x8B); em.raw(0x86); em.imm32(@intCast(ai * 8));
+        }
         em.pushRaxNoLoad();
     }
 

@@ -2411,6 +2411,22 @@ zeln_jit_compile (Lisp_Object fun)
   ptrdiff_t nargs_template = FIXNUMP (AREF (fun, CLOSURE_ARGLIST))
       ? XFIXNUM (AREF (fun, CLOSURE_ARGLIST)) : -1;
 
+  {   /* ZELN_JIT_TRACE=1: log the first bytecodes of every compile so a
+         crash site identifies the offending closure without a debugger.  */
+    const char *tr = getenv ("ZELN_JIT_TRACE");
+    if (tr && tr[0] == '1')
+      {
+	fprintf (stderr, "[jit] compiling len=%d:",
+		 (int) SBYTES (bytestr));
+	for (int i = 0; i < SBYTES (bytestr) && i < 24; i++)
+	  fprintf (stderr, " %02x", (unsigned char) SDATA (bytestr)[i]);
+	fprintf (stderr, "\n");
+      }
+  }
+  /* (TRACE-DONE is printed by the caller after a successful compile via
+     zeln_jit_trace_done below, so a crash between the two lines is
+     inside the compiler proper.)  */
+
   /* FULL slot validation before compiling anything: a malformed
      closure (observed from the dump with a non-string CODE slot)
      must never reach the emitter - its garbage slots would be baked
@@ -2444,6 +2460,11 @@ zeln_jit_compile (Lisp_Object fun)
 	(SDATA (bytestr), SBYTES (bytestr),
 	 (unsigned) XFIXNAT (maxdepth), nonrest,
 	 XVECTOR (vector)->contents, zeln_jit_freloc_slot ());
+  {
+    const char *tr = getenv ("ZELN_JIT_TRACE");
+    if (tr && tr[0] == '1')
+      fprintf (stderr, "[jit] compile done -> %p\n", (void *) entry);
+  }
   e->key = SDATA (bytestr);
   e->entry = entry;
   if (entry != NULL)

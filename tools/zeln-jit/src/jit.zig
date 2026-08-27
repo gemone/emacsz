@@ -32,6 +32,29 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+// Minimal kernel32 surface for the Windows ExecArena (VirtualAlloc/
+// VirtualFree are not exposed by zig 0.16's std.os.windows; declared
+// locally with the exact win32 signatures).
+const win = struct {
+    const MEM_COMMIT: u32 = 0x1000;
+    const MEM_RESERVE: u32 = 0x2000;
+    const MEM_RELEASE: u32 = 0x8000;
+    const PAGE_EXECUTE_READWRITE: u32 = 0x40;
+
+    extern "kernel32" fn VirtualAlloc(
+        lpAddress: ?*anyopaque,
+        dwSize: usize,
+        flAllocationType: u32,
+        flProtect: u32,
+    ) callconv(.c) ?*anyopaque;
+
+    extern "kernel32" fn VirtualFree(
+        lpAddress: ?*anyopaque,
+        dwSize: usize,
+        dwFreeType: u32,
+    ) callconv(.c) i32;
+};
+
 // ---------------------------------------------------------------------------
 // ExecArena: executable memory with a W^X discipline.
 //
@@ -100,9 +123,23 @@ pub const ExecArena = struct {
                 );
                 return .{ .w = mem.ptr, .x = mem.ptr, .len = size };
             },
+            .windows => {
+                // VirtualAlloc PAGE_EXECUTE_READWRITE: the platform offers
+                // no RX/RW alias pair, so one RWX region is used (the
+                // comment at the top of this file documents the accepted
+                // W^X tradeoff for Windows JITs).  VirtualFree releases it.
+                const mem = win.VirtualAlloc(
+                    null,
+                    size,
+                    win.MEM_RESERVE | win.MEM_COMMIT,
+                    win.PAGE_EXECUTE_READWRITE,
+                ) orelse return error.MmapFailed;
+                const p: [*]align(std.heap.pageSize()) u8 = @ptrCast(@alignCast(mem));
+                return .{ .w = p, .x = p, .len = size };
+            },
             else => {
-                // Portable fallback: plain RWX anonymous mapping (Windows
-                //VirtualAlloc-equivalent semantics via mmap where allowed).
+                // Portable fallback: plain RWX anonymous mapping for the
+                // remaining POSIX systems (std.posix.PROT exists there).
                 const mem = try std.posix.mmap(
                     null,
                     size,
@@ -121,6 +158,8 @@ pub const ExecArena = struct {
             // two independent mappings of the same object
             if (self.w) |w| _ = std.os.linux.munmap(@ptrCast(w), self.len);
             _ = std.os.linux.munmap(@ptrCast(self.x), self.len);
+        } else if (builtin.os.tag == .windows) {
+            _ = win.VirtualFree(self.x, 0, win.MEM_RELEASE);
         } else {
             std.posix.munmap(self.x[0..self.len]);
         }
@@ -329,7 +368,8 @@ test "arena emits and executes a constant function" {
 
 test "arena executes code calling a C function through a register" {
     // target: int add(int,int) via C ABI -- emitted code loads the target
-    // address into rax, moves args into rdi/rsi, calls, returns rax.
+    // address into rax, moves args into the platform's first two argument
+    // registers (rdi/rsi on SysV, rcx/rdx on WinX64), calls, returns rax.
     var arena = try ExecArena.allocate(page_size);
     defer arena.deinit();
 
@@ -343,8 +383,13 @@ test "arena executes code calling a C function through a register" {
     }.add;
 
     asm_.movR64Imm64(.rax, @intFromPtr(&addFn));
-    asm_.movR64Imm64(.rdi, 20);
-    asm_.movR64Imm64(.rsi, 22);
+    if (builtin.os.tag == .windows) {
+        asm_.movR64Imm64(.rcx, 20);
+        asm_.movR64Imm64(.rdx, 22);
+    } else {
+        asm_.movR64Imm64(.rdi, 20);
+        asm_.movR64Imm64(.rsi, 22);
+    }
     asm_.callR64(.rax);
     asm_.ret();
 
