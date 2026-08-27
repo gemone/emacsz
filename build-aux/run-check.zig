@@ -68,6 +68,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // non-C host locale makes string-width disagree with the expected
     // values (character-test-string-width failed under a zh-CN host).
     try env_map.put("LC_ALL", "C");
+    // Deterministic interpreter for the test harness (the zeln-jit gate
+    // is a runtime feature; the batch check pipeline pins it off).
+    try env_map.put("ZELN_JIT", "0");
 
     // -O0 eval frames are large; raise the stack limit so the ert-deftest
     // macro expansion does not overflow the C stack (ulimit -s unlimited).

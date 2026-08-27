@@ -112,11 +112,14 @@ pub const ExecArena = struct {
             .macos => {
                 // MAP_JIT gives one RWX-but-gated region; the JIT write
                 // protect thread-toggle is handled by the caller around
-                // emission batches (beginWrite/endWrite below).
+                // emission batches (beginWrite/endWrite below).  Note
+                // std.posix.PROT on darwin is the macho.vm_prot_t packed
+                // struct TYPE: construct an instance rather than reading
+                // type-level constants.
                 const mem = try std.posix.mmap(
                     null,
                     size,
-                    std.posix.PROT.READ | std.posix.PROT.WRITE | std.posix.PROT.EXEC,
+                    std.posix.PROT{ .READ = true, .WRITE = true, .EXEC = true },
                     .{ .TYPE = .PRIVATE, .FLAGS = .{ .JIT = true } },
                     -1,
                     0,

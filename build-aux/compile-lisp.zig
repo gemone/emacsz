@@ -46,6 +46,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     try env_map.put("EMACSLOADPATH", lisp_path);
     try env_map.put("EMACSDATA", etc_path);
     try env_map.put("LC_ALL", "C");
+    // Build tooling wants deterministic interpreter behavior: the JIT
+    // gate stays OFF for the byte-compile pass (mirrors the run-check
+    // contract; the zeln-jit engine is for interactive runtimes).
+    try env_map.put("ZELN_JIT", "0");
 
     const charprop = try std.fs.path.join(gpa, &.{ lisp_path, "international", "charprop" });
     defer gpa.free(charprop);

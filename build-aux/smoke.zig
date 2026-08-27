@@ -27,6 +27,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     try env_map.put("EMACSLOADPATH", lisp_path);
     try env_map.put("EMACSDATA", etc_path);
     try env_map.put("LC_ALL", "C");
+    // Deterministic interpreter for the build-time smoke pass.
+    try env_map.put("ZELN_JIT", "0");
 
     const temacs_argv = [_][]const u8{
         "./zig-out/bin/" ++ temacs_path.name,

@@ -145,6 +145,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     try env_map.put("EMACSLOADPATH", lisp_path);
     try env_map.put("EMACSDATA", etc_path);
     try env_map.put("LC_ALL", "C");
+    // Build tooling wants deterministic interpreter behavior: the JIT
+    // gate stays OFF for the loadup/dump passes.
+    try env_map.put("ZELN_JIT", "0");
 
     const argv = [_][]const u8{ "./" ++ temacs_path.name, "-batch", "-l", "loadup", "--temacs=pbootstrap" };
     var attempt: usize = 0;
