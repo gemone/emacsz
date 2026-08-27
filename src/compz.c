@@ -2463,7 +2463,20 @@ zeln_jit_compile (Lisp_Object fun)
   {
     const char *tr = getenv ("ZELN_JIT_TRACE");
     if (tr && tr[0] == '1')
-      fprintf (stderr, "[jit] compile done -> %p\n", (void *) entry);
+      {
+	fprintf (stderr, "[jit] compile done -> %p code:", (void *) entry);
+	if (entry)
+	  for (int i = 0; i < 40; i++)
+	    fprintf (stderr, " %02x",
+		     ((unsigned char *) entry)[i]);
+	fprintf (stderr, "\n");
+	/* The freloc slot the engine baked + the first table entries.  */
+	void *const *ltb = zeln_jit_freloc_slot ();
+	fprintf (stderr, "[jit] slot=%p base=%p t1=%p t3=%p t15=%p\n",
+		 (void *) ltb, (void *) *ltb,
+		 ((void **) *ltb)[1], ((void **) *ltb)[3],
+		 ((void **) *ltb)[15]);
+      }
   }
   e->key = SDATA (bytestr);
   e->entry = entry;
@@ -2567,6 +2580,12 @@ zeln_jit_entry_hook (Lisp_Object fun, ptrdiff_t args_template,
       zeln_jit_entry_t cached = zeln_jit_validated_entry (fun, bytestr);
       if (cached != NULL)
 	{
+	  {   /* ZELN_JIT_TRACE=1: mark the transition into JIT code so an
+	       AV immediately after this line is inside the entry.  */
+	    const char *tr = getenv ("ZELN_JIT_TRACE");
+	    if (tr && tr[0] == '1')
+	      fprintf (stderr, "[jit] EXECUTING entry %p\n", (void *) cached);
+	  }
 	  *result = cached (nargs, args);
 	  return true;
 	}

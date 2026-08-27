@@ -1365,29 +1365,20 @@ android_emacs_init (int argc, char **argv, char *dump_file)
 #ifdef HAVE_NATIVE_COMP_ZIG
   /* zeln-jit gate: resolved ONCE here (main always runs, dump load
      included) so the zero-cost inline read in exec_byte_code sees the
-     real value in every process - pdump children do NOT rerun
-     syms_of_compz, so resolving there left the gate off in children
-     even with ZELN_JIT=1.  DEFAULT ON on Linux (the consts-validation
-     fix made the full check suite pass with the JIT active); on Windows
-     the JIT's generated code still corrupts memory during execution
-     (compile succeeds, a later compile AVs - traced to the first JIT'd
-     closure having RUN in between; the WinX64 calling-convention fix in
-     tools/zeln-jit landed but an execution-time defect remains), so the
-     Windows gate defaults OFF: ZELN_JIT=1 opts in for debugging.  */
+     real value in every process.  DEFAULT OFF: the engine has a
+     cross-platform execution defect under real Lisp load (the exact
+     bytecode shape passes the standalone unit harness but crashes with
+     real Lisp_Object traffic - traced to inside the freloc call chain:
+     an error gets signaled and the process dies during unwinding/print;
+     the SAME signature hit Linux CI's compile-lisp with SIGSEGV before
+     the build-tool pins, so this is not Windows-specific).  The Windows
+     PORT itself is complete and verified (WinX64 ABI, shadow space,
+     VirtualAlloc arena; entries execute, freloc calls run, errors
+     signal).  ZELN_JIT=1 opts in for engine debugging.  */
   {
     extern bool zeln_jit_gate_var;
     const char *e = getenv ("ZELN_JIT");
-    if (e && e[0] == '1' && e[1] == '\0')
-      zeln_jit_gate_var = true;
-    else if (e && e[0] == '0' && e[1] == '\0')
-      zeln_jit_gate_var = false;
-    else
-      zeln_jit_gate_var =
-#ifdef WINDOWSNT
-	false;
-#else
-	true;
-#endif
+    zeln_jit_gate_var = (e && e[0] == '1' && e[1] == '\0');
   }
 #endif
 

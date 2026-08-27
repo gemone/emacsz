@@ -177,14 +177,13 @@ const Emitter = struct {
             self.raw(0x4C); self.raw(0x89); self.raw(0xE6); // mov rsi,r12
         }
     }
-    /// mov <arg2reg>, rsp; sub <arg2reg>, imm  (scratch pair handoff)
-    fn loadArg2RspSub(self: *Emitter, imm: i32) void {
+
+    /// mov <arg2reg>, rsp+32   (the scratch pair address)
+    fn loadArg2Scratch(self: *Emitter) void {
         if (self.win64) {
-            self.raw(0x48); self.raw(0x89); self.raw(0xE2); // mov rdx,rsp
-            self.raw(0x48); self.raw(0x83); self.raw(0xEA); self.raw(@intCast(imm)); // sub rdx,imm
+            self.raw(0x48); self.raw(0x8D); self.raw(0x54); self.raw(0x24); self.raw(32); // lea rdx,[rsp+32]
         } else {
-            self.raw(0x48); self.raw(0x89); self.raw(0xE6); // mov rsi,rsp
-            self.raw(0x48); self.raw(0x83); self.raw(0xEE); self.raw(@intCast(imm)); // sub rsi,imm
+            self.raw(0x48); self.raw(0x8D); self.raw(0x74); self.raw(0x24); self.raw(32); // lea rsi,[rsp+32]
         }
     }
 
@@ -287,39 +286,42 @@ const Emitter = struct {
         self.raw(0x48); self.raw(0x89); self.raw(0x02); // [rdx] = rax
         self.adjustTop(-8); // POP
     }
-    /// Bvarset: set_internal(consts[idx], POP).  Two scratch words live
-    /// just below the virtual stack base: [rsp-8]=symbol, [rsp-16]=value.
+    /// Bvarset: set_internal(a[0]=symbol, a[1]=value).  The pair lives in
+    /// the prologue's scratch area at [rsp+32]=symbol, [rsp+40]=value -
+    /// ABOVE the WinX64 shadow space (callee homes trash [rsp..rsp+32))
+    /// and never below rsp (the call's return-address push used to
+    /// clobber a [rsp-8] scratch word).
     fn varsetConst(self: *Emitter, idx: u32) void {
-        // rax = value = [r12]; save below stack
+        // rax = value = [r12] -> [rsp+40]
         self.loadTosRax();
-        self.raw(0x48); self.raw(0x89); self.raw(0x44); self.raw(0x24); self.raw(0xF0); // [rsp-16]=rax
-        // rax = consts[idx] -> [rsp-8]
+        self.raw(0x48); self.raw(0x89); self.raw(0x44); self.raw(0x24); self.raw(40); // [rsp+40]=rax
+        // rax = consts[idx] (symbol) -> [rsp+32]
         const disp: i32 = @intCast(idx * 8);
         if (disp < 128) {
             self.raw(0x49); self.raw(0x8B); self.raw(0x46); self.raw(@intCast(disp));
         } else {
             self.raw(0x49); self.raw(0x8B); self.raw(0x86); self.imm32(disp);
         }
-        self.raw(0x48); self.raw(0x89); self.raw(0x44); self.raw(0x24); self.raw(0xF8); // [rsp-8]=rax
-        // call set_internal(2, rsp-16)
+        self.raw(0x48); self.raw(0x89); self.raw(0x44); self.raw(0x24); self.raw(32); // [rsp+32]=rax
+        // call set_internal(2, rsp+32)
         self.loadArg1Imm(2);
-        self.loadArg2RspSub(16);
+        self.loadArg2Scratch();
         self.frelocCall(IDX_VARSET);
         self.adjustTop(-8); // POP
     }
-    /// Bvarbind: specbind(consts[idx], POP).
+    /// Bvarbind: specbind(a[0]=symbol, a[1]=value) - same scratch pair.
     fn varbindConst(self: *Emitter, idx: u32) void {
         self.loadTosRax();
-        self.raw(0x48); self.raw(0x89); self.raw(0x44); self.raw(0x24); self.raw(0xF0);
+        self.raw(0x48); self.raw(0x89); self.raw(0x44); self.raw(0x24); self.raw(40); // [rsp+40]=value
         const disp: i32 = @intCast(idx * 8);
         if (disp < 128) {
             self.raw(0x49); self.raw(0x8B); self.raw(0x46); self.raw(@intCast(disp));
         } else {
             self.raw(0x49); self.raw(0x8B); self.raw(0x86); self.imm32(disp);
         }
-        self.raw(0x48); self.raw(0x89); self.raw(0x44); self.raw(0x24); self.raw(0xF8);
+        self.raw(0x48); self.raw(0x89); self.raw(0x44); self.raw(0x24); self.raw(32); // [rsp+32]=symbol
         self.loadArg1Imm(2);
-        self.loadArg2RspSub(16);
+        self.loadArg2Scratch();
         self.frelocCall(IDX_VARBIND);
         self.adjustTop(-8);
     }
@@ -498,20 +500,25 @@ pub fn compile(
     em.raw(0x41); em.raw(0x54); // push r12
     em.raw(0x41); em.raw(0x55); // push r13
     em.raw(0x41); em.raw(0x56); // push r14
-    // Reserve the virtual stack frame sized to stack_depth, padded so
-    // that rsp ends up 16-BYTE ALIGNED at call sites: entry rsp is
-    // 8-mod-16 (post-call ABI), push rbp -> 0, three pushes -> 8, so the
-    // sub must be 8-mod-16 to land at 0.  (Every freloc call from JIT
-    // code entered C frames with misaligned rbp before this - the
-    // vmovaps crashes in deep library loads.)
+    // Reserve (a) the virtual stack frame sized to stack_depth and
+    // (b) 48 bytes BELOW it: [rsp..rsp+32) is the WinX64 SHADOW SPACE
+    // (a WinX64 callee is entitled to home rcx/rdx/r8/r9 into
+    // [entry_rsp+8 .. entry_rsp+40) = [call_rsp .. call_rsp+32); the
+    // earlier layout had the virtual stack start AT rsp, so the first
+    // four freloc calls' home writes CORRUPTED the bottom live slots -
+    // the "compiles fine, executes once, then AVs" Windows signature:
+    // SysV has no shadow space, which is why Linux never saw it), and
+    // [rsp+32..rsp+48) is a 16-byte SCRATCH PAIR for varset/varbind
+    // (safe from homes and from the return-address push).  Alignment:
+    // entry rsp is 8-mod-16, four pushes add 32 -> 8, frame is
+    // 8-mod-16 and 48 is 0-mod-16, so rsp lands 0-mod-16 at calls.
     const frame: u32 = (((stack_depth * 8) + 15) & ~@as(u32, 15)) + 8;
-    em.raw(0x48); em.raw(0x81); em.raw(0xEC); em.imm32(@intCast(frame)); // sub rsp, imm32
-    // r12 = top = the RESERVED frame's virtual stack, one below its
-    // first slot (Bconstant does *++top).  The interpreter reuses its
-    // own big stack; we use the frame we just reserved so pushes write
-    // OUR memory, never the caller's args.
-    em.raw(0x4C); em.raw(0x8B); em.raw(0xE4); // mov r12, rsp (8B: rm->reg, reg=r12 via REX.R)
-    em.raw(0x49); em.raw(0x83); em.raw(0xEC); em.raw(8); // sub r12, 8: pushes land [r12+8] = [rsp], inside the reserved frame
+    const total: u32 = frame + 48;
+    em.raw(0x48); em.raw(0x81); em.raw(0xEC); em.imm32(@intCast(total)); // sub rsp, imm32
+    // r12 = top = the virtual stack's lowest slot minus 8, i.e. the
+    // stack occupies [rsp+48 .. rsp+48+frame): Bconstant does *++top,
+    // so the first push writes [rsp+48] (above shadow+scratch).
+    em.raw(0x4C); em.raw(0x8D); em.raw(0x64); em.raw(0x24); em.raw(40); // lea r12, [rsp+40]
     // r13 = [freloc_slot]
     em.movImm64(0, @intFromPtr(freloc_slot)); // mov rax, imm64
     em.raw(0x4C); em.raw(0x8B); em.raw(0x28); // mov r13, [rax] (REX.WR)
