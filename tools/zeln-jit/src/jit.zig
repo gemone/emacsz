@@ -120,7 +120,7 @@ pub const ExecArena = struct {
                     null,
                     size,
                     std.posix.PROT{ .READ = true, .WRITE = true, .EXEC = true },
-                    .{ .TYPE = .PRIVATE, .FLAGS = .{ .JIT = true } },
+                    .{ .TYPE = .PRIVATE, .JIT = true },
                     -1,
                     0,
                 );
@@ -142,11 +142,13 @@ pub const ExecArena = struct {
             },
             else => {
                 // Portable fallback: plain RWX anonymous mapping for the
-                // remaining POSIX systems (std.posix.PROT exists there).
+                // remaining POSIX systems.  std.posix.PROT there is a
+                // packed struct TYPE like darwin's: build an instance
+                // (type-level .READ constants do not exist).
                 const mem = try std.posix.mmap(
                     null,
                     size,
-                    std.posix.PROT.READ | std.posix.PROT.WRITE | std.posix.PROT.EXEC,
+                    std.posix.PROT{ .READ = true, .WRITE = true, .EXEC = true },
                     .{ .TYPE = .PRIVATE },
                     -1,
                     0,

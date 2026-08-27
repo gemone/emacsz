@@ -4378,6 +4378,9 @@ pub fn build(b: *std.Build) void {
             "ZELN_TARGET",
             target.result.zigTriple(b.allocator) catch @panic("OOM"),
         );
+        // Deterministic interpreter for the build-time serialize/BC walk
+        // (the JIT gate is a runtime feature; the batch pipeline pins it).
+        run_populate.setEnvironmentVariable("ZELN_JIT", "0");
         run_populate.setCwd(b.path("."));
         // Pass the built zeln-compile exe as a file arg (tracked dep) so the
         // driver can spawn one zeln-compile per zunit.
