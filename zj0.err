@@ -1,0 +1,6 @@
+Source file `c:/Users/Administrator/worker/emacsz/lisp/emacs-lisp/cl-loaddefs.el' newer than byte-compiled file; using older file
+Warning (files): Missing `lexical-binding' cookie in "c:/Users/Administrator/worker/emacsz/zz.el".
+You can add one with `M-x elisp-enable-lexical-binding RET'.
+See `(elisp)Selecting Lisp Dialect' and `(elisp)Converting to Lexical Binding'
+for more information.
+ZZ-DONE

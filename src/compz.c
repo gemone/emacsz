@@ -191,8 +191,6 @@ zeln_switch_target (ptrdiff_t nargs, Lisp_Object *args)
    short-circuits the common case and falls back to the SAME primitive
    on overflow / non-fixnum (bytecode.c:1331 Bplus, 1256 Beqlsign, ...).
    The differential test includes fixnum-overflow inputs to prove it.  */
-static Lisp_Object zeln_plus     (ptrdiff_t n, Lisp_Object *a) { return Fplus     (n, a); }
-static Lisp_Object zeln_minus    (ptrdiff_t n, Lisp_Object *a) { return Fminus    (n, a); }
 static Lisp_Object zeln_times    (ptrdiff_t n, Lisp_Object *a) { return Ftimes    (n, a); }
 static Lisp_Object zeln_sub1     (ptrdiff_t n, Lisp_Object *a) { return Fsub1     (a[0]); }
 static Lisp_Object zeln_add1     (ptrdiff_t n, Lisp_Object *a) { return Fadd1     (a[0]); }
@@ -202,8 +200,27 @@ static Lisp_Object zeln_min      (ptrdiff_t n, Lisp_Object *a) { return Fmin    
 static Lisp_Object zeln_eqlsign  (ptrdiff_t n, Lisp_Object *a) { return Feqlsign  (n, a); }
 static Lisp_Object zeln_gtr      (ptrdiff_t n, Lisp_Object *a) { return Fgtr      (n, a); }
 static Lisp_Object zeln_lss      (ptrdiff_t n, Lisp_Object *a) { return Flss      (n, a); }
-static Lisp_Object zeln_leq      (ptrdiff_t n, Lisp_Object *a) { return Fleq      (n, a); }
-static Lisp_Object zeln_geq      (ptrdiff_t n, Lisp_Object *a) { return Fgeq      (n, a); }
+/* ZELN_JIT_TRACE arg precheck: log raw arg words before the C primitive
+   can signal wrong-type-argument, so a bad JIT handoff is visible
+   without surviving the error path.  */
+#define ZELN_JIT_ARGPC					\
+  do {							\
+    const char *tr_ = getenv ("ZELN_JIT_TRACE");	\
+    if (tr_ && tr_[0] == '1' && n >= 1)			\
+      fprintf (stderr, "[jit] %s n=%d a=%p args:",	\
+	       __func__, (int) n, (void *) a);		\
+    if (tr_ && tr_[0] == '1' && n >= 1)			\
+      {							\
+	for (ptrdiff_t i_ = 0; i_ < n && i_ < 4; i_++)	\
+	  fprintf (stderr, " %016"PRIxMAX,		\
+		   (uintmax_t) XLI (a[i_]));		\
+	fprintf (stderr, "\n");				\
+      }							\
+  } while (0)
+static Lisp_Object zeln_geq      (ptrdiff_t n, Lisp_Object *a) { ZELN_JIT_ARGPC; return Fgeq      (n, a); }
+static Lisp_Object zeln_leq      (ptrdiff_t n, Lisp_Object *a) { ZELN_JIT_ARGPC; return Fleq      (n, a); }
+static Lisp_Object zeln_plus     (ptrdiff_t n, Lisp_Object *a) { ZELN_JIT_ARGPC; return Fplus     (n, a); }
+static Lisp_Object zeln_minus    (ptrdiff_t n, Lisp_Object *a) { ZELN_JIT_ARGPC; return Fminus    (n, a); }
 static Lisp_Object zeln_equal    (ptrdiff_t n, Lisp_Object *a) { return Fequal    (a[0], a[1]); }
 static Lisp_Object zeln_eq       (ptrdiff_t n, Lisp_Object *a) { return Feq       (a[0], a[1]); }
 static Lisp_Object zeln_null     (ptrdiff_t n, Lisp_Object *a) { return Fnull     (a[0]); }
@@ -2464,18 +2481,24 @@ zeln_jit_compile (Lisp_Object fun)
     const char *tr = getenv ("ZELN_JIT_TRACE");
     if (tr && tr[0] == '1')
       {
-	fprintf (stderr, "[jit] compile done -> %p code:", (void *) entry);
+	fprintf (stderr, "[jit] compile done arity=%d depth=%d -> %p consts@%p c:",
+		 (int) nonrest, (int) XFIXNAT (maxdepth), (void *) entry,
+		 (void *) XVECTOR (vector)->contents);
+	for (int ci = 0; ci < 4 && ci < ASIZE (vector); ci++)
+	  fprintf (stderr, " [%d]=%016"PRIxMAX, ci,
+		   (uintmax_t) XLI (AREF (vector, ci)));
+	fprintf (stderr, " code:");
 	if (entry)
-	  for (int i = 0; i < 40; i++)
+	  for (int i = 0; i < 64; i++)
 	    fprintf (stderr, " %02x",
 		     ((unsigned char *) entry)[i]);
 	fprintf (stderr, "\n");
 	/* The freloc slot the engine baked + the first table entries.  */
 	void *const *ltb = zeln_jit_freloc_slot ();
-	fprintf (stderr, "[jit] slot=%p base=%p t1=%p t3=%p t15=%p\n",
+	fprintf (stderr, "[jit] slot=%p base=%p t1=%p t3=%p t4=%p t13=%p t14=%p t15=%p\n",
 		 (void *) ltb, (void *) *ltb,
-		 ((void **) *ltb)[1], ((void **) *ltb)[3],
-		 ((void **) *ltb)[15]);
+		 ((void **) *ltb)[1], ((void **) *ltb)[3], ((void **) *ltb)[4],
+		 ((void **) *ltb)[13], ((void **) *ltb)[14], ((void **) *ltb)[15]);
       }
   }
   e->key = SDATA (bytestr);
