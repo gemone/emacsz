@@ -529,9 +529,18 @@ a function -- A function selecting files with matching names.
 
 The variable `native-comp-async-jobs-number' specifies the number
 of (commands) to run simultaneously."
-  ;; Normalize: we only want to pass t or nil, never e.g. `late'.
-  (let ((load (not (not load))))
-    (native--compile-async files recursively load selector)))
+  (if (and (fboundp 'comp-z-write-file-zunit)
+           (not (fboundp 'comp--compile-ctxt-to-file0)))
+      ;; A zeln-only build has no gccjit worker.  Route the standard
+      ;; entry point to the fault-tolerant zeln compiler so config files
+      ;; that call `native-compile-async' do not fall into comp.el.
+      (progn
+        (require 'zeln-run nil t)
+        (when (fboundp 'zeln-compile-async)
+          (zeln-compile-async files recursively load)))
+    ;; Normalize: we only want to pass t or nil, never e.g. `late'.
+    (let ((load (not (not load))))
+      (native--compile-async files recursively load selector))))
 
 (provide 'comp-run)
 
