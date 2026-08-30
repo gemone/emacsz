@@ -46,7 +46,7 @@ const ZUNIT_MAGIC: u32 = 0x5A554E54;
 // The freloc surface size — MUST match src/compz.c's ZELN_F_RELOC_COUNT.
 // The IR's getelementptr type is `[SURFACE x ptr]` over the loader-patched
 // link-table base.  Frozen order: the IDX_* below mirror the compz.c enum.
-const SURFACE: u64 = 102;
+const SURFACE: u64 = 103;
 
 const IDX_SETUP_ARGS: u64 = 0;
 const IDX_FUNCALL: u64 = 1;
@@ -151,6 +151,7 @@ const IDX_PUSHHANDLER: u64 = 98;
 const IDX_RESUME: u64 = 99;
 const IDX_POPHANDLER: u64 = 100;
 const IDX_SWITCH_TARGET: u64 = 101;
+const IDX_JIT_CALL: u64 = 102;
 
 // ---- FRELOC_NAMES: the Zig-side mirror of compz.c's zeln_imports[] order.
 // Positional (slot i = the subr at freloc slot i), in the SAME order as the
@@ -162,114 +163,114 @@ const IDX_SWITCH_TARGET: u64 = 101;
 // the compile if the count or any positional name disagrees -- the mirror is
 // CHECKED on every zeln-compile run, not just by the dev-time differential.
 const FRELOC_NAMES = [_][]const u8{
-    "zeln-setup-args",          // 0
-    "zeln-funcall",             // 1
-    "zeln-isnil",               // 2
-    "+",                        // 3
-    "-",                        // 4
-    "*",                        // 5
-    "1-",                       // 6
-    "1+",                       // 7
-    "negate",                   // 8
-    "max",                      // 9
-    "min",                      // 10
-    "=",                        // 11
-    ">",                        // 12
-    "<",                        // 13
-    "<=",                       // 14
-    ">=",                       // 15
-    "equal",                    // 16
-    "eq",                       // 17
-    "null",                     // 18
-    "car",                      // 19
-    "cdr",                      // 20
-    "cons",                     // 21
-    "list1",                    // 22
-    "list2",                    // 23
-    "list3",                    // 24
-    "list4",                    // 25
-    "list",                     // 26
-    "symbolp",                  // 27
-    "consp",                    // 28
-    "stringp",                  // 29
-    "listp",                    // 30
-    "numberp",                  // 31
-    "integerp",                 // 32
-    "nth",                      // 33
-    "memq",                     // 34
-    "length",                   // 35
-    "aref",                     // 36
-    "aset",                     // 37
-    "symbol-value",             // 38
-    "symbol-function",          // 39
-    "set",                      // 40
-    "fset",                     // 41
-    "get",                      // 42
-    "substring",                // 43
-    "concat",                   // 44
-    "string=",                  // 45
-    "string-lessp",             // 46
-    "nthcdr",                   // 47
-    "elt",                      // 48
-    "member",                   // 49
-    "assq",                     // 50
-    "nreverse",                 // 51
-    "setcar",                   // 52
-    "setcdr",                   // 53
-    "car-safe",                 // 54
-    "cdr-safe",                 // 55
-    "nconc",                    // 56
-    "/",                        // 57
-    "%",                        // 58
-    "goto-char",                // 59
-    "insert",                   // 60
-    "char-after",               // 61
-    "indent-to",                // 62
-    "forward-char",             // 63
-    "forward-word",             // 64
-    "forward-line",             // 65
-    "char-syntax",              // 66
-    "end-of-line",              // 67
-    "match-beginning",          // 68
-    "match-end",                // 69
-    "upcase",                   // 70
-    "downcase",                 // 71
-    "point",                    // 72
-    "point-max",                // 73
-    "point-min",                // 74
-    "following-char",           // 75
-    "previous-char",            // 76
-    "current-column",           // 77
-    "eolp",                     // 78
-    "eobp",                     // 79
-    "bolp",                     // 80
-    "bobp",                     // 81
-    "current-buffer",           // 82
-    "set-buffer",               // 83
-    "skip-chars-forward",       // 84
-    "skip-chars-backward",      // 85
-    "buffer-substring",         // 86
-    "delete-region",            // 87
-    "narrow-to-region",         // 88
-    "widen",                    // 89
-    "set-marker",               // 90
-    "zeln-varset",              // 91
-    "zeln-varbind",             // 92
-    "zeln-unbind",              // 93
-    "zeln-save-excursion",      // 94
+    "zeln-setup-args", // 0
+    "zeln-funcall", // 1
+    "zeln-isnil", // 2
+    "+", // 3
+    "-", // 4
+    "*", // 5
+    "1-", // 6
+    "1+", // 7
+    "negate", // 8
+    "max", // 9
+    "min", // 10
+    "=", // 11
+    ">", // 12
+    "<", // 13
+    "<=", // 14
+    ">=", // 15
+    "equal", // 16
+    "eq", // 17
+    "null", // 18
+    "car", // 19
+    "cdr", // 20
+    "cons", // 21
+    "list1", // 22
+    "list2", // 23
+    "list3", // 24
+    "list4", // 25
+    "list", // 26
+    "symbolp", // 27
+    "consp", // 28
+    "stringp", // 29
+    "listp", // 30
+    "numberp", // 31
+    "integerp", // 32
+    "nth", // 33
+    "memq", // 34
+    "length", // 35
+    "aref", // 36
+    "aset", // 37
+    "symbol-value", // 38
+    "symbol-function", // 39
+    "set", // 40
+    "fset", // 41
+    "get", // 42
+    "substring", // 43
+    "concat", // 44
+    "string=", // 45
+    "string-lessp", // 46
+    "nthcdr", // 47
+    "elt", // 48
+    "member", // 49
+    "assq", // 50
+    "nreverse", // 51
+    "setcar", // 52
+    "setcdr", // 53
+    "car-safe", // 54
+    "cdr-safe", // 55
+    "nconc", // 56
+    "/", // 57
+    "%", // 58
+    "goto-char", // 59
+    "insert", // 60
+    "char-after", // 61
+    "indent-to", // 62
+    "forward-char", // 63
+    "forward-word", // 64
+    "forward-line", // 65
+    "char-syntax", // 66
+    "end-of-line", // 67
+    "match-beginning", // 68
+    "match-end", // 69
+    "upcase", // 70
+    "downcase", // 71
+    "point", // 72
+    "point-max", // 73
+    "point-min", // 74
+    "following-char", // 75
+    "previous-char", // 76
+    "current-column", // 77
+    "eolp", // 78
+    "eobp", // 79
+    "bolp", // 80
+    "bobp", // 81
+    "current-buffer", // 82
+    "set-buffer", // 83
+    "skip-chars-forward", // 84
+    "skip-chars-backward", // 85
+    "buffer-substring", // 86
+    "delete-region", // 87
+    "narrow-to-region", // 88
+    "widen", // 89
+    "set-marker", // 90
+    "zeln-varset", // 91
+    "zeln-varbind", // 92
+    "zeln-unbind", // 93
+    "zeln-save-excursion", // 94
     "zeln-save-current-buffer", // 95
-    "zeln-save-restriction",    // 96
-    "zeln-unwind-protect",      // 97
-    "zeln-pushhandler",         // 98
-    "zeln-resume",              // 99
-    "zeln-pophandler",          // 100
-    "zeln-switch-target",       // 101
+    "zeln-save-restriction", // 96
+    "zeln-unwind-protect", // 97
+    "zeln-pushhandler", // 98
+    "zeln-resume", // 99
+    "zeln-pophandler", // 100
+    "zeln-switch-target", // 101
+    "zeln-jit-call", // 102
 };
 comptime {
     if (FRELOC_NAMES.len != SURFACE)
         @compileError("FRELOC_NAMES length != SURFACE: update both (freloc surface drift)");
 }
-
 
 // ---- Tier-1 fixnum-arith inline fast path (USE_LSB_TAG). ----------------
 // Mirrors src/lisp.h for USE_LSB_TAG=true: a fixnum's low 2 bits are
@@ -1905,8 +1906,7 @@ fn emitNativeFn(
                 // (cons/list2/eql/...) keeps the Tier-0 freloc call.
                 if (ins.idx == IDX_PLUS or ins.idx == IDX_MINUS or ins.idx == IDX_TIMES)
                     try emitBinaryArith(em, ins.idx, ins.start)
-                else if (ins.idx == IDX_EQLSIGN or ins.idx == IDX_GTR or ins.idx == IDX_LSS
-                    or ins.idx == IDX_LEQ or ins.idx == IDX_GEQ)
+                else if (ins.idx == IDX_EQLSIGN or ins.idx == IDX_GTR or ins.idx == IDX_LSS or ins.idx == IDX_LEQ or ins.idx == IDX_GEQ)
                     try emitBinaryCompare(em, ins.idx, ins.start)
                 else
                     try emitBinary(em, ins.idx);
@@ -2151,7 +2151,7 @@ fn emitFileLLVM(
         // Each array element needs an explicit struct-type prefix (LLVM
         // rejects a bare struct value as an array element).
         try em.wf("  {{ ptr, i64, ptr, ptr, i64, ptr, ptr }} {{ ptr @zeln_fn_{d}, i64 {d}, ptr @sym_name_{d}, ptr @d_reloc_z_{d}, i64 {d}, ptr @d_reloc_blob_{d}, ptr @zeln_entry_fn_{d} }}{s}\n", .{
-            orig_i, unit.args_template, orig_i, orig_i, unit.consts.len + 1, orig_i, orig_i,
+            orig_i,                              unit.args_template, orig_i, orig_i, unit.consts.len + 1, orig_i, orig_i,
             if (slot + 1 < fns.len) "," else "",
         });
     }
@@ -2794,16 +2794,19 @@ fn emitListN(em: *Emitter, idx: u64, n: u32) !void {
 // Bcall family.  Interpreter docall (bytecode.c:766): the call group on
 // the stack is [fun, arg1..argN] with argN on top and fun at the BOTTOM.
 // DISCARD(N) moves `top` down to fun; call_fun = TOP = fun; call_args =
-// &TOP+1 = the stale arg slots above.  zeln_funcall(N+1, &fun) reads
+// &TOP+1 = the stale arg slots above.  zeln-jit-call(N+1, &fun) reads
 // fun=[0], args=[1..N], mirroring that exactly; the result replaces fun's
-// slot (net stack effect -N, matching Bcall).
+// slot (net stack effect -N, matching Bcall).  AOT callers therefore use
+// the same guarded JIT fast path as JIT callers: exact fixed-arity JIT
+// closures dispatch directly, while every other callee falls back to the
+// exact generic zeln_funcall semantics.
 fn emitCall(em: *Emitter, nargs: u32) !void {
     const t = try em.loadTop(); // t = argN (top of the group)
     const di: i64 = -@as(i64, nargs);
     const fp = em.fresh(); // fp = &fun = t - N
     try em.wif("%{d} = getelementptr inbounds i64, ptr %{d}, i64 {d}\n", .{ fp, t, di });
     try em.storeTop(fp); // DISCARD N: top = fun
-    const r = try em.frelocCallI64(IDX_FUNCALL, @as(u64, nargs) + 1, fp);
+    const r = try em.frelocCallI64(IDX_JIT_CALL, @as(u64, nargs) + 1, fp);
     try em.wif("store i64 %{d}, ptr %{d}\n", .{ r, fp }); // TOP = val
 }
 

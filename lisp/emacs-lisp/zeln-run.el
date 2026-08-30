@@ -76,10 +76,17 @@ installs it next to the emacs binary as zeln-compile)."
   "Return the .zeln cache path SRC (.el) maps to."
   (let* ((rel (comp-z-el-to-zeln-rel-filename src))
          (ver (comp-z-compute-version-dir))
-         (dirs (append (bound-and-true-p native-comp-eln-load-path)
-                       (bound-and-true-p native-comp-zeln-load-path))))
+         ;; In combined eln+zeln builds both variables are normally bound.
+         ;; Prefer the explicit zeln cache so a combined fixture cannot
+         ;; accidentally write .zeln artifacts into the gccjit cache.
+         (dirs (append (bound-and-true-p native-comp-zeln-load-path)
+                       (bound-and-true-p native-comp-eln-load-path))))
     (or (cl-loop for d in dirs
-                 when (and (file-name-absolute-p d) (file-writable-p d))
+                 when (and (file-name-absolute-p d)
+                           ;; The cache root need not exist yet; create it
+                           ;; before treating it as a usable destination.
+                           (ignore-errors (make-directory d t)
+                                          (file-writable-p d)))
                  return (expand-file-name rel (expand-file-name ver d)))
         (expand-file-name rel (expand-file-name ver "~/.emacs.d/eln-cache/")))))
 

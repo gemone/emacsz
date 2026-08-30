@@ -126,7 +126,6 @@ fn applyMsvcCrtWarnings(mod: *std.Build.Module) void {
     mod.addCMacro("_STDBOOL", "1");
 }
 
-
 // MSVC-backend toolchain hint (goal 3.6).  When the selected target uses the
 // Windows MSVC C ABI (-Dtarget=x86_64-windows-msvc), the build needs the
 // Windows SDK + a Visual Studio C/C++ toolchain.  zig itself performs the
@@ -384,12 +383,9 @@ pub fn build(b: *std.Build) void {
     // decides which native artifact loads where a .elc has both a .eln and a
     // .zeln.  libgccjit is host-specific, so the switch is forced OFF for any
     // non-native / non-glibc-Linux target (see native_comp_target below).
-    // DEFAULT AUTO-ON for the native glibc-Linux build when the host has
-    // libgccjit (the private gcc tree is globbed at config time, the same
-    // probe the compile step performs); without it the feature stays off,
-    // and -Dnative-comp=false forces it off.
-    const native_comp_auto = b.graph.host.result.os.tag == .linux and gccjitAvailable(b);
-    const enable_native_comp = b.option(bool, "native-comp", "Enable the gccjit native-comp path (.eln, HAVE_NATIVE_COMP); default auto-on when host libgccjit is found") orelse native_comp_auto;
+    // It is strictly opt-in: merely having libgccjit installed must not turn
+    // a `-Dnative-comp-zig=true` zeln-only build into a combined graph.
+    const enable_native_comp = b.option(bool, "native-comp", "Enable the gccjit native-comp path (.eln, HAVE_NATIVE_COMP); default OFF") orelse false;
     const enable_modules = b.option(bool, "modules", "Enable upstream dynamic modules (HAVE_MODULES)") orelse false;
     const enable_modules_zig = b.option(bool, "modules-zig", "Enable the Zig dynamic-module subsystem (HAVE_MODULES_ZIG)") orelse false;
 
@@ -889,11 +885,10 @@ pub fn build(b: *std.Build) void {
         // -- mirrors the -Dgui windows re-add below.
         if (pgtk_target) {
             const pgtk_doc_sources = [_][]const u8{
-                "pgtkfns.c", "pgtkterm.c", "pgtkmenu.c", "pgtkselect.c",
-                "pgtkim.c",  "xsettings.c", "xgselect.c",
-                "fontset.c", "fringe.c",    "image.c",
-                "ftfont.c",  "ftcrfont.c",  "hbfont.c",
-                "gtkutil.c", "emacsgtkfixed.c",
+                "pgtkfns.c", "pgtkterm.c",  "pgtkmenu.c",      "pgtkselect.c",
+                "pgtkim.c",  "xsettings.c", "xgselect.c",      "fontset.c",
+                "fringe.c",  "image.c",     "ftfont.c",        "ftcrfont.c",
+                "hbfont.c",  "gtkutil.c",   "emacsgtkfixed.c",
             };
             for (pgtk_doc_sources) |name| run_mdf.addArg(name);
         }
@@ -917,8 +912,8 @@ pub fn build(b: *std.Build) void {
     // today but is included for parity with the compile gate.
     if (target.result.os.tag == .windows) {
         const windows_doc_sources = [_][]const u8{
-            "w32.c", "w32console.c", "w32heap.c",
-            "w32proc.c", "w32reg.c", "w32dwrite.c",
+            "w32.c",     "w32console.c", "w32heap.c",
+            "w32proc.c", "w32reg.c",     "w32dwrite.c",
             "w32font.c",
             // w32fns.c carries the Vw32_* key-modifier DEFVARs that
             // w32inevt.c (the console input layer) reads; scan it for
@@ -926,7 +921,7 @@ pub fn build(b: *std.Build) void {
             "w32fns.c",
             // w32term.c DEFVARs Vw32_recognize_altgr, also read by
             // w32inevt.c.
-            "w32term.c",
+                "w32term.c",
         };
         for (windows_doc_sources) |name| run_mdf.addArg(name);
         // -Dgui: the GUI modules' DEFVAR/DEFUN surface (fringe.c's
@@ -936,11 +931,12 @@ pub fn build(b: *std.Build) void {
         if (with_gui) {
             const gui_doc_sources = [_][]const u8{
                 "w32menu.c", "w32select.c", "w32uniscribe.c",
-                "w32xfns.c", "fontset.c", "fringe.c", "image.c",
+                "w32xfns.c", "fontset.c",   "fringe.c",
+                "image.c",
                 // w32image.c carries Fw32image_create_thumbnail and
                 // w32cygwinx.c Fw32_battery_status (both referenced by
                 // their own DEFUN bodies via globals.h declarations).
-                "w32image.c", "w32cygwinx.c",
+                  "w32image.c",  "w32cygwinx.c",
             };
             for (gui_doc_sources) |name| run_mdf.addArg(name);
         }
@@ -995,24 +991,24 @@ pub fn build(b: *std.Build) void {
     // SOME_MACHINE_OBJECTS as in Makefile.in:477-488 (.o names; make-docfile
     // rewrites the extension to .c after the -d chdir).
     const some_machine_objects = [_][]const u8{
-        "dosfns.o",          "msdos.o",          "xterm.o",
-        "xfns.o",            "xmenu.o",          "xselect.o",
-        "xrdb.o",            "xsmfns.o",         "fringe.o",
-        "image.o",           "fontset.o",        "dbusbind.o",
-        "cygw32.o",          "nsterm.o",         "nsfns.o",
-        "nsmenu.o",          "nsselect.o",       "nsimage.o",
-        "nsfont.o",          "macfont.o",        "nsxwidget.o",
-        "w32.o",             "w32console.o",     "w32cygwinx.o",
-        "w32fns.o",          "w32heap.o",        "w32inevt.o",
-        "w32notify.o",       "w32menu.o",        "w32proc.o",
-        "w32reg.o",          "w32select.o",      "w32term.o",
-        "w32xfns.o",         "w16select.o",      "widget.o",
-        "xfont.o",           "ftfont.o",         "xftfont.o",
-        "gtkutil.o",         "xsettings.o",      "xgselect.o",
-        "termcap.o",         "hbfont.o",         "haikuterm.o",
-        "haikufns.o",        "haikumenu.o",      "haikufont.o",
-        "androidterm.o",     "androidfns.o",     "androidfont.o",
-        "androidselect.c",   "androidvfs.c",     "sfntfont-android.c",
+        "dosfns.o",        "msdos.o",      "xterm.o",
+        "xfns.o",          "xmenu.o",      "xselect.o",
+        "xrdb.o",          "xsmfns.o",     "fringe.o",
+        "image.o",         "fontset.o",    "dbusbind.o",
+        "cygw32.o",        "nsterm.o",     "nsfns.o",
+        "nsmenu.o",        "nsselect.o",   "nsimage.o",
+        "nsfont.o",        "macfont.o",    "nsxwidget.o",
+        "w32.o",           "w32console.o", "w32cygwinx.o",
+        "w32fns.o",        "w32heap.o",    "w32inevt.o",
+        "w32notify.o",     "w32menu.o",    "w32proc.o",
+        "w32reg.o",        "w32select.o",  "w32term.o",
+        "w32xfns.o",       "w16select.o",  "widget.o",
+        "xfont.o",         "ftfont.o",     "xftfont.o",
+        "gtkutil.o",       "xsettings.o",  "xgselect.o",
+        "termcap.o",       "hbfont.o",     "haikuterm.o",
+        "haikufns.o",      "haikumenu.o",  "haikufont.o",
+        "androidterm.o",   "androidfns.o", "androidfont.o",
+        "androidselect.c", "androidvfs.c", "sfntfont-android.c",
         "sfntfont.c",
     };
     for (some_machine_objects) |name| run_doc.addArg(name);
@@ -1669,14 +1665,12 @@ pub fn build(b: *std.Build) void {
         b.addLibrary(.{ .name = "emacs-time", .root_module = emacs_time_mod });
     exe.root_module.linkLibrary(emacs_time_lib);
 
-    // zeln-jit: the in-process lightweight JIT engine (tools/zeln-jit,
-    // docs/zeln-jit.md).  Foundation only for now (executable arena +
-    // x86-64 emitter, unit-tested standalone via `zig build test` in the
-    // package); linked into temacs so the J2+ bytecode-tiering work
-    // (hotness hooks in exec_byte_code) has the engine present at
-    // runtime.  Built ReleaseFast: the emitter is on the hot path when
-    // tiering is active.  Pure Zig, no libc, no external toolchain --
-    // the whole point is NO gcc/libgccjit and NO subprocess.
+    // zeln-jit: the in-process lightweight Tier-1 engine (tools/zeln-jit,
+    // docs/zeln-jit.md).  Its x86-64 emitter is integrated with the
+    // bytecode hotness hook; other targets retain AOT/interpreter
+    // fallback.  Built ReleaseFast: compilation and generated dispatch are
+    // runtime paths.  Pure Zig, no libc, no external toolchain -- the
+    // whole point is NO gcc/libgccjit and NO subprocess.
     const zeln_jit_mod = b.createModule(.{
         .root_source_file = b.dependency("zeln_jit", .{}).path("src/jit.zig"),
         .target = target,
@@ -1881,7 +1875,7 @@ pub fn build(b: *std.Build) void {
             // -O2 file corrupts lisp state during dump -> bad relocation
             // entries -> SIGSEGV on load) that is NOT fixed by non-PIE
             // or pdumper.c -O0; stay at -O0 until that is root-caused.
-            "-std=gnu2x",  // Allow C23 features like _Static_assert without message
+            "-std=gnu2x", // Allow C23 features like _Static_assert without message
             "-fno-common",
             "-fno-strict-aliasing",
             // The fixnum range macros compare int values against the
@@ -1898,7 +1892,7 @@ pub fn build(b: *std.Build) void {
             "-I.",
             "-Isrc",
             "-Ilib",
-            "-Ilib/malloc",  // Gnulib generated headers
+            "-Ilib/malloc", // Gnulib generated headers
         };
         // musl reuses the C23/execinfo shims from lib/w32 (generic
         // headers; the directory name is historical) and must NOT see
@@ -1943,7 +1937,7 @@ pub fn build(b: *std.Build) void {
             // w32 needs no terminfo.
             if (!is_windows and !is_musl and
                 (std.mem.eql(u8, src, "src/termcap.c") or
-                 std.mem.eql(u8, src, "src/tparam.c")))
+                    std.mem.eql(u8, src, "src/tparam.c")))
                 continue;
             // src/comp.c is in base_obj (Makefile.in:459), so the loop compiles
             // it with base_flags.  When -Dnative-comp is effective, comp.c needs
@@ -1966,6 +1960,8 @@ pub fn build(b: *std.Build) void {
         // src/compz.c. OFF => all no-ops.
         if (enable_native_comp_zig) {
             exe.root_module.addCMacro("HAVE_NATIVE_COMP_ZIG", "1");
+            if (target.result.cpu.arch == .x86_64)
+                exe.root_module.addCMacro("ZELN_JIT_ARCH_X86_64", "1");
             exe.root_module.addCSourceFile(.{
                 .file = b.path("src/compz.c"),
                 .flags = base_flags,
@@ -2092,9 +2088,9 @@ pub fn build(b: *std.Build) void {
         // kqueue.c is BSD/macOS-specific (HAVE_KQUEUE)
         const is_macos = target.result.os.tag == .macos;
         const is_bsd = target.result.os.tag == .freebsd or
-                       target.result.os.tag == .openbsd or
-                       target.result.os.tag == .netbsd or
-                       target.result.os.tag == .dragonfly;
+            target.result.os.tag == .openbsd or
+            target.result.os.tag == .netbsd or
+            target.result.os.tag == .dragonfly;
 
         if (is_macos or is_bsd) {
             exe.root_module.addCSourceFile(.{
@@ -2191,13 +2187,13 @@ pub fn build(b: *std.Build) void {
             // No -O flag: see base_flags (separate -O2 lisp-corruption bug).
             "-std=gnu2x",
             "-fno-common",
-        "-fno-strict-aliasing",
+            "-fno-strict-aliasing",
             "-D_GNU_SOURCE",
             "-DHAVE_CONFIG_H",
             "-I.",
             "-Isrc",
             "-Ilib",
-            "-Ilib/malloc",  // Gnulib generated headers
+            "-Ilib/malloc", // Gnulib generated headers
         };
         const libgnu_flags_full = libgnu_flags_core ++ unix_extra_inc;
         const libgnu_flags: []const []const u8 = &libgnu_flags_full;
@@ -2229,7 +2225,7 @@ pub fn build(b: *std.Build) void {
         const base_flags_core_w32 = [_][]const u8{
             "-std=gnu2x",
             "-fno-common",
-        "-fno-strict-aliasing",
+            "-fno-strict-aliasing",
             // The fixnum range macros compare int/long values against the
             // 61-bit fixnum bounds; on the LLP64 ABI those comparisons are
             // provably true and clang flags them.  They are intentional
@@ -2304,7 +2300,7 @@ pub fn build(b: *std.Build) void {
         const libgnu_flags_core = [_][]const u8{
             "-std=gnu2x",
             "-fno-common",
-        "-fno-strict-aliasing",
+            "-fno-strict-aliasing",
             "-Wno-tautological-constant-out-of-range-compare",
             "-Wno-initializer-overrides",
             "-Wno-pointer-sign",
@@ -2352,9 +2348,9 @@ pub fn build(b: *std.Build) void {
                 // for the GNU backend.
                 (target.result.abi == .msvc and
                     (std.mem.eql(u8, src, "lib/strtol.c") or
-                     std.mem.eql(u8, src, "lib/strtoll.c") or
-                     std.mem.eql(u8, src, "lib/strtoimax.c") or
-                     std.mem.eql(u8, src, "lib/strnlen.c"))))
+                        std.mem.eql(u8, src, "lib/strtoll.c") or
+                        std.mem.eql(u8, src, "lib/strtoimax.c") or
+                        std.mem.eql(u8, src, "lib/strnlen.c"))))
                 continue;
             exe.root_module.addCSourceFile(.{
                 .file = b.path(src),
@@ -2506,23 +2502,23 @@ pub fn build(b: *std.Build) void {
             exe.root_module.linkSystemLibrary("gdi32", .{});
             exe.root_module.linkSystemLibrary("gdiplus", .{});
         } else {
-        for ([_][]const u8{
-            "src/w32.c",
-            "src/w32console.c",
-            "src/w32heap.c",
-            "src/w32inevt.c",
-            "src/w32proc.c",
-            "src/w32reg.c",
-            "src/w32dwrite.c",
-            "src/dynlib.c",
-            "src/w32-stubs.c",
-            "src/w32-compat.c",
-        }) |w32src| {
-            exe.root_module.addCSourceFile(.{
-                .file = b.path(w32src),
-                .flags = libgnu_flags,
-            });
-        }
+            for ([_][]const u8{
+                "src/w32.c",
+                "src/w32console.c",
+                "src/w32heap.c",
+                "src/w32inevt.c",
+                "src/w32proc.c",
+                "src/w32reg.c",
+                "src/w32dwrite.c",
+                "src/dynlib.c",
+                "src/w32-stubs.c",
+                "src/w32-compat.c",
+            }) |w32src| {
+                exe.root_module.addCSourceFile(.{
+                    .file = b.path(w32src),
+                    .flags = libgnu_flags,
+                });
+            }
         }
 
         // Phase-2.1 subsystem switches, Windows branch (mirrors the Unix
@@ -2530,6 +2526,8 @@ pub fn build(b: *std.Build) void {
         // defines HAVE_NATIVE_COMP_ZIG so the zeln DEFUNs are registered.
         if (enable_native_comp_zig) {
             exe.root_module.addCMacro("HAVE_NATIVE_COMP_ZIG", "1");
+            if (target.result.cpu.arch == .x86_64)
+                exe.root_module.addCMacro("ZELN_JIT_ARCH_X86_64", "1");
             exe.root_module.addCSourceFile(.{
                 .file = b.path("src/compz.c"),
                 .flags = libgnu_flags,
@@ -2570,113 +2568,112 @@ pub fn build(b: *std.Build) void {
     // compiled out. On Windows the pthread/unistd/dlfcn/mmap features are
     // dropped so libxml2 takes its win32 code paths.
     if (with_xml2) {
-    const xml2_src = b.dependency("xml2_src", .{});
-    const xml2_win = target.result.os.tag == .windows;
-    const xml2_cfg = b.addConfigHeader(.{
-        .style = .{ .autoconf_at = xml2_src.path("include/libxml/xmlversion.h.in") },
-        .include_path = "libxml/xmlversion.h",
-    }, .{
-        .VERSION = "2.15.3",
-        .LIBXML_VERSION_NUMBER = "21503",
-        .LIBXML_VERSION_EXTRA = "",
-        .MODULE_EXTENSION = ".so",
-        .WITH_THREADS = 1,
-        // Windows keeps per-thread allocation on: with C11 TLS (USE_TLS)
-        // and per-thread allocation off, globals.c's DllMain cleanup
-        // references the undeclared `globalkey' (upstream 2.15.x quirk).
-        .WITH_THREAD_ALLOC = if (xml2_win) @as(i32, 1) else @as(i32, 0),
-        .WITH_OUTPUT = 1,
-        .WITH_PUSH = 1,
-        .WITH_READER = 1,
-        .WITH_PATTERN = 1,
-        .WITH_WRITER = 1,
-        .WITH_SAX1 = 1,
-        .WITH_HTTP = 0,
-        .WITH_VALID = 1,
-        .WITH_HTML = 1,
-        .WITH_C14N = 0,
-        .WITH_CATALOG = 0,
-        .WITH_XPATH = 1,
-        .WITH_XPTR = 1,
-        .WITH_XINCLUDE = 1,
-        .WITH_ICONV = 0,
-        .WITH_ICU = 0,
-        .WITH_ISO8859X = 1,
-        .WITH_DEBUG = 0,
-        .WITH_REGEXPS = 1,
-        .WITH_RELAXNG = 1,
-        .WITH_SCHEMAS = 1,
-        .WITH_SCHEMATRON = 1,
-        .WITH_MODULES = 0,
-        .WITH_ZLIB = 0,
-    });
-    const xml2_config_cfg = b.addConfigHeader(.{
-        .style = .{ .autoconf_undef = xml2_src.path("config.h.in") },
-        .include_path = "config.h",
-    }, .{
-        // getentropy is a glibc/POSIX-2024 API; musl and Windows fall back
-        // to the time-based seed in dict.c's xmlInitRandom.
-        .HAVE_DECL_GETENTROPY = if (xml2_win or is_musl) null else @as(?i32, 1),
-        .HAVE_DECL_GLOB = null,
-        .HAVE_DECL_MMAP = if (xml2_win) null else @as(?i32, 1),
-        .HAVE_DLFCN_H = if (xml2_win) null else @as(?i32, 1),
-        .HAVE_DLOPEN = null,
-        .HAVE_FUNC_ATTRIBUTE_DESTRUCTOR = 1,
-        .HAVE_INTTYPES_H = 1,
-        .HAVE_LIBHISTORY = null,
-        .HAVE_LIBREADLINE = null,
-        .HAVE_PTHREAD_H = if (xml2_win) null else @as(?i32, 1),
-        .HAVE_SHLLOAD = null,
-        .HAVE_STDINT_H = 1,
-        .HAVE_STDIO_H = 1,
-        .HAVE_STDLIB_H = 1,
-        .HAVE_STRINGS_H = 1,
-        .HAVE_STRING_H = 1,
-        .HAVE_SYS_STAT_H = 1,
-        .HAVE_SYS_TYPES_H = 1,
-        .HAVE_UNISTD_H = if (xml2_win) null else @as(?i32, 1),
-        .HAVE_ZLIB_H = null,
-        .LT_OBJDIR = "",
-        .PACKAGE = "libxml2",
-        .PACKAGE_BUGREPORT = "",
-        .PACKAGE_NAME = "libxml2",
-        .PACKAGE_STRING = "libxml2 2.15.3",
-        .PACKAGE_TARNAME = "libxml2",
-        .PACKAGE_URL = "",
-        .PACKAGE_VERSION = "2.15.3",
-        .STDC_HEADERS = 1,
-        .VERSION = "2.15.3",
-        .XML_SYSCONFDIR = "/etc",
-        .XML_THREAD_LOCAL = ._Thread_local,
-    });
-    const xml2_mod = b.createModule(.{
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    xml2_mod.addConfigHeader(xml2_cfg);
-    xml2_mod.addConfigHeader(xml2_config_cfg);
-    xml2_mod.addIncludePath(xml2_src.path(""));
-    xml2_mod.addIncludePath(xml2_src.path("include"));
-    const xml2_files = [_][]const u8{
-        "HTMLparser.c", "HTMLtree.c", "SAX2.c", "buf.c", "chvalid.c",
-        "dict.c", "encoding.c", "entities.c", "error.c", "globals.c",
-        "hash.c", "list.c", "parser.c", "parserInternals.c",
-        "pattern.c", "relaxng.c", "schematron.c", "threads.c",
-        "tree.c", "uri.c", "valid.c", "xinclude.c", "xlink.c",
-        "xmlIO.c", "xmlmemory.c", "xmlreader.c", "xmlregexp.c",
-        "xmlsave.c", "xmlschemas.c", "xmlschemastypes.c",
-        "xmlstring.c", "xmlwriter.c", "xpath.c", "xpointer.c",
-    };
-    xml2_mod.addCSourceFiles(.{
-        .root = xml2_src.path("."),
-        .files = &xml2_files,
-        .flags = &.{ "-std=c11", "-D_FILE_OFFSET_BITS=64", "-D_LARGEFILE_SOURCE" },
-    });
-    const xml2_lib = b.addLibrary(.{ .name = "xml2", .root_module = xml2_mod });
-    exe.root_module.linkLibrary(xml2_lib);
-    exe.root_module.addConfigHeader(xml2_cfg);
-    exe.root_module.addIncludePath(xml2_src.path("include"));
+        const xml2_src = b.dependency("xml2_src", .{});
+        const xml2_win = target.result.os.tag == .windows;
+        const xml2_cfg = b.addConfigHeader(.{
+            .style = .{ .autoconf_at = xml2_src.path("include/libxml/xmlversion.h.in") },
+            .include_path = "libxml/xmlversion.h",
+        }, .{
+            .VERSION = "2.15.3",
+            .LIBXML_VERSION_NUMBER = "21503",
+            .LIBXML_VERSION_EXTRA = "",
+            .MODULE_EXTENSION = ".so",
+            .WITH_THREADS = 1,
+            // Windows keeps per-thread allocation on: with C11 TLS (USE_TLS)
+            // and per-thread allocation off, globals.c's DllMain cleanup
+            // references the undeclared `globalkey' (upstream 2.15.x quirk).
+            .WITH_THREAD_ALLOC = if (xml2_win) @as(i32, 1) else @as(i32, 0),
+            .WITH_OUTPUT = 1,
+            .WITH_PUSH = 1,
+            .WITH_READER = 1,
+            .WITH_PATTERN = 1,
+            .WITH_WRITER = 1,
+            .WITH_SAX1 = 1,
+            .WITH_HTTP = 0,
+            .WITH_VALID = 1,
+            .WITH_HTML = 1,
+            .WITH_C14N = 0,
+            .WITH_CATALOG = 0,
+            .WITH_XPATH = 1,
+            .WITH_XPTR = 1,
+            .WITH_XINCLUDE = 1,
+            .WITH_ICONV = 0,
+            .WITH_ICU = 0,
+            .WITH_ISO8859X = 1,
+            .WITH_DEBUG = 0,
+            .WITH_REGEXPS = 1,
+            .WITH_RELAXNG = 1,
+            .WITH_SCHEMAS = 1,
+            .WITH_SCHEMATRON = 1,
+            .WITH_MODULES = 0,
+            .WITH_ZLIB = 0,
+        });
+        const xml2_config_cfg = b.addConfigHeader(.{
+            .style = .{ .autoconf_undef = xml2_src.path("config.h.in") },
+            .include_path = "config.h",
+        }, .{
+            // getentropy is a glibc/POSIX-2024 API; musl and Windows fall back
+            // to the time-based seed in dict.c's xmlInitRandom.
+            .HAVE_DECL_GETENTROPY = if (xml2_win or is_musl) null else @as(?i32, 1),
+            .HAVE_DECL_GLOB = null,
+            .HAVE_DECL_MMAP = if (xml2_win) null else @as(?i32, 1),
+            .HAVE_DLFCN_H = if (xml2_win) null else @as(?i32, 1),
+            .HAVE_DLOPEN = null,
+            .HAVE_FUNC_ATTRIBUTE_DESTRUCTOR = 1,
+            .HAVE_INTTYPES_H = 1,
+            .HAVE_LIBHISTORY = null,
+            .HAVE_LIBREADLINE = null,
+            .HAVE_PTHREAD_H = if (xml2_win) null else @as(?i32, 1),
+            .HAVE_SHLLOAD = null,
+            .HAVE_STDINT_H = 1,
+            .HAVE_STDIO_H = 1,
+            .HAVE_STDLIB_H = 1,
+            .HAVE_STRINGS_H = 1,
+            .HAVE_STRING_H = 1,
+            .HAVE_SYS_STAT_H = 1,
+            .HAVE_SYS_TYPES_H = 1,
+            .HAVE_UNISTD_H = if (xml2_win) null else @as(?i32, 1),
+            .HAVE_ZLIB_H = null,
+            .LT_OBJDIR = "",
+            .PACKAGE = "libxml2",
+            .PACKAGE_BUGREPORT = "",
+            .PACKAGE_NAME = "libxml2",
+            .PACKAGE_STRING = "libxml2 2.15.3",
+            .PACKAGE_TARNAME = "libxml2",
+            .PACKAGE_URL = "",
+            .PACKAGE_VERSION = "2.15.3",
+            .STDC_HEADERS = 1,
+            .VERSION = "2.15.3",
+            .XML_SYSCONFDIR = "/etc",
+            .XML_THREAD_LOCAL = ._Thread_local,
+        });
+        const xml2_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        xml2_mod.addConfigHeader(xml2_cfg);
+        xml2_mod.addConfigHeader(xml2_config_cfg);
+        xml2_mod.addIncludePath(xml2_src.path(""));
+        xml2_mod.addIncludePath(xml2_src.path("include"));
+        const xml2_files = [_][]const u8{
+            "HTMLparser.c", "HTMLtree.c",   "SAX2.c",     "buf.c",             "chvalid.c",
+            "dict.c",       "encoding.c",   "entities.c", "error.c",           "globals.c",
+            "hash.c",       "list.c",       "parser.c",   "parserInternals.c", "pattern.c",
+            "relaxng.c",    "schematron.c", "threads.c",  "tree.c",            "uri.c",
+            "valid.c",      "xinclude.c",   "xlink.c",    "xmlIO.c",           "xmlmemory.c",
+            "xmlreader.c",  "xmlregexp.c",  "xmlsave.c",  "xmlschemas.c",      "xmlschemastypes.c",
+            "xmlstring.c",  "xmlwriter.c",  "xpath.c",    "xpointer.c",
+        };
+        xml2_mod.addCSourceFiles(.{
+            .root = xml2_src.path("."),
+            .files = &xml2_files,
+            .flags = &.{ "-std=c11", "-D_FILE_OFFSET_BITS=64", "-D_LARGEFILE_SOURCE" },
+        });
+        const xml2_lib = b.addLibrary(.{ .name = "xml2", .root_module = xml2_mod });
+        exe.root_module.linkLibrary(xml2_lib);
+        exe.root_module.addConfigHeader(xml2_cfg);
+        exe.root_module.addIncludePath(xml2_src.path("include"));
     }
 
     // Compression: zlib built from source as a Zig-managed dependency
@@ -2684,32 +2681,32 @@ pub fn build(b: *std.Build) void {
     // Compiled in its own module so the Emacs config.h flags never
     // leak into zlib, and exported as a static libz for the exe.
     if (with_zlib) {
-    const zlib_src = b.dependency("zlib_src", .{});
-    const zlib_mod = b.createModule(.{
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    zlib_mod.addIncludePath(zlib_src.path(""));
-    const zlib_sources = [_][]const u8{
-        "adler32.c", "compress.c", "crc32.c", "deflate.c", "gzclose.c",
-        "gzlib.c", "gzread.c", "gzwrite.c", "infback.c", "inffast.c",
-        "inflate.c", "inftrees.c", "trees.c", "uncompr.c", "zutil.c",
-    };
-    // zlib compiles standalone.  -DHAVE_UNISTD_H is correct where unistd.h
-    // exists (MinGW/glibc); the MSVC CRT has no unistd.h, and giving zlib
-    // that define makes zconf.h include it and fail.  For the MSVC ABI,
-    // build zlib without it (zconf.h degrades to its own off_t handling).
-    const zlib_flags: []const []const u8 = if (target.result.abi == .msvc)
-        &[_][]const u8{ "-O2" }
-    else
-        &[_][]const u8{ "-O2", "-DHAVE_UNISTD_H" };
-    for (zlib_sources) |zsrc| {
-        zlib_mod.addCSourceFile(.{ .file = zlib_src.path(zsrc), .flags = zlib_flags });
-    }
-    const zlib_lib = b.addLibrary(.{ .name = "z", .root_module = zlib_mod });
-    exe.root_module.linkLibrary(zlib_lib);
-    exe.root_module.addIncludePath(zlib_src.path(""));
+        const zlib_src = b.dependency("zlib_src", .{});
+        const zlib_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        zlib_mod.addIncludePath(zlib_src.path(""));
+        const zlib_sources = [_][]const u8{
+            "adler32.c", "compress.c", "crc32.c",   "deflate.c", "gzclose.c",
+            "gzlib.c",   "gzread.c",   "gzwrite.c", "infback.c", "inffast.c",
+            "inflate.c", "inftrees.c", "trees.c",   "uncompr.c", "zutil.c",
+        };
+        // zlib compiles standalone.  -DHAVE_UNISTD_H is correct where unistd.h
+        // exists (MinGW/glibc); the MSVC CRT has no unistd.h, and giving zlib
+        // that define makes zconf.h include it and fail.  For the MSVC ABI,
+        // build zlib without it (zconf.h degrades to its own off_t handling).
+        const zlib_flags: []const []const u8 = if (target.result.abi == .msvc)
+            &[_][]const u8{"-O2"}
+        else
+            &[_][]const u8{ "-O2", "-DHAVE_UNISTD_H" };
+        for (zlib_sources) |zsrc| {
+            zlib_mod.addCSourceFile(.{ .file = zlib_src.path(zsrc), .flags = zlib_flags });
+        }
+        const zlib_lib = b.addLibrary(.{ .name = "z", .root_module = zlib_mod });
+        exe.root_module.linkLibrary(zlib_lib);
+        exe.root_module.addIncludePath(zlib_src.path(""));
     }
 
     // ------------------------------------------------------------------
@@ -2745,8 +2742,8 @@ pub fn build(b: *std.Build) void {
             }) });
             png_link_zlib.root_module.addIncludePath(z.path(""));
             const zsrcs = [_][]const u8{
-                "adler32.c", "compress.c", "crc32.c", "deflate.c",
-                "infback.c", "inffast.c", "inflate.c", "inftrees.c",
+                "adler32.c", "compress.c", "crc32.c",   "deflate.c",
+                "infback.c", "inffast.c",  "inflate.c", "inftrees.c",
                 "trees.c",   "uncompr.c",  "zutil.c",
             };
             const zflags: []const []const u8 = if (target.result.abi == .msvc)
@@ -2759,10 +2756,10 @@ pub fn build(b: *std.Build) void {
             png_mod.linkLibrary(png_link_zlib);
         }
         const png_sources = [_][]const u8{
-            "png.c",       "pngerror.c",  "pngget.c",   "pngmem.c",
-            "pngpread.c",  "pngread.c",   "pngrio.c",   "pngrtran.c",
-            "pngrutil.c",  "pngset.c",    "pngtrans.c", "pngwio.c",
-            "pngwrite.c",  "pngwtran.c",  "pngwutil.c",
+            "png.c",      "pngerror.c", "pngget.c",   "pngmem.c",
+            "pngpread.c", "pngread.c",  "pngrio.c",   "pngrtran.c",
+            "pngrutil.c", "pngset.c",   "pngtrans.c", "pngwio.c",
+            "pngwrite.c", "pngwtran.c", "pngwutil.c",
         };
         // MinGW supplies unistd.h; the MSVC CRT does not, and defining
         // PNG_NO_STDIO off-config breaks.  Keep both ABIs on plain -O2 and
@@ -2830,15 +2827,15 @@ pub fn build(b: *std.Build) void {
         tiff_mod.addIncludePath(b.path("nt/inc/tiff"));
         tiff_mod.addIncludePath(tiff_src.path("libtiff"));
         const tiff_sources = [_][]const u8{
-            "tif_aux.c",    "tif_close.c",  "tif_codec.c",  "tif_color.c",
-            "tif_compress.c", "tif_dir.c",  "tif_dirinfo.c", "tif_dirread.c",
-            "tif_dirwrite.c", "tif_dumpmode.c", "tif_error.c", "tif_extension.c",
-            "tif_fax3.c",   "tif_fax3sm.c", "tif_flush.c",  "tif_getimage.c",
-            "tif_hash_set.c",
-            "tif_luv.c",    "tif_lzw.c",    "tif_next.c",   "tif_open.c",
-            "tif_packbits.c", "tif_predict.c", "tif_print.c", "tif_read.c",
-            "tif_strip.c",  "tif_swab.c",   "tif_thunder.c", "tif_tile.c",
-            "tif_unix.c",   "tif_version.c", "tif_warning.c", "tif_write.c",
+            "tif_aux.c",      "tif_close.c",    "tif_codec.c",   "tif_color.c",
+            "tif_compress.c", "tif_dir.c",      "tif_dirinfo.c", "tif_dirread.c",
+            "tif_dirwrite.c", "tif_dumpmode.c", "tif_error.c",   "tif_extension.c",
+            "tif_fax3.c",     "tif_fax3sm.c",   "tif_flush.c",   "tif_getimage.c",
+            "tif_hash_set.c", "tif_luv.c",      "tif_lzw.c",     "tif_next.c",
+            "tif_open.c",     "tif_packbits.c", "tif_predict.c", "tif_print.c",
+            "tif_read.c",     "tif_strip.c",    "tif_swab.c",    "tif_thunder.c",
+            "tif_tile.c",     "tif_unix.c",     "tif_version.c", "tif_warning.c",
+            "tif_write.c",
             // tif_hash_set.c: the custom hash-set (TIFFHashSet*).
             // tif_unix.c: the POSIX fd-based platform IO layer --
             // TIFFOpen/_TIFFmalloc/_TIFFcalloc & friends (image.c calls
@@ -2972,12 +2969,13 @@ pub fn build(b: *std.Build) void {
         // lives at include/X11/xpm.h.
         xpm_mod.addIncludePath(xpm_src.path("include/X11"));
         const xpm_sources = [_][]const u8{
-            "Attrib.c",    "CrBufFrI.c", "CrDatFrI.c",
-            "create.c",    "CrIFrBuf.c", "CrIFrDat.c",
-            "data.c",      "hashtab.c",  "Image.c",    "Info.c",
-            "misc.c",      "parse.c",    "RdFToBuf.c", "RdFToDat.c",
-            "RdFToI.c",    "rgb.c",      "scan.c",
-            "simx.c",      "WrFFrBuf.c", "WrFFrDat.c", "WrFFrI.c",
+            "Attrib.c",   "CrBufFrI.c", "CrDatFrI.c",
+            "create.c",   "CrIFrBuf.c", "CrIFrDat.c",
+            "data.c",     "hashtab.c",  "Image.c",
+            "Info.c",     "misc.c",     "parse.c",
+            "RdFToBuf.c", "RdFToDat.c", "RdFToI.c",
+            "rgb.c",      "scan.c",     "simx.c",
+            "WrFFrBuf.c", "WrFFrDat.c", "WrFFrI.c",
         };
         // K&R-era old-style function definitions (simx.c hexCharToInt)
         // need gnu89; the rest of the lib is plain C89-compatible.
@@ -3003,34 +3001,34 @@ pub fn build(b: *std.Build) void {
     // dependency (build.zig.zon -> lcms2_src), replacing the system
     // liblcms2.  Own module so Emacs config flags do not leak in.
     if (with_lcms2) {
-    const lcms2_src = b.dependency("lcms2_src", .{});
-    const lcms2_mod = b.createModule(.{
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    lcms2_mod.addIncludePath(lcms2_src.path("src"));
-    lcms2_mod.addIncludePath(lcms2_src.path("include"));
-    const lcms2_sources = [_][]const u8{
-        "src/cmsalpha.c", "src/cmscam02.c", "src/cmscgats.c", "src/cmscnvrt.c",
-        "src/cmserr.c", "src/cmsgamma.c", "src/cmsgmt.c", "src/cmshalf.c",
-        "src/cmsintrp.c", "src/cmsio0.c", "src/cmsio1.c", "src/cmslut.c",
-        "src/cmsmd5.c", "src/cmsmtrx.c", "src/cmsnamed.c", "src/cmsopt.c",
-        "src/cmspack.c", "src/cmspcs.c", "src/cmsplugin.c", "src/cmsps2.c",
-        "src/cmssamp.c", "src/cmssm.c", "src/cmstypes.c", "src/cmsvirt.c",
-        "src/cmswtpnt.c", "src/cmsxform.c",
-    };
-    const lcms2_flags = [_][]const u8{ "-O2" };
-    for (lcms2_sources) |lcsrc| {
-        lcms2_mod.addCSourceFile(.{
-            .file = lcms2_src.path(lcsrc),
-            .flags = &lcms2_flags,
+        const lcms2_src = b.dependency("lcms2_src", .{});
+        const lcms2_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
         });
-    }
-    const lcms2_lib = b.addLibrary(.{ .name = "lcms2", .root_module = lcms2_mod });
-    exe.root_module.linkLibrary(lcms2_lib);
-    exe.root_module.addIncludePath(lcms2_src.path("src"));
-    exe.root_module.addIncludePath(lcms2_src.path("include"));
+        lcms2_mod.addIncludePath(lcms2_src.path("src"));
+        lcms2_mod.addIncludePath(lcms2_src.path("include"));
+        const lcms2_sources = [_][]const u8{
+            "src/cmsalpha.c", "src/cmscam02.c", "src/cmscgats.c",  "src/cmscnvrt.c",
+            "src/cmserr.c",   "src/cmsgamma.c", "src/cmsgmt.c",    "src/cmshalf.c",
+            "src/cmsintrp.c", "src/cmsio0.c",   "src/cmsio1.c",    "src/cmslut.c",
+            "src/cmsmd5.c",   "src/cmsmtrx.c",  "src/cmsnamed.c",  "src/cmsopt.c",
+            "src/cmspack.c",  "src/cmspcs.c",   "src/cmsplugin.c", "src/cmsps2.c",
+            "src/cmssamp.c",  "src/cmssm.c",    "src/cmstypes.c",  "src/cmsvirt.c",
+            "src/cmswtpnt.c", "src/cmsxform.c",
+        };
+        const lcms2_flags = [_][]const u8{"-O2"};
+        for (lcms2_sources) |lcsrc| {
+            lcms2_mod.addCSourceFile(.{
+                .file = lcms2_src.path(lcsrc),
+                .flags = &lcms2_flags,
+            });
+        }
+        const lcms2_lib = b.addLibrary(.{ .name = "lcms2", .root_module = lcms2_mod });
+        exe.root_module.linkLibrary(lcms2_lib);
+        exe.root_module.addIncludePath(lcms2_src.path("src"));
+        exe.root_module.addIncludePath(lcms2_src.path("include"));
     }
 
     // SQLite database: the amalgamation built from source as a
@@ -3040,20 +3038,20 @@ pub fn build(b: *std.Build) void {
     // extensions are compiled in so `sqlite-load-extension' works on
     // every target (the vendored build, unlike the platform sqlite3).
     if (with_sqlite3) {
-    const sqlite_src = b.dependency("sqlite_src", .{});
-    const sqlite_mod = b.createModule(.{
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    sqlite_mod.addIncludePath(sqlite_src.path(""));
-    sqlite_mod.addCSourceFile(.{
-        .file = sqlite_src.path("sqlite3.c"),
-        .flags = &.{ "-O2", "-DHAVE_USLEEP", "-DSQLITE_ENABLE_LOAD_EXTENSION" },
-    });
-    const sqlite_lib = b.addLibrary(.{ .name = "sqlite3", .root_module = sqlite_mod });
-    exe.root_module.linkLibrary(sqlite_lib);
-    exe.root_module.addIncludePath(sqlite_src.path(""));
+        const sqlite_src = b.dependency("sqlite_src", .{});
+        const sqlite_mod = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        sqlite_mod.addIncludePath(sqlite_src.path(""));
+        sqlite_mod.addCSourceFile(.{
+            .file = sqlite_src.path("sqlite3.c"),
+            .flags = &.{ "-O2", "-DHAVE_USLEEP", "-DSQLITE_ENABLE_LOAD_EXTENSION" },
+        });
+        const sqlite_lib = b.addLibrary(.{ .name = "sqlite3", .root_module = sqlite_mod });
+        exe.root_module.linkLibrary(sqlite_lib);
+        exe.root_module.addIncludePath(sqlite_src.path(""));
     }
 
     // Tree-sitter (HAVE_TREE_SITTER): ts_* symbols from src/treesit.c.
@@ -3066,12 +3064,12 @@ pub fn build(b: *std.Build) void {
     // is undef'd, while src/treesit.c still compiles (its ts_* bodies are
     // #if HAVE_TREE_SITTER-gated out) to keep treesit-available-p present.
     if (with_tree_sitter) {
-    const tree_sitter = b.dependency("tree_sitter", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    exe.root_module.linkLibrary(tree_sitter.artifact("tree-sitter"));
-    exe.root_module.addIncludePath(tree_sitter.path("lib/include"));
+        const tree_sitter = b.dependency("tree_sitter", .{
+            .target = target,
+            .optimize = optimize,
+        });
+        exe.root_module.linkLibrary(tree_sitter.artifact("tree-sitter"));
+        exe.root_module.addIncludePath(tree_sitter.path("lib/include"));
     }
 
     // GnuTLS (HAVE_GNUTLS): gnutls_* symbols from src/gnutls.c.  Built
@@ -3383,17 +3381,29 @@ pub fn build(b: *std.Build) void {
             providers: []const []const u8,
         };
         // Provider sets are per-platform: the POSIX ACL stack is compiled
-        // only where libacl exists (glibc-Linux; macOS uses a stub since
-        // its config's HAVE_ACL_LIBACL_H would pull <acl/libacl.h>), and
-        // the Windows tools need the mingw shims (stpcpy, nl_langinfo)
-        // plus the Zig gnulib-tempname mkostemp.
+        // only where the target is the native glibc toolchain (macOS and
+        // foreign cross targets use a stub; macOS's config would otherwise
+        // pull <acl/libacl.h>), and the Windows tools need the mingw shims
+        // (stpcpy, nl_langinfo) plus the Zig gnulib-tempname mkostemp.
+        const tools_native_linux_glibc =
+            target.result.cpu.arch == b.graph.host.result.cpu.arch and
+            target.result.os.tag == b.graph.host.result.os.tag and
+            target.result.abi == b.graph.host.result.abi and
+            target.result.os.tag == .linux and !is_musl;
         const emacsclient_providers: []const []const u8 = if (is_windows)
             &.{
-                "lib/c-ctype.c",        "lib/realloc.c",
-                "lib/strnul.c",         "lib/memeq.c",
-                "lib/getline.c",        "lib/getdelim.c",
+                "lib/c-ctype.c",    "lib/realloc.c",
+                "lib/strnul.c",     "lib/memeq.c",
+                "lib/getline.c",    "lib/getdelim.c",
                 "lib/w32/stpcpy.c",
             }
+        else if (is_musl or !tools_native_linux_glibc)
+            // Static musl has no libacl and USE_ACL is disabled.  Foreign
+            // cross targets cannot assume a target libacl in the Zig sysroot.
+            // Reuse the no-ACL stub: emacsclient only uses file_has_acl
+            // defensively before connecting to a local socket, and returning
+            // 0 matches an ACL-unavailable platform.
+            &.{ "lib/c-ctype.c", "lib/realloc.c", "lib/macos-file-has-acl-stub.c", "lib/strnul.c", "lib/memeq.c" }
         else if (target.result.os.tag == .macos)
             // macOS lacks SOCK_CLOEXEC, so emacsclient.c's cloexec_socket()
             // takes its fcntl(F_SETFD, FD_CLOEXEC) fallback; gnulib's
@@ -3406,31 +3416,39 @@ pub fn build(b: *std.Build) void {
             &.{ "lib/c-ctype.c", "lib/realloc.c", "lib/file-has-acl.c", "lib/strnul.c", "lib/acl-errno-valid.c", "lib/memeq.c" };
         const etags_providers: []const []const u8 = if (is_windows)
             &.{
-                "lib/c-ctype.c",           "lib/binary-io.c",
-                "lib/streq.c",             "lib/realloc.c",
+                "lib/c-ctype.c", "lib/binary-io.c",
+                "lib/streq.c",   "lib/realloc.c",
                 "lib/regex.c", // includes regcomp/regexec/regex_internal
-                "lib/c-strcasecmp.c",      "lib/c-strncasecmp.c",
-                "lib/memeq.c",             "lib/malloc/dynarray_resize.c",
-                "lib/w32/stpcpy.c",        "lib/w32/nl_langinfo.c",
+                "lib/c-strcasecmp.c",
+                "lib/c-strncasecmp.c",
+                "lib/memeq.c",
+                "lib/malloc/dynarray_resize.c",
+                "lib/w32/stpcpy.c",
+                "lib/w32/nl_langinfo.c",
             }
         else if (target.result.os.tag == .macos)
             // The macOS flags rename the gnulib getopt surface to rpl_ (see
             // libsrc_flags above), so the implementation is linked in too.
             &.{
-                "lib/c-ctype.c",           "lib/binary-io.c",
-                "lib/streq.c",             "lib/realloc.c",
+                "lib/c-ctype.c", "lib/binary-io.c",
+                "lib/streq.c",   "lib/realloc.c",
                 "lib/regex.c", // includes regcomp/regexec/regex_internal
-                "lib/c-strcasecmp.c",      "lib/c-strncasecmp.c",
-                "lib/memeq.c",             "lib/malloc/dynarray_resize.c",
-                "lib/getopt.c",            "lib/getopt1.c",
+                "lib/c-strcasecmp.c",
+                "lib/c-strncasecmp.c",
+                "lib/memeq.c",
+                "lib/malloc/dynarray_resize.c",
+                "lib/getopt.c",
+                "lib/getopt1.c",
             }
         else
             &.{
-                "lib/c-ctype.c",           "lib/binary-io.c",
-                "lib/streq.c",             "lib/realloc.c",
+                "lib/c-ctype.c", "lib/binary-io.c",
+                "lib/streq.c",   "lib/realloc.c",
                 "lib/regex.c", // includes regcomp/regexec/regex_internal
-                "lib/c-strcasecmp.c",      "lib/c-strncasecmp.c",
-                "lib/memeq.c",             "lib/malloc/dynarray_resize.c",
+                "lib/c-strcasecmp.c",
+                "lib/c-strncasecmp.c",
+                "lib/memeq.c",
+                "lib/malloc/dynarray_resize.c",
             };
         const tools = [_]Tool{
             .{
@@ -3465,11 +3483,11 @@ pub fn build(b: *std.Build) void {
                     .flags = libsrc_flags,
                 });
             }
-            // emacsclient's file_has_acl needs libacl on glibc-Linux;
-            // upstream links FILE_HAS_ACL_LIB there too.  Gated on the
-            // -Dwith-acl switch (the ACL providers are dropped on
-            // !with_acl... keep in sync with emacsclient_providers above).
-            if (target.result.os.tag == .linux and target.result.abi != .musl and with_acl)
+            // emacsclient's file_has_acl needs libacl only on the native
+            // glibc-Linux toolchain; upstream links FILE_HAS_ACL_LIB there
+            // too.  Gated on -Dwith-acl (the ACL providers are dropped on
+            // !with_acl; keep in sync with emacsclient_providers above).
+            if (tools_native_linux_glibc and with_acl)
                 tool_exe.root_module.linkSystemLibrary("acl", .{});
             if (is_windows and std.mem.eql(u8, t.name, "emacsclient")) {
                 // w32_window_app (emacsclient.c:412) calls InitCommonControls.
@@ -3502,8 +3520,7 @@ pub fn build(b: *std.Build) void {
             // substitute in lib/macos-tool FIRST, then lib/ itself for
             // the rest of the gnulib headers (module include paths keep
             // their add order and follow the per-file -I flags).
-            if (target.result.os.tag == .macos)
-            {
+            if (target.result.os.tag == .macos) {
                 tool_exe.root_module.addIncludePath(b.path("lib/macos-tool"));
                 tool_exe.root_module.addIncludePath(b.path("lib"));
             }
@@ -3514,8 +3531,7 @@ pub fn build(b: *std.Build) void {
             // getopt.c+getopt1.c implementation (verified to compile for the
             // MSVC ABI).  lib/getopt.h requires <config.h> first, which the
             // flags' -DHAVE_CONFIG_H + target-config include path satisfy.
-            if (target.result.abi == .msvc and (std.mem.eql(u8, t.name, "emacsclient") or std.mem.eql(u8, t.name, "etags")))
-            {
+            if (target.result.abi == .msvc and (std.mem.eql(u8, t.name, "emacsclient") or std.mem.eql(u8, t.name, "etags"))) {
                 tool_exe.root_module.addIncludePath(b.path("lib/macos-tool"));
                 tool_exe.root_module.addCSourceFile(.{
                     .file = b.path("lib/getopt.c"),
@@ -3902,8 +3918,8 @@ pub fn build(b: *std.Build) void {
     // exactly as it already does for GNU.
     const host_can_run_target = is_native_target or
         (b.graph.host.result.os.tag == .windows and
-        target.result.os.tag == .windows and
-        target.result.cpu.arch == b.graph.host.result.cpu.arch);
+            target.result.os.tag == .windows and
+            target.result.cpu.arch == b.graph.host.result.cpu.arch);
     if (host_can_run_target) b.getInstallStep().dependOn(dump_compiled_step);
 
     // `zig build install -p <dir>` must yield a self-consistent, runnable
@@ -4170,9 +4186,9 @@ pub fn build(b: *std.Build) void {
         // exit, threadsafety).  Requires the mod-test build above.
         const run_module_tests = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/emacs", "--batch",
-            "-L", "test/src",
-            "-l", "test/src/emacs-module-tests.el",
-            "-f", "ert-run-tests-batch-and-exit",
+            "-L",                  "test/src",
+            "-l",                  "test/src/emacs-module-tests.el",
+            "-f",                  "ert-run-tests-batch-and-exit",
         });
         run_module_tests.setCwd(b.path("."));
         run_module_tests.step.dependOn(&run_dump_compiled.step);
@@ -4197,8 +4213,7 @@ pub fn build(b: *std.Build) void {
     // gates this for the same reason as the dump: a Windows host runs BOTH
     // ABI backends' exes and .zeln shared objects, so the msvc target gets
     // the full .zeln feature steps as well.
-    if (enable_native_comp_zig and host_can_run_target and !is_musl)
-    {
+    if (enable_native_comp_zig and host_can_run_target and !is_musl) {
         // The zeln-compile tool: a host Zig executable that parses a
         // zunit, emits the Tier-0 .ll, and drives `zig cc -shared`.
         // Mirrors compile_lisp_tool (an addExecutable over a tools/
@@ -4239,7 +4254,7 @@ pub fn build(b: *std.Build) void {
         // zig-out/bin (a real directory; zig-out/etc is a symlink to the
         // source tree and must not be polluted by spike artifacts).
         const spike_ser = b.addSystemCommand(&[_][]const u8{
-            "./zig-out/bin/emacs", "--batch", "--eval",
+            "./zig-out/bin/emacs",                                   "--batch", "--eval",
             "(comp-z-write-spike-zunit \"zig-out/bin/zeln-spike\")",
         });
         spike_ser.setCwd(b.path("."));
@@ -4281,22 +4296,23 @@ pub fn build(b: *std.Build) void {
         // truth); build.zig only needs the fn names here to mint one
         // zeln-compile run step per fn (zeln-compile consumes one zunit).
         const diff_names = [_][]const u8{
-            "inc", "arith", "abs", "cadr", "conslist", "loop",
-            "rec", "fmt", "list3", "strpred", "rest", "list6", "list7", "const2",
+            "inc",      "arith",    "abs",       "cadr",       "conslist", "loop",
+            "rec",      "fmt",      "list3",     "strpred",    "rest",     "list6",
+            "list7",    "const2",
             // ---- M2 corpus (one+ per new opcode group) ----
-            "dynvar", "saveex", "saverest", "savebuf", "unwind",
-            "condcase", "catchself", "catchcross",
-            "vecstr", "asetop", "concatn", "listops", "consmut", "nconcop",
-            "bufrange", "bufmove", "matchops", "strcase", "arith2",
-            "symfns", "fnsym", "markerop", "bufpred",
+              "dynvar",    "saveex",     "saverest", "savebuf",
+            "unwind",   "condcase", "catchself", "catchcross", "vecstr",   "asetop",
+            "concatn",  "listops",  "consmut",   "nconcop",    "bufrange", "bufmove",
+            "matchops", "strcase",  "arith2",    "symfns",     "fnsym",    "markerop",
+            "bufpred",
         };
 
         // (a) Serialize: emacs --batch -l zeln-diff.el --eval run-serialize.
         // Produces zig-out/bin/zeln-diff/<name>.{zunit,manifest} per fn.
         const diff_ser = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/emacs", "--batch",
-            "-l", "build-aux/zeln-diff.el",
-            "--eval", "(zeln-diff-run-serialize)",
+            "-l",                  "build-aux/zeln-diff.el",
+            "--eval",              "(zeln-diff-run-serialize)",
         });
         diff_ser.setCwd(b.path("."));
         diff_ser.step.dependOn(&run_dump_compiled.step);
@@ -4311,8 +4327,8 @@ pub fn build(b: *std.Build) void {
         // .zeln is produced).
         const diff_harness = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/emacs", "--batch",
-            "-l", "build-aux/zeln-diff.el",
-            "--eval", "(zeln-diff-run-harness)",
+            "-l",                  "build-aux/zeln-diff.el",
+            "--eval",              "(zeln-diff-run-harness)",
         });
         diff_harness.setCwd(b.path("."));
         diff_harness.step.dependOn(&run_dump_compiled.step);
@@ -4426,6 +4442,25 @@ pub fn build(b: *std.Build) void {
         );
         check_zeln_step.dependOn(&run_check_zeln.step);
 
+        // ---- full-suite AOT + in-process JIT gate -------------------------
+        // Same .zeln-backed 582-test run as check-zeln, but the runtime
+        // JIT gate is armed in the Emacs children.  This deliberately goes
+        // through a separate ZELN_TEST_JIT control so it cannot leak into
+        // loaddefs/dump children.
+        const run_check_zeln_jit = b.addRunArtifact(run_check_tool);
+        run_check_zeln_jit.setCwd(b.path("."));
+        run_check_zeln_jit.setEnvironmentVariable("ZELN_LOAD_PATH", "zig-out/zeln-cache");
+        run_check_zeln_jit.setEnvironmentVariable("ZELN_TEST_JIT", "1");
+        run_check_zeln_jit.step.dependOn(&run_populate.step);
+        run_check_zeln_jit.step.dependOn(&run_dump_compiled.step);
+        run_check_zeln_jit.step.dependOn(&run_loaddefs_final.step);
+        run_check_zeln_jit.step.dependOn(emacs_wrapper_step);
+        const check_zeln_jit_step = b.step(
+            "check-zeln-jit",
+            "Run 582 built-in tests with .zeln loading and the runtime JIT gate on",
+        );
+        check_zeln_jit_step.dependOn(&run_check_zeln_jit.step);
+
         // ---- zeln-fdo: the Z5 auto profile-guided recompilation loop.
         // build-aux/zeln-fdo.el drives the full closed loop on a SIMULATED
         // .zeln: build a 2-fn fixture, serialize + compile it, load with
@@ -4439,8 +4474,8 @@ pub fn build(b: *std.Build) void {
         // zeln-compile (the harness spawns it itself).
         const run_fdo = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/emacs", "--batch",
-            "-l", "build-aux/zeln-fdo.el",
-            "--eval", "(zeln-fdo-run)",
+            "-l",                  "build-aux/zeln-fdo.el",
+            "--eval",              "(zeln-fdo-run)",
         });
         run_fdo.setCwd(b.path("."));
         run_fdo.setEnvironmentVariable("ZELN_COMPILE", b.fmt("zig-out/bin/{s}", .{zeln_compile_bin}));
@@ -4465,8 +4500,8 @@ pub fn build(b: *std.Build) void {
         // ZELN_PGO_HAMMER (default 150000/round) for quick CI runs.
         const run_pgo = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/emacs", "--batch",
-            "-l", "build-aux/zeln-pgo.el",
-            "--eval", "(zeln-pgo-run)",
+            "-l",                  "build-aux/zeln-pgo.el",
+            "--eval",              "(zeln-pgo-run)",
         });
         run_pgo.setCwd(b.path("."));
         run_pgo.setEnvironmentVariable("ZELN_COMPILE", b.fmt("zig-out/bin/{s}", .{zeln_compile_bin}));
@@ -4479,6 +4514,114 @@ pub fn build(b: *std.Build) void {
             "Z7: multi-fixture PGO closed-loop test (6 workload shapes on any native OS)",
         );
         zeln_pgo_step.dependOn(&run_pgo.step);
+
+        // ---- zeln-jit-unit: run the emitter/compiler tests from the root
+        // graph.  The smoke gate depends on these so an executable gate
+        // cannot pass while the platform fallback or instruction encoding
+        // invariants have regressed underneath it.
+        const zeln_jit_unit_mod = b.createModule(.{
+            .root_source_file = b.dependency("zeln_jit", .{}).path("src/jit.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        });
+        const zeln_jit_unit_tests = b.addTest(.{
+            .root_module = zeln_jit_unit_mod,
+        });
+        const run_zeln_jit_unit = b.addRunArtifact(zeln_jit_unit_tests);
+        const zeln_jit_unit_step = b.step(
+            "zeln-jit-unit",
+            "Run zeln-jit emitter/compiler unit tests",
+        );
+        zeln_jit_unit_step.dependOn(&run_zeln_jit_unit.step);
+
+        // ---- zeln-jit-smoke: a tiny executable gate for the in-process
+        // JIT.  It checks both correctness and seam behavior: fixed-arity
+        // machine-code dispatch, rebuilt-closure constants rebinding,
+        // and a Lisp error crossing a generated frame.  On non-x86_64 the
+        // Lisp gate reports SKIP and exits successfully; CI runs the full
+        // JIT suite only on x86_64 targets where it can prove dispatch.
+        const run_jit_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs", "--batch",
+            "-l",                  "build-aux/zeln-jit-smoke.el",
+            "--eval",              "(zeln-jit-smoke-run)",
+        });
+        run_jit_smoke.setCwd(b.path("."));
+        run_jit_smoke.setEnvironmentVariable("ZELN_JIT", "1");
+        run_jit_smoke.setEnvironmentVariable(
+            "ZELN_COMPILE",
+            b.fmt("zig-out/bin/{s}", .{zeln_compile_bin}),
+        );
+        run_jit_smoke.step.dependOn(&run_dump_compiled.step);
+        run_jit_smoke.step.dependOn(&run_loaddefs_final.step);
+        run_jit_smoke.step.dependOn(emacs_wrapper_step);
+        run_jit_smoke.step.dependOn(&install_zeln_compile.step);
+        run_jit_smoke.step.dependOn(&run_zeln_jit_unit.step);
+        const zeln_jit_smoke_step = b.step(
+            "zeln-jit-smoke",
+            "Run the executable in-process JIT smoke/error-path gate",
+        );
+        zeln_jit_smoke_step.dependOn(&run_jit_smoke.step);
+
+        // ---- zeln-interop-smoke: end-to-end transparent replacement gate.
+        // It compiles one fixture with both backends, then runs clean child
+        // Emacs processes for both `native-comp-z-prefer' values and checks
+        // which native unit's file actually won.  Enabled only in combined
+        // builds; zeln-only has no .eln candidate to replace.
+        if (enable_native_comp) {
+            const run_interop_smoke = b.addSystemCommand(&[_][]const u8{
+                "./zig-out/bin/emacs", "--batch",
+                "-l",                  "build-aux/zeln-interop-smoke.el",
+                "--eval",              "(zeln-interop-smoke-run)",
+            });
+            run_interop_smoke.setCwd(b.path("."));
+            run_interop_smoke.setEnvironmentVariable(
+                "ZELN_COMPILE",
+                b.fmt("zig-out/bin/{s}", .{zeln_compile_bin}),
+            );
+            run_interop_smoke.setEnvironmentVariable("ZELN_EMACS", "zig-out/bin/emacs");
+            run_interop_smoke.step.dependOn(&run_dump_compiled.step);
+            run_interop_smoke.step.dependOn(&run_loaddefs_final.step);
+            run_interop_smoke.step.dependOn(emacs_wrapper_step);
+            run_interop_smoke.step.dependOn(&install_zeln_compile.step);
+            const zeln_interop_smoke_step = b.step(
+                "zeln-interop-smoke",
+                "Verify transparent .eln/.zeln selection by native-comp-z-prefer",
+            );
+            zeln_interop_smoke_step.dependOn(&run_interop_smoke.step);
+        }
+
+        // ---- zeln-jit-bench: interpreter / AOT / in-process JIT timing.
+        // The benchmark force-compiles an identity-distinct clone of each
+        // workload, verifies zeln-jit-compiled-p and every JIT result, then
+        // times the interpreter and JIT clones in one process without letting
+        // the interpreter A/B closure cross the hotness gate.  It also runs
+        // the existing .zeln AOT compile/correctness path, so native/jit is
+        // measured over the same program shapes.
+        const run_jit_bench = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs", "--batch",
+            "-l",                  "build-aux/zeln-bench.el",
+            "--eval",              "(zeln-bench-run nil t)",
+        });
+        run_jit_bench.setCwd(b.path("."));
+        run_jit_bench.setEnvironmentVariable("ZELN_COMPILE", b.fmt("zig-out/bin/{s}", .{zeln_compile_bin}));
+        run_jit_bench.setEnvironmentVariable("ZELN_JIT", "1");
+        run_jit_bench.setEnvironmentVariable(
+            "ZIG_GLOBAL_CACHE_DIR",
+            b.fmt("{s}/zeln-jit-bench-global", .{b.graph.global_cache_root.path orelse ".zig-cache"}),
+        );
+        run_jit_bench.setEnvironmentVariable(
+            "ZIG_LOCAL_CACHE_DIR",
+            b.fmt("{s}/zeln-jit-bench-cache", .{b.cache_root.path orelse ".zig-cache"}),
+        );
+        run_jit_bench.step.dependOn(&install_zeln_compile.step);
+        run_jit_bench.step.dependOn(&run_dump_compiled.step);
+        run_jit_bench.step.dependOn(&run_loaddefs_final.step);
+        run_jit_bench.step.dependOn(emacs_wrapper_step);
+        const zeln_jit_bench_step = b.step(
+            "zeln-jit-bench",
+            "Perf comparison: interpreter vs .zeln AOT vs in-process JIT (verified JIT dispatch)",
+        );
+        zeln_jit_bench_step.dependOn(&run_jit_bench.step);
 
         // ---- bench-check: real-suite perf comparison (interpreter vs
         // .zeln) over the SAME 582 built-in tests.  bench-tests runs the
@@ -4517,54 +4660,60 @@ pub fn build(b: *std.Build) void {
     // through std.debug.print, which is cross-platform and needs only the
     // Zig runtime.  The banner text uses the same wording as the prior echo.
     const helptext = std.fmt.allocPrint(b.allocator,
-            \\Emacs Zig Native Build
-            \\======================
-            \\
-            \\Available steps:
-            \\  zig build                   - Build temacs + emacs wrapper
-            \\  zig build dump              - Dump a runnable bootstrap-emacs.pdmp
-            \\  zig build compile-lisp      - Byte-compile lisp/ (incremental)
-            \\  zig build dump-compiled     - Re-dump with compiled lisp loaded
-            \\  zig build smoke             - Verify dumped emacs runs
-            \\  zig build check             - Run built-in ert test suites (582 tests across 40 suites)
-            \\  zig build test              - Alias of check
-            \\  zig build check-all         - Run ALL ert suites (no skip; classify failures for planning)
-            \\  zig build generate-headers  - Generate Gnulib .gl.h headers
-            \\  zig build generate-unidata  - Generate charscript/emoji-zwj.el
-            \\  zig build generate-charsets - Generate charset maps
-            \\  zig build generate-charprop - Generate unicode charprop/uni-*.el
-            \\  zig build generate-loaddefs - Generate autoload files
-            \\  zig build generate-cedet-grammars - Generate cedet parser files
-            \\  zig build help              - Show this message
-            \\
-            \\Windows backends (via -Dtarget, Windows host only):
-            \\  -Dtarget=x86_64-windows-gnu   - GNU/MinGW backend (default; zig's bundled headers+libs)
-            \\  -Dtarget=x86_64-windows-msvc  - MSVC backend (requires Visual Studio / Windows SDK)
-            \\
-            \\Native-comp Zig path (opt-in: -Dnative-comp-zig=true, glibc-Linux):
-            \\  zig build zeln-compile-spike - M0 spike: build test-spike.zeln
-            \\  zig build zeln-diff         - M1/M2 differential test (N/N identical)
-            \\  zig build populate-zeln-cache - M2b: populate .zeln-cache from lisp/
-            \\  zig build check-zeln        - M2b: 582 built-in tests via .zeln
-            \\  zig build zeln-fdo          - Z5: auto profile-guided recompile loop
-            \\  zig build zeln-pgo          - Z7: multi-fixture PGO test (6 workload shapes)
-            \\
-            \\Native-comp gccjit path (opt-in: -Dnative-comp=true, native glibc-Linux;
-            \\  requires libgccjit). Coexists with -Dnative-comp-zig: when both are on,
-            \\  `native-comp-z-prefer' (nil=prefer .eln, t=prefer .zeln) picks the
-            \\  artifact loaded where a .elc has both a .eln and a .zeln.
-            \\
-            \\Runnable commands (after `zig build dump`):
-            \\  zig-out/bin/temacs          - raw temacs (needs --dump-file=...)
-            \\  zig-out/bin/emacs           - wrapper that locates temacs+pdmp and
-            \\                               forwards args (e.g. `--version`)
-            \\
-            \\Status: Linux TTY build works
-            \\  - zig build: temacs (non-PIE, -O0) + emacs wrapper
-            \\  - zig build dump: runnable emacs (32.0.50)
-            \\  - zig build check: 582/582 built-in tests pass
-            \\
-        , .{}) catch @panic("OOM");
+        \\Emacs Zig Native Build
+        \\======================
+        \\
+        \\Available steps:
+        \\  zig build                   - Build temacs + emacs wrapper
+        \\  zig build dump              - Dump a runnable bootstrap-emacs.pdmp
+        \\  zig build compile-lisp      - Byte-compile lisp/ (incremental)
+        \\  zig build dump-compiled     - Re-dump with compiled lisp loaded
+        \\  zig build smoke             - Verify dumped emacs runs
+        \\  zig build check             - Run built-in ert test suites (582 tests across 40 suites)
+        \\  zig build test              - Alias of check
+        \\  zig build check-all         - Run ALL ert suites (no skip; classify failures for planning)
+        \\  zig build generate-headers  - Generate Gnulib .gl.h headers
+        \\  zig build generate-unidata  - Generate charscript/emoji-zwj.el
+        \\  zig build generate-charsets - Generate charset maps
+        \\  zig build generate-charprop - Generate unicode charprop/uni-*.el
+        \\  zig build generate-loaddefs - Generate autoload files
+        \\  zig build generate-cedet-grammars - Generate cedet parser files
+        \\  zig build help              - Show this message
+        \\
+        \\Windows backends (via -Dtarget, Windows host only):
+        \\  -Dtarget=x86_64-windows-gnu   - GNU/MinGW backend (default; zig's bundled headers+libs)
+        \\  -Dtarget=x86_64-windows-msvc  - MSVC backend (requires Visual Studio / Windows SDK)
+        \\
+        \\Native-comp Zig path (opt-in: -Dnative-comp-zig=true; native
+        \\  Linux/macOS/Windows targets; JIT execution is x86-64 only):
+        \\  zig build zeln-compile-spike - M0 spike: build test-spike.zeln
+        \\  zig build zeln-diff         - M1/M2 differential test (N/N identical)
+        \\  zig build populate-zeln-cache - M2b: populate .zeln-cache from lisp/
+        \\  zig build check-zeln        - M2b: 582 built-in tests via .zeln
+        \\  zig build check-zeln-jit    - 582 built-in tests with AOT + runtime JIT
+        \\  zig build zeln-jit-unit     - zeln-jit emitter/compiler unit tests
+        \\  zig build zeln-jit-smoke    - executable in-process JIT/error-path gate
+        \\  zig build zeln-jit-bench    - interpreter/AOT/JIT performance comparison
+        \\  zig build zeln-fdo          - Z5: auto profile-guided recompile loop
+        \\  zig build zeln-pgo          - Z7: multi-fixture PGO test (6 workload shapes)
+        \\
+        \\Native-comp gccjit path (opt-in: -Dnative-comp=true, native glibc-Linux;
+        \\  requires libgccjit). Coexists with -Dnative-comp-zig: when both are on,
+        \\  `native-comp-z-prefer' (nil=prefer .eln, t=prefer .zeln) picks the
+        \\  artifact loaded where a .elc has both a .eln and a .zeln.
+        \\  zig build zeln-interop-smoke - end-to-end .eln/.zeln selection gate
+        \\
+        \\Runnable commands (after `zig build dump`):
+        \\  zig-out/bin/temacs          - raw temacs (needs --dump-file=...)
+        \\  zig-out/bin/emacs           - wrapper that locates temacs+pdmp and
+        \\                               forwards args (e.g. `--version`)
+        \\
+        \\Status: Linux TTY build works
+        \\  - zig build: temacs (non-PIE, -O0) + emacs wrapper
+        \\  - zig build dump: runnable emacs (32.0.50)
+        \\  - zig build check: 582/582 built-in tests pass
+        \\
+    , .{}) catch @panic("OOM");
     const help_step = b.step("help", "Show build information");
     const HelpStep = struct {
         step: std.Build.Step,
@@ -4675,40 +4824,37 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
 
     // Allowlist: substring port of the former `grep -E` allowlist.
     const allowlist = [_][]const u8{
-        "acl",        "alloca",       "binary-io",      "boot-time",
-        "byteswap",   "c-ctype",      "c-str",          "canonicalize",
-        "careadlinkat", "chmodat",    "cloexec",        "close-stream",
-        "copy-file-range", "dirent",  "dirfd",          "dtoastr",
-        "dtotimespec", "dup2",        "fallocat",       "fchmodat",
-        "fcntl",      "fd-open",      "filemode",       "filename",
-        "filevercmp", "flexmember",   "fpending",       "fingerprint",
-        "futimens",
-        "free",       "fsusage",      "gen_tempname",   "get-permissions",
-        "getdelim",   "getrandom",    "getline",        "getprogname",
-        "hard-locale", "isset",       "issymlink",      "lstat",
-        "malloc",     "md5",          "memchr",         "memcmp",
-        "memeq",      "memmem",       "memset_explicit", "memmove",
-        "memcpy",
-        "memrchr",    "mkdir",        "mkancesdirs",    "mkostemp",
-        "mktime",     "nanosleep",    "nproc",          "nstrftime",
-        "openat-die", "openat",       "pathmax",        "pending",
-        "pipe2",      "pthread",      "qcopy-acl",      "quotearl",
-        "read",       "realloc",      "same",           "save-cwd",
-        "set-permissions", "sha",     "sig2str",        "sigdescr_np",
-        "streq",      "stat",         "stdbit",         "stdc",
-        "strchr",     "strcmp",       "strchrnul",      "strcpy",
-        "strerror",   "strlen",       "string",         "strncase",
-        "strndup",    "strnlen",      "strncmp",        "strnul",
-        "strto",
-        "tempname",   "time",         "timespec",       "u64",
-        "unsetenv",   "utimens",      "waitpid",        "wctype",
-        "xmalloc",
+        "acl",             "alloca",      "binary-io",       "boot-time",
+        "byteswap",        "c-ctype",     "c-str",           "canonicalize",
+        "careadlinkat",    "chmodat",     "cloexec",         "close-stream",
+        "copy-file-range", "dirent",      "dirfd",           "dtoastr",
+        "dtotimespec",     "dup2",        "fallocat",        "fchmodat",
+        "fcntl",           "fd-open",     "filemode",        "filename",
+        "filevercmp",      "flexmember",  "fpending",        "fingerprint",
+        "futimens",        "free",        "fsusage",         "gen_tempname",
+        "get-permissions", "getdelim",    "getrandom",       "getline",
+        "getprogname",     "hard-locale", "isset",           "issymlink",
+        "lstat",           "malloc",      "md5",             "memchr",
+        "memcmp",          "memeq",       "memmem",          "memset_explicit",
+        "memmove",         "memcpy",      "memrchr",         "mkdir",
+        "mkancesdirs",     "mkostemp",    "mktime",          "nanosleep",
+        "nproc",           "nstrftime",   "openat-die",      "openat",
+        "pathmax",         "pending",     "pipe2",           "pthread",
+        "qcopy-acl",       "quotearl",    "read",            "realloc",
+        "same",            "save-cwd",    "set-permissions", "sha",
+        "sig2str",         "sigdescr_np", "streq",           "stat",
+        "stdbit",          "stdc",        "strchr",          "strcmp",
+        "strchrnul",       "strcpy",      "strerror",        "strlen",
+        "string",          "strncase",    "strndup",         "strnlen",
+        "strncmp",         "strnul",      "strto",           "tempname",
+        "time",            "timespec",    "u64",             "unsetenv",
+        "utimens",         "waitpid",     "wctype",          "xmalloc",
     };
     // Exclusion: substring port of the former `grep -v` list.
     const exclude = [_][]const u8{
-        "regex",          "strtoimax",     "strtoumax",
-        "printf",         "strftime",      "at-func",
-        "dynarray-skeleton", "ialloca",    "malloc/dynarray",
+        "regex",               "strtoimax",       "strtoumax",
+        "printf",              "strftime",        "at-func",
+        "dynarray-skeleton",   "ialloca",         "malloc/dynarray",
         "pthread_sigmask",
         // lib/getrandom.c: with HAVE_GETRANDOM and the rpl substitution
         // disabled (lib/sys/random.h guards `#define getrandom rpl_getrandom`
@@ -4716,14 +4862,14 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // getrandom -- its internal call resolves to its own definition,
         // overflowing the stack at startup. Callers (fns.c, sysdep.c) use the
         // libc getrandom directly, so the gnulib rpl provider is unneeded.
-        "getrandom",
+            "getrandom",
         // lib/fchmodat.c: same self-recursion as getrandom. lib/sys/stat.h
         // guards `#define fchmodat rpl_fchmodat` under `#if 0` (rpl off), so
         // compiling this file defines a plain `fchmodat` whose internal
         // orig_fchmodat call resolves to itself -> stack overflow. It crashes
         // byte-compilation (the byte-compiler fchmodat's its temp files).
         // Callers use the libc fchmodat (HAVE_FCHMODAT=1).
-        "fchmodat",
+              "fchmodat",
         // lib/futimens.c + lib/utimens.c: with working system futimens and
         // utimensat (HAVE_FUTIMENS=1, HAVE_UTIMENSAT=1) and no rpl rename,
         // linking gnulib's futimens makes fdutimens's internal futimens call
@@ -4731,14 +4877,13 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // with keep-time t busy-loops; dired-copy-preserve-time defaults to
         // t, so dired copies and copy-directory hang too). Callers use the
         // libc functions (fileio.c set-file-times/copy-file keep-time).
-        "futimens",
-        "utimens",
+        "futimens",            "utimens",
         // lib/memeq.c + lib/streq.c are provided by an independent Zig
         // package (tools/gnulib-str, dependency `gnulib_str`) instead of C
         // -- runtime gnulib string primitives replaced by Zig. Excluded
         // here so the C sources are not compiled; the package's exported
         // symbols are linked into temacs below.
-        "memeq",
+                "memeq",
         "streq",
         // lib/c-ctype.c is provided by an independent Zig package
         // (tools/gnulib-ctype, dependency `gnulib_ctype`) instead of C --
@@ -4746,26 +4891,22 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // Zig. Excluded here so the C source is not compiled; the package's
         // exported symbols are linked into temacs below. (make-docfile, a
         // host tool, still compiles its own copy of lib/c-ctype.c.)
-        "c-ctype",
+                      "c-ctype",
         // lib/stdc_leading_zeros.c, lib/stdc_trailing_zeros.c,
         // lib/stdc_count_ones.c, lib/stdc_bit_width.c are provided by an
         // independent Zig package (tools/gnulib-stdbit, dependency
         // `gnulib_stdbit`) -- the C23 stdbit bit-count functions replaced
         // by Zig @clz/@ctz/@popCount. Excluded by exact name so
         // lib/stdc_memreverse8u.c (not yet replaced) still compiles.
-        "stdc_leading_zeros",
-        "stdc_trailing_zeros",
-        "stdc_count_ones",
-        "stdc_bit_width",
+                "stdc_leading_zeros",
+        "stdc_trailing_zeros", "stdc_count_ones", "stdc_bit_width",
         // lib/sha1.c, lib/sha256.c and lib/sha512.c are provided by an
         // independent Zig package (tools/gnulib-hash, dependency
         // `gnulib_hash`) -- native Zig SHA1, SHA-2 (sha224/sha256/
         // sha384/sha512) operating on the gnulib ctx structs. Excluded
         // here so the C sources are not compiled; the package's exported
         // sha1_*/sha256_*/sha512_* symbols are linked into temacs below.
-        "sha1",
-        "sha256",
-        "sha512",
+        "sha1",                "sha256",          "sha512",
         // lib/sha3.c is provided by the same Zig package (tools/gnulib-hash)
         // -- a native Zig SHA-3 (Keccak-f[1600] sponge, FIPS 202) operating
         // on the gnulib struct sha3_ctx. Excluded here so the C source is
@@ -4777,13 +4918,13 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // (RFC 1321). Excluded by exact name so lib/md5-stream.c (the
         // FILE*-reading md5_stream wrapper, still C) keeps compiling and
         // calls the package's exported md5_* symbols.
-        "md5.c",
+                       "md5.c",
         // lib/sig2str.c is provided by an independent Zig package
         // (tools/gnulib-sig2str, dependency `gnulib_sig2str`) -- the
         // signal name<->number conversion (sig2str / str2sig) replaced
         // by native Zig. Excluded here so the C source is not compiled;
         // the package's exported symbols are linked into temacs below.
-        "sig2str",
+                  "sig2str",
         // lib/filemode.c is provided by an independent Zig package
         // (tools/gnulib-filemode, dependency `gnulib_filemode`) -- native
         // Zig strmode/filemodestring (ls-style mode strings). Excluded
@@ -4798,8 +4939,7 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // name so lib/timespec.c (the make_timespec/timespec_cmp extern
         // inline definitions) still compiles; the package's exported
         // symbols are linked into temacs below.
-        "dtotimespec",
-        "timespec-add",
+                   "dtotimespec",     "timespec-add",
         "timespec-sub",
         // lib/timespec.c (the extern-inline definitions of make_timespec,
         // timespec_cmp, timespec_sign and timespectod) is provided by the
@@ -4807,14 +4947,14 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // `gnulib_timespec`). Excluded here so the C source is not
         // compiled; the package's exported symbols are linked into temacs
         // below (callers mostly inline the lib/timespec.h bodies).
-        "timespec",
+               "timespec",
         // lib/filevercmp.c is provided by an independent Zig package
         // (tools/gnulib-filevercmp, dependency `gnulib_filevercmp`) --
         // native Zig Debian-policy version sort (filevercmp /
         // filenvercmp). Excluded here so the C source is not compiled;
         // the package's exported symbols are linked into temacs below
         // (`string-version-lessp').
-        "filevercmp",
+               "filevercmp",
         // lib/sigdescr_np.c is provided by an independent Zig package
         // (tools/gnulib-sigdescr-np, dependency `gnulib_sigdescr_np`) --
         // native Zig signal description strings (sigdescr_np). Excluded
@@ -4826,27 +4966,27 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // processor-count query (num_processors). Excluded here so the
         // C source is not compiled; the package's exported symbol is
         // linked into temacs below (`num-processors').
-        "nproc",
+                "nproc",
         // lib/tempname.c + lib/mkostemp.c are provided by an independent
         // Zig package (tools/gnulib-tempname, dependency
         // `gnulib_tempname`) -- native Zig temp-name generation
         // (gen_tempname / gen_tempname_len / mkostemp). Excluded here so
         // the C sources are not compiled; the package's exported symbols
         // are linked into temacs below (`make-temp-file', filelock).
-        "tempname",
+                  "tempname",
         "mkostemp",
         // lib/fsusage.c is provided by an independent Zig package
         // (tools/gnulib-fsusage, dependency `gnulib_fsusage`) -- native
         // Zig file-system space query (get_fs_usage). Excluded here so
         // the C source is not compiled; the package's exported symbol is
         // linked into temacs below (`file-system-info').
-        "fsusage",
+                   "fsusage",
         // lib/getloadavg.c is provided by an independent Zig package
         // (tools/gnulib-getloadavg, dependency `gnulib_getloadavg`) --
         // native Zig load-average query (getloadavg). Excluded here so
         // the C source is not compiled; the package's exported symbol is
         // linked into temacs below (`load-average').
-        "getloadavg",
+                "getloadavg",
         // lib/careadlinkat.c is provided by an independent Zig package
         // (tools/gnulib-careadlinkat, dependency `gnulib_careadlinkat`)
         // -- native Zig symlink reader (careadlinkat). Excluded here so
@@ -4858,14 +4998,14 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // dependency `gnulib_dtoastr`) -- native Zig dtoastr. Excluded
         // here so the C source is not compiled; the package's exported
         // symbol is linked into temacs below (float printing).
-        "dtoastr",
+               "dtoastr",
         // lib/stat-time.c is provided by an independent Zig package
         // (tools/gnulib-stat-time, dependency `gnulib_stat_time`) --
         // native Zig struct stat timestamp accessors (get_stat_*).
         // Excluded here so the C source is not compiled; the package's
         // exported symbols are linked into temacs below
         // (`file-attributes' time elements).
-        "stat-time",
+                "stat-time",
         // lib/boot-time.c is provided by an independent Zig package
         // (tools/gnulib-boot-time, dependency `gnulib_boot_time`) --
         // native Zig boot-time query (get_boot_time). Excluded here so
@@ -4877,8 +5017,7 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // `gnulib_c_strcase`) -- native Zig ASCII case-insensitive string
         // comparison. Excluded here so the C sources are not compiled;
         // the package's exported symbols are linked into temacs below.
-        "c-strcasecmp",
-        "c-strncasecmp",
+                  "c-strcasecmp",    "c-strncasecmp",
         // lib/qcopy-acl.c, lib/file-has-acl.c, lib/acl-errno-valid.c,
         // lib/acl-internal.c, lib/acl_entries.c, lib/set-permissions.c
         // and lib/get-permissions.c are provided by an independent Zig
@@ -4888,12 +5027,8 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // Excluded here so the C sources are not compiled; the package's
         // exported qcopy_acl symbol is linked into temacs below
         // (preserve-permissions in Fcopy_file).
-        "qcopy-acl",
-        "file-has-acl",
-        "acl-errno-valid",
-        "acl-internal",
-        "acl_entries",
-        "set-permissions",
+        "qcopy-acl",           "file-has-acl",    "acl-errno-valid",
+        "acl-internal",        "acl_entries",     "set-permissions",
         "get-permissions",
         // lib/time_rz.c is provided by an independent Zig package
         // (tools/gnulib-time-rz, dependency `gnulib_time_rz`) -- native
@@ -4904,7 +5039,7 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // compiled; the package's exported symbols are linked into
         // temacs below (time-zone conversions in timefns.c, %Z in
         // nstrftime.c).
-        "time_rz",
+            "time_rz",
         // lib/time_r.c, lib/timegm.c and lib/mktime.c are the last live
         // gnulib C objects; the gnulib-time-rz package's localtime_r /
         // gmtime_r / timegm externs now bind directly to libc (glibc
@@ -4912,9 +5047,8 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // mktime_internal. Excluded here so the C sources are not
         // compiled; the time conversions in src and the Zig package use
         // libc's versions.
-        "time_r",
-        "timegm",
-        "mktime",
+                "time_r",
+        "timegm",              "mktime",
         // lib/close-stream.c, lib/binary-io.c, lib/pipe2.c are provided
         // by an independent Zig package (tools/gnulib-io, dependency
         // `gnulib_io`) -- native Zig close_stream / set_binary_mode /
@@ -4922,9 +5056,8 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // syscalls. Excluded here so the C sources are not compiled;
         // the package's exported symbols are linked into temacs below
         // (exit-time flush, emacs_pipe, `set-binary-mode').
-        "close-stream",
-        "binary-io",
-        "pipe2",
+                 "close-stream",
+        "binary-io",           "pipe2",
         // lib/fpending.c, lib/save-cwd.c, lib/md5-stream.c,
         // lib/strnul.c and lib/u64.c are dead in this build: nothing
         // references their symbols any more (their former callers are
@@ -4932,16 +5065,14 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // save-cwd/md5-stream/strnul/u64 had no callers at all once
         // at-func, fdopendir, native-comp and the hash/string packages
         // were replaced). Excluded so the C sources are not compiled.
-        "fpending",
-        "save-cwd",
-        "md5-stream",
-        "strnul",
+                  "fpending",
+        "save-cwd",            "md5-stream",      "strnul",
         "u64",
         // lib/gettime.c is provided by an independent Zig package
         // (tools/emacs-time, dependency `emacs_time`) -- the realtime
         // clock read (gettime / current_timespec) via per-platform native
         // backends, no libc. Excluded here so the C source is not compiled.
-        "gettime",
+                        "gettime",
         // lib/nanosleep.c is provided by an independent Zig package
         // (tools/emacs-nanosleep, dependency `emacs_nanosleep`) -- the
         // POSIX nanosleep() via per-platform native backends, no libc
@@ -4950,7 +5081,7 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
         // the C source is not compiled; the package's exported
         // `rpl_nanosleep` symbol (gnulib renames nanosleep via lib/time.h)
         // is linked into temacs below.
-        "nanosleep",
+                "nanosleep",
     };
 
     var libdir = try std.Io.Dir.cwd().openDir(io, "lib", .{ .iterate = true });
@@ -4989,17 +5120,7 @@ fn parseLibgnuSources(b: *std.Build, io: std.Io) ![]const []const u8 {
 /// subdir) and `*out_lib_dir` to the `<version>` dir itself (where
 /// libgccjit.so lives).  Both are left empty if no tree is found (the caller
 /// then falls back to the compiler's default search path).  This is the
-/// True when the HOST has libgccjit's header in a private gcc tree
-/// (/usr/lib/gcc/<triplet>/<version>/include/libgccjit.h).  This drives the
-/// -Dnative-comp AUTO default for the native glibc-Linux build: same
-/// filesystem probe as gccDiscoverGccjit, without duplicating its outputs.
-fn gccjitAvailable(b: *std.Build) bool {
-    var inc: []const u8 = "";
-    var lib: []const u8 = "";
-    gccDiscoverGccjit(b, b.graph.io, &inc, &lib);
-    return inc.len > 0;
-}
-
+/// fallback for the compiler's default search path.
 /// gcc-host equivalent of `cc -print-file-name=include`/`=libgccjit.so`, done
 /// without a subprocess (the single-threaded build Io cannot run one) by
 /// iterating the directory tree directly.

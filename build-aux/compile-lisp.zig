@@ -135,8 +135,10 @@ const stampName = "compile-lisp.stamp";
 
 fn freshFinger(io: std.Io, gpa: std.mem.Allocator, cwd: std.Io.Dir, temacs: []const u8, dump: []const u8) stamp.Finger {
     var f = stamp.Finger.init("compile-lisp");
-    f.file(io, cwd, temacs);
-    f.file(io, cwd, dump);
+    // Content, not mtime: bootstrap staging and install steps may rewrite
+    // identical binaries/images on every invocation.
+    f.fileContent(io, cwd, gpa, temacs);
+    f.fileContent(io, cwd, gpa, dump);
     f.file(io, cwd, "build-aux/compile-lisp.zig");
     // .elc are this tool's OUTPUTS (excluded); loaddefs outputs are
     // compile-time inputs and stay fingerprinted.

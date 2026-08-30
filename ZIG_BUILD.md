@@ -1,6 +1,7 @@
 # Emacs Zig Native Build System
 
-这是GNU Emacs的Zig原生构建系统，作为Phase 2的一部分，提供TUI-only构建。
+这是GNU Emacs的Zig原生构建系统，提供跨 Linux/macOS/Windows 的构建与
+原生 AOT/JIT 实验路径；各平台默认 UI 能力见下方构建选项。
 
 > **从 MSYS2/MinGW 迁移到 Zig 构建？** 见 [MIGRATING_MSYS2_TO_ZIG.md](MIGRATING_MSYS2_TO_ZIG.md)
 > （分步迁移指南、构建选项对照、Windows GNU/MSVC 后端安装指南、`build.zig.zon`
@@ -61,8 +62,11 @@ compile-lisp → dump-compiled → 最终 loaddefs 生成 → smoke，因此
   安装 libgccjit（链接 `-lgccjit`），且 `libgccjit.h` 的 include 路径在构建
   时通过 `cc -print-file-name=include` 推导。
 - `-Dnative-comp-zig=[bool]` - Zig/LLVM 原生编译路径（.zeln，
-  `HAVE_NATIVE_COMP_ZIG`，`src/compz.c`）。默认 OFF。仅在本机 glibc-Linux 上
-  生效。与 `-Dnative-comp` **相互独立**，两者可同时开启（M2.5 共存）。
+  `HAVE_NATIVE_COMP_ZIG`，`src/compz.c`）。默认 OFF。可在本机 Linux、
+  macOS 与 Windows 构建和运行；静态 musl 只做编译（不能 `dlopen`）。
+  运行时 AOT/JIT 执行门按平台安全降级：zeln AOT 覆盖原生目标，进程内
+  JIT 目前只支持 x86-64，其它架构保持解释器/AOT。与 `-Dnative-comp`
+  **相互独立**，两者可同时开启（M2.5 共存）。
 - `-Dwith-tree-sitter=[bool]` - 是否启用 tree-sitter（`HAVE_TREE_SITTER`，
   vendored via `zig fetch`），对照上游 `--with-tree-sitter`。默认 ON；设
   `false` 时不链接 vendored 库并把 `HAVE_TREE_SITTER` undef（`treesit-available-p`

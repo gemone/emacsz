@@ -1365,20 +1365,17 @@ android_emacs_init (int argc, char **argv, char *dump_file)
 #ifdef HAVE_NATIVE_COMP_ZIG
   /* zeln-jit gate: resolved ONCE here (main always runs, dump load
      included) so the zero-cost inline read in exec_byte_code sees the
-     real value in every process.  DEFAULT OFF: the engine has a
-     cross-platform execution defect under real Lisp load (the exact
-     bytecode shape passes the standalone unit harness but crashes with
-     real Lisp_Object traffic - traced to inside the freloc call chain:
-     an error gets signaled and the process dies during unwinding/print;
-     the SAME signature hit Linux CI's compile-lisp with SIGSEGV before
-     the build-tool pins, so this is not Windows-specific).  The Windows
-     PORT itself is complete and verified (WinX64 ABI, shadow space,
-     VirtualAlloc arena; entries execute, freloc calls run, errors
-     signal).  ZELN_JIT=1 opts in for engine debugging.  */
+     real value in every process.  Keep the default OFF while the
+     real-Lisp error/unwind audit is in progress; ZELN_JIT=1 opts in.
+     The flag can never arm the x86-only emitter on another CPU.  */
   {
     extern bool zeln_jit_gate_var;
     const char *e = getenv ("ZELN_JIT");
+#ifdef ZELN_JIT_ARCH_X86_64
     zeln_jit_gate_var = (e && e[0] == '1' && e[1] == '\0');
+#else
+    zeln_jit_gate_var = false;
+#endif
   }
 #endif
 

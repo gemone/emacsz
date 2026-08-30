@@ -66,6 +66,15 @@
 
 #define ZELN_F_RELOC_MAX 128
 
+/* Defined after the JIT cache; the hot-call shim below needs only this
+   validated lookup.  Keeping the hot path out of the generic funcall
+   shim lets a compiled closure call another already-compiled closure
+   without re-resolving symbols or rediscovering the closure ABI.  */
+typedef Lisp_Object (*zeln_jit_entry_t) (ptrdiff_t, Lisp_Object *);
+static zeln_jit_entry_t zeln_jit_validated_entry (Lisp_Object fun,
+						  Lisp_Object bytestr);
+static uintmax_t zeln_jit_fast_calls;
+
 typedef struct
 {
   void *link_table[ZELN_F_RELOC_MAX];
@@ -154,6 +163,52 @@ zeln_funcall (ptrdiff_t nargs, Lisp_Object *args)
   return funcall_general (args[0], nargs - 1, args + 1);
 }
 
+/* Hot-call shim for generated code.  ARGS[0] is the callee and
+   ARGS[1..N-1] are the evaluated arguments, exactly as for
+   zeln_funcall.  Take the fast path for a bytecode closure with the
+   exact fixed arity AND a validated JIT entry; those conditions mean
+   the generic dispatch would inevitably reach the same machine code.
+   The callee may be the closure itself or a bare symbol bound to it.
+   Every other callee--symbol alias chains, symbols-with-position,
+   AOT/native objects, optional/rest closures, and not-yet-compiled
+   closures--takes the generic fallback.  This is deliberately not a
+   general `funcall' rewrite.  */
+static Lisp_Object
+zeln_jit_call (ptrdiff_t nargs, Lisp_Object *args)
+{
+  Lisp_Object fun = Qnil;
+  if (nargs > 0
+      && (BARE_SYMBOL_P (args[0]) || CLOSUREP (args[0])))
+    {
+      fun = BARE_SYMBOL_P (args[0])
+	? XBARE_SYMBOL (args[0])->u.s.function
+	: args[0];
+      if (CLOSUREP (fun))
+	{
+	  Lisp_Object template = AREF (fun, CLOSURE_ARGLIST);
+	  if (FIXNUMP (template))
+	    {
+	      ptrdiff_t at = XFIXNUM (template);
+	      ptrdiff_t arity = nargs - 1;
+	      if (! (at & 128) && (at & 127) == arity
+		  && ((at >> 8) & 127) == arity)
+		{
+		  Lisp_Object bytestr = AREF (fun, CLOSURE_CODE);
+		  zeln_jit_entry_t entry =
+		    (STRINGP (bytestr)
+		     ? zeln_jit_validated_entry (fun, bytestr) : NULL);
+		  if (entry != NULL)
+		    {
+		      zeln_jit_fast_calls++;
+		      return entry (arity, args + 1);
+		    }
+		}
+	    }
+	}
+    }
+  return funcall_general (args[0], nargs - 1, args + 1);
+}
+
 /* Branch-test helper.  Returns a RAW 0/1 (NOT a tagged Lisp_Object) so
    the emitter's conditional `br' can test `icmp eq i64 %ret, 0' without
    ever computing Lisp_Object tag bits in the IR (USE_LSB_TAG never
@@ -200,27 +255,10 @@ static Lisp_Object zeln_min      (ptrdiff_t n, Lisp_Object *a) { return Fmin    
 static Lisp_Object zeln_eqlsign  (ptrdiff_t n, Lisp_Object *a) { return Feqlsign  (n, a); }
 static Lisp_Object zeln_gtr      (ptrdiff_t n, Lisp_Object *a) { return Fgtr      (n, a); }
 static Lisp_Object zeln_lss      (ptrdiff_t n, Lisp_Object *a) { return Flss      (n, a); }
-/* ZELN_JIT_TRACE arg precheck: log raw arg words before the C primitive
-   can signal wrong-type-argument, so a bad JIT handoff is visible
-   without surviving the error path.  */
-#define ZELN_JIT_ARGPC					\
-  do {							\
-    const char *tr_ = getenv ("ZELN_JIT_TRACE");	\
-    if (tr_ && tr_[0] == '1' && n >= 1)			\
-      fprintf (stderr, "[jit] %s n=%d a=%p args:",	\
-	       __func__, (int) n, (void *) a);		\
-    if (tr_ && tr_[0] == '1' && n >= 1)			\
-      {							\
-	for (ptrdiff_t i_ = 0; i_ < n && i_ < 4; i_++)	\
-	  fprintf (stderr, " %016"PRIxMAX,		\
-		   (uintmax_t) XLI (a[i_]));		\
-	fprintf (stderr, "\n");				\
-      }							\
-  } while (0)
-static Lisp_Object zeln_geq      (ptrdiff_t n, Lisp_Object *a) { ZELN_JIT_ARGPC; return Fgeq      (n, a); }
-static Lisp_Object zeln_leq      (ptrdiff_t n, Lisp_Object *a) { ZELN_JIT_ARGPC; return Fleq      (n, a); }
-static Lisp_Object zeln_plus     (ptrdiff_t n, Lisp_Object *a) { ZELN_JIT_ARGPC; return Fplus     (n, a); }
-static Lisp_Object zeln_minus    (ptrdiff_t n, Lisp_Object *a) { ZELN_JIT_ARGPC; return Fminus    (n, a); }
+static Lisp_Object zeln_geq      (ptrdiff_t n, Lisp_Object *a) { return Fgeq      (n, a); }
+static Lisp_Object zeln_leq      (ptrdiff_t n, Lisp_Object *a) { return Fleq      (n, a); }
+static Lisp_Object zeln_plus     (ptrdiff_t n, Lisp_Object *a) { return Fplus     (n, a); }
+static Lisp_Object zeln_minus    (ptrdiff_t n, Lisp_Object *a) { return Fminus    (n, a); }
 static Lisp_Object zeln_equal    (ptrdiff_t n, Lisp_Object *a) { return Fequal    (a[0], a[1]); }
 static Lisp_Object zeln_eq       (ptrdiff_t n, Lisp_Object *a) { return Feq       (a[0], a[1]); }
 static Lisp_Object zeln_null     (ptrdiff_t n, Lisp_Object *a) { return Fnull     (a[0]); }
@@ -538,6 +576,7 @@ enum {
   IDX_RESUME,			/* longjmp-caught path: restore top + push val */
   IDX_POPHANDLER,		/* Bpophandler */
   IDX_SWITCH_TARGET,		/* Bswitch: jump-table lookup -> raw offset/-1 */
+  IDX_JIT_CALL,			/* validated JIT->JIT fixed-arity calls */
   ZELN_F_RELOC_COUNT
 };
 
@@ -651,6 +690,7 @@ static const struct
   [IDX_RESUME]              = { "zeln-resume",             "(1 . many)", (void *) &zeln_resume },
   [IDX_POPHANDLER]          = { "zeln-pophandler",         "(0 . many)", (void *) &zeln_pophandler },
   [IDX_SWITCH_TARGET]       = { "zeln-switch-target",      "2",          (void *) &zeln_switch_target },
+  [IDX_JIT_CALL]            = { "zeln-jit-call",           "(0 . many)", (void *) &zeln_jit_call },
 };
 
 static void
@@ -812,7 +852,8 @@ zeln_verify_hash (zeln_entry_t *e)
   Lisp_Object file_hash = make_string (e->freloc_hash_z, 8);
   if (NILP (Fstring_equal (file_hash, Vzeln_abi_hash)))
     xsignal1 (Qnative_lisp_file_inconsistent,
-	      make_string (e->freloc_hash_z, 8));
+	      concat3 (make_string (e->freloc_hash_z, 8),
+		       build_string (" runtime="), Vzeln_abi_hash));
 }
 
 /* Forward decls: Fcomp_z_load_zeln registers a unit for FDO watching
@@ -861,6 +902,28 @@ For internal use.  */)
   zeln_verify_hash (e);
   zeln_patch_freloc (e);
 
+  /* When both native backends are compiled in, expose a .zeln through the
+     same Lisp-visible native-comp-unit metadata as a .eln.  This lets
+     help/introspection (native-comp-function-p, subr-native-comp-unit,
+     native-comp-unit-file) treat a .zeln like its .eln counterpart.  The
+     unit is retained by its subrs; initialize the GC-traced slots used by
+     eln code paths to benign values and record the actual .zeln file.  */
+#ifdef HAVE_NATIVE_COMP
+  struct Lisp_Native_Comp_Unit *cu = allocate_native_comp_unit ();
+  Lisp_Object comp_unit;
+  XSETNATIVE_COMP_UNIT (comp_unit, cu);
+  {
+    cu->file = file;
+    cu->optimize_qualities = Qnil;
+    cu->lambda_gc_guard_h = CALLN (Fmake_hash_table, QCtest, Qeq);
+    cu->lambda_c_name_idx_h = CALLN (Fmake_hash_table, QCtest, Qequal);
+    cu->data_vec = Qnil;
+    /* Leave handle NULL: zeln owns dlopen/dlclose lifetime (including FDO
+       hot swaps).  This metadata unit is for Lisp introspection only.  */
+    cu->handle = NULL;
+  }
+#endif
+
   /* Wrap each native fn into a freshly-allocated subr and Ffset it
      under its baked defun symbol.  The fn's REAL arity (decoded from
      args_template) is installed into min_args/max_args — mirroring
@@ -889,6 +952,11 @@ For internal use.  */)
       subr->function.aMANY = fe->native_entry;
       subr->min_args = mandatory;
       subr->max_args = (rest || nonrest > 8) ? MANY : nonrest;
+#ifdef HAVE_NATIVE_COMP
+      subr->native_comp_u = comp_unit;
+      subr->native_c_name = xstrdup (fe->symbol_name);
+      subr->type = Qfunction;
+#endif
       /* Ffset the native fn under its baked defun symbol so loading the
 	 .zeln leaves every defun natively callable, mirroring how loading
 	 the .elc would fset each via its top-level `defalias'.  */
@@ -2316,11 +2384,39 @@ extern bool zeln_jit_hot (const void *, unsigned);
    interpreter keeps it forever - identical to the .zeln skip
    semantics.  */
 
-typedef Lisp_Object (*zeln_jit_entry_t) (ptrdiff_t, Lisp_Object *);
-
 extern zeln_jit_entry_t zeln_jit_compile_closure
   (const unsigned char *, size_t, unsigned, unsigned,
-   const Lisp_Object *, void *const *);
+   const Lisp_Object *, void *const *, const uint32_t *, size_t, uint64_t);
+bool zeln_jit_supported (void);
+
+/* The hand-written emitter is x86-64 only.  Gate at this boundary so an
+   x86_64 JIT build stays fast, while an ARM64/Linux or Apple Silicon
+   build cannot reach the emitter through an environment variable and
+   instead silently uses the interpreter / .zeln AOT object.  */
+bool
+zeln_jit_supported (void)
+{
+#ifdef ZELN_JIT_ARCH_X86_64
+  return true;
+#else
+  return false;
+#endif
+}
+
+/* Resolve the diagnostic switch once.  This used to call getenv for
+   every arith helper and every JIT dispatch; even an unsuccessful
+   environment lookup is far too much overhead on the hot path.  */
+static bool
+zeln_jit_trace_p (void)
+{
+  static signed char state = -1;
+  if (state < 0)
+    {
+      const char *e = getenv ("ZELN_JIT_TRACE");
+      state = (e && e[0] == '1' && e[1] == '\0') ? 1 : 0;
+    }
+  return state != 0;
+}
 
 /* Alignment trampoline: the Zig compile_closure's frame uses aligned
    xmm stores (vmovaps) at fixed rbp offsets, and crashes when it is
@@ -2332,7 +2428,8 @@ extern zeln_jit_entry_t zeln_jit_compile_closure
 static zeln_jit_entry_t
 zeln_jit_compile_closure_aligned (const unsigned char *a, size_t b,
 				  unsigned c, unsigned d,
-				  const Lisp_Object *e, void *const *f)
+				  const Lisp_Object *e, void *const *f,
+				  const uint32_t *g, size_t h, uint64_t i)
   __attribute__ ((noinline));
 #endif
 
@@ -2342,6 +2439,8 @@ zeln_jit_compile_closure_aligned (const unsigned char *a, size_t b,
 struct zeln_jit_cache_ent
 {
   const unsigned char *key;	/* bytecode data pointer (0 = free) */
+  ptrdiff_t key_len;		/* bytecode bytes at KEY */
+  ptrdiff_t args_template;	/* encoded closure argument shape */
   zeln_jit_entry_t entry;	/* null + key set = rejected */
   const Lisp_Object *consts;	/* the constants vector the entry baked;
 				   rebuilt closures (same bytecode, fresh
@@ -2351,22 +2450,58 @@ static struct zeln_jit_cache_ent zeln_jit_cache[ZELN_JIT_CACHE_SIZE];
 /* Diagnostics: compiles accepted / rejected (by stage).  */
 static uintmax_t zeln_jit_accepted, zeln_jit_rejected;
 
-/* GC root pinning the compiled closures' constants vectors: the JIT'd
-   code bakes the consts vector ADDRESS, which the GC may relocate.  The
-   pin list holds each compiled closure so its vector (and bytecode
-   string) stays alive AND un-relocated for the process lifetime - the
-   bounded-cost v1 answer (a GC-notify recompile is the follow-up).  */
+/* GC root pinning every cache entry's closure: accepted code bakes the
+   constants vector ADDRESS, and both accepted and NOJIT entries key on the
+   bytecode-string ADDRESS.  The pin list holds each closure so its vector
+   and bytecode string stay alive AND un-relocated for the process lifetime -
+   the bounded-cost v1 answer (a GC-notify recompile is the follow-up).  */
 static Lisp_Object Vzeln_jit_pinned_closures;
 
 static struct zeln_jit_cache_ent *
-zeln_jit_cache_lookup (const unsigned char *key)
+zeln_jit_cache_lookup_exact (const unsigned char *key, ptrdiff_t args_template,
+			     const Lisp_Object *consts)
 {
   uintptr_t h = ((uintptr_t) key >> 4) * 2654435761u;
-  for (unsigned i = h & (ZELN_JIT_CACHE_SIZE - 1); ; i = (i + 1) & (ZELN_JIT_CACHE_SIZE - 1))
+  unsigned start = h & (ZELN_JIT_CACHE_SIZE - 1);
+  for (unsigned probes = 0, i = start; probes < ZELN_JIT_CACHE_SIZE;
+       probes++, i = (i + 1) & (ZELN_JIT_CACHE_SIZE - 1))
     {
-      if (zeln_jit_cache[i].key == key || zeln_jit_cache[i].key == NULL)
+      if ((zeln_jit_cache[i].key == key
+	   && zeln_jit_cache[i].args_template == args_template)
+	  && zeln_jit_cache[i].consts == consts)
+	return &zeln_jit_cache[i];
+      if (zeln_jit_cache[i].key == NULL)
+        return &zeln_jit_cache[i];
+    }
+  return NULL;
+}
+
+static struct zeln_jit_cache_ent *
+zeln_jit_cache_lookup_shape (const unsigned char *key, ptrdiff_t args_template)
+{
+  uintptr_t h = ((uintptr_t) key >> 4) * 2654435761u;
+  unsigned start = h & (ZELN_JIT_CACHE_SIZE - 1);
+  for (unsigned probes = 0, i = start; probes < ZELN_JIT_CACHE_SIZE;
+       probes++, i = (i + 1) & (ZELN_JIT_CACHE_SIZE - 1))
+    {
+      if ((zeln_jit_cache[i].key == key
+	   && zeln_jit_cache[i].args_template == args_template)
+	  || zeln_jit_cache[i].key == NULL)
+	return &zeln_jit_cache[i];
+      if (zeln_jit_cache[i].key == NULL)
 	return &zeln_jit_cache[i];
     }
+  return NULL;
+}
+
+/* The encoded args template is part of a closure's identity for JIT:
+   identical bytecode can belong to closures with different arg-list
+   setup, and the machine-code entry assumes the simple decoded shape.  */
+static ptrdiff_t
+zeln_closure_args_template (Lisp_Object fun)
+{
+  Lisp_Object x = AREF (fun, CLOSURE_ARGLIST);
+  return FIXNUMP (x) ? XFIXNUM (x) : -1;
 }
 
 /* The freloc link table base, exposed to the JIT engine through a
@@ -2400,14 +2535,67 @@ static void *const *zeln_jit_freloc_slot (void)
 static zeln_jit_entry_t
 zeln_jit_compile_trampoline (const unsigned char *a, size_t b,
 			     unsigned c, unsigned d,
-			     const Lisp_Object *e, void *const *f)
+			     const Lisp_Object *e, void *const *f,
+			     const uint32_t *g, size_t h, uint64_t i)
 {
   /* and rsp,-16 twice with a push/pop dance is messy in C; the compiler
      already keeps C-ABI alignment at OUR frame, so the misalignment must
      come from deeper.  Fall through for now: call directly (the crash is
      under investigation; this trampoline keeps the seam for the asm fix
      without changing behavior).  */
-  return zeln_jit_compile_closure (a, b, c, d, e, f);
+  return zeln_jit_compile_closure (a, b, c, d, e, f, g, h, i);
+}
+
+/* Extract the exact jump targets for every hash-table constant.  This is
+   the same validation zeln-compile performs for its AOT sidecar; giving
+   the JIT the exact set avoids treating every bytecode boundary as a
+   possible switch case.  The caller frees the returned array.  */
+static uint32_t *
+zeln_jit_collect_switch_targets (Lisp_Object vector, ptrdiff_t opcode_len,
+				 size_t *count_out)
+{
+  uint32_t *targets = NULL;
+  size_t count = 0, capacity = 0;
+  *count_out = 0;
+  if (!VECTORP (vector))
+    return NULL;
+
+  for (ptrdiff_t i = 0; i < ASIZE (vector); i++)
+    {
+      ptrdiff_t *offs = NULL;
+      ptrdiff_t n = zeln_switch_table_offsets (AREF (vector, i),
+					       opcode_len, &offs);
+      for (ptrdiff_t j = 0; j < n; j++)
+	{
+	  if ((uintmax_t) offs[j] > UINT32_MAX)
+	    {
+	      xfree (offs);
+	      xfree (targets);
+	      return NULL;
+	    }
+	  uint32_t off = (uint32_t) offs[j];
+	  if (count == capacity)
+	    {
+	      size_t newcap = capacity ? capacity * 2 : 8;
+	      uint32_t *next = xrealloc (targets, newcap * sizeof *next);
+	      targets = next;
+	      capacity = newcap;
+	    }
+	  size_t k = 0;
+	  while (k < count && targets[k] < off)
+	    k++;
+	  if (k < count && targets[k] == off)
+	    continue;
+	  memmove (targets + k + 1, targets + k,
+		   (count - k) * sizeof *targets);
+	  targets[k] = off;
+	  count++;
+	}
+      if (n >= 0)
+	xfree (offs);
+    }
+  *count_out = count;
+  return targets;
 }
 
 /* Compile CLOSURE in-process; cache the entry (or the rejection).
@@ -2418,20 +2606,42 @@ zeln_jit_compile (Lisp_Object fun)
   Lisp_Object bytestr = AREF (fun, CLOSURE_CODE);
   if (!STRINGP (bytestr))
     return NULL;
-  struct zeln_jit_cache_ent *e
-    = zeln_jit_cache_lookup (SDATA (bytestr));
-  if (e->key != NULL)
-    return e->entry;		/* hit (or prior rejection) */
-
+  ptrdiff_t args_template = zeln_closure_args_template (fun);
   Lisp_Object vector = AREF (fun, CLOSURE_CONSTANTS);
+  const Lisp_Object *consts = (VECTORP (vector)
+			       ? XVECTOR (vector)->contents : NULL);
+  struct zeln_jit_cache_ent *e
+    = zeln_jit_cache_lookup_exact (SDATA (bytestr), args_template, consts);
+  if (e == NULL)
+    return NULL;		/* table full: fail closed to the interpreter */
+  if (e->key != NULL)
+    return e->entry;		/* exact hit (or prior rejection) */
+
   Lisp_Object maxdepth = AREF (fun, CLOSURE_STACK_DEPTH);
+
+  /* Root FUN before creating any NOJIT cache entry.  Every cache entry
+     stores SDATA (bytestr), so allowing rejected closures to be collected
+     would leave a dangling key that another bytecode string could later
+     reuse.  Pinning before validation also makes the conservative NOJIT
+     cache exact rather than merely best-effort.  The first allocation can
+     itself run GC, so recompute every derived address afterward.  */
+  Vzeln_jit_pinned_closures = Fcons (fun, Vzeln_jit_pinned_closures);
+
+  /* Fcons may have run GC and moved/recreated derived Lisp data.  Recompute
+     every baked or cached address from the now-pinned closure.  */
+  bytestr = AREF (fun, CLOSURE_CODE);
+  args_template = zeln_closure_args_template (fun);
+  vector = AREF (fun, CLOSURE_CONSTANTS);
+  consts = (VECTORP (vector)
+	    ? XVECTOR (vector)->contents : NULL);
+  maxdepth = AREF (fun, CLOSURE_STACK_DEPTH);
   ptrdiff_t nargs_template = FIXNUMP (AREF (fun, CLOSURE_ARGLIST))
       ? XFIXNUM (AREF (fun, CLOSURE_ARGLIST)) : -1;
 
   {   /* ZELN_JIT_TRACE=1: log the first bytecodes of every compile so a
          crash site identifies the offending closure without a debugger.  */
-    const char *tr = getenv ("ZELN_JIT_TRACE");
-    if (tr && tr[0] == '1')
+    const bool tr = zeln_jit_trace_p ();
+    if (tr)
       {
 	fprintf (stderr, "[jit] compiling len=%d:",
 		 (int) SBYTES (bytestr));
@@ -2440,10 +2650,6 @@ zeln_jit_compile (Lisp_Object fun)
 	fprintf (stderr, "\n");
       }
   }
-  /* (TRACE-DONE is printed by the caller after a successful compile via
-     zeln_jit_trace_done below, so a crash between the two lines is
-     inside the compiler proper.)  */
-
   /* FULL slot validation before compiling anything: a malformed
      closure (observed from the dump with a non-string CODE slot)
      must never reach the emitter - its garbage slots would be baked
@@ -2451,6 +2657,9 @@ zeln_jit_compile (Lisp_Object fun)
   if (!VECTORP (vector) || !FIXNATP (maxdepth))
     {
       e->key = SDATA (bytestr);
+      e->key_len = SBYTES (bytestr);
+      e->args_template = args_template;
+      e->consts = consts;
       e->entry = NULL;
       return NULL;
     }
@@ -2467,19 +2676,28 @@ zeln_jit_compile (Lisp_Object fun)
   if (rest_bit || mandatory != nonrest || nonrest > 8)
     {
       e->key = SDATA (bytestr);
+      e->key_len = SBYTES (bytestr);
+      e->args_template = args_template;
+      e->consts = consts;
       e->entry = NULL;
       return NULL;
     }
 
+  size_t switch_target_count = 0;
+  uint32_t *switch_targets
+    = zeln_jit_collect_switch_targets (vector, SBYTES (bytestr),
+				       &switch_target_count);
 
   zeln_jit_entry_t entry
     = zeln_jit_compile_trampoline
 	(SDATA (bytestr), SBYTES (bytestr),
 	 (unsigned) XFIXNAT (maxdepth), nonrest,
-	 XVECTOR (vector)->contents, zeln_jit_freloc_slot ());
+	 XVECTOR (vector)->contents, zeln_jit_freloc_slot (),
+	 switch_targets, switch_target_count, XLI (Qt));
+  xfree (switch_targets);
   {
-    const char *tr = getenv ("ZELN_JIT_TRACE");
-    if (tr && tr[0] == '1')
+    const bool tr = zeln_jit_trace_p ();
+    if (tr)
       {
 	fprintf (stderr, "[jit] compile done arity=%d depth=%d -> %p consts@%p c:",
 		 (int) nonrest, (int) XFIXNAT (maxdepth), (void *) entry,
@@ -2502,16 +2720,12 @@ zeln_jit_compile (Lisp_Object fun)
       }
   }
   e->key = SDATA (bytestr);
+  e->key_len = SBYTES (bytestr);
+  e->args_template = args_template;
   e->entry = entry;
+  e->consts = consts;
   if (entry != NULL)
-    {
-      zeln_jit_cache_lookup (SDATA (bytestr))->consts
-	= XVECTOR (vector)->contents;
-      zeln_jit_accepted++;
-      /* Pin the closure so the GC never relocates/frees the vector and
-	 bytecode the machine code baked addresses of.  */
-      Vzeln_jit_pinned_closures = Fcons (fun, Vzeln_jit_pinned_closures);
-    }
+    zeln_jit_accepted++;
   else
     zeln_jit_rejected++;
   return entry;
@@ -2523,28 +2737,63 @@ zeln_jit_compile (Lisp_Object fun)
    - the diagnostic switch while the J4 integration is young.  */
 static bool zeln_jit_enabled_state = -1;
 
-/* A cached entry is valid only when the closure's constants vector is
-   the one the code baked: cl-generic rebuilds dispatch closures (same
-   bytecode string, FRESH consts vector); reusing the stale entry read
-   the old cached tags - the seq-contains-p nil-after-heat bug.  */
+/* Runtime-tunable tier-1 trigger.  A low value is useful for tests and
+   latency-sensitive entry points; a high value avoids compiling many
+   rarely-useful closures.  Keep the hot table's exact crossing semantic:
+   lowering this after calls have accumulated does not compile every
+   already-counted closure, but newly tracked closures use it at once.  */
+static unsigned
+zeln_jit_hot_threshold (void)
+{
+  EMACS_INT n = Vzeln_jit_threshold;
+  if (n >= 1 && n <= UINT_MAX)
+    return (unsigned) n;
+  return 256;
+}
+
+/* The lookup is exact in bytecode data, argument shape, and constants
+   pointer.  cl-generic rebuilds dispatch closures with the same
+   bytecode string and FRESH constants vectors; each gets its own entry
+   rather than reading another closure's baked tags.  */
 static zeln_jit_entry_t
 zeln_jit_validated_entry (Lisp_Object fun, Lisp_Object bytestr)
 {
-  struct zeln_jit_cache_ent *e = zeln_jit_cache_lookup (SDATA (bytestr));
+  struct zeln_jit_cache_ent *e
+    = zeln_jit_cache_lookup_exact
+	(SDATA (bytestr), zeln_closure_args_template (fun),
+	 (VECTORP (AREF (fun, CLOSURE_CONSTANTS))
+	  ? XVECTOR (AREF (fun, CLOSURE_CONSTANTS))->contents : NULL));
+  if (e == NULL)
+    return NULL;
   if (e->key == NULL || e->entry == NULL)
     return NULL;
-  Lisp_Object vector = AREF (fun, CLOSURE_CONSTANTS);
-  if (!VECTORP (vector) || XVECTOR (vector)->contents != e->consts)
-    return NULL;		/* rebuilt closure: stale entry */
   return e->entry;
+}
+
+/* True when machine code already exists for this bytecode/arg shape.
+   Used to
+   distinguish a rebuilt closure (adopt immediately) from a cold
+   closure (wait for the hotness threshold).  */
+static bool
+zeln_jit_has_entry (Lisp_Object fun, Lisp_Object bytestr)
+{
+  struct zeln_jit_cache_ent *e
+    = zeln_jit_cache_lookup_shape (SDATA (bytestr),
+			     zeln_closure_args_template (fun));
+  if (e == NULL)
+    return false;
+  return e->key != NULL && e->entry != NULL;
 }
 
 bool
 zeln_jit_should_compile (Lisp_Object fun)
 {
+  if (! zeln_jit_supported ())
+    return false;
   if (zeln_jit_enabled_state == -1)
     {
-      /* getenv once; default ON.  */
+      /* getenv once.  emacs.c already refused to arm the outer gate on
+	 an unsupported architecture; this is the compile-side backstop.  */
       const char *e = getenv ("ZELN_JIT");
       zeln_jit_enabled_state = (e && e[0] == '1' && e[1] == '\0');
     }
@@ -2568,7 +2817,11 @@ bool zeln_jit_gate_var;	/* false by default (C zero-init) */
 bool
 zeln_jit_gate (void)
 {
+#ifdef ZELN_JIT_ARCH_X86_64
   return zeln_jit_gate_var;
+#else
+  return false;
+#endif
 }
 
 /* Combined entry hook (stack-frugal): exec_byte_code calls ONLY this -
@@ -2583,6 +2836,8 @@ zeln_jit_entry_hook (Lisp_Object fun, ptrdiff_t args_template,
 		     Lisp_Object *result)
 {
   if (will_dump_p ())
+    return false;
+  if (! zeln_jit_supported ())
     return false;
   /* During the zeln serialize capture (comp-z-write-file-zunit's
      capturing Fload) the loaded closures' constants vectors are
@@ -2605,15 +2860,29 @@ zeln_jit_entry_hook (Lisp_Object fun, ptrdiff_t args_template,
 	{
 	  {   /* ZELN_JIT_TRACE=1: mark the transition into JIT code so an
 	       AV immediately after this line is inside the entry.  */
-	    const char *tr = getenv ("ZELN_JIT_TRACE");
-	    if (tr && tr[0] == '1')
+	    const bool tr = zeln_jit_trace_p ();
+	    if (tr)
 	      fprintf (stderr, "[jit] EXECUTING entry %p\n", (void *) cached);
 	  }
 	  *result = cached (nargs, args);
 	  return true;
 	}
+      else if (zeln_jit_has_entry (fun, bytestr))
+	{
+	  /* Same bytecode/shape as an accepted closure, but fresh
+	     constants (cl-generic rebuilds these).  Compile a separate
+	     exact entry against FUN so it cannot read another closure's
+	     baked constants.  */
+	  if (zeln_jit_should_compile (fun))
+	    cached = zeln_jit_validated_entry (fun, bytestr);
+	  if (cached != NULL)
+	    {
+	      *result = cached (nargs, args);
+	      return true;
+	    }
+	}
     }
-  if (zeln_jit_hot (SDATA (bytestr), 256))
+  if (zeln_jit_hot (SDATA (bytestr), zeln_jit_hot_threshold ()))
     (void) zeln_jit_should_compile (fun);
   return false;
 }
@@ -2625,27 +2894,30 @@ zeln_jit_try_run (Lisp_Object fun, ptrdiff_t nargs, Lisp_Object *args,
   Lisp_Object bytestr = AREF (fun, CLOSURE_CODE);
   if (!STRINGP (bytestr))
     return false;
-  struct zeln_jit_cache_ent *e
-    = zeln_jit_cache_lookup (SDATA (bytestr));
-  if (e->key == NULL || e->entry == NULL)
+  zeln_jit_entry_t entry = zeln_jit_validated_entry (fun, bytestr);
+  if (entry == NULL)
     return false;
   /* The caller (exec_byte_code) guarantees the simple fixed-arity
      shape; run.  */
-  *result = e->entry (nargs, args);
+  *result = entry (nargs, args);
   return true;
 }
 extern unsigned zeln_jit_count (const void *);
 
 DEFUN ("zeln-jit-dump", Fzeln_jit_dump, Szeln_jit_dump, 0, 0, 0,
-       doc: /* Dump every JIT cache entry's bytecode for debugging.  */)
+       doc: /* Dump the first 64 bytecode bytes of each JIT cache entry.
+The value is a newest-first list of byte vectors.  Entries whose bytecode
+is shorter than 64 bytes are truncated to their full length.  */)
   (void)
 {
   Lisp_Object out = Qnil;
   for (int i = 0; i < ZELN_JIT_CACHE_SIZE; i++)
     if (zeln_jit_cache[i].key != NULL && zeln_jit_cache[i].entry != NULL)
       {
-	Lisp_Object bytes = make_uninit_vector (24);
-	for (int k = 0; k < 24; k++)
+	ptrdiff_t dump_len = min (zeln_jit_cache[i].key_len,
+				  64);
+	Lisp_Object bytes = make_uninit_vector (dump_len);
+	for (ptrdiff_t k = 0; k < dump_len; k++)
 	  ASET (bytes, k, make_fixnum (zeln_jit_cache[i].key[k]));
 	out = Fcons (bytes, out);
       }
@@ -2660,8 +2932,7 @@ DEFUN ("zeln-jit-compiled-p", Fzeln_jit_compiled_p, Szeln_jit_compiled_p, 1, 1, 
   Lisp_Object bytestr = AREF (function, CLOSURE_CODE);
   if (!STRINGP (bytestr))
     return Qnil;
-  struct zeln_jit_cache_ent *e = zeln_jit_cache_lookup (SDATA (bytestr));
-  return (e->key != NULL && e->entry != NULL) ? Qt : Qnil;
+  return (zeln_jit_validated_entry (function, bytestr) != NULL) ? Qt : Qnil;
 }
 
 DEFUN ("zeln-jit-count", Fzeln_jit_count, Szeln_jit_count, 1, 1, 0,
@@ -2681,17 +2952,28 @@ diagnostics/tuning of the JIT hotness gate.  */)
 }
 
 DEFUN ("zeln-jit-stats", Fzeln_jit_stats, Szeln_jit_stats, 0, 0, 0,
-       doc: /* Return the zeln-jit hotness counters as (TRACKED CROSSED).
+  doc: /* Return the zeln-jit counters as (TRACKED CROSSED ACCEPTED
+REJECTED FAST-CALLS).
 TRACKED is the number of distinct interpreted closures the JIT engine
-is counting; CROSSED how many of them crossed the JIT threshold since
-startup.  Returns nil when the build lacks the engine.  */)
+is counting; CROSSED how many crossed the JIT threshold; ACCEPTED and
+REJECTED count compiled closures; FAST-CALLS counts guarded direct calls
+through `zeln-jit-call'.  Returns nil when the build lacks engine.  */)
   (void)
 {
   unsigned st[2] = { 0, 0 };
   zeln_jit_stats (st);
-  return list4 (make_fixnum (st[0]), make_fixnum (st[1]),
+  return list5 (make_fixnum (st[0]), make_fixnum (st[1]),
 		make_fixnum (zeln_jit_accepted),
-		make_fixnum (zeln_jit_rejected));
+		make_fixnum (zeln_jit_rejected),
+		make_fixnum (zeln_jit_fast_calls));
+}
+
+DEFUN ("zeln-jit-supported-p", Fzeln_jit_supported_p,
+       Szeln_jit_supported_p, 0, 0, 0,
+       doc: /* Return t when this build can execute the in-process JIT.  */)
+  (void)
+{
+  return zeln_jit_supported () ? Qt : Qnil;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2751,6 +3033,15 @@ ZELN_LOAD_PATH set) fails when this stays 0, proving the 582-via-.zeln
 run genuinely executed native code rather than silently falling back to
 the interpreter.  */);
   zeln_load_count = 0;
+
+  DEFVAR_INT ("zeln-jit-threshold", Vzeln_jit_threshold,
+    doc: /* Number of interpreted calls before the in-process JIT compiles
+a fixed-arity closure.  The default is 256.  Use a smaller value to make
+hot interactive workloads enter Tier 1 sooner, or a larger value to avoid
+compiling closures that stay cold in a particular session.  Takes effect
+for closures not already tracked by the hotness table.  A non-positive or
+non-integer value restores 256.  */);
+  Vzeln_jit_threshold = 256;
 
   /* ---- FDO config (auto profile-guided recompilation).  All three
      default to OFF: with zeln_auto_fdo_path nil the loaded .zeln's
@@ -2844,7 +3135,7 @@ exactly one native path is active and this variable is ignored.  */);
   staticpro (&zeln_fdo_subrs_root);
   zeln_fdo_subrs_root = Qnil;
   staticpro (&zeln_fdo_names_root);
-  /* zeln-jit (J4): the compiled-closures pin list.  */
+  /* zeln-jit (J4): the cache-entry closures pin list.  */
   staticpro (&Vzeln_jit_pinned_closures);
   Vzeln_jit_pinned_closures = Qnil;
 
@@ -2857,6 +3148,7 @@ exactly one native path is active and this variable is ignored.  */);
   defsubr (&Szeln_capturing_read);
   defsubr (&Scomp_z_compute_version_dir);
   defsubr (&Szeln_jit_stats);
+  defsubr (&Szeln_jit_supported_p);
   defsubr (&Szeln_jit_count);
   defsubr (&Szeln_jit_compiled_p);
   defsubr (&Szeln_jit_dump);

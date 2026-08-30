@@ -15,6 +15,9 @@
 ;;
 ;; Invoked from the build root (a -Dnative-comp-zig=true emacs):
 ;;   ZELN_COMPILE=<path-to-zeln-compile> \
+;;     ZELN_JIT=1 ./zig-out/bin/emacs --batch -l build-aux/zeln-bench.el \
+;;       --eval '(zeln-bench-run nil t)'   ; interpreter/AOT/JIT
+;;   ZELN_COMPILE=<path-to-zeln-compile> \
 ;;     ./zig-out/bin/emacs --batch -l build-aux/zeln-bench.el \
 ;;     --eval '(zeln-bench-run)'          ; zeln vs interpreter
 ;;     --eval '(zeln-bench-run t)'        ; + zeln vs eln (gccjit)
@@ -118,6 +121,35 @@ runs."
       (let ((dt (zeln-bench--time fn args iters bind target)))
         (setq best (if (or (null best) (< dt best)) dt best))))))
 
+(defun zeln-bench--clone-for-jit (fn)
+  "Return an identity-distinct copy of byte-code closure FN.
+
+The copied bytecode and constants let the JIT and interpreter use the
+same program shape without sharing a hotness key or JIT cache entry.
+This matters for A/B timing in one process: if the original closure is
+allowed to cross the hot threshold, later ``interpreter'' calls would
+actually run its JIT entry."
+  (make-byte-code (aref fn 0)
+                  (copy-sequence (aref fn 1))
+                  (copy-sequence (aref fn 2))
+                  (aref fn 3)))
+
+(defun zeln-bench--compile-jit (form first-input bind)
+  "Byte-compile FORM, force its clone through the JIT, and return clone.
+FIRST-INPUT is applied once with `zeln-jit-threshold' set to 1.  BIND
+is fset to the clone first so recursive workloads compile the same
+closure that recursive calls resolve through the symbol slot."
+  (let* ((source (zeln-bench-byte-compile form))
+         (jitted (zeln-bench--clone-for-jit source)))
+    (when bind (fset bind jitted))
+    (let ((zeln-jit-threshold 1))
+      (apply jitted first-input))
+    (unless (eq (zeln-jit-compiled-p jitted) t)
+      (error "zeln-bench: JIT did not compile closure (stats=%S count=%S)"
+             (and (fboundp 'zeln-jit-stats) (zeln-jit-stats))
+             (zeln-jit-count jitted)))
+    jitted))
+
 (defun zeln-bench-native-compile-eln (form)
   "Native-compile (gccjit) the lambda FORM to an .eln subr.
 `native-compile' on a lambda FORM dispatches comp--spill-lap-function
@@ -126,9 +158,13 @@ raw form, not a byte-compiled closure."
   (require 'comp)
   (native-compile form))
 
-(defun zeln-bench-run (&optional with-eln)
+(defun zeln-bench-run (&optional with-eln require-jit)
   "Run every workload; WITH-ELN non-nil also compiles .eln (gccjit) and
 reports the zeln/eln ratio (THE M3+ perf gate: lower = zeln faster).
+REQUIRE-JIT non-nil also force-compiles an identity-distinct clone of
+every workload through the in-process JIT (the process must have been
+started with ZELN_JIT=1), compares every JIT result with the
+interpreter, and reports jit/interp plus native/jit ratios.
 
 Always prints per-workload native/interp ratio + geomean.  With WITH-ELN
 it additionally prints eln/interp (gccjit reference) and native/eln
@@ -140,6 +176,11 @@ the geomean ratio (also printed)."
   (unless (fboundp 'comp-z-write-zunit)
     (message "zeln-bench: comp-z-write-zunit not bound (build without \
 -Dnative-comp-zig=true?)")
+    (kill-emacs 1))
+  (when (and require-jit
+             (or (not (fboundp 'zeln-jit-supported-p))
+                 (not (eq (zeln-jit-supported-p) t))))
+    (message "zeln-bench: in-process JIT unsupported on this CPU/build")
     (kill-emacs 1))
   (let ((envzc (getenv "ZELN_COMPILE")))
     (setq zeln-bench-zc
@@ -165,11 +206,17 @@ the geomean ratio (also printed)."
                (file-executable-p zeln-bench-zc))
     (message "zeln-bench: zeln-compile not found (set ZELN_COMPILE)")
     (kill-emacs 1))
+  ;; `call-process' does not reliably resolve a slashed relative PROGRAM
+  ;; name on all Emacs startup configurations; canonicalize it once.
+  (setq zeln-bench-zc (expand-file-name zeln-bench-zc))
   (let* ((dir (make-temp-file "zeln-bench-" t))
          (gc-cons-threshold most-positive-fixnum) ; suppress GC during timing
          (log-ration 0.0)
          (log-eln 0.0)
          (log-zeln-eln 0.0)
+         (log-jit-interp 0.0)
+         (log-native-jit 0.0)
+         (n-jit 0)
          (nwork 0)
          (failures 0))
     (unwind-protect
@@ -186,7 +233,7 @@ the geomean ratio (also printed)."
                    (baseline (zeln-bench-byte-compile form))
                    (prefix (expand-file-name (symbol-name name) dir))
                    (zelnfile (concat prefix ".zeln"))
-                   rc native eln)
+                   rc native eln jitted)
               ;; Serialize + compile + load (.zeln).
               (comp-z-write-zunit baseline prefix)
               (setq rc (call-process zeln-bench-zc nil (list (concat prefix ".log")) nil
@@ -205,52 +252,109 @@ the geomean ratio (also printed)."
                                    (setq failures (1+ failures))
                                    nil)))
                 (when (and eln (not (functionp eln))) (setq eln nil)))
-              ;; Correctness spot-check on every input (zeln == eln == interp).
-              (dolist (in inputs)
-                (let* ((args (read in))
-                       (r0 (condition-case e (apply baseline args) (error (cons 'error e))))
-                       (r1 (condition-case e (apply native args) (error (cons 'error e))))
-                       (r2 (when eln (condition-case e (apply eln args) (error (cons 'error e))))))
-                  ;; fset bind for recursive resolution during spot-check.
-                  (when bind (fset bind baseline)
-                    (let ((rb (condition-case e (apply baseline args) (error (cons 'error e))))
-                          (rn (condition-case e
-                                 (progn (fset bind native) (apply native args))
-                               (error (cons 'error e))))
-                          (re (when eln
-                                (condition-case e
-                                    (progn (fset bind eln) (apply eln args))
-                                  (error (cons 'error e))))))
-                      (setq r0 rb r1 rn r2 re)))
-                  (unless (equal r0 r1)
-                    (message "zeln-bench MISMATCH: %s input=%S interp=%S native=%S"
-                             name args r0 r1)
-                    (setq failures (1+ failures)))
-                  (when (and eln (not (equal r0 r2)))
-                    (message "zeln-bench ELN-MISMATCH: %s input=%S interp=%S eln=%S"
-                             name args r0 r2)
-                    (setq failures (1+ failures)))))
+              ;; Keep ordinary interpreted invocations from becoming JIT
+              ;; entries.  The JIT clone below has its own bytecode string
+              ;; identity and is compiled explicitly at threshold 1.
+              (let ((zeln-jit-threshold 1000000))
+                ;; Correctness spot-check on every input
+                ;; (zeln == eln == jit == interp).
+                (dolist (in inputs)
+                  (let* ((args (read in))
+                         (r0 (condition-case e (apply baseline args) (error (cons 'error e))))
+                         (r1 (condition-case e (apply native args) (error (cons 'error e))))
+                         (r2 (when eln (condition-case e (apply eln args) (error (cons 'error e))))))
+                    ;; fset bind for recursive resolution during spot-check.
+                    (when bind (fset bind baseline)
+                      (let ((rb (condition-case e (apply baseline args) (error (cons 'error e))))
+                            (rn (condition-case e
+                                   (progn (fset bind native) (apply native args))
+                                 (error (cons 'error e))))
+                            (re (when eln
+                                  (condition-case e
+                                      (progn (fset bind eln) (apply eln args))
+                                    (error (cons 'error e))))))
+                        (setq r0 rb r1 rn r2 re)))
+                    (unless (equal r0 r1)
+                      (message "zeln-bench MISMATCH: %s input=%S interp=%S native=%S"
+                               name args r0 r1)
+                      (setq failures (1+ failures)))
+                    (when (and eln (not (equal r0 r2)))
+                      (message "zeln-bench ELN-MISMATCH: %s input=%S interp=%S eln=%S"
+                               name args r0 r2)
+                      (setq failures (1+ failures))))))
+              ;; Force/verify the JIT separately from the interpreter A/B
+              ;; closure, then compare it on every spot-check input.
+              (condition-case err
+                  (progn
+                    (setq jitted (zeln-bench--compile-jit
+                                  form (read (car inputs)) bind))
+                    (let ((zeln-jit-threshold 1000000))
+                      (dolist (in inputs)
+                        (let* ((args (read in))
+                               (r0 (progn
+                                     (when bind (fset bind baseline))
+                                     (condition-case e (apply baseline args)
+                                       (error (cons 'error e)))))
+                               (rj (progn
+                                     (when bind (fset bind jitted))
+                                     (condition-case e (apply jitted args)
+                                       (error (cons 'error e))))))
+                          (unless (equal r0 rj)
+                            (message "zeln-bench JIT-MISMATCH: %s input=%S interp=%S jit=%S"
+                                     name args r0 rj)
+                            (setq failures (1+ failures)))))))
+                (error
+                 (when require-jit
+                   (message "zeln-bench: %s JIT compile/run failed: %S" name err)
+                   (setq failures (1+ failures)))
+                 (unless require-jit
+                   (message "zeln-bench: %s JIT skipped: %S" name err))))
               (when (> failures 0) (throw 'zeln-bench-abort nil))
-              ;; Time all three on the FIRST input.
-              (let* ((args (read (car inputs)))
-                     (t-int (zeln-bench--best-of-3 baseline args iters bind baseline))
-                     (t-nat (zeln-bench--best-of-3 native    args iters bind native))
-                     (t-eln (when eln (zeln-bench--best-of-3 eln args iters bind eln)))
-                     (ration (if (> t-int 0) (/ t-nat t-int) 0.0)))
-                (setq log-ration (+ log-ration (log ration))
-                      nwork (1+ nwork))
-                (when t-eln
-                  (setq log-eln (+ log-eln (log (/ t-eln t-int)))
-                        log-zeln-eln (+ log-zeln-eln (log (/ t-nat t-eln))))
-                  (message "zeln-bench: %-14s interp=%7.4fs native=%7.4fs eln=%7.4fs  native/interp=%.3f  eln/interp=%.3f  native/eln=%.3f"
-                           name t-int t-nat t-eln ration (/ t-eln t-int) (/ t-nat t-eln)))
-                (message "zeln-bench: %-14s interp=%7.4fs native=%7.4fs  native/interp=%.3f"
-                         name t-int t-nat ration))))
+                ;; Time all modes on the FIRST input.
+                (let* ((args (read (car inputs)))
+                       (t-int (let ((zeln-jit-threshold 1000000))
+                                (zeln-bench--best-of-3
+                                 baseline args iters bind baseline)))
+                       (t-nat (zeln-bench--best-of-3 native    args iters bind native))
+                       (t-jit (when jitted
+                                (zeln-bench--best-of-3 jitted args iters bind jitted)))
+                       (t-eln (when eln (zeln-bench--best-of-3 eln args iters bind eln)))
+                       (ration (if (> t-int 0) (/ t-nat t-int) 0.0)))
+                  (setq log-ration (+ log-ration (log ration))
+                        nwork (1+ nwork))
+                  (when t-jit
+                    (setq log-jit-interp
+                          (+ log-jit-interp (log (/ t-jit t-int)))
+                          log-native-jit
+                          (+ log-native-jit (log (/ t-nat t-jit)))
+                          n-jit (1+ n-jit)))
+                  (cond
+                   ((and t-eln t-jit)
+                    (message "zeln-bench: %-14s interp=%7.4fs native=%7.4fs jit=%7.4fs eln=%7.4fs  native/interp=%.3f  jit/interp=%.3f  native/jit=%.3f  eln/interp=%.3f"
+                             name t-int t-nat t-jit t-eln
+                             ration (/ t-jit t-int) (/ t-nat t-jit)
+                             (/ t-eln t-int)))
+                   (t-jit
+                    (message "zeln-bench: %-14s interp=%7.4fs native=%7.4fs jit=%7.4fs  native/interp=%.3f  jit/interp=%.3f  native/jit=%.3f"
+                             name t-int t-nat t-jit ration
+                             (/ t-jit t-int) (/ t-nat t-jit)))
+                   (t-eln
+                    (message "zeln-bench: %-14s interp=%7.4fs native=%7.4fs eln=%7.4fs  native/interp=%.3f  eln/interp=%.3f  native/eln=%.3f"
+                             name t-int t-nat t-eln ration
+                             (/ t-eln t-int) (/ t-nat t-eln)))
+                   (t
+                    (message "zeln-bench: %-14s interp=%7.4fs native=%7.4fs  native/interp=%.3f"
+                             name t-int t-nat ration))))))
           ;; Summary -- still inside the catch; a throw aborts here.
           (if (> nwork 0)
               (let ((geo (exp (/ log-ration nwork))))
                 (message "zeln-bench: GEOMEAN native/interp = %.3f across %d workloads (lower=faster)"
                          geo nwork)
+                (when (> n-jit 0)
+                  (message "zeln-bench: GEOMEAN jit/interp = %.3f across %d workloads (lower=faster)"
+                           (exp (/ log-jit-interp n-jit)) n-jit)
+                  (message "zeln-bench: GEOMEAN native/jit = %.3f across %d workloads (<1 = AOT faster)"
+                           (exp (/ log-native-jit n-jit)) n-jit))
                 (when (and with-eln (> nwork 0))
                   (message "zeln-bench: GEOMEAN eln/interp = %.3f (gccjit reference)" (exp (/ log-eln nwork)))
                   (message "zeln-bench: GEOMEAN native/eln = %.3f across %d workloads (zeln vs gccjit; <1 = zeln faster)"

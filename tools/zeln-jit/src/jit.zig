@@ -53,6 +53,10 @@ const win = struct {
         dwSize: usize,
         dwFreeType: u32,
     ) callconv(.c) i32;
+
+    extern "kernel32" fn RtlDeleteFunctionTable(
+        callback: ?*anyopaque,
+    ) callconv(.c) i32;
 };
 
 // ---------------------------------------------------------------------------
@@ -73,6 +77,14 @@ fn osPageSize() usize {
 }
 
 pub const ExecArena = struct {
+    pub const Slot = struct { w: []u8, x: [*]u8 };
+    /// One Windows dynamic function-table handle.  On other platforms the
+    /// list stays empty and has no per-arena cost beyond one pointer.
+    pub const UnwindNode = struct {
+        next: ?*UnwindNode,
+        id: ?*anyopaque,
+    };
+
     /// writable alias (null where unsupported)
     w: ?[*]u8 = null,
     /// executable alias
@@ -81,6 +93,9 @@ pub const ExecArena = struct {
     len: usize,
     /// bytes committed to emitted code
     used: usize = 0,
+    /// Windows unwind registrations owned by this arena; deleted before
+    /// VirtualFree so a later exception cannot consult freed metadata.
+    unwind_ids: ?*UnwindNode = null,
 
     pub fn allocate(bytes: usize) !ExecArena {
         const size = std.mem.alignForward(usize, @max(bytes, page_size), osPageSize());
@@ -159,6 +174,16 @@ pub const ExecArena = struct {
     }
 
     pub fn deinit(self: *ExecArena) void {
+        if (builtin.os.tag == .windows) {
+            var node = self.unwind_ids;
+            while (node) |current| {
+                const next = current.next;
+                if (current.id) |id| _ = win.RtlDeleteFunctionTable(id);
+                std.heap.smp_allocator.destroy(current);
+                node = next;
+            }
+        }
+        self.unwind_ids = null;
         if (builtin.os.tag == .linux) {
             // two independent mappings of the same object
             if (self.w) |w| _ = std.os.linux.munmap(@ptrCast(w), self.len);
@@ -172,7 +197,7 @@ pub const ExecArena = struct {
     }
 
     /// Reserve `bytes` in the arena; returns the executable address.
-    pub fn reserve(self: *ExecArena, bytes: usize) !struct { w: []u8, x: [*]u8 } {
+    pub fn reserve(self: *ExecArena, bytes: usize) !Slot {
         const start = self.used;
         const end = start + bytes;
         if (end > self.len) return error.OutOfMemory;
@@ -182,6 +207,14 @@ pub const ExecArena = struct {
             .w = w_alias[start..end],
             .x = self.x + start,
         };
+    }
+
+    /// Remember a Windows dynamic unwind-table handle owned by this arena.
+    pub fn addUnwindId(self: *ExecArena, id: ?*anyopaque) !void {
+        if (builtin.os.tag != .windows) return;
+        const node = try std.heap.smp_allocator.create(UnwindNode);
+        node.* = .{ .next = self.unwind_ids, .id = id };
+        self.unwind_ids = node;
     }
 };
 
@@ -451,7 +484,6 @@ var stack_canary: u8 = 0;
 var k_test_slot: u8 = 0;
 
 pub const compiler = @import("compiler.zig");
-
 
 // Pull the compiler's tests into this root's test build.
 comptime {

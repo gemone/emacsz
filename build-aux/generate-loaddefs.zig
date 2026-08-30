@@ -73,17 +73,17 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     try runEmacs(io, gpa, &env_map, temacs, dump, lisp_path, &.{
         "--eval", charprop_eval,
         "--eval", "(setq make-backup-files nil create-lockfiles nil write-region-inhibit-fsync t)",
-        "-l", "emacs-lisp/loaddefs-gen.el",
-        "-f", "loaddefs-generate--emacs-batch",
+        "-l",     "emacs-lisp/loaddefs-gen.el",
+        "-f",     "loaddefs-generate--emacs-batch",
     }, subdirs);
 
     const cus_eval = try std.fmt.allocPrint(gpa, "(setq generated-custom-dependencies-file \"{s}/cus-load.el\")", .{lisp_path_flat});
     defer gpa.free(cus_eval);
     try runEmacs(io, gpa, &env_map, temacs, dump, lisp_path, &.{
         "--eval", "(setq make-backup-files nil create-lockfiles nil write-region-inhibit-fsync t)",
-        "-l", "cus-dep",
+        "-l",     "cus-dep",
         "--eval", cus_eval,
-        "-f", "custom-make-dependencies",
+        "-f",     "custom-make-dependencies",
     }, subdirs);
 
     const finder_eval = try std.fmt.allocPrint(gpa, "(setq generated-finder-keywords-file \"{s}/finder-inf.el\")", .{lisp_path_flat});
@@ -103,7 +103,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     if (finder_stale) {
         try runEmacs(io, gpa, &env_map, temacs, dump, lisp_path, &.{
             "--eval", "(setq make-backup-files nil create-lockfiles nil write-region-inhibit-fsync t)",
-            "-l", "finder",
+            "-l",     "finder",
             "--eval", finder_eval,
             "--eval", "(apply #'finder-compile-keywords command-line-args-left)",
         }, finder_dirs);
@@ -140,8 +140,10 @@ const stampName = "loaddefs.stamp";
 /// 6-10x (finder/custom/loaddefs runs plus compile-lisp) instead of once.
 fn freshFinger(io: std.Io, gpa: std.mem.Allocator, cwd: std.Io.Dir, temacs: []const u8, dump: []const u8) stamp.Finger {
     var f = stamp.Finger.init("loaddefs");
-    f.file(io, cwd, temacs);
-    f.file(io, cwd, dump);
+    // Content, not mtime: the same bootstrap binary/image can be staged or
+    // installed again on every build without changing.
+    f.fileContent(io, cwd, gpa, temacs);
+    f.fileContent(io, cwd, gpa, dump);
     f.file(io, cwd, "build-aux/generate-loaddefs.zig");
     f.tree(io, gpa, cwd, "lisp", fingerprintExclude) catch {};
     return f;

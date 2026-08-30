@@ -211,8 +211,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     };
 
     // Record the post-run fingerprint + outputs (the pdmp itself and the
-    // <temacs>.pdmp companion).  Computed AFTER loadup so a re-dump that
-    // nothing upstream moved converges on the next run.
+    // <temacs>.pdmp companion).  freshFinger hashes temacs by content, so
+    // staging the identical backend binary again cannot churn the stamp.
     var f = try freshFinger(io, gpa, cwd, temacs);
     stamp.mark(io, gpa, cwd, stampName(stamp_suffix), f.final(), &.{
         "zig-out/bin/bootstrap-emacs.pdmp",
@@ -242,7 +242,11 @@ fn stampName(suffix: ?[]const u8) []const u8 {
 /// preload) and this tool's source.
 fn freshFinger(io: std.Io, gpa: std.mem.Allocator, cwd: std.Io.Dir, temacs: []const u8) !stamp.Finger {
     var f = stamp.Finger.init("dump");
-    f.file(io, cwd, temacs);
+    // Content, not mtime: build.zig stages the same requested temacs into
+    // zig-out/bin on every invocation (and Windows may rewrite it even when
+    // identical), so an mtime fingerprint would invalidate the dump stamp
+    // forever.  The content hash still detects a backend/ABI flip.
+    f.fileContent(io, cwd, gpa, temacs);
     f.file(io, cwd, "build-aux/bootstrap-dump.zig");
     // etc/DOC is rewritten by the UpdateSourceFiles step on every build
     // (the make-docfile Run re-executes and its capture carries a fresh

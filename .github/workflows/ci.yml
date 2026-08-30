@@ -102,6 +102,7 @@ jobs:
       - name: Install system libraries (Linux)
         if: runner.os == 'Linux'
         run: |
+          GCC_MAJOR="$(gcc -dumpversion | cut -d. -f1)"
           sudo apt-get update
           sudo apt-get install -y \
             pkg-config \
@@ -110,17 +111,15 @@ jobs:
             libacl1-dev \
             libasound2-dev \
             libgpm-dev \
-            libdbus-1-dev
+            libdbus-1-dev \
+            "libgccjit-${GCC_MAJOR}-dev"
 
-      # Build ONCE in ReleaseFast.  Every later step passes the SAME flag
-      # set (-Dnative-comp-zig=true -Doptimize=ReleaseFast) so it reuses
-      # this exact build via the in-workspace zig cache instead of
-      # rebuilding.  The compz flag MUST be here too: the .zeln step
-      # enables it, and a flag flip invalidates the whole graph (temacs
-      # -> dump -> compile-lisp -> dump-compiled -> loaddefs), forcing a
-      # full second rebuild inside the 180-min .zeln step budget.
+      # Build the deterministic pure-zeln baseline once in ReleaseFast.
+      # Pin gccjit OFF: the combined build is a separate, later gate.  Keep
+      # -Dnative-comp=false on every baseline command; omitting it would let
+      # the newly installed libgccjit flip auto-on and invalidate the graph.
       - name: Build
-        run: zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast
+        run: zig build -Dnative-comp=false -Dnative-comp-zig=true -Doptimize=ReleaseFast
 
       # Verify + smoke: the binary name and dump handling differ per OS, so
       # run each in its native shell.  The --eval arg is single-quoted so the
@@ -173,7 +172,7 @@ jobs:
         env:
           ZIG_COMPILE_LISP_PROBE: ${{ runner.os == 'Windows' && '1' || '' }}
         timeout-minutes: 90
-        run: zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast check
+        run: zig build -Dnative-comp=false -Dnative-comp-zig=true -Doptimize=ReleaseFast check
 
       # .zeln native-comp feature tests, identical on all three platforms.
       # ZELN_PGO_HAMMER is set in the step env (shell-agnostic) instead of the
@@ -187,7 +186,7 @@ jobs:
       # regression -- the same job's build + smoke + full ert suite stay
       # gating.  Keep the step running for visibility; do not let it block
       # the pipeline on that runner.  Linux/macOS remain hard-gated.
-      - name: .zeln feature tests (populate + gate #2 + zeln-diff + pgo)
+      - name: .zeln AOT feature tests (populate + gate #2 + zeln-diff + pgo)
         continue-on-error: ${{ runner.os == 'Windows' }}
         env:
           ZELN_PGO_HAMMER: '30000'
@@ -206,10 +205,35 @@ jobs:
         # Linux/macOS finish the whole step in ~6 min.
         timeout-minutes: 90
         run: |
-          zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast populate-zeln-cache &&
-          zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast check-zeln &&
-          zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-diff &&
-          zig build -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-pgo
+          zig build -Dnative-comp=false -Dnative-comp-zig=true -Doptimize=ReleaseFast populate-zeln-cache &&
+          zig build -Dnative-comp=false -Dnative-comp-zig=true -Doptimize=ReleaseFast check-zeln &&
+          zig build -Dnative-comp=false -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-diff &&
+          zig build -Dnative-comp=false -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-pgo
+
+      # The in-process JIT emitter is x86-64-only.  Keep the AOT matrix
+      # platform-uniform above, but gate the JIT only where it can execute.
+      # Pin gccjit OFF so the suite exercises the zeln JIT itself rather
+      # than a host-dependent combined eln+zeln configuration.
+      - name: .zeln JIT gates (smoke + full suite)
+        if: runner.arch == 'X64'
+        continue-on-error: ${{ runner.os == 'Windows' }}
+        timeout-minutes: 90
+        run: |
+          zig build -Dnative-comp=false -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-jit-smoke &&
+          zig build -Dnative-comp=false -Dnative-comp-zig=true -Doptimize=ReleaseFast check-zeln-jit
+
+      # Combined-path behavior is meaningful only where libgccjit is
+      # supported: a .zeln must expose the same native-comp introspection
+      # surface as a .eln when both backends are compiled in, and loader
+      # preference must remain deterministic in both directions.  The
+      # versioned Ubuntu package above is chosen from the host compiler so
+      # the explicit -Dnative-comp=true command cannot silently degrade.
+      - name: Combined eln + zeln metadata smoke (Linux)
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        timeout-minutes: 30
+        run: |
+          zig build -Dnative-comp=true -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-jit-smoke &&
+          zig build -Dnative-comp=true -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-interop-smoke
 
       # Persist the zig global cache for the next run.  Always runs (even on
       # a late step failure) and must not fail the job (cache-service 4xx
@@ -264,7 +288,7 @@ jobs:
       # a Windows host run the dump for the msvc target, so the install
       # produces bootstrap-emacs.pdmp here just as it does for GNU.
       - name: Build (MSVC)
-        run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp-zig=true
+        run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp=false -Dnative-comp-zig=true
 
       - name: Verify & smoke (MSVC)
         run: |
@@ -293,7 +317,7 @@ jobs:
       # 132 tests, 0 unexpected, EXIT=0 (ReleaseFast + native-comp-zig=true).
       - name: Built-in ert tests (MSVC)
         timeout-minutes: 90
-        run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp-zig=true check
+        run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp=false -Dnative-comp-zig=true check
 
       # .zeln native-comp feature tests for the MSVC backend, mirroring the
       # GNU job's four steps with the msvc target.  The pushhandler gate in
@@ -303,17 +327,25 @@ jobs:
       # windows job: the 2-vCPU runner's byte-compile pass is flaky on test
       # resources (compiles clean locally and on Linux/macOS); build + smoke
       # + the full ert suite above stay the hard gates.
-      - name: .zeln feature tests (MSVC)
+      - name: .zeln AOT feature tests (MSVC)
         continue-on-error: true
         env:
           ZELN_PGO_HAMMER: '30000'
           ZELN_BC_TIMEOUT: '120'
         timeout-minutes: 90
         run: |
-          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp-zig=true populate-zeln-cache &&
-          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp-zig=true check-zeln &&
-          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp-zig=true zeln-diff &&
-          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp-zig=true zeln-pgo
+          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp=false -Dnative-comp-zig=true populate-zeln-cache &&
+          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp=false -Dnative-comp-zig=true check-zeln &&
+          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp=false -Dnative-comp-zig=true zeln-diff &&
+          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp=false -Dnative-comp-zig=true zeln-pgo
+
+      - name: .zeln JIT gates (MSVC)
+        if: runner.arch == 'X64'
+        continue-on-error: true
+        timeout-minutes: 90
+        run: |
+          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp=false -Dnative-comp-zig=true zeln-jit-smoke &&
+          zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp=false -Dnative-comp-zig=true check-zeln-jit
 
       - name: Save zig global cache (MSVC)
         uses: actions/cache/save@v4

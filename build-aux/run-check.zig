@@ -22,17 +22,17 @@ const env = @import("env.zig");
 const temacs_path = @import("temacs-path.zig");
 
 const test_files = [_][]const u8{
-    "cl-macs",         "cl-seq",        "cl-extra",       "alloc-tests",
-    "version-tests",   "byte-run-tests", "float-sup-tests", "cl-preloaded-tests",
-    "button-tests",    "delim-col-tests", "color-tests",   "custom-tests",
-    "dom-tests",       "data-tests",    "marker-tests",   "chartab-tests",
-    "cmds-tests",      "let-alist-tests", "cl-lib-tests",  "map-tests",
-    "seq-tests",       "character-tests", "charset-tests", "json-tests",
-    "fns-tests",       "backquote-tests", "parse-time-tests", "derived-tests",
-    "cond-star-tests", "cl-print-tests", "time-date-tests", "check-declare-tests",
-    "copyright-tests", "easy-mmode-tests", "nadvice-tests", "pcase-tests",
-    "pp-tests",        "ring-tests",   "rx-tests",        "warnings-tests",
-    "regexp-opt-tests", "range-tests", "crypto-hash-tests",
+    "cl-macs",          "cl-seq",           "cl-extra",          "alloc-tests",
+    "version-tests",    "byte-run-tests",   "float-sup-tests",   "cl-preloaded-tests",
+    "button-tests",     "delim-col-tests",  "color-tests",       "custom-tests",
+    "dom-tests",        "data-tests",       "marker-tests",      "chartab-tests",
+    "cmds-tests",       "let-alist-tests",  "cl-lib-tests",      "map-tests",
+    "seq-tests",        "character-tests",  "charset-tests",     "json-tests",
+    "fns-tests",        "backquote-tests",  "parse-time-tests",  "derived-tests",
+    "cond-star-tests",  "cl-print-tests",   "time-date-tests",   "check-declare-tests",
+    "copyright-tests",  "easy-mmode-tests", "nadvice-tests",     "pcase-tests",
+    "pp-tests",         "ring-tests",       "rx-tests",          "warnings-tests",
+    "regexp-opt-tests", "range-tests",      "crypto-hash-tests",
 };
 
 const GroupResult = struct {
@@ -69,8 +69,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // values (character-test-string-width failed under a zh-CN host).
     try env_map.put("LC_ALL", "C");
     // Deterministic interpreter for the test harness (the zeln-jit gate
-    // is a runtime feature; the batch check pipeline pins it off).
-    try env_map.put("ZELN_JIT", "0");
+    // is a runtime feature; the batch check pipeline pins it off.  The
+    // separate full-suite JIT gate must opt in with an intentionally
+    // different variable, so ordinary external ZELN_JIT values cannot
+    // destabilize code generation/dump children.
+    const test_jit = env_map.get("ZELN_TEST_JIT") orelse "0";
+    try env_map.put("ZELN_JIT", if (std.mem.eql(u8, test_jit, "1")) "1" else "0");
 
     // -O0 eval frames are large; raise the stack limit so the ert-deftest
     // macro expansion does not overflow the C stack (ulimit -s unlimited).
@@ -199,12 +203,17 @@ fn runGroup(
     const argv = [_][]const u8{
         "./zig-out/bin/" ++ temacs_path.name,
         "--batch",
-        "-L", "test/src",
-        "-L", "test/lisp",
-        "-L", "test/lisp/emacs-lisp",
-        "-L", "test/lisp/calendar",
+        "-L",
+        "test/src",
+        "-L",
+        "test/lisp",
+        "-L",
+        "test/lisp/emacs-lisp",
+        "-L",
+        "test/lisp/calendar",
         "--dump-file=./zig-out/bin/bootstrap-emacs.pdmp",
-        "--eval", eval.items,
+        "--eval",
+        eval.items,
     };
 
     var attempt: usize = 0;
