@@ -70,7 +70,12 @@
 		 (prefix (expand-file-name
 			  (secure-hash 'md5 elc) zeln-pop--staging)))
 	    (make-directory (file-name-directory zeln-path) t)
-	    (let ((n (comp-z-write-file-zunit elc prefix)))
+	    ;; Loading an .elc for capture can execute intentionally noisy
+	    ;; test fixtures.  Suppress their diagnostics; serializer errors
+	    ;; are still caught and recorded by the condition-case below.
+	    (let ((n (let ((inhibit-message t)
+			   (message-log-max nil))
+		       (comp-z-write-file-zunit elc prefix))))
 	      (if (numberp n)
 		  (push (format "%s.zunit\t%s.manifest\t%s\t%s"
 				prefix prefix zeln-path elc)
@@ -134,7 +139,19 @@ harness, and without an .elc it simply has no .zeln (interpreter path)."
 	(message "zeln-pop bc %s" el)
 	(zeln-pop--set-bc-current el)
 	(condition-case err
-	    (byte-compile-file el)
+	    ;; The test tree deliberately contains fixtures with malformed
+	    ;; calls, free variables, Edebug instrumentation and obsolete
+	    ;; APIs.  Their byte-compiler diagnostics are useful upstream but
+	    ;; are pure noise here: we only need a loadable .elc (or a known
+	    ;; skip).  Real compilation errors are still caught below.
+	    (let ((byte-compile-warnings nil)
+		  ;; Some fixtures signal warnings from macro expansion or
+		  ;; compiler-macro tests, outside byte-compile-warnings.  A
+		  ;; failed compile is still caught and summarized by the
+		  ;; condition-case below.
+		  (inhibit-message t)
+		  (message-log-max nil))
+	      (byte-compile-file el))
 	  (error (setq nfail (1+ nfail))
 		 (message "zeln-populate: test compile skip %s: %S" el err)))))
     (zeln-pop--clear-bc-current)
