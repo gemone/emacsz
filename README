@@ -5,6 +5,50 @@ See the end of the file for license conditions.
 This directory tree holds version 32.0.50 of GNU Emacs, the extensible,
 customizable, self-documenting real-time display editor.
 
+## Building the zeln-JIT GUI Emacs (Linux x86-64)
+
+This fork can build a PGTK/GTK3 GUI Emacs with the Zig `.zeln` AOT
+backend and the in-process zeln-JIT runtime.  Use Zig 0.16.0 and install
+the GTK/cairo development packages plus the usual Emacs build tools.
+On Debian/Ubuntu:
+
+```sh
+sudo apt install build-essential pkg-config \
+  libgtk-3-dev libcairo2-dev libfreetype-dev libfontconfig1-dev
+```
+
+Keep the build options identical for every step:
+
+```sh
+ZELN_GUI_FLAGS=(
+  -Doptimize=ReleaseFast
+  -Dnative-comp=false
+  -Dnative-comp-zig=true
+  -Dpgtk=true
+  -Dwith-png=true
+  -Dwith-jpeg=true
+  -Dwith-tiff=true
+  -Dwith-gif=true
+  -Dwith-webp=true
+  # PGTK uses image.c's built-in XPM3 parser; do not set -Dwith-xpm here.
+)
+
+zig build "${ZELN_GUI_FLAGS[@]}"
+zig build "${ZELN_GUI_FLAGS[@]}" dump-compiled
+zig build "${ZELN_GUI_FLAGS[@]}" populate-zeln-cache
+zig build "${ZELN_GUI_FLAGS[@]}" zeln-jit-smoke
+
+# Point the runtime at the generated .zeln cache.
+ln -sfn ../zeln-cache zig-out/zeln-lisp
+
+# Launch PGTK GUI with AOT and the optional in-process JIT enabled.
+ZELN_JIT=1 ./zig-out/bin/emacs
+```
+
+`ZELN_JIT=1` is the runtime opt-in for the x86-64 JIT.  Set it to `0`
+to run `.zeln` AOT code with the ordinary bytecode interpreter.  See
+`ZIG_BUILD.md` and `docs/zeln-jit.md` for other platforms and options.
+
 The file INSTALL in this directory says how to build and install GNU
 Emacs on various systems, once you have unpacked or checked out the
 entire Emacs file tree.

@@ -637,7 +637,9 @@ pub fn build(b: *std.Build) void {
             .{ .on = with_tiff, .name = "HAVE_TIFF" },
             .{ .on = with_gif, .name = "HAVE_GIF" },
             .{ .on = with_webp, .name = "HAVE_WEBP" },
-            .{ .on = with_xpm, .name = "HAVE_XPM" },
+            // PGTK/cairo has a built-in XPM3 parser; HAVE_XPM selects the
+            // X/libXpm loader and must stay off there.
+            .{ .on = with_xpm and !pgtk_target, .name = "HAVE_XPM" },
         };
         for (feats) |f| {
             if (!f.on) disabled_knobs.append(b.allocator, .{ .name = f.name, .value = f.value }) catch @panic("OOM");
@@ -654,7 +656,7 @@ pub fn build(b: *std.Build) void {
         if (with_tiff) image_defines.append(b.allocator, .{ .name = "HAVE_TIFF", .value = "1" }) catch @panic("OOM");
         if (with_gif) image_defines.append(b.allocator, .{ .name = "HAVE_GIF", .value = "1" }) catch @panic("OOM");
         if (with_webp) image_defines.append(b.allocator, .{ .name = "HAVE_WEBP", .value = "1" }) catch @panic("OOM");
-        if (with_xpm) image_defines.append(b.allocator, .{ .name = "HAVE_XPM", .value = "1" }) catch @panic("OOM");
+        if (with_xpm and !pgtk_target) image_defines.append(b.allocator, .{ .name = "HAVE_XPM", .value = "1" }) catch @panic("OOM");
         // The w32 GUI backend (mirrors configure.ac's HAVE_W32=yes branch:
         // AC_DEFINE HAVE_NTGUI, and window_system=w32 implies
         // HAVE_WINDOW_SYSTEM + POLL_FOR_INPUT + WINDOW_SYSTEM_OBJ).
@@ -2459,7 +2461,7 @@ pub fn build(b: *std.Build) void {
                 const ip2 = std.fmt.allocPrint(b.allocator, "-I{s}", .{w.path("src").getPath(b)}) catch @panic("OOM");
                 image_c_flags.append(b.allocator, ip2) catch @panic("OOM");
             }
-            if (with_xpm) {
+            if (with_xpm and !pgtk_target) {
                 const x = b.lazyDependency("xpm_src", .{}) orelse return;
                 // image.c defines FOR_MSW itself before #include
                 // "X11/xpm.h" (and renames XImage/XColor/Display to
@@ -2948,7 +2950,11 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkLibrary(webp_lib);
         // NOTE: no exe-level include path (same rationale as the others).
     }
-    if (with_xpm) {
+    // The vendored libXpm uses its Windows FOR_MSW simulation layer.  PGTK
+    // instead enables image.c's built-in XPM3 parser, which avoids mixing
+    // Xlib typedefs with GDK typedefs.
+    const vendored_xpm = with_xpm and !pgtk_target;
+    if (vendored_xpm) {
         const xpm_src = b.lazyDependency("xpm_src", .{}) orelse return;
         const xpm_mod = b.createModule(.{
             .target = target,
