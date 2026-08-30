@@ -3397,13 +3397,6 @@ pub fn build(b: *std.Build) void {
                 "lib/getline.c",    "lib/getdelim.c",
                 "lib/w32/stpcpy.c",
             }
-        else if (is_musl or !tools_native_linux_glibc)
-            // Static musl has no libacl and USE_ACL is disabled.  Foreign
-            // cross targets cannot assume a target libacl in the Zig sysroot.
-            // Reuse the no-ACL stub: emacsclient only uses file_has_acl
-            // defensively before connecting to a local socket, and returning
-            // 0 matches an ACL-unavailable platform.
-            &.{ "lib/c-ctype.c", "lib/realloc.c", "lib/macos-file-has-acl-stub.c", "lib/strnul.c", "lib/memeq.c" }
         else if (target.result.os.tag == .macos)
             // macOS lacks SOCK_CLOEXEC, so emacsclient.c's cloexec_socket()
             // takes its fcntl(F_SETFD, FD_CLOEXEC) fallback; gnulib's
@@ -3412,6 +3405,13 @@ pub fn build(b: *std.Build) void {
             // getopt{,1}.c supply the rpl_ getopt implementation the
             // -D__GETOPT_PREFIX rename above points the call sites at.
             &.{ "lib/c-ctype.c", "lib/realloc.c", "lib/macos-file-has-acl-stub.c", "lib/fcntl.c", "lib/strnul.c", "lib/memeq.c", "lib/getopt.c", "lib/getopt1.c" }
+        else if (is_musl or !tools_native_linux_glibc)
+            // Static musl has no libacl and USE_ACL is disabled.  Foreign
+            // cross targets cannot assume a target libacl in the Zig sysroot.
+            // Reuse the no-ACL stub: emacsclient only uses file_has_acl
+            // defensively before connecting to a local socket, and returning
+            // 0 matches an ACL-unavailable platform.
+            &.{ "lib/c-ctype.c", "lib/realloc.c", "lib/macos-file-has-acl-stub.c", "lib/strnul.c", "lib/memeq.c" }
         else
             &.{ "lib/c-ctype.c", "lib/realloc.c", "lib/file-has-acl.c", "lib/strnul.c", "lib/acl-errno-valid.c", "lib/memeq.c" };
         const etags_providers: []const []const u8 = if (is_windows)
