@@ -85,11 +85,10 @@ Return the process exit status and leave diagnostics in the current
 buffer.  Signal `zeln-compile-timeout' when the worker must be killed."
   (let* ((buffer (generate-new-buffer " *zeln compiler*"))
          (process (apply #'make-process
-                         :name "zeln-compile-tool"
-                         :buffer buffer
-                         :command (cons exe args)
-                         :connection-type 'pipe
-                         :sentinel #'ignore))
+                         (list :name "zeln-compile-tool"
+                               :buffer buffer
+                               :command (cons (expand-file-name exe)
+                                              args))))
          (timeout zeln-compile-timeout)
          (deadline (when (and (numberp timeout) (> timeout 0))
                      (time-add (current-time) timeout))))
@@ -113,13 +112,14 @@ buffer.  Signal `zeln-compile-timeout' when the worker must be killed."
   "Return the .zeln cache path SRC (.el) maps to."
   (let* ((rel (comp-z-el-to-zeln-rel-filename src))
          (ver (comp-z-compute-version-dir))
-         ;; Mirror maybe_swap_for_zeln exactly: a zeln-only loader search
-         ;; puts the user-facing eln compatibility path first, while a
-         ;; combined build uses only the explicit zeln path.
+         ;; Mirror maybe_swap_for_zeln exactly.  In a combined build the
+         ;; zeln loader searches only `native-comp-zeln-load-path'; in a
+         ;; zeln-only build the user-facing eln compatibility path comes
+         ;; first, followed by the explicit zeln path.
          (dirs (if (fboundp 'comp--compile-ctxt-to-file0)
-                   (append (bound-and-true-p native-comp-eln-load-path)
-                           (bound-and-true-p native-comp-zeln-load-path))
-                 (bound-and-true-p native-comp-zeln-load-path))))
+                   (bound-and-true-p native-comp-zeln-load-path)
+                 (append (bound-and-true-p native-comp-eln-load-path)
+                         (bound-and-true-p native-comp-zeln-load-path)))))
     (or (cl-loop for d in dirs
                  when (and (file-name-absolute-p d)
                            ;; The cache root need not exist yet; create it
@@ -222,11 +222,10 @@ afterwards so its functions run from the .zeln."
            (file (plist-get item :file))
            (buffer (generate-new-buffer " *zeln async worker*"))
            (process (apply #'make-process
-                           :name "zeln-compile"
-                           :buffer buffer
-                           :sentinel #'zeln-async--sentinel
-                           :connection-type 'pipe
-                           :command (zeln--async-worker-command file))))
+                           (list :name "zeln-compile"
+                                 :buffer buffer
+                                 :sentinel #'zeln-async--sentinel
+                                 :command (zeln--async-worker-command file)))))
       (process-put process :zeln-item item)
       (process-put process :zeln-buffer buffer)
       (push process zeln-async--processes)
