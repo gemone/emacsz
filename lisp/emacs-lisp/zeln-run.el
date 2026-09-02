@@ -41,6 +41,7 @@
 ;;; Code:
 
 (require 'comp)                    ; comp-eln-load-path-eff, naming
+(require 'subr-x)                  ; string-trim
 (declare-function comp-z-write-file-zunit "compz.c" (file prefix))
 (declare-function comp-z-el-to-zeln-rel-filename "compz.c" (filename))
 (declare-function comp-z-compute-version-dir "compz.c" ())
@@ -60,6 +61,12 @@ installs it next to the emacs binary as zeln-compile)."
   "Per-file timeout (seconds) for one zeln-compile invocation."
   :type 'natnum)
 
+(defvar zeln-async--queue nil
+  "Internal queue of pending zeln asynchronous compilation jobs.")
+
+(defvar zeln-async--processes nil
+  "Internal list of live zeln asynchronous compilation processes.")
+
 (defun zeln--executable ()
   "Return the zeln-compile tool path."
   (or zeln-compile-executable
@@ -72,15 +79,47 @@ installs it next to the emacs binary as zeln-compile)."
     (make-directory dir t)
     dir))
 
+(defun zeln--call-compiler (exe args)
+  "Run EXE with ARGS, honoring `zeln-compile-timeout'.
+Return the process exit status and leave diagnostics in the current
+buffer.  Signal `zeln-compile-timeout' when the worker must be killed."
+  (let* ((buffer (generate-new-buffer " *zeln compiler*"))
+         (process (apply #'make-process
+                         :name "zeln-compile-tool"
+                         :buffer buffer
+                         :command (cons exe args)
+                         :connection-type 'pipe
+                         :sentinel #'ignore))
+         (timeout zeln-compile-timeout)
+         (deadline (when (and (numberp timeout) (> timeout 0))
+                     (time-add (current-time) timeout))))
+    (while (and (process-live-p process)
+                (or (not deadline)
+                    (time-less-p nil deadline)))
+      (accept-process-output process 0.1))
+    (when (process-live-p process)
+      (delete-process process)
+      (accept-process-output process 0.1)
+      (kill-buffer buffer)
+      (error "zeln-compile timed out after %s seconds" timeout))
+    (let ((status (process-exit-status process)))
+      (when (buffer-live-p buffer)
+        (let ((text (with-current-buffer buffer (buffer-string))))
+          (kill-buffer buffer)
+          (insert text)))
+      status)))
+
 (defun zeln--target-path (src)
   "Return the .zeln cache path SRC (.el) maps to."
   (let* ((rel (comp-z-el-to-zeln-rel-filename src))
          (ver (comp-z-compute-version-dir))
-         ;; In combined eln+zeln builds both variables are normally bound.
-         ;; Prefer the explicit zeln cache so a combined fixture cannot
-         ;; accidentally write .zeln artifacts into the gccjit cache.
-         (dirs (append (bound-and-true-p native-comp-zeln-load-path)
-                       (bound-and-true-p native-comp-eln-load-path))))
+         ;; Mirror maybe_swap_for_zeln exactly: a zeln-only loader search
+         ;; puts the user-facing eln compatibility path first, while a
+         ;; combined build uses only the explicit zeln path.
+         (dirs (if (fboundp 'comp--compile-ctxt-to-file0)
+                   (append (bound-and-true-p native-comp-eln-load-path)
+                           (bound-and-true-p native-comp-zeln-load-path))
+                 (bound-and-true-p native-comp-zeln-load-path))))
     (or (cl-loop for d in dirs
                  when (and (file-name-absolute-p d)
                            ;; The cache root need not exist yet; create it
@@ -121,16 +160,17 @@ afterwards so its functions run from the .zeln."
                     nil
                   ;; 3. compile: zeln-compile zunit manifest zeln
                   (make-directory (file-name-directory zeln-path) t)
-                  (let ((exe (zeln--executable)))
-                    (unless (file-executable-p exe)
-                      (error "zeln-compile tool not found at %s" exe))
-                    (with-temp-buffer
-                      (let ((exit (apply #'call-process exe nil t nil
-                                         (list (concat zunit-prefix
-                                                       ".zunit")
-                                               (concat zunit-prefix
-                                                       ".manifest")
-                                               zeln-path))))
+	                  (let ((exe (zeln--executable)))
+	                    (unless (file-executable-p exe)
+	                      (error "zeln-compile tool not found at %s" exe))
+	                    (with-temp-buffer
+	                      (let ((exit (zeln--call-compiler
+	                                   exe
+	                                   (list (concat zunit-prefix
+	                                                 ".zunit")
+	                                         (concat zunit-prefix
+	                                                 ".manifest")
+	                                         zeln-path))))
                         (unless (zerop exit)
                           (error "zeln-compile failed (%s): %s" exit
                                  (buffer-string))))))
@@ -138,27 +178,121 @@ afterwards so its functions run from the .zeln."
             (error
              (message "zeln-compile-file: skipping %s: %S" file err)
              nil)))
-    ;; 4. optional immediate reload through the zeln load path
+    ;; 4. optional immediate reload.  Load the concrete .zeln, not the
+    ;; source: `load' on FILE would normally find and evaluate the .el.
     (when (and load result (file-exists-p result))
-      (load file nil t))
+      (load result nil t))
     result))
 
 ;;;###autoload
-(defun zeln-compile-async (files &optional recursively _load)
-  "Native-compile FILES via the zeln backend (zeln-compile-file each).
-FILES is a file, a list of files, or a directory (recurse into
-subdirectories when RECURSIVELY is non-nil).  This is the zeln
-counterpart of `native-compile-async'; compilation runs
-synchronously per file but is fault-tolerant: failures are
-reported and skipped, never signaled."
+(defun zeln--async-selector-skip-p (file selector)
+  "Return non-nil if SELECTOR rejects FILE from zeln compilation."
+  (cond
+   ((null selector) nil)
+   ((functionp selector) (not (funcall selector file)))
+   ((stringp selector) (not (string-match-p selector file)))
+   (t (error "SELECTOR must be nil, a function, or a regexp"))))
+
+(defun zeln--async-max-jobs ()
+  "Return the maximum number of concurrent zeln workers."
+  (max 1 (min 8 (or (bound-and-true-p native-comp-async-jobs-number) 1))))
+
+(defun zeln--async-emacs ()
+  "Return the Emacs executable to use for batch zeln workers."
+  (expand-file-name invocation-name invocation-directory))
+
+(defun zeln--async-worker-command (file)
+  "Return the batch Emacs command compiling FILE in a worker."
+  (let ((library (or (locate-library "zeln-run")
+                     (error "Cannot locate zeln-run.el"))))
+    (list (zeln--async-emacs)
+          "--batch" "-Q"
+          "--load" library
+          "--eval"
+          (format "(let ((zeln-compile-executable %S) \
+(zeln-compile-timeout %S)) (zeln-compile-file %S) (kill-emacs 0))"
+                  zeln-compile-executable zeln-compile-timeout file))))
+
+(defun zeln-async--start-next ()
+  "Start queued zeln jobs while worker capacity remains."
+  (while (and zeln-async--queue
+              (< (length zeln-async--processes)
+                 (zeln--async-max-jobs)))
+    (let* ((item (pop zeln-async--queue))
+           (file (plist-get item :file))
+           (buffer (generate-new-buffer " *zeln async worker*"))
+           (process (apply #'make-process
+                           :name "zeln-compile"
+                           :buffer buffer
+                           :sentinel #'zeln-async--sentinel
+                           :connection-type 'pipe
+                           :command (zeln--async-worker-command file))))
+      (process-put process :zeln-item item)
+      (process-put process :zeln-buffer buffer)
+      (push process zeln-async--processes)
+      (message "zeln compiling %s" file))))
+
+(defun zeln-async--sentinel (process _event)
+  "Finish PROCESS, report failures, load when requested, and start more work."
+  (when (memq process zeln-async--processes)
+    (setq zeln-async--processes (delq process zeln-async--processes))
+    (let* ((item (process-get process :zeln-item))
+           (buffer (process-get process :zeln-buffer))
+           (file (plist-get item :file))
+           (load (plist-get item :load))
+           (zeln-path (plist-get item :zeln-path))
+           (output (and (buffer-live-p buffer)
+                        (with-current-buffer buffer
+                          (buffer-string))))
+           (ok (and (zerop (process-exit-status process))
+                    zeln-path
+                    (file-exists-p zeln-path)
+                    (not (and output
+                              (string-match-p
+                               "zeln-compile-file: skipping" output)))))
+           (load-too (and ok load)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (if ok
+          (when load-too
+            (condition-case err
+                (load zeln-path nil t)
+              (error (message "zeln async load failed for %s: %S"
+                              zeln-path err))))
+        (message "zeln async compilation failed for %s (%s): %s"
+                 file (process-status process)
+                 (or (and output (string-trim output))
+                     "no diagnostics"))))
+    (zeln-async--start-next)))
+
+(defun zeln-compile-async (files &optional recursively load selector)
+  "Native-compile FILES with the zeln backend without blocking Emacs.
+FILES is a file, a list of files, or a directory.  Recurse into a
+directory when RECURSIVELY is non-nil.  LOAD and SELECTOR have the
+same meaning as in `native-compile-async'.  Each file is compiled by
+a batch Emacs worker; failures are logged and compilation continues."
   (interactive "fFile/directory to zeln-compile: ")
+  (setq load (not (not load)))
   (when (stringp files)
     (setq files (if (and recursively (file-directory-p files))
-                    (directory-files-recursively files "\\.el\\'")
+                    (directory-files-recursively
+                     files "\\.el\\(?:\\.gz\\)?\\'")
                   (list files))))
-  (dolist (f files)
-    (message "zeln compiling %s" f)
-    (ignore-errors (zeln-compile-file f))))
+  (setq files (delq nil (delete-dups
+                         (mapcar
+                          (lambda (f)
+                            (setq f (expand-file-name f))
+                            (unless (zeln--async-selector-skip-p f selector)
+                              f))
+                          (if (stringp files) (list files) files)))))
+  (setq zeln-async--queue
+        (append zeln-async--queue
+                (mapcar (lambda (f)
+                          (list :file f :load load
+                                :zeln-path (zeln--target-path f)))
+                        files)))
+  (zeln-async--start-next)
+  (length zeln-async--queue))
 
 (provide 'zeln-run)
 

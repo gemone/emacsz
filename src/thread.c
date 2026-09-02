@@ -1242,6 +1242,12 @@ in_current_thread (void)
   return sys_thread_equal (sys_thread_self (), current_thread->thread_id);
 }
 
+bool
+in_main_lisp_thread (void)
+{
+  return current_thread == &main_thread.s;
+}
+
 void
 init_threads (void)
 {

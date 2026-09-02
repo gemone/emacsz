@@ -630,10 +630,34 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     }
     defer gpa.free(ll_body);
 
-    // Emit the .ll next to the output .zeln (sibling file).
+    // Emit and link only to temporary sibling names.  A failed/killed
+    // linker must never leave a partial file at the final .zeln path:
+    // the load side chooses artifacts by ABI and source mtime, so such
+    // a file could otherwise be selected later.  rename(2) and the
+    // Windows implementation used by std.Io.Dir.rename replace the
+    // destination, making the final publish the only commit point.
+    const now_ns: i128 = std.Io.Timestamp.now(io, .awake).nanoseconds;
+    const serial: u64 = @truncate(@as(u128, @bitCast(now_ns)));
+    const ll_tmp_path = try std.fmt.allocPrint(
+        gpa,
+        "{s}.tmp-{x}.ll",
+        .{ out_zeln_path, serial },
+    );
+    defer gpa.free(ll_tmp_path);
+    const zeln_tmp_path = try std.fmt.allocPrint(
+        gpa,
+        "{s}.tmp-{x}",
+        .{ out_zeln_path, serial },
+    );
+    defer gpa.free(zeln_tmp_path);
     const ll_path = try std.fmt.allocPrint(gpa, "{s}.ll", .{out_zeln_path});
     defer gpa.free(ll_path);
-    try cwd.writeFile(io, .{ .sub_path = ll_path, .data = ll_body });
+    defer {
+        // These are no-ops after the two successful renames.
+        cwd.deleteFile(io, ll_tmp_path) catch {};
+        cwd.deleteFile(io, zeln_tmp_path) catch {};
+    }
+    try cwd.writeFile(io, .{ .sub_path = ll_tmp_path, .data = ll_body });
 
     // Drive the link: `zig cc -shared -fPIC -O2 -fvisibility=default
     // <fn>.ll -o <name>.zeln`. -fvisibility=default ensures `zeln_entry`
@@ -667,7 +691,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             try cc_argv.appendSlice(gpa, &[_][]const u8{ "-target", t });
         }
     }
-    try cc_argv.appendSlice(gpa, &[_][]const u8{ ll_path, "-o", out_zeln_path });
+    try cc_argv.appendSlice(gpa, &[_][]const u8{ ll_tmp_path, "-o", zeln_tmp_path });
     const res = std.process.run(gpa, io, .{
         .argv = cc_argv.items,
         .environ_map = &env_map,
@@ -681,6 +705,15 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         std.debug.print("zeln-compile: zig cc failed\n--- stdout ---\n{s}\n--- stderr ---\n{s}\n", .{ res.stdout, res.stderr });
         std.process.exit(1);
     }
+
+    cwd.rename(ll_tmp_path, cwd, ll_path, io) catch |err| {
+        std.debug.print("zeln-compile: cannot publish {s}: {s}\n", .{ ll_path, @errorName(err) });
+        std.process.exit(1);
+    };
+    cwd.rename(zeln_tmp_path, cwd, out_zeln_path, io) catch |err| {
+        std.debug.print("zeln-compile: cannot publish {s}: {s}\n", .{ out_zeln_path, @errorName(err) });
+        std.process.exit(1);
+    };
 }
 
 // =====================================================================
@@ -2796,10 +2829,10 @@ fn emitListN(em: *Emitter, idx: u64, n: u32) !void {
 // DISCARD(N) moves `top` down to fun; call_fun = TOP = fun; call_args =
 // &TOP+1 = the stale arg slots above.  zeln-jit-call(N+1, &fun) reads
 // fun=[0], args=[1..N], mirroring that exactly; the result replaces fun's
-// slot (net stack effect -N, matching Bcall).  AOT callers therefore use
-// the same guarded JIT fast path as JIT callers: exact fixed-arity JIT
-// closures dispatch directly, while every other callee falls back to the
-// exact generic zeln_funcall semantics.
+// slot (net stack effect -N, matching Bcall).  zeln-jit-call forwards
+// that exact group to Ffuncall, preserving quit checks, eval depth,
+// backtrace, GC, and debugger semantics.  Hot closures then enter the
+// JIT through exec_byte_code as usual.
 fn emitCall(em: *Emitter, nargs: u32) !void {
     const t = try em.loadTop(); // t = argN (top of the group)
     const di: i64 = -@as(i64, nargs);

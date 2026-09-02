@@ -181,10 +181,10 @@
                    (eq (zeln-jit-compiled-p square) t))
         (error "zeln-jit-smoke: closure-object JIT call failed")))
 
-    ;; AOT-to-JIT seam: load a native .zeln caller, bind its symbol call
-    ;; to a JIT callee, and require the guarded fast-call counter to move.
-    ;; This proves AOT code can preserve JIT hotness instead of falling
-    ;; through generic dispatch whenever it calls back into Lisp.
+    ;; AOT-to-JIT seam: load a native .zeln caller and bind its symbol
+    ;; call to a JIT callee.  Generated calls intentionally use the full
+    ;; Ffuncall boundary, so assert the guarded direct fast-call counter
+    ;; remains unchanged and the callee still enters the same JIT entry.
     (let ((zeln-jit-threshold 1)
           (dir (make-temp-file "zeln-jit-smoke-aot-" t))
           (fast0 (nth 4 (zeln-jit-stats)))
@@ -208,8 +208,8 @@
             (setq native caller)
             (unless (eq (funcall native 8) 18)
               (error "zeln-jit-smoke: AOT-to-JIT result mismatch"))
-            (unless (> (nth 4 (zeln-jit-stats)) fast0)
-              (error "zeln-jit-smoke: AOT-to-JIT fast call did not run")))
+            (unless (= (nth 4 (zeln-jit-stats)) fast0)
+              (error "zeln-jit-smoke: unsafe AOT-to-JIT fast call ran")))
       ;; On combined eln+zeln builds, .zeln must be introspectable through
       ;; the same native-comp metadata as .eln.  On zeln-only builds the
       ;; data.c accessors are unavailable, so this check is conditional.

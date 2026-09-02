@@ -537,7 +537,7 @@ of (commands) to run simultaneously."
       (progn
         (require 'zeln-run nil t)
         (when (fboundp 'zeln-compile-async)
-          (zeln-compile-async files recursively load)))
+          (zeln-compile-async files recursively load selector)))
     ;; Normalize: we only want to pass t or nil, never e.g. `late'.
     (let ((load (not (not load))))
       (native--compile-async files recursively load selector))))

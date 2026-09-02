@@ -2032,9 +2032,9 @@ pub fn compile(
             BDIFF => try em.inlineBinaryAddSub(IDX_MINUS),
             BMULT => try em.inlineBinaryMultiply(),
             BCONS => em.binaryFreloc(IDX_CONS),
-            // ---- calls: POP n args + fun -> hot JIT-to-JIT dispatch when
-            // the callee already has a validated fixed-arity entry; the
-            // helper falls back to the exact generic funcall otherwise. ----
+            // ---- calls: POP n args + fun -> the complete Ffuncall
+            // boundary (quit/depth/backtrace/GC/debug).  The callee
+            // reaches the same JIT entry through exec_byte_code. ----
             BCALL, 33, 34, 35, 36, BCALL5 => {
                 em.callFrelocN(IDX_JIT_CALL, @intCast(b - BCALL));
             },

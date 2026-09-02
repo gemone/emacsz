@@ -114,7 +114,9 @@ static zeln_f_reloc_t zeln_freloc;
    M2b multi-function .zeln container (the entry struct gained a
    function table + top_level_blob), then Z6 -> Z7 for the Bswitch
    support (the freloc surface gained zeln-switch-target and the zunit
-   format became zabi=4 with the switch-table sidecar), so a stale
+   format became zabi=4 with the switch-table sidecar), then
+   Z7 -> Z8 to give generated Bcall sites the interpreter's complete
+   call boundary (Ffuncall: quit/depth/backtrace/debug/GC), so a stale
    .zeln is rejected by the hash gate before any native code runs.  The
    IDX_* freloc surface growth is append-only (the hash fingerprints
    the ordered name list, so appending is safe but reordering is not),
@@ -151,62 +153,36 @@ zeln_setup_args (ptrdiff_t args_template, ptrdiff_t nargs,
 }
 
 /* Generic call shim for the Bcall family.  args[0] = fun (the TOP the
-   interpreter reads), args[1..nargs-1] = the actuals.  funcall_general
-   is the EXACT non-fast-path the interpreter's docall falls back to
-   (bytecode.c:824): it does symbol resolution, closure dispatch
-   (recursive exec_byte_code), funcall_subr, with full backtrace /
-   debug / gc.  So a .zeln calling another closure or a subr behaves
-   identically to the interpreter.  */
+   interpreter reads), args[1..nargs-1] = the actuals.
+
+   Important: funcall_general alone is NOT the interpreter's Bcall
+   boundary.  The bytecode interpreter wraps dispatch with maybe_quit,
+   lisp_eval_depth, record_in_backtrace, maybe_gc, call-on-entry
+   debugging, and exit debugging/pop before calling funcall_general.
+   Ffuncall provides exactly that complete boundary, so generated calls
+   must go through it rather than calling funcall_general directly.  */
 static Lisp_Object
 zeln_funcall (ptrdiff_t nargs, Lisp_Object *args)
 {
-  return funcall_general (args[0], nargs - 1, args + 1);
+  return Ffuncall (nargs, args);
 }
 
-/* Hot-call shim for generated code.  ARGS[0] is the callee and
-   ARGS[1..N-1] are the evaluated arguments, exactly as for
-   zeln_funcall.  Take the fast path for a bytecode closure with the
-   exact fixed arity AND a validated JIT entry; those conditions mean
-   the generic dispatch would inevitably reach the same machine code.
-   The callee may be the closure itself or a bare symbol bound to it.
-   Every other callee--symbol alias chains, symbols-with-position,
-   AOT/native objects, optional/rest closures, and not-yet-compiled
-   closures--takes the generic fallback.  This is deliberately not a
-   general `funcall' rewrite.  */
+/* Hot-call shim for generated code.  The old JIT-to-JIT direct-entry
+   optimization bypassed the interpreter's call boundary: it skipped
+   quit checks, eval-depth accounting, backtrace frames, maybe_gc, and
+   debugger entry/exit handling.  A recursive fixed-arity closure could
+   therefore exhaust the C stack without ever raising
+   `excessive-lisp-nesting'.
+
+   Correctness comes first: route every generated call through
+   Ffuncall.  The callee still reaches the same JIT entry through
+   exec_byte_code once it is hot.  Reintroduce a direct fast path only
+   by factoring a complete-call-boundary helper in eval.c, not by
+   calling entry() from here.  */
 static Lisp_Object
 zeln_jit_call (ptrdiff_t nargs, Lisp_Object *args)
 {
-  Lisp_Object fun = Qnil;
-  if (nargs > 0
-      && (BARE_SYMBOL_P (args[0]) || CLOSUREP (args[0])))
-    {
-      fun = BARE_SYMBOL_P (args[0])
-	? XBARE_SYMBOL (args[0])->u.s.function
-	: args[0];
-      if (CLOSUREP (fun))
-	{
-	  Lisp_Object template = AREF (fun, CLOSURE_ARGLIST);
-	  if (FIXNUMP (template))
-	    {
-	      ptrdiff_t at = XFIXNUM (template);
-	      ptrdiff_t arity = nargs - 1;
-	      if (! (at & 128) && (at & 127) == arity
-		  && ((at >> 8) & 127) == arity)
-		{
-		  Lisp_Object bytestr = AREF (fun, CLOSURE_CODE);
-		  zeln_jit_entry_t entry =
-		    (STRINGP (bytestr)
-		     ? zeln_jit_validated_entry (fun, bytestr) : NULL);
-		  if (entry != NULL)
-		    {
-		      zeln_jit_fast_calls++;
-		      return entry (arity, args + 1);
-		    }
-		}
-	    }
-	}
-    }
-  return funcall_general (args[0], nargs - 1, args + 1);
+  return Ffuncall (nargs, args);
 }
 
 /* Branch-test helper.  Returns a RAW 0/1 (NOT a tagged Lisp_Object) so
@@ -754,8 +730,9 @@ hash_zeln_abi (void)
   Lisp_Object sig = zeln_signature_string ();
 
   /* Key = ABI_VERSION ++ version ++ config ++ config-options ++ sig,
-     mirroring comp.c:787-793.  ZELN_ABI_VERSION ("Z4" for M2b; "Z3"
-     covered M2, "Z2" M1, "Z1" M0) is the
+     mirroring comp.c:787-793.  ZELN_ABI_VERSION ("Z8" current; "Z7"
+     added Bswitch, "Z4" covered M2b, "Z3" covered M2, "Z2" M1,
+     "Z1" M0) is the
      ZELN-native analogue of gccjit's ABI_VERSION ("13"); it comes from
      config.h (config_values.txt + tools/gen-config), not a #define
      here, so the serializer, the gate, and the Zig tool compute it from
@@ -862,6 +839,27 @@ static bool zeln_fdo_enabled (void);
 static void zeln_fdo_register (zeln_entry_t *, dynlib_handle_ptr,
 			       Lisp_Object, Lisp_Object);
 
+/* Close a .zeln only while it is still safe to do so.  Once any native
+   function from the unit has been installed in a symbol function cell,
+   ownership transfers to the session: a signal during the rest of load
+   must not unmap code that Lisp can still call.  */
+struct zeln_load_handle_state
+{
+  dynlib_handle_ptr handle;
+  bool installed;
+};
+
+static void
+zeln_unwind_load_handle (void *arg)
+{
+  struct zeln_load_handle_state *state = arg;
+  if (!state->installed && state->handle)
+    {
+      dynlib_close (state->handle);
+      state->handle = NULL;
+    }
+}
+
 DEFUN ("comp-z-load-zeln", Fcomp_z_load_zeln, Scomp_z_load_zeln, 1, 1, 0,
        doc: /* Load a .zeln native-comp unit (Zig path).
 FILE is the .zeln path.  The unit holds N native functions (one per
@@ -885,6 +883,9 @@ For internal use.  */)
     xsignal1 (Qnative_lisp_file_inconsistent,
 	      build_string (dynlib_error () ? dynlib_error ()
 					    : "dynlib_open failed"));
+  struct zeln_load_handle_state handle_state = { handle, false };
+  specpdl_ref load_count = SPECPDL_INDEX ();
+  record_unwind_protect_ptr (zeln_unwind_load_handle, &handle_state);
 
   zeln_entry_t *(*entry_sym) (void) =
     (zeln_entry_t * (*) (void)) dynlib_sym (handle, "zeln_entry");
@@ -893,7 +894,9 @@ For internal use.  */)
 	      build_string ("no zeln_entry symbol"));
 
   zeln_entry_t *e = entry_sym ();
-  eassert (e);
+  if (!e)
+    xsignal1 (Qnative_lisp_file_inconsistent,
+	      build_string ("zeln_entry returned NULL"));
 
   /* Order mirrors comp.c load_comp_unit: hash gate, then patch relocs,
      then reconstruct data.  The hash gate fires first so a stale-ABI
@@ -939,6 +942,13 @@ For internal use.  */)
   Lisp_Object last_subr = Qnil;
   Lisp_Object subr_list = Qnil;	/* FDO: subrs in fn-table order */
   for (ptrdiff_t i = 0; i < e->n_fns; i++)
+    for (ptrdiff_t j = 0; j < i; j++)
+      if (e->fns[i].symbol_name && e->fns[j].symbol_name
+	  && strcmp (e->fns[i].symbol_name,
+		     e->fns[j].symbol_name) == 0)
+	xsignal1 (Qnative_lisp_file_inconsistent,
+		  build_string ("zeln contains duplicate function names"));
+  for (ptrdiff_t i = 0; i < e->n_fns; i++)
     {
       zeln_fn_entry_t *fe = &e->fns[i];
       zeln_fill_d_reloc_fn (fe);
@@ -970,6 +980,7 @@ For internal use.  */)
       subr->symbol_name = xstrdup (fe->symbol_name);
       Lisp_Object subr_obj;
       XSETSUBR (subr_obj, subr);
+      handle_state.installed = true;
       Ffset (sym, subr_obj);
       last_subr = subr_obj;
       subr_list = Fcons (subr_obj, subr_list);
@@ -1008,6 +1019,8 @@ For internal use.  */)
       zeln_fdo_register (e, handle, subr_list, rel);
     }
 
+  unbind_to (load_count, Qnil);
+
   return last_subr;
 }
 
@@ -1029,9 +1042,12 @@ For internal use.  */)
 
 #define ZELN_FDO_MAX_ROUNDS 2
 
-/* One loaded unit being auto-optimized.  Retired (recompiled) units
-   keep their slot until the session ends (the old .zeln handle is
-   dlclosed only after the swap is fully live).  */
+/* One loaded unit being auto-optimized.  Retired handles are never
+   dlclosed: a helper called by old generated code can allocate, enter
+   GC, and return through that code after the post-GC swap has finished.
+   At that point the old frame is still live even though every symbol
+   now points to the new unit.  The bounded number of FDO rounds makes
+   keeping the old mappings a small, deterministic cost.  */
 typedef struct
 {
   dynlib_handle_ptr handle;	/* current .zeln handle */
@@ -1044,8 +1060,14 @@ typedef struct
 } zeln_fdo_unit_t;
 
 #define ZELN_FDO_MAX_UNITS 64
+/* Each unit can retire at most ZELN_FDO_MAX_ROUNDS handles; the +1 is
+   defensive and keeps the bound obvious without a dynamic allocator. */
+#define ZELN_FDO_MAX_RETIRED_HANDLES \
+  (ZELN_FDO_MAX_UNITS * (ZELN_FDO_MAX_ROUNDS + 1))
 static zeln_fdo_unit_t zeln_fdo_units[ZELN_FDO_MAX_UNITS];
 static ptrdiff_t zeln_fdo_nunits;
+static dynlib_handle_ptr zeln_fdo_retired_handles[ZELN_FDO_MAX_RETIRED_HANDLES];
+static ptrdiff_t zeln_fdo_nretired;
 
 /* GC root for the FDO units' subr lists + rel-names.  Each unit's
    `subrs' / `rel_name' fields are Lisp objects living only in C struct
@@ -1244,28 +1266,66 @@ zeln_fdo_recompile (zeln_fdo_unit_t *u, const char *out, bool final)
 static bool
 zeln_fdo_swap (zeln_fdo_unit_t *u, const char *out)
 {
+  ptrdiff_t nold = u->entry->n_fns;
+  ptrdiff_t nnew;
   dynlib_handle_ptr nh = dynlib_open_for_eln (out);
   if (!nh)
     return false;
+  hash_zeln_abi ();
   zeln_entry_t *(*entry_sym) (void) =
     (zeln_entry_t * (*) (void)) dynlib_sym (nh, "zeln_entry");
   if (!entry_sym)
     {
-      dynlib_close (nh);
-      return false;
-    }
+	  dynlib_close (nh);
+	  return false;
+	}
   zeln_entry_t *ne = entry_sym ();
-  if (!ne || !ne->fdo_counters || ne->n_fns != u->entry->n_fns)
+  nnew = ne ? ne->n_fns : 0;
+  if (!ne || !ne->fdo_counters || !ne->fdo_fallbacks || nnew != nold)
     {
       dynlib_close (nh);
       return false;
     }
-  hash_zeln_abi ();
-  if (NILP (Fstring_equal (make_string (ne->freloc_hash_z, 8), Vzeln_abi_hash)))
+  if (SBYTES (Vzeln_abi_hash) != 8
+      || memcmp (ne->freloc_hash_z, SSDATA (Vzeln_abi_hash), 8) != 0)
     {
       dynlib_close (nh);
       return false;
     }
+  /* Validate before changing either library's mutable state.  In
+     particular, do not patch/repoint until every old function has a
+     unique counterpart with the same arity and constant count.  A
+     duplicate serializer name would make name-based pairing ambiguous,
+     so refuse to optimize that unit rather than guessing.  */
+  for (ptrdiff_t i = 0; i < nold; i++)
+    {
+      zeln_fn_entry_t *ofe = &u->entry->fns[i];
+      ptrdiff_t old_matches = 0, new_matches = 0;
+      zeln_fn_entry_t *nfe = NULL;
+      if (!ofe->symbol_name || ofe->n_d_reloc < 0)
+	goto fail;
+      for (ptrdiff_t j = 0; j < nold; j++)
+	if (u->entry->fns[j].symbol_name
+	    && strcmp (ofe->symbol_name, u->entry->fns[j].symbol_name) == 0)
+	  old_matches++;
+      for (ptrdiff_t j = 0; j < nnew; j++)
+	{
+	  zeln_fn_entry_t *cand = &ne->fns[j];
+	  if (!cand->symbol_name || !cand->native_entry
+	      || !cand->d_reloc || cand->n_d_reloc < 0)
+	    goto fail;
+	  if (strcmp (ofe->symbol_name, cand->symbol_name) == 0)
+	    {
+	      new_matches++;
+	      nfe = cand;
+	    }
+	}
+      if (old_matches != 1 || new_matches != 1 || !nfe
+	  || nfe->n_d_reloc != ofe->n_d_reloc
+	  || nfe->args_template != ofe->args_template)
+	goto fail;
+    }
+
   zeln_patch_freloc (ne);
 
   /* Repoint every subr; copy the old d_reloc values into the new
@@ -1273,9 +1333,9 @@ zeln_fdo_swap (zeln_fdo_unit_t *u, const char *out)
      SYMBOL NAME, never by table index: the PGO recompile emits the fn
      table HOT-FIRST (main.zig `order`), so new slot i is generally NOT
      the same fn as old slot i.  Index pairing would hand each symbol
-     the wrong native code + a crossed d_reloc constant vector (the
-     harness's hot-first fixture masked this).  The subr's symbol_name
-     is the same string as the .zeln's baked symbol_name for that fn.  */
+     the wrong native code + a crossed d_reloc constant vector.  The
+     validation pass has already proved names are unique and every
+     field is compatible.  */
   Lisp_Object tail = u->subrs;
   for (; !NILP (tail); tail = XCDR (tail))
     {
@@ -1305,9 +1365,11 @@ zeln_fdo_swap (zeln_fdo_unit_t *u, const char *out)
 	}
     }
 
-  /* Retire the old handle (the old code is no longer reachable — every
-     subr now points at the new .zeln).  */
-  dynlib_close (u->handle);
+  /* Retire, never close: symbol dispatch now points at the new unit,
+     but an old generated frame reached through a helper/GC can still be
+     on the C stack and may execute after this function returns.  */
+  if (zeln_fdo_nretired < ZELN_FDO_MAX_RETIRED_HANDLES)
+    zeln_fdo_retired_handles[zeln_fdo_nretired++] = u->handle;
   u->handle = nh;
   u->entry = ne;
   u->rounds++;
@@ -1320,6 +1382,10 @@ zeln_fdo_swap (zeln_fdo_unit_t *u, const char *out)
     *ne->fdo_active = 1;
   zeln_fdo_reset_counters (ne);
   return true;
+
+ fail:
+  dynlib_close (nh);
+  return false;
 }
 
 /* The post-GC FDO check: interval-gated flush + threshold recompile +
@@ -2790,6 +2856,12 @@ zeln_jit_should_compile (Lisp_Object fun)
 {
   if (! zeln_jit_supported ())
     return false;
+  /* v1 compilation state is owned by the main Lisp thread.  Other
+     threads deliberately stay on the interpreter until the immutable
+     entry cache is published; this avoids unsynchronized cache writes
+     without taking a lock on every bytecode call.  */
+  if (! in_main_lisp_thread ())
+    return false;
   if (zeln_jit_enabled_state == -1)
     {
       /* getenv once.  emacs.c already refused to arm the outer gate on
@@ -2836,6 +2908,8 @@ zeln_jit_entry_hook (Lisp_Object fun, ptrdiff_t args_template,
 		     Lisp_Object *result)
 {
   if (will_dump_p ())
+    return false;
+  if (! in_main_lisp_thread ())
     return false;
   if (! zeln_jit_supported ())
     return false;
@@ -2891,6 +2965,8 @@ bool
 zeln_jit_try_run (Lisp_Object fun, ptrdiff_t nargs, Lisp_Object *args,
 		  Lisp_Object *result)
 {
+  if (! in_main_lisp_thread ())
+    return false;
   Lisp_Object bytestr = AREF (fun, CLOSURE_CODE);
   if (!STRINGP (bytestr))
     return false;
