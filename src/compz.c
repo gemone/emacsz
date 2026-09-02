@@ -860,6 +860,22 @@ zeln_unwind_load_handle (void *arg)
     }
 }
 
+/* Legitimate Lisp files can defalias the same name more than once; the
+   loader installs entries in source order so the final definition wins.
+   Such names are safe for normal loads but ambiguous for FDO's name-based
+   pairing after a PGO hot-first reorder, so those units are not watched.  */
+static bool
+zeln_entry_has_duplicate_fn_names (const zeln_entry_t *e)
+{
+  for (ptrdiff_t i = 0; i < e->n_fns; i++)
+    for (ptrdiff_t j = 0; j < i; j++)
+      if (e->fns[i].symbol_name && e->fns[j].symbol_name
+	  && strcmp (e->fns[i].symbol_name,
+		     e->fns[j].symbol_name) == 0)
+	return true;
+  return false;
+}
+
 DEFUN ("comp-z-load-zeln", Fcomp_z_load_zeln, Scomp_z_load_zeln, 1, 1, 0,
        doc: /* Load a .zeln native-comp unit (Zig path).
 FILE is the .zeln path.  The unit holds N native functions (one per
@@ -942,13 +958,6 @@ For internal use.  */)
   Lisp_Object last_subr = Qnil;
   Lisp_Object subr_list = Qnil;	/* FDO: subrs in fn-table order */
   for (ptrdiff_t i = 0; i < e->n_fns; i++)
-    for (ptrdiff_t j = 0; j < i; j++)
-      if (e->fns[i].symbol_name && e->fns[j].symbol_name
-	  && strcmp (e->fns[i].symbol_name,
-		     e->fns[j].symbol_name) == 0)
-	xsignal1 (Qnative_lisp_file_inconsistent,
-		  build_string ("zeln contains duplicate function names"));
-  for (ptrdiff_t i = 0; i < e->n_fns; i++)
     {
       zeln_fn_entry_t *fe = &e->fns[i];
       zeln_fill_d_reloc_fn (fe);
@@ -1011,7 +1020,7 @@ For internal use.  */)
      current-buffer context, and the file arg is an absolute ASCII path
      on every loader call site (the swap path, the transparent Fload
      path, and the FDO recompile spawn all pass absolute paths).  */
-  if (zeln_fdo_enabled ())
+  if (zeln_fdo_enabled () && ! zeln_entry_has_duplicate_fn_names (e))
     {
       const char *s = SSDATA (file);
       const char *slash = strrchr (s, '/');
