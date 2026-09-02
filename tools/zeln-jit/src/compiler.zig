@@ -750,6 +750,8 @@ const Emitter = struct {
 
     /// POP handler; fn(1,&oldtop), discard result (Bunwind_protect).
     fn unaryPopFreloc(self: *Emitter, idx: u64) void {
+        self.loadArg1Imm(1);
+        self.loadArg2R12();
         self.frelocCall(idx);
         self.adjustTop(-8);
     }
@@ -2551,6 +2553,33 @@ test "compile and run: AOT-parity helper opcodes preserve stack effects" {
     const pop_ops = [_]u8{ 0xC0, 0xC0 + 1, BUNWIND_PROTECT, BRETURN };
     const pop = try compile(&pop_arena, &pop_ops, 8, freloc_slot, &consts, 0, &[_]u32{}, 0);
     try testing.expectEqual(@as(u64, 111), pop.entry(0, &args));
+}
+
+var test_unwind_n: i64 = 0;
+var test_unwind_handler: u64 = 0;
+
+test "compile and run: unwind-protect passes the popped handler" {
+    var arena = try jit.ExecArena.allocate(jit.page_size);
+    defer arena.deinit();
+
+    const Shim = struct {
+        fn unwind_protect(n: i64, args: [*]const u64) callconv(.c) u64 {
+            test_unwind_n = n;
+            test_unwind_handler = args[0];
+            return 0;
+        }
+    };
+    var freloc_table = [_]*const anyopaque{undefined} ** 103;
+    freloc_table[IDX_UNWIND_PROTECT] = &Shim.unwind_protect;
+    var freloc_base: *const anyopaque = &freloc_table;
+    var consts = [_]u64{ 111, 222 };
+
+    const ops = [_]u8{ 0xC0, 0xC0 + 1, BUNWIND_PROTECT, BRETURN };
+    const res = try compile(&arena, &ops, 8, &freloc_base, &consts, 0, &[_]u32{}, 0);
+    var args: [1]u64 = .{0};
+    try testing.expectEqual(@as(u64, 111), res.entry(0, &args));
+    try testing.expectEqual(@as(i64, 1), test_unwind_n);
+    try testing.expectEqual(@as(u64, 222), test_unwind_handler);
 }
 
 test "compile and run: discard-N with and without TOP preservation" {
