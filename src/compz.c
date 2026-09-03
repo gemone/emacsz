@@ -2563,8 +2563,6 @@ zeln_jit_cache_lookup_shape (const unsigned char *key, ptrdiff_t args_template)
 	   && zeln_jit_cache[i].args_template == args_template)
 	  || zeln_jit_cache[i].key == NULL)
 	return &zeln_jit_cache[i];
-      if (zeln_jit_cache[i].key == NULL)
-	return &zeln_jit_cache[i];
     }
   return NULL;
 }
@@ -2965,8 +2963,31 @@ zeln_jit_entry_hook (Lisp_Object fun, ptrdiff_t args_template,
 	    }
 	}
     }
-  if (zeln_jit_hot (SDATA (bytestr), zeln_jit_hot_threshold ()))
-    (void) zeln_jit_should_compile (fun);
+	if (zeln_jit_hot (SDATA (bytestr), zeln_jit_hot_threshold ()))
+	  {
+	    if (! zeln_jit_should_compile (fun))
+	      {
+		/* Compilation can fail (bad bytecode, unsupported opcode,
+		   allocator failure, full cache).  Mark this closure NOJIT
+		   or every later call repeats the full-cache linear scan.
+		   That turned a failed compile into an uninterruptible
+		   100% CPU startup loop.  */
+		struct zeln_jit_cache_ent *e
+		  = zeln_jit_cache_lookup_shape
+		      (SDATA (bytestr), zeln_closure_args_template (fun));
+		if (e != NULL && e->key == NULL)
+		  {
+		    e->key = SDATA (bytestr);
+		    e->key_len = SBYTES (bytestr);
+		    e->args_template = zeln_closure_args_template (fun);
+		    e->consts = VECTORP (AREF (fun, CLOSURE_CONSTANTS))
+		      ? XVECTOR (AREF (fun, CLOSURE_CONSTANTS))->contents
+		      : NULL;
+		    e->entry = NULL;
+		    zeln_jit_rejected++;
+		  }
+	      }
+	  }
   return false;
 }
 
