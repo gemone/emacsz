@@ -5386,6 +5386,13 @@ native_function_doc (Lisp_Object function)
   struct Lisp_Native_Comp_Unit *cu =
     XNATIVE_COMP_UNIT (Fsubr_native_comp_unit (function));
 
+  /* A zeln compatibility unit has no gccjit static doc vector.  Its
+     Lisp-level documentation is not represented in the gccjit fdoc
+     format yet; return the subr's doc reference so `documentation'
+     treats missing docs as nil instead of probing .eln-only symbols.  */
+  if (cu->handle == NULL)
+    return make_fixnum (XSUBR (function)->doc);
+
   if (NILP (cu->data_fdoc_v))
     cu->data_fdoc_v = load_static_obj (cu, TEXT_FDOC_SYM);
   if (!VECTORP (cu->data_fdoc_v))
