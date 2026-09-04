@@ -292,6 +292,7 @@ Value is:
  `ns' for an Emacs frame on a GNUstep or Macintosh Cocoa display,
  `pc' for a direct-write MS-DOS frame,
  `pgtk' for an Emacs frame running on pure GTK.
+ `proto' for an EUP proto-ui frame.
  `haiku' for an Emacs frame running in Haiku.
  `android' for an Emacs frame running in Android.
 See also `frame-live-p'.  */)
@@ -318,6 +319,10 @@ See also `frame-live-p'.  */)
       return Qhaiku;
     case output_android:
       return Qandroid;
+#ifdef HAVE_PROTO_UI
+    case output_proto:
+      return Qproto;
+#endif
     default:
       emacs_abort ();
     }
@@ -7259,6 +7264,9 @@ syms_of_frame (void)
   DEFSYM (Qpgtk, "pgtk");
   DEFSYM (Qhaiku, "haiku");
   DEFSYM (Qandroid, "android");
+#ifdef HAVE_PROTO_UI
+  DEFSYM (Qproto, "proto");
+#endif
   DEFSYM (Qvisible, "visible");
   DEFSYM (Qbuffer_predicate, "buffer-predicate");
   DEFSYM (Qbuffer_list, "buffer-list");
@@ -7269,6 +7277,17 @@ syms_of_frame (void)
   DEFSYM (Qtty_color_mode, "tty-color-mode");
   DEFSYM (Qtty, "tty");
   DEFSYM (Qtty_type, "tty-type");
+
+#ifdef HAVE_PROTO_UI
+  /* Verify the Zig registration library's ABI and EUP contract before the
+     Lisp feature becomes visible.  W3 replaces this boundary with terminal
+     lifecycle calls.  */
+  if (!proto_ui_registration_compatible (PROTO_UI_ABI_VERSION,
+					 PROTO_UI_EUP_MAJOR_VERSION,
+					 PROTO_UI_EUP_MINOR_VERSION))
+    emacs_abort ();
+  Fprovide (Qproto, Qnil);
+#endif
 
   DEFSYM (Qface_set_after_frame_default, "face-set-after-frame-default");
 

@@ -474,6 +474,10 @@ return values.  */)
       return Qhaiku;
     case output_android:
       return Qandroid;
+#ifdef HAVE_PROTO_UI
+    case output_proto:
+      return Qproto;
+#endif
     default:
       emacs_abort ();
     }

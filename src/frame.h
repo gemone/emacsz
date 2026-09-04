@@ -140,6 +140,9 @@ struct text_conversion_state
 
 #endif
 
+/* Opaque per-frame state owned by the opt-in EUP proto-ui backend.  */
+struct proto_output;
+
 /* The structure representing a frame.  */
 
 struct frame
@@ -659,6 +662,9 @@ struct frame
     struct pgtk_output *pgtk;		/* From pgtkterm.h. */
     struct haiku_output *haiku;		/* From haikuterm.h. */
     struct android_output *android;	/* From androidterm.h.  */
+#ifdef HAVE_PROTO_UI
+    struct proto_output *proto;		/* Owned by src/proto-ui.  */
+#endif
   }
   output_data;
 
@@ -962,29 +968,50 @@ default_pixels_per_inch_y (void)
 #else
 #define FRAME_ANDROID_P(f) ((f)->output_method == output_android)
 #endif
+#ifndef HAVE_PROTO_UI
+#define FRAME_PROTO_P(f) false
+#else
+#define FRAME_PROTO_P(f) ((f)->output_method == output_proto)
+
+/* Build-time contract expected by the Zig registration library.  A
+   mismatch is a fatal configuration error, not a runtime fallback.  */
+#define PROTO_UI_ABI_VERSION 1u
+#define PROTO_UI_EUP_MAJOR_VERSION 1u
+#define PROTO_UI_EUP_MINOR_VERSION 0u
+extern bool proto_ui_registration_compatible (unsigned int abi_version,
+					      unsigned int eup_major,
+					      unsigned int eup_minor);
+#endif
 
 /* FRAME_WINDOW_P tests whether the frame is a graphical window system
-   frame.  */
+   frame.  Keep the non-proto selection in a helper so proto can coexist
+   with another compiled backend and simply extend this predicate.  */
 #ifdef HAVE_X_WINDOWS
-#define FRAME_WINDOW_P(f) FRAME_X_P (f)
+# define FRAME_WINDOW_P_NONPROTO(f) FRAME_X_P (f)
 #endif
 #ifdef HAVE_NTGUI
-#define FRAME_WINDOW_P(f) FRAME_W32_P (f)
+# define FRAME_WINDOW_P_NONPROTO(f) FRAME_W32_P (f)
 #endif
 #ifdef HAVE_NS
-#define FRAME_WINDOW_P(f) FRAME_NS_P(f)
+# define FRAME_WINDOW_P_NONPROTO(f) FRAME_NS_P(f)
 #endif
 #ifdef HAVE_PGTK
-#define FRAME_WINDOW_P(f) FRAME_PGTK_P(f)
+# define FRAME_WINDOW_P_NONPROTO(f) FRAME_PGTK_P(f)
 #endif
 #ifdef HAVE_HAIKU
-#define FRAME_WINDOW_P(f) FRAME_HAIKU_P (f)
+# define FRAME_WINDOW_P_NONPROTO(f) FRAME_HAIKU_P (f)
 #endif
 #ifdef HAVE_ANDROID
-#define FRAME_WINDOW_P(f) FRAME_ANDROID_P (f)
+# define FRAME_WINDOW_P_NONPROTO(f) FRAME_ANDROID_P(f)
 #endif
-#ifndef FRAME_WINDOW_P
-#define FRAME_WINDOW_P(f) ((void) (f), false)
+#ifndef FRAME_WINDOW_P_NONPROTO
+# define FRAME_WINDOW_P_NONPROTO(f) ((void) (f), false)
+#endif
+
+#ifdef HAVE_PROTO_UI
+# define FRAME_WINDOW_P(f) (FRAME_PROTO_P (f) || FRAME_WINDOW_P_NONPROTO (f))
+#else
+# define FRAME_WINDOW_P(f) FRAME_WINDOW_P_NONPROTO (f)
 #endif
 
 /* Dots per inch of the screen the frame F is on.  */

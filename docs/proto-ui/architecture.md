@@ -2,7 +2,7 @@
 
 Status: normative design baseline
 Protocol: EUP v1
-Implementation status: specification complete; W1 protocol/transport skeleton complete
+Implementation status: specification complete; W1 protocol/transport skeleton complete; W2 registration seam implemented, under final review
 
 ## 1. Purpose
 

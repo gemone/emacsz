@@ -20,7 +20,7 @@ The completed system must:
 
 ## 2. Current status
 
-The repository contains the complete English design baseline. W1 now includes an isolated EUP protocol/transport skeleton with focused tests. It does **not** yet register an Emacs terminal, capture redisplay, create a real SDL3 window, or satisfy the final objective.
+The repository contains the complete English design baseline. W1 includes an approved EUP protocol/transport skeleton with focused tests. W2 adds the opt-in Emacs registration seam and is under final review; it does **not** yet capture redisplay, create a real SDL3 window, or satisfy the final objective.
 
 The documentation in this directory is the source of truth for the implementation workstreams.
 

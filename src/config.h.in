@@ -369,6 +369,10 @@
 #undef HAVE_OTF_KANNADA_BUG
 #undef HAVE_PDUMPER
 #undef HAVE_PERSONALITY_ADDR_NO_RANDOMIZE
+/* HAVE_PROTO_UI: opt-in headless EUP terminal/frontend protocol backend.
+   Enabled only by -Dproto-ui=true from build.zig; absent from default and
+   PGTK-only builds.  W2 registers the backend identity and ABI seam only.  */
+#undef HAVE_PROTO_UI
 #undef HAVE_PGTK
 #undef HAVE_PIPE2
 #undef HAVE_PNG

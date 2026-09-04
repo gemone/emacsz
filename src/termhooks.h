@@ -65,6 +65,9 @@ enum output_method
   output_pgtk,
   output_haiku,
   output_android,
+#ifdef HAVE_PROTO_UI
+  output_proto,
+#endif
 };
 
 /* Input queue declarations and hooks.  */
