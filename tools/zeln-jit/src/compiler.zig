@@ -344,17 +344,38 @@ fn registerWindowsUnwind(
 ) Error!void {
     if (builtin.os.tag != .windows or builtin.cpu.arch != .x86_64) return;
 
-    // Large frame allocation consumes two unwind-code slots, plus four
-    // pushes.  Five slots only covered the small-frame special case.
+    // UNWIND_CODE bit layout (little-endian u16, per PE/COFF spec):
+    //   bits  7-0: CodeOffset — prologue offset where the op completes
+    //   bits 11-8: UnwindOp   — operation code
+    //   bits 15-12: OpInfo    — register / operand info
+    const uw = struct {
+        fn code(op: u16, opinfo: u16, offset: u16) u16 {
+            return (offset << 8) | (opinfo << 4) | op;
+        }
+    }.code;
+
+    // Fixed prologue (17 bytes):
+    //   0: push rbp          (1 byte,  0x55)
+    //   1: mov rbp, rsp      (3 bytes, 48 89 E5) — not an unwind op
+    //   4: push r12          (2 bytes, 41 54)
+    //   6: push r13          (2 bytes, 41 55)
+    //   8: push r14          (2 bytes, 41 56)
+    //  10: sub rsp, imm32    (7 bytes, 48 81 EC xx xx xx xx)
+    //
+    // Unwind codes must be listed in reverse-execution order: the
+    // last prologue op (sub rsp) first, then pushes in reverse.
+    // Large frame allocation consumes two unwind-code slots, plus
+    // four pushes.  Six slots covers the worst case.
     var codes: [6]u16 = undefined;
     var count: usize = 0;
     if (total_frame == 0 or (total_frame & 7) != 0) return Error.BadBytecode;
     if (total_frame <= 128) {
-        codes[count] = (win_unwind.UWOP_ALLOC_SMALL << 12) | @as(u16, @intCast(total_frame / 8 - 1));
+        codes[count] = uw(win_unwind.UWOP_ALLOC_SMALL, @intCast(total_frame / 8 - 1), 17);
         count += 1;
     } else if (total_frame <= 65536) {
-        codes[count] = win_unwind.UWOP_ALLOC_LARGE << 12;
+        codes[count] = uw(win_unwind.UWOP_ALLOC_LARGE, 0, 17);
         count += 1;
+        // Raw slot: frame size / 8 (not a UNWIND_CODE, just a u16 operand)
         codes[count] = @intCast(total_frame / 8);
         count += 1;
     } else {
@@ -365,13 +386,13 @@ fn registerWindowsUnwind(
     }
     // Unwind codes are reverse-execution ordered.  The sub runs last,
     // so it is described first, followed by the four pushes.
-    codes[count] = (win_unwind.UWOP_PUSH_NONVOL << 12) | 14;
+    codes[count] = uw(win_unwind.UWOP_PUSH_NONVOL, 14, 10); // push r14
     count += 1;
-    codes[count] = (win_unwind.UWOP_PUSH_NONVOL << 12) | 13;
+    codes[count] = uw(win_unwind.UWOP_PUSH_NONVOL, 13, 8);  // push r13
     count += 1;
-    codes[count] = (win_unwind.UWOP_PUSH_NONVOL << 12) | 12;
+    codes[count] = uw(win_unwind.UWOP_PUSH_NONVOL, 12, 6);  // push r12
     count += 1;
-    codes[count] = (win_unwind.UWOP_PUSH_NONVOL << 12) | 5;
+    codes[count] = uw(win_unwind.UWOP_PUSH_NONVOL, 5, 1);   // push rbp
     count += 1;
 
     const rf_offset = std.mem.alignForward(u32, code_size, @alignOf(win_unwind.RUNTIME_FUNCTION));
