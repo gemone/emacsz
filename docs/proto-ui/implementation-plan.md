@@ -62,15 +62,15 @@ Acceptance:
 * Every message has direction, payload summary, QoS class, and state effect.
 * Every required capability has a fallback.
 
-Status: documentation baseline complete; W1 skeleton implemented; schema conformance review continues.
+Status: approved. The W1 protocol/transport skeleton is complete.
 
 Implemented W1 evidence:
 
 1. `src/proto-ui/protocol.zig` encodes/decodes the 62-byte envelope, capability name/value table, resource identity, and the `FRAME_UPDATE` concrete header/section envelope.
 2. `src/proto-ui/transport.zig` implements ordered memory-sink and bounded replay-file primitives.
 3. `zig build -Dproto-ui=true proto-ui-unit --summary all` passes.
-
-W1 still requires conformance expansion and final reviewer approval before closure.
+4. The dedicated reviewer completed three-plus passes and approved the W1 skeleton on commit `9548f0a6a4d`.
+5. Native, foreign-target host-runner, clean-export, and default-build gates were reproduced by the reviewer.
 
 ### W1 — Protocol implementation skeleton
 
