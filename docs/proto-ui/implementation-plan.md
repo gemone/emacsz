@@ -27,7 +27,7 @@ Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existin
 | SDL3 frontend design | Documented |
 | Performance baseline | Documented |
 | Build option `-Dproto-ui` | Test-only W1 implementation |
-| W2 registration seam | In review |
+| W2 registration seam | Approved |
 | `output_proto` terminal | Not implemented |
 | Redisplay capture | Not implemented |
 | Resource model | Not implemented |
