@@ -320,15 +320,13 @@ jobs:
         run: zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp=false -Dnative-comp-zig=true check
 
       # .zeln native-comp feature tests for the MSVC backend, mirroring the
-      # GNU job's four steps with the msvc target.  The pushhandler gate in
-      # zeln-compile (handler-carrying units are skipped on msvc and fall
-      # back to the interpreter; longjmp-into-JIT-frame aborts on the MSVC
-      # ABI) keeps check-zeln viable here.  continue-on-error like the GNU
-      # windows job: the 2-vCPU runner's byte-compile pass is flaky on test
-      # resources (compiles clean locally and on Linux/macOS); build + smoke
-      # + the full ert suite above stay the hard gates.
+      # GNU job's four steps with the msvc target.  HAVE__SETJMP=1 (config-
+      # overrides.zig) makes sys_longjmp a direct register restore on MSVC,
+      # so handler-carrying units compile natively and the coverage floor
+      # passes without an msvc exemption; the JIT UNWIND_CODE encoding fix
+      # keeps the JIT smoke green.  No continue-on-error: MSVC is now a
+      # hard gate like Linux/macOS.
       - name: .zeln AOT feature tests (MSVC)
-        continue-on-error: true
         env:
           ZELN_PGO_HAMMER: '30000'
           ZELN_BC_TIMEOUT: '120'
@@ -341,7 +339,6 @@ jobs:
 
       - name: .zeln JIT gates (MSVC)
         if: runner.arch == 'X64'
-        continue-on-error: true
         timeout-minutes: 90
         run: |
           zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp=false -Dnative-comp-zig=true zeln-jit-smoke &&
