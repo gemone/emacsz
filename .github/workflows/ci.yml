@@ -178,16 +178,8 @@ jobs:
       # ZELN_PGO_HAMMER is set in the step env (shell-agnostic) instead of the
       # bash-only `VAR=val cmd` prefix; only zeln-pgo reads it.
       #
-      # continue-on-error on WINDOWS only: the 2-vCPU windows-latest runner
-      # byte-compiles ~20 of the test tree's resources with hard errors
-      # (errors that compile clean locally and on the Linux/macOS runners),
-      # which then fails check-zeln's resource loading.  This is an
-      # environmental flake of the slow Windows runner, not a backend
-      # regression -- the same job's build + smoke + full ert suite stay
-      # gating.  Keep the step running for visibility; do not let it block
-      # the pipeline on that runner.  Linux/macOS remain hard-gated.
+      # Hard gate on ALL platforms: no continue-on-error.
       - name: .zeln AOT feature tests (populate + gate #2 + zeln-diff + pgo)
-        continue-on-error: ${{ runner.os == 'Windows' }}
         env:
           ZELN_PGO_HAMMER: '30000'
           # Shrink the per-batch/standalone byte-compile watchdog from the
@@ -216,7 +208,6 @@ jobs:
       # than a host-dependent combined eln+zeln configuration.
       - name: .zeln JIT gates (smoke + full suite)
         if: runner.arch == 'X64'
-        continue-on-error: ${{ runner.os == 'Windows' }}
         timeout-minutes: 90
         run: |
           zig build -Dnative-comp=false -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-jit-smoke &&
