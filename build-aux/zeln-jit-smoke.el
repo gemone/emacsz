@@ -225,7 +225,11 @@
           (error "zeln-jit-smoke: AOT native-comp-unit file is not .zeln")))
         (fmakunbound 'zeln-jit-smoke-aot-callee)
         (when (and dir (file-directory-p dir))
-          (delete-directory dir t))))
+          ;; Windows: the .zeln is dlopen'd and the OS file lock prevents
+          ;; deletion while loaded.  Best-effort cleanup: ignore the error.
+          (condition-case nil
+              (delete-directory dir t)
+            (file-error nil)))))
 
     (message "zeln-jit-smoke: PASS")))
 

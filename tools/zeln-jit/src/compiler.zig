@@ -1888,9 +1888,14 @@ pub fn compile(
     while (ai < arity) : (ai += 1) {
         if (em.win64) {
             // mov rax, [rdx + ai*8]
+            // ModRM 0x82: mod=10 (disp32), reg=000 (rax = destination),
+            // r/m=010 (rdx = base).  The previous 0x92 encoded reg=001
+            // (rcx), silently loading args into rcx instead of rax --
+            // the virtual stack then stored the stale rax (freloc_slot
+            // address) rather than the argument, corrupting every call.
             em.raw(0x48);
             em.raw(0x8B);
-            em.raw(0x92);
+            em.raw(0x82);
             em.imm32(@intCast(ai * 8));
         } else {
             // mov rax, [rsi + ai*8]

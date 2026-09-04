@@ -3006,6 +3006,11 @@ zeln_jit_try_run (Lisp_Object fun, ptrdiff_t nargs, Lisp_Object *args,
   /* The caller (exec_byte_code) guarantees the simple fixed-arity
      shape; run.  */
   *result = entry (nargs, args);
+  if (getenv ("ZELN_JIT_DEBUG"))
+    fprintf (stderr, "[jit-dispatch] nargs=%d args[0]=%016llx result=%016llx\n",
+	     (int) nargs,
+	     nargs > 0 ? (unsigned long long) XLI (args[0]) : 0ULL,
+	     (unsigned long long) XLI (*result));
   return true;
 }
 extern unsigned zeln_jit_count (const void *);
