@@ -72,6 +72,13 @@ pub const Session = struct {
         return id;
     }
 
+    pub fn destroyTerminal(self: *Session, terminal_id: u64) !void {
+        const terminal = self.terminals.getPtr(terminal_id) orelse
+            return LifecycleError.InvalidTerminal;
+        if (!terminal.live) return LifecycleError.InvalidTerminal;
+        terminal.live = false;
+    }
+
     pub fn createFrame(self: *Session, terminal_id: u64) !u64 {
         const terminal = self.terminals.get(terminal_id) orelse
             return LifecycleError.InvalidTerminal;
@@ -188,6 +195,13 @@ export fn proto_ui_terminal_create(session_id: u64, terminal_id: *u64) c_int {
     return 0;
 }
 
+export fn proto_ui_terminal_destroy(session_id: u64, terminal_id: u64) c_int {
+    const session = lifecycle_session orelse return -1;
+    if (session.id != session_id) return -1;
+    session.destroyTerminal(terminal_id) catch return -1;
+    return 0;
+}
+
 export fn proto_ui_frame_create(
     session_id: u64,
     terminal_id: u64,
@@ -251,6 +265,11 @@ test "lifecycle IDs, generations, and emitted messages remain stable" {
     try std.testing.expectEqual(@as(usize, 2), session.messageCount());
     try std.testing.expectError(LifecycleError.InvalidTerminal, session.createFrame(terminal_id + 1));
     try std.testing.expectError(LifecycleError.InvalidFrame, session.destroyFrame(frame_id));
+
+    // Backend terminal destruction is independent of frame state and must
+    // reject repeated destruction at the lifecycle boundary.
+    try session.destroyTerminal(terminal_id);
+    try std.testing.expectError(LifecycleError.InvalidTerminal, session.destroyTerminal(terminal_id));
 
     const expected = [_]u16{ protocol.Message.frame_create, protocol.Message.frame_destroy };
     for (expected, 0..) |message_type, index| {

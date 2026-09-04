@@ -2,7 +2,7 @@
 
 Status: normative design baseline
 Protocol: EUP v1
-Implementation status: specification complete; W1 protocol/transport skeleton complete; W2 registration complete; W3a lifecycle identity complete
+Implementation status: specification complete; W1 protocol/transport skeleton complete; W2 registration complete; W3a lifecycle identity and W3b terminal lifecycle complete; proto frame lifecycle pending
 
 ## 1. Purpose
 

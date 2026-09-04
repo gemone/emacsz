@@ -26,10 +26,11 @@ Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existin
 | Memory sink and replay-file transport | Partial |
 | SDL3 frontend design | Documented |
 | Performance baseline | Documented |
-| Build option `-Dproto-ui` | W2 registration and W3a lifecycle identity |
+| Build option `-Dproto-ui` | W2 registration, W3a lifecycle identity, W3b terminal lifecycle |
 | W2 registration seam | Approved |
 | W3a lifecycle identity | Approved |
-| `output_proto` terminal | Not implemented |
+| W3b terminal lifecycle | Approved |
+| `output_proto` terminal | Approved |
 | Redisplay capture | Not implemented |
 | Resource model | Not implemented |
 | SDL3 frontend | Not implemented |
@@ -150,7 +151,7 @@ Review gates:
 2. Build/default-config isolation.
 3. Emacs backend ABI compatibility.
 
-### W3a — Headless lifecycle identity (current)
+### W3a — Headless lifecycle identity (approved)
 
 Goal: implement protocol-safe frame identity and emitted lifecycle messages
 before touching Emacs terminal objects.
@@ -178,18 +179,54 @@ zig build -Dproto-ui=true proto-ui-unit
 
 Status: approved.
 
-### W3b — Real headless terminal/frame lifecycle (next)
+### W3b — Real headless terminal lifecycle (approved)
 
-Goal: create and delete a real proto graphic frame without rendering.
+Goal: create and delete a real `output_proto` terminal without frames.
 
 Tasks:
 
-1. Connect lifecycle ABI to `create_terminal` / terminal deletion.
-2. Implement frame creation parameter parsing.
-3. Create and release `output_proto` terminal/frame objects.
-4. Map Emacs objects to stable EUP IDs.
-5. Emit window-tree snapshots and geometry/state updates.
-6. Add a `make-frame` / `delete-frame` smoke test.
+1. Connect lifecycle ABI to `create_terminal` and terminal deletion.
+2. Assign a stable EUP terminal ID and preserve it on the terminal object.
+3. Install terminal deletion hooks and release lifecycle state.
+4. Expose `proto-ui-create-terminal` for controlled runtime tests.
+
+Deliverables:
+
+* `output_proto` terminal object.
+* Terminal state mapping.
+* Controlled create/delete/recreate runtime evidence.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true --summary all
+```
+
+```elisp
+(setq terminal (proto-ui-create-terminal))
+(terminal-live-p terminal)              => proto
+(terminal-name terminal)                => "proto"
+(delete-terminal terminal)
+(terminal-live-p terminal)              => nil
+(setq terminal (proto-ui-create-terminal))
+(terminal-live-p terminal)              => proto
+(delete-terminal terminal)
+(terminal-live-p terminal)              => nil
+```
+
+Status: approved.
+
+### W3c — Real headless frame lifecycle (pending)
+
+Goal: create and delete a real proto frame without rendering.
+
+Tasks:
+
+1. Implement frame creation parameter parsing.
+2. Create and release `output_proto` frame objects.
+3. Map Emacs frame objects to stable EUP frame IDs.
+4. Emit window-tree snapshots and geometry/state updates.
+5. Add a `make-frame` / `delete-frame` smoke test.
 
 Review gates:
 

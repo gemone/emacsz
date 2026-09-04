@@ -693,6 +693,67 @@ delete_initial_terminal (struct terminal *terminal)
   initial_terminal = NULL;
 }
 
+#ifdef HAVE_PROTO_UI
+
+static struct terminal *proto_terminal;
+
+/* The generic terminal deletion path has already detached live frames when
+   this hook runs.  Marking the EUP terminal dead here keeps lifecycle state
+   synchronized.  */
+static void
+proto_delete_terminal (struct terminal *terminal)
+{
+  extern int proto_ui_terminal_destroy (uint64_t, uint64_t);
+  if (proto_ui_terminal_destroy (terminal->proto_session_id,
+                                 terminal->proto_terminal_id) != 0)
+    emacs_abort ();
+  delete_terminal (terminal);
+  if (terminal == proto_terminal)
+    proto_terminal = NULL;
+}
+
+DEFUN ("proto-ui-create-terminal", Fproto_ui_create_terminal,
+       Sproto_ui_create_terminal, 0, 0, 0,
+       doc: /* Create the headless EUP terminal used by proto-ui.
+Return the terminal object.  Repeated calls return the same live terminal.
+This is W3 lifecycle plumbing; it does not yet create proto frames.  */)
+  (void)
+{
+  extern int proto_ui_lifecycle_session_create (uint64_t *);
+  extern int proto_ui_terminal_create (uint64_t, uint64_t *);
+  uint64_t session_id, terminal_id;
+
+  if (proto_terminal && proto_terminal->name)
+    {
+      Lisp_Object terminal;
+      XSETTERMINAL (terminal, proto_terminal);
+      return terminal;
+    }
+
+  if (!proto_ui_registration_compatible (PROTO_UI_ABI_VERSION,
+					 PROTO_UI_EUP_MAJOR_VERSION,
+					 PROTO_UI_EUP_MINOR_VERSION))
+    error ("proto-ui registration ABI is incompatible");
+  if (proto_ui_lifecycle_session_create (&session_id) != 0)
+    error ("proto-ui lifecycle session creation failed");
+  if (proto_ui_terminal_create (session_id, &terminal_id) != 0)
+    error ("proto-ui terminal lifecycle creation failed");
+
+  proto_terminal = create_terminal (output_proto, NULL);
+  proto_terminal->name = xstrdup ("proto");
+  proto_terminal->kboard = allocate_kboard (Qproto);
+  proto_terminal->kboard->reference_count++;
+  proto_terminal->delete_terminal_hook = proto_delete_terminal;
+  proto_terminal->proto_session_id = session_id;
+  proto_terminal->proto_terminal_id = terminal_id;
+
+  Lisp_Object terminal;
+  XSETTERMINAL (terminal, proto_terminal);
+  return terminal;
+}
+
+#endif /* HAVE_PROTO_UI */
+
 void
 syms_of_terminal (void)
 {
@@ -722,6 +783,10 @@ or some time later.  */);
   defsubr (&Sterminal_parameters);
   defsubr (&Sterminal_parameter);
   defsubr (&Sset_terminal_parameter);
+
+#ifdef HAVE_PROTO_UI
+  defsubr (&Sproto_ui_create_terminal);
+#endif
 
   Fprovide (intern_c_string ("multi-tty"), Qnil);
   DEFSYM (Qdefault_keyboard_coding_system, "default-keyboard-coding-system");

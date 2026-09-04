@@ -390,9 +390,9 @@ pub fn build(b: *std.Build) void {
     const enable_modules_zig = b.option(bool, "modules-zig", "Enable the Zig dynamic-module subsystem (HAVE_MODULES_ZIG)") orelse false;
     // Proto-UI W3: the EUP protocol/lifecycle module is independent of Emacs
     // internals.
-    // The option enables HAVE_PROTO_UI registration plus protocol/transport
-    // conformance tests.  Real Emacs terminal lifecycle and frame creation
-    // arrive in a later workstream.
+    // The option enables HAVE_PROTO_UI registration, terminal lifecycle
+    // identity, and protocol/transport conformance tests.  Real proto frame
+    // creation arrives in a later workstream.
     const enable_proto_ui = b.option(bool, "proto-ui", "Enable EUP proto-ui registration, lifecycle identity, and transport tests") orelse false;
 
     // Target-derived flags.  `target` is resolved at line 64, so target.result
@@ -1719,9 +1719,9 @@ pub fn build(b: *std.Build) void {
     });
     const zeln_jit_lib =
         b.addLibrary(.{ .name = "zeln-jit", .root_module = zeln_jit_mod });
-    // proto-ui W3: the opt-in lifecycle/registration ABI linked into temacs
-    // when HAVE_PROTO_UI is enabled.  Built ReleaseFast like other leaf Zig
-    // ABI libraries.  Later workstreams connect it to real terminal objects.
+    // proto-ui W3: the opt-in terminal lifecycle/registration ABI linked
+    // into temacs when HAVE_PROTO_UI is enabled.  Built ReleaseFast like other
+    // leaf Zig ABI libraries.  Real frame objects arrive in a later workstream.
     if (enable_proto_ui) {
         const proto_ui_mod = b.createModule(.{
             .root_source_file = b.path("src/proto-ui/backend.zig"),
