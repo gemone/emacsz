@@ -176,7 +176,7 @@ See [`capabilities.md`](capabilities.md).
 
 | ID | Name | Direction | Payload | Semantics |
 |---|---|---|---|---|
-| `0x0200` | `FRAME_CREATE` | C→F | Frame descriptor | Create frontend surface/window |
+| `0x0200` | `FRAME_CREATE` | C→F | W3 lifecycle payload (section 28.4) | Create the frontend frame view |
 | `0x0201` | `FRAME_PATCH` | C→F | Parameter patch | Update parameters |
 | `0x0202` | `FRAME_SNAPSHOT` | C→F | Complete frame state | Initialization/resync |
 | `0x0203` | `FRAME_UPDATE` | C→F | Composite display batch | Primary production hot path |
@@ -753,7 +753,26 @@ Known section kinds are values 1 through 12 corresponding to the semantic sectio
 
 At W1, section records are opaque byte strings for encoding/transport tests. Promoting them to concrete window, row, glyph, damage, resource, present-hint, and commit-token tables is explicitly deferred to W4–W6 and must not be assumed complete by callers.
 
-### 28.4 Replay-file container
+### 28.4 W3 lifecycle payload
+
+The W3 skeleton fixes the lifecycle payload for the two emitted lifecycle
+messages.  A terminal ID is backend-private and is not part of the EUP payload.
+
+`FRAME_CREATE` and `FRAME_DESTROY` both use this 8-byte payload:
+
+```text
+frame_id          u32
+frame_generation  u32
+```
+
+`frame_id` and `frame_generation` must be nonzero.  The envelope `frame_id`
+must equal the payload `frame_id`.  `FRAME_CREATE` marks generation one of a
+new, non-recycled frame ID.  `FRAME_DESTROY` retains the same generation and
+marks the frontend view dead.  Terminal-to-frame ownership is tracked by the
+backend state machine.  W3 memory-sink messages deterministically emit
+`timestamp_ns = 0`; a real transport replaces this with a monotonic timestamp.
+
+### 28.5 Replay-file container
 
 W1 replay files are a transport capture, not a new EUP message:
 

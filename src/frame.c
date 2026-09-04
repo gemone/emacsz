@@ -7280,8 +7280,8 @@ syms_of_frame (void)
 
 #ifdef HAVE_PROTO_UI
   /* Verify the Zig registration library's ABI and EUP contract before the
-     Lisp feature becomes visible.  W3 replaces this boundary with terminal
-     lifecycle calls.  */
+     Lisp feature becomes visible.  Lifecycle identity exports are available;
+     real Emacs terminal/frame integration is future work.  */
   if (!proto_ui_registration_compatible (PROTO_UI_ABI_VERSION,
 					 PROTO_UI_EUP_MAJOR_VERSION,
 					 PROTO_UI_EUP_MINOR_VERSION))

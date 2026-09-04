@@ -388,10 +388,12 @@ pub fn build(b: *std.Build) void {
     const enable_native_comp = b.option(bool, "native-comp", "Enable the gccjit native-comp path (.eln, HAVE_NATIVE_COMP); default OFF") orelse false;
     const enable_modules = b.option(bool, "modules", "Enable upstream dynamic modules (HAVE_MODULES)") orelse false;
     const enable_modules_zig = b.option(bool, "modules-zig", "Enable the Zig dynamic-module subsystem (HAVE_MODULES_ZIG)") orelse false;
-    // Proto-UI W2: the EUP protocol module is independent of Emacs internals.
+    // Proto-UI W3: the EUP protocol/lifecycle module is independent of Emacs
+    // internals.
     // The option enables HAVE_PROTO_UI registration plus protocol/transport
-    // conformance tests; terminal lifecycle and frame creation arrive in W3.
-    const enable_proto_ui = b.option(bool, "proto-ui", "Enable EUP proto-ui registration, protocol, and transport tests") orelse false;
+    // conformance tests.  Real Emacs terminal lifecycle and frame creation
+    // arrive in a later workstream.
+    const enable_proto_ui = b.option(bool, "proto-ui", "Enable EUP proto-ui registration, lifecycle identity, and transport tests") orelse false;
 
     // Target-derived flags.  `target` is resolved at line 64, so target.result
     // is in scope here; computing these early lets the make-docfile / doc-scan
@@ -680,9 +682,9 @@ pub fn build(b: *std.Build) void {
         if (with_gif) image_defines.append(b.allocator, .{ .name = "HAVE_GIF", .value = "1" }) catch @panic("OOM");
         if (with_webp) image_defines.append(b.allocator, .{ .name = "HAVE_WEBP", .value = "1" }) catch @panic("OOM");
         if (with_xpm and !pgtk_target) image_defines.append(b.allocator, .{ .name = "HAVE_XPM", .value = "1" }) catch @panic("OOM");
-        // Proto-UI is an independent opt-in backend identity.  W2 registers
-        // HAVE_PROTO_UI and the ABI seam only; it does not turn on
-        // HAVE_WINDOW_SYSTEM or any native-toolkit dependency.
+        // Proto-UI is an independent opt-in backend identity and lifecycle
+        // ABI.  It does not turn on HAVE_WINDOW_SYSTEM or any native-toolkit
+        // dependency.
         if (enable_proto_ui) image_defines.append(b.allocator, .{ .name = "HAVE_PROTO_UI", .value = "1" }) catch @panic("OOM");
         // The w32 GUI backend (mirrors configure.ac's HAVE_W32=yes branch:
         // AC_DEFINE HAVE_NTGUI, and window_system=w32 implies
@@ -1717,9 +1719,9 @@ pub fn build(b: *std.Build) void {
     });
     const zeln_jit_lib =
         b.addLibrary(.{ .name = "zeln-jit", .root_module = zeln_jit_mod });
-    // proto-ui W2: the opt-in registration ABI linked into temacs when
-    // HAVE_PROTO_UI is enabled.  Built ReleaseFast like other leaf Zig ABI
-    // libraries.  W3+ adds terminal lifecycle and EUP transport state.
+    // proto-ui W3: the opt-in lifecycle/registration ABI linked into temacs
+    // when HAVE_PROTO_UI is enabled.  Built ReleaseFast like other leaf Zig
+    // ABI libraries.  Later workstreams connect it to real terminal objects.
     if (enable_proto_ui) {
         const proto_ui_mod = b.createModule(.{
             .root_source_file = b.path("src/proto-ui/backend.zig"),

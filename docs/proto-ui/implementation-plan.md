@@ -26,8 +26,9 @@ Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existin
 | Memory sink and replay-file transport | Partial |
 | SDL3 frontend design | Documented |
 | Performance baseline | Documented |
-| Build option `-Dproto-ui` | Test-only W1 implementation |
+| Build option `-Dproto-ui` | W2 registration and W3a lifecycle identity |
 | W2 registration seam | Approved |
+| W3a lifecycle identity | Approved |
 | `output_proto` terminal | Not implemented |
 | Redisplay capture | Not implemented |
 | Resource model | Not implemented |
@@ -149,39 +150,46 @@ Review gates:
 2. Build/default-config isolation.
 3. Emacs backend ABI compatibility.
 
-### W3 — Headless frame lifecycle
+### W3a — Headless lifecycle identity (current)
+
+Goal: implement protocol-safe frame identity and emitted lifecycle messages
+before touching Emacs terminal objects.
+
+Tasks:
+
+1. Implement lifecycle session state.
+2. Allocate non-recycled terminal/frame IDs and generations.
+3. Emit `FRAME_CREATE` / `FRAME_DESTROY` messages.
+4. Guarantee rollback or explicit failure ordering.
+5. Decode and verify successful emitted create/destroy protocol payloads and
+   rollback behavior.
+
+Deliverables:
+
+* Zig lifecycle state and C-facing ABI.
+* Headless lifecycle messages.
+* Protocol conformance tests.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+```
+
+Status: approved.
+
+### W3b — Real headless terminal/frame lifecycle (next)
 
 Goal: create and delete a real proto graphic frame without rendering.
 
 Tasks:
 
-1. Implement backend initialization.
-2. Implement terminal creation/deletion.
-3. Implement frame creation parameter parsing.
-4. Assign frame/session/window IDs.
-5. Emit frame create, window-tree snapshot, and frame destroy messages.
-6. Handle visibility, title, geometry, and size-state changes.
-7. Ensure deleted frames release protocol IDs safely.
-
-Deliverables:
-
-* `output_proto` terminal object.
-* Frame state mapping.
-* Headless lifecycle messages.
-
-Acceptance:
-
-```sh
-zig build -Dproto-ui=true proto-ui-smoke
-```
-
-The smoke test must prove:
-
-```elisp
-(setq frame (make-frame '((window-system . proto))))
-(framep frame) => proto
-(delete-frame frame)
-```
+1. Connect lifecycle ABI to `create_terminal` / terminal deletion.
+2. Implement frame creation parameter parsing.
+3. Create and release `output_proto` terminal/frame objects.
+4. Map Emacs objects to stable EUP IDs.
+5. Emit window-tree snapshots and geometry/state updates.
+6. Add a `make-frame` / `delete-frame` smoke test.
 
 Review gates:
 
