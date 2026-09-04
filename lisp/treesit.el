@@ -5514,6 +5514,37 @@ See `treesit-language-source-alist' for details."
 (defvar treesit--install-language-grammar-blobless nil
   "If non-nil, create a blobless clone when cloning git repos.")
 
+(defcustom treesit-grammar-use-zig-cc t
+  "Prefer Zig's C/C++ compiler when building grammar libraries.
+When non-nil and the `zig' executable is available, the built-in
+grammar installer builds with `zig cc' or `zig c++'.  Explicit
+`:cc' and `:c++' recipes still take precedence.  System compiler
+fallbacks are used when Zig is unavailable."
+  :type 'boolean
+  :version "32.1")
+
+(defun treesit--grammar-compiler-command (kind &optional explicit)
+  "Return the compiler command for KIND.
+KIND is `:cc' or `:c++'.  EXPLICIT is a compiler program name from
+`treesit-language-source-alist', or a command list.  With the default
+`treesit-grammar-use-zig-cc', prefer `zig cc' and `zig c++'."
+  (let* ((is-cxx (eq kind :c++))
+         (command
+          (cond
+           (explicit
+            (if (consp explicit)
+                explicit
+              (list explicit)))
+           ((and treesit-grammar-use-zig-cc (executable-find "zig"))
+            (list "zig" (if is-cxx "c++" "cc")))
+           (is-cxx
+            (list (or (seq-find #'executable-find '("c++" "g++"))
+                      "c++")))
+           (t
+            (list (or (seq-find #'executable-find '("cc" "gcc" "c99"))
+                      "cc"))))))
+    (if (stringp command) (list command) command)))
+
 ;;;###autoload
 (defun treesit-install-language-grammar (lang &optional out-dir)
   "Build and install the tree-sitter language grammar library for LANG.
@@ -5742,12 +5773,8 @@ For LANG, SOURCE-DIR, CC, C++, see `treesit-language-source-alist'.
 If anything goes wrong, this function signals an `treesit-error'."
   (let* ((lang (symbol-name lang))
          (source-dir (expand-file-name (or source-dir "src") workdir))
-         (cc (or cc (seq-find #'executable-find '("cc" "gcc" "c99"))
-                 ;; If no C compiler found, just use cc and let
-                 ;; `call-process' signal the error.
-                 "cc"))
-         (c++ (or c++ (seq-find #'executable-find '("c++" "g++"))
-                  "c++"))
+         (cc (treesit--grammar-compiler-command :cc cc))
+         (c++ (treesit--grammar-compiler-command :c++ c++))
          (soext (or (car dynamic-library-suffixes)
                     (signal 'treesit-error '("Emacs cannot figure out the file extension for dynamic libraries for this system, because `dynamic-library-suffixes' is nil"))))
          (out-dir (or (and out-dir (expand-file-name out-dir))
@@ -5759,32 +5786,41 @@ If anything goes wrong, this function signals an `treesit-error'."
       ;; cd "${sourcedir}"
       (setq default-directory source-dir)
       (message "Compiling library")
-      ;; cc -fPIC -c -I. parser.c
-      (treesit--call-process-signal
-       cc nil t nil "-fPIC" "-c" "-I." "parser.c")
-      ;; cc -fPIC -c -I. scanner.c
-      (when (file-exists-p "scanner.c")
-        (treesit--call-process-signal
-         cc nil t nil "-fPIC" "-c" "-I." "scanner.c"))
-      ;; c++ -fPIC -I. -c scanner.cc
-      (when (file-exists-p "scanner.cc")
-        (treesit--call-process-signal
-         c++ nil t nil "-fPIC" "-c" "-I." "scanner.cc"))
-      ;; cc/c++ -fPIC -shared *.o -o "libtree-sitter-${lang}.${soext}"
+      ;; Compile and link in one invocation.  Tree-sitter grammar
+      ;; repositories are small C libraries; explicit object files are an
+      ;; unnecessary platform-specific intermediate step.
+      (let* ((sources (append (when (file-exists-p "parser.c")
+                                '("parser.c"))
+                              (when (file-exists-p "scanner.c")
+                                '("scanner.c"))
+                              (when (file-exists-p "scanner.cc")
+                                '("scanner.cc"))
+                              (when (file-exists-p "scanner.cpp")
+                                '("scanner.cpp"))))
+             (use-cxx (or (file-exists-p "scanner.cc")
+                          (file-exists-p "scanner.cpp")))
+             (compiler (if use-cxx c++ cc))
+             (link-flags
+              (if (and (eq system-type 'cygwin)
+                       (not (equal (car compiler) "zig")))
+                  '("-shared" "-Wl,-dynamicbase")
+                '("-shared"))))
+        (pcase-dolist (`(,source . ,_) sources)
+          (unless (file-exists-p source)
+            (signal 'treesit-error
+                    (list "Grammar source file is missing" source))))
+        (unless sources
+          (signal 'treesit-error '("No grammar parser sources found")))
+      ;; cc/c++ -I. -fPIC -shared SOURCES -o "libtree-sitter-${lang}"
       (apply #'treesit--call-process-signal
-             (if (file-exists-p "scanner.cc") c++ cc)
+             (car compiler)
              nil t nil
-             (if (eq system-type 'cygwin)
-                 `("-shared" "-Wl,-dynamicbase"
-                   ,@(directory-files
-                      default-directory nil
-                      (rx bos (+ anychar) ".o" eos))
-                   "-o" ,lib-name)
-               `("-fPIC" "-shared"
-                 ,@(directory-files
-                    default-directory nil
-                    (rx bos (+ anychar) ".o" eos))
-                 "-o" ,lib-name)))
+             (append (cdr compiler)
+                     '("-I.")
+                     link-flags
+                     '("-fPIC")
+                     sources
+                     (list "-o" lib-name))))
       ;; Copy out.
       (unless (file-exists-p out-dir)
         (make-directory out-dir t))

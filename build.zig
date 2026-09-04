@@ -3062,8 +3062,8 @@ pub fn build(b: *std.Build) void {
 
     // Tree-sitter (HAVE_TREE_SITTER): ts_* symbols from src/treesit.c.
     // Built from source as a Zig-managed dependency (build.zig.zon ->
-    // tree_sitter URL dep, pinned master commit 308aee0c9 / version
-    // 0.27.0) using tree-sitter's own Zig 0.16 build.zig, replacing the
+    // tree_sitter URL dep, pinned to tag v0.27.0) using tree-sitter's
+    // own Zig 0.16 build.zig, replacing the
     // system-installed library on every platform.  Gated on -Dwith-tree-sitter
     // (default on) so `zig build -Dwith-tree-sitter=false` mirrors upstream
     // --without-tree-sitter: the vendored lib is not linked and HAVE_TREE_SITTER
