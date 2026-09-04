@@ -611,7 +611,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         // (Bpushcatch / Bpushconditioncase) are rejected on msvc and
         // fall back to the interpreter.  The populate coverage floor is
         // lowered to 45% for msvc to accommodate this skip rate.
-        if (envTargetIsMsvc(&env_map) and fileUsesPushHandler(file_unit.fns)) {
+        // The gate must check the HOST ABI (ZELN_HOST_MSVC), not the .zeln
+        // target (ZELN_TARGET is always GNU on Windows).  MSVC hosts must
+        // reject handler-carrying units because their setjmp/longjmp CRT
+        // formats are incompatible with MinGW .zeln code.
+        const host_is_msvc = env_map.get("ZELN_HOST_MSVC") != null;
+        if (host_is_msvc and fileUsesPushHandler(file_unit.fns)) {
             std.debug.print("zeln-compile: msvc-abi unit uses pushhandler (condition-case/catch); skipping native emission (interpreter fallback)\n", .{});
             std.process.exit(1);
         }
@@ -1093,13 +1098,6 @@ const Instr = struct {
     target: u32 = 0, // branch absolute byte offset
     end: u32, // offset after this instruction
 };
-
-/// True when ZELN_TARGET names an msvc-ABI triple (build.zig sets it from
-/// the emacs target; absent => host default, treat as not-msvc).
-fn envTargetIsMsvc(env_map: *const std.process.Environ.Map) bool {
-    const t = env_map.get("ZELN_TARGET") orelse return false;
-    return std.mem.endsWith(u8, t, "-msvc");
-}
 
 /// True when any fn's bytecode uses the pushhandler trio (Bpushcatch /
 /// Bpushconditioncase): walked with the REAL decoder (operands consumed

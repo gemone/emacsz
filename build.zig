@@ -4448,24 +4448,44 @@ pub fn build(b: *std.Build) void {
         // (target.zigTriple, e.g. aarch64-macos / x86_64-windows-msvc) --
         // canonicalConfiguration's autoconf form (aarch64-apple-darwin) is
         // not a valid -target value and failed every compile on macOS.
+        //
+        // Windows: ALWAYS use the GNU (MinGW) triple for .zeln, even when
+        // the host is MSVC.  Both use the Microsoft x64 calling convention,
+        // so freloc function pointers are interchangeable.  The MSVC CRT's
+        // longjmp on x64 always invokes RtlUnwind (mandatory per the x64
+        // ABI), which walks every stack frame; MSVC-target .zeln DLLs
+        // produced by zig cc lack the SEH unwind metadata the unwinder
+        // needs, crashing with exit 40.  MinGW-target .zeln DLLs carry
+        // proper .pdata/.xdata that RtlUnwind understands.  Additionally,
+        // loading a MinGW DLL avoids the MSVC UCRT _setjmp intrinsic
+        // abort entirely (the gate rejects handler-carrying units, so the
+        // .zeln never calls setjmp directly).
+        const zeln_target_triple = if (target.result.os.tag == .windows)
+            "x86_64-windows-gnu"
+        else
+            target.result.zigTriple(b.allocator) catch @panic("OOM");
         run_populate.setEnvironmentVariable(
             "ZELN_TARGET",
-            target.result.zigTriple(b.allocator) catch @panic("OOM"),
+            zeln_target_triple,
         );
         // The .zeln IR must call the SAME setjmp/longjmp pair as the host
-        // emacs (sys_setjmp/sys_longjmp in lisp.h).  With HAVE__SETJMP=1
-        // the host uses _setjmp/_longjmp; the plain CRT pair would create
-        // an ABI mismatch (SEH-aware jmp_buf vs direct register restore).
-        // Pass the resolved symbol so zeln-compile doesn't have to guess
-        // from the host OS.
-        if (target.result.abi == .msvc) {
-            run_populate.setEnvironmentVariable("ZELN_SETJMP_SYM", "_setjmp");
-        } else {
-            run_populate.setEnvironmentVariable("ZELN_SETJMP_SYM", "setjmp");
-        }
+        // emacs (sys_setjmp/sys_longjmp in lisp.h).  Since .zeln is always
+        // compiled for the GNU target on Windows (see above), use the
+        // MinGW CRT's plain setjmp/longjmp pair.  The pushhandler gate
+        // rejects handler-carrying units on MSVC, so the symbol is never
+        // actually called for msvc-host .zeln; it only matters for GNU
+        // hosts where both sides use the MinGW CRT.
+        run_populate.setEnvironmentVariable("ZELN_SETJMP_SYM", "setjmp");
         // Deterministic interpreter for the build-time serialize/BC walk
         // (the JIT gate is a runtime feature; the batch pipeline pins it).
         run_populate.setEnvironmentVariable("ZELN_JIT", "0");
+        // The pushhandler gate in zeln-compile needs to know the HOST ABI
+        // (not the .zeln target): MSVC hosts must reject handler-carrying
+        // units because their setjmp/longjmp CRT formats are incompatible
+        // with MinGW .zeln code.
+        if (target.result.abi == .msvc) {
+            run_populate.setEnvironmentVariable("ZELN_HOST_MSVC", "1");
+        }
         run_populate.setCwd(b.path("."));
         // Pass the built zeln-compile exe as a file arg (tracked dep) so the
         // driver can spawn one zeln-compile per zunit.

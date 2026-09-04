@@ -437,10 +437,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // compile rejects handler-carrying units on msvc; those fall back to
     // the interpreter.  The observed skip rate is ~51.5%, so a 45% floor
     // still catches a near-total fallback while accommodating the ABI.
-    const is_msvc = if (env_map.get("ZELN_TARGET")) |t|
-        std.mem.endsWith(u8, t, "-msvc")
-    else
-        false;
+    const is_msvc = env_map.get("ZELN_HOST_MSVC") != null;
     const MIN_COVERAGE_PCT: f64 = if (is_msvc) 45.0 else 50.0;
     if (attempted > 0 and coverage < MIN_COVERAGE_PCT) {
         std.debug.print(
