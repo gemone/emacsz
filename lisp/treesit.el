@@ -5805,7 +5805,7 @@ If anything goes wrong, this function signals an `treesit-error'."
                        (not (equal (car compiler) "zig")))
                   '("-shared" "-Wl,-dynamicbase")
                 '("-shared"))))
-        (pcase-dolist (`(,source . ,_) sources)
+        (dolist (source sources)
           (unless (file-exists-p source)
             (signal 'treesit-error
                     (list "Grammar source file is missing" source))))
