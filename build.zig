@@ -4742,11 +4742,13 @@ pub fn build(b: *std.Build) void {
         \\  zig build check-zeln        - M2b: 582 built-in tests via .zeln
         \\  zig build check-zeln-jit    - 582 built-in tests with AOT + runtime JIT
         \\  zig build zeln-jit-unit     - zeln-jit emitter/compiler unit tests
-        \\  zig build -Dproto-ui=true proto-ui-unit - EUP protocol/transport tests
         \\  zig build zeln-jit-smoke    - executable in-process JIT/error-path gate
         \\  zig build zeln-jit-bench    - interpreter/AOT/JIT performance comparison
         \\  zig build zeln-fdo          - Z5: auto profile-guided recompile loop
         \\  zig build zeln-pgo          - Z7: multi-fixture PGO test (6 workload shapes)
+        \\
+        \\Proto-UI path (opt-in: -Dproto-ui=true):
+        \\  zig build -Dproto-ui=true proto-ui-unit - EUP protocol/transport tests
         \\
         \\Native-comp gccjit path (opt-in: -Dnative-comp=true, native glibc-Linux;
         \\  requires libgccjit). Coexists with -Dnative-comp-zig: when both are on,

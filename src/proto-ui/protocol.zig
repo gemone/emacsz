@@ -191,13 +191,29 @@ fn payloadHash(payload: []const u8) u32 {
     return std.hash.crc.Crc32Iscsi.hash(payload);
 }
 
+const unsupported_transport_flags: u16 = Flags.compressed | Flags.encrypted |
+    Flags.fragmented | Flags.last_fragment;
+const known_flag_mask: u16 = Flags.snapshot | Flags.delta | Flags.coalescable |
+    Flags.requires_ack | Flags.fragmented | Flags.last_fragment |
+    Flags.compressed | Flags.encrypted | Flags.idempotent | Flags.debug;
+
+fn validateEnvelopeFlags(flags: u16) Error!void {
+    if (flags & unsupported_transport_flags != 0) return Error.Unsupported;
+    if (flags & ~known_flag_mask != 0) return Error.InvalidEnvelope;
+}
+
+fn validMessageType(message_type: u16) bool {
+    return message_type != 0 and message_type != Message.invalid and knownMessage(message_type);
+}
+
 pub fn encodeEnvelope(
     a: std.mem.Allocator,
     envelope: Envelope,
     payload: []const u8,
     out: *std.ArrayList(u8),
 ) !void {
-    if (envelope.message_type == 0 or envelope.message_type == Message.invalid) return Error.InvalidMessage;
+    if (!validMessageType(envelope.message_type)) return Error.InvalidMessage;
+    try validateEnvelopeFlags(envelope.flags);
     if (payload.len > std.math.maxInt(u32)) return Error.Unsupported;
     const start = out.items.len;
     try out.appendSlice(a, &Magic);
@@ -229,9 +245,6 @@ pub fn decodeEnvelope(data: []const u8) Error!Payload {
     // Minor additions are compatible; unknown minor values are accepted at
     // envelope level and ignored by handlers that do not understand them.
     _ = minor;
-    // Minor revisions are compatible additions.  Unknown minor values are
-    // accepted here; payload/capability handlers must ignore what they do not
-    // know, as required by the v1 compatibility policy.
     const flags = try reader.readU16();
     const message_type = try reader.readU16();
     if (try reader.readU16() != header_size) return Error.InvalidEnvelope;
@@ -243,9 +256,8 @@ pub fn decodeEnvelope(data: []const u8) Error!Payload {
     if (try reader.readU32() != 0) return Error.InvalidEnvelope;
     const timestamp_ns = try reader.readU64();
     const hash = try reader.readU32();
-    if (flags & (Flags.compressed | Flags.encrypted | Flags.fragmented | Flags.last_fragment) != 0)
-        return Error.Unsupported;
-    if (message_type == 0 or message_type == Message.invalid) return Error.InvalidMessage;
+    try validateEnvelopeFlags(flags);
+    if (!validMessageType(message_type)) return Error.InvalidMessage;
     if (payload_size > data.len -| reader.offset) return Error.InvalidEnvelope;
     const end = reader.offset + payload_size;
     const payload = data[reader.offset..end];
@@ -295,6 +307,7 @@ pub fn encodeCapabilities(
     capabilities: []const Capability,
     out: *std.ArrayList(u8),
 ) !void {
+    if (capabilities.len > std.math.maxInt(u32)) return Error.Unsupported;
     try putU32(out, a, @intCast(capabilities.len));
     for (capabilities, 0..) |capability, capability_index| {
         if (capability.name.len == 0) return Error.InvalidTable;
@@ -429,6 +442,7 @@ pub fn encodeFrameUpdate(a: std.mem.Allocator, update: FrameUpdate, out: *std.Ar
     const header = update.header;
     try validateFrameHeader(header);
     try validateFrameSections(update.sections);
+    if (update.sections.len > std.math.maxInt(u32)) return Error.Unsupported;
     try out.appendSlice(a, "FUP1");
     try putU32(out, a, header.frame_id);
     try putU32(out, a, header.frame_generation);
@@ -452,6 +466,7 @@ pub fn encodeFrameUpdate(a: std.mem.Allocator, update: FrameUpdate, out: *std.Ar
     try putU64(out, a, header.timestamp_ns);
     try putU32(out, a, @intCast(update.sections.len));
     for (update.sections) |section| {
+        if (section.records.len > std.math.maxInt(u32)) return Error.Unsupported;
         try putU32(out, a, section.kind);
         try putU32(out, a, @intCast(section.records.len));
         try out.appendSlice(a, section.records);
@@ -542,10 +557,11 @@ test "envelope rejects bad magic, trailer, and unknown core message" {
     out.items[0] = 'X';
     try std.testing.expectError(Error.InvalidEnvelope, decodeEnvelope(out.items));
     out.items[0] = 'E';
+    const original_len = out.items.len;
     out.append(a, 0) catch unreachable;
     try std.testing.expectError(Error.TrailingBytes, decodeEnvelope(out.items));
-    out.items[out.items.len - 1] = 0;
-    try std.testing.expectError(Error.TrailingBytes, decodeEnvelope(out.items));
+    out.shrinkRetainingCapacity(original_len);
+    _ = try decodeEnvelope(out.items);
 }
 
 test "capability and resource encoding follows v1 generations" {
@@ -564,6 +580,25 @@ test "capability and resource encoding follows v1 generations" {
     try std.testing.expect(!(&ResourceId{ .id = 3, .generation = 0 }).valid());
 }
 
+test "capability table rejects empty duplicate and truncated entries" {
+    const a = std.testing.allocator;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(a);
+
+    const duplicate = [_]Capability{
+        .{ .name = "same", .value = "1" },
+        .{ .name = "same", .value = "2" },
+    };
+    try std.testing.expectError(Error.InvalidTable, encodeCapabilities(a, &duplicate, &out));
+
+    const empty = [_]Capability{.{ .name = "", .value = "1" }};
+    try std.testing.expectError(Error.InvalidTable, encodeCapabilities(a, &empty, &out));
+
+    // A declared entry needs four bytes even when both strings are empty.
+    try std.testing.expectError(Error.InvalidTable, decodeCapabilities(a, &[_]u8{ 1, 0, 0, 0 }));
+    try std.testing.expectError(Error.InvalidTable, decodeCapabilities(a, &[_]u8{ 1, 0, 0, 0, 4 }));
+}
+
 test "optional and required message policy follows EUP classes" {
     try std.testing.expect(!optionalMessage(0, Message.hello));
     try std.testing.expect(optionalMessage(0, 0x1234));
@@ -571,6 +606,70 @@ test "optional and required message policy follows EUP classes" {
     try std.testing.expect(optionalMessage(Flags.debug, Message.hello));
     try std.testing.expect(optionalMessage(0, 0xf001));
     try std.testing.expectEqual(Class.unknown, messageClass(0x1234));
+}
+
+test "envelope encoder rejects unsupported and unknown states" {
+    const a = std.testing.allocator;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(a);
+
+    try std.testing.expectError(
+        Error.Unsupported,
+        encodeEnvelope(a, .{ .flags = Flags.compressed, .message_type = Message.hello, .sequence = 1, .ack_sequence = 0, .session_id = 1, .timestamp_ns = 1 }, &[_]u8{}, &out),
+    );
+    try std.testing.expectError(
+        Error.InvalidEnvelope,
+        encodeEnvelope(a, .{ .flags = 1 << 15, .message_type = Message.hello, .sequence = 1, .ack_sequence = 0, .session_id = 1, .timestamp_ns = 1 }, &[_]u8{}, &out),
+    );
+    try std.testing.expectError(
+        Error.InvalidMessage,
+        encodeEnvelope(a, .{ .flags = 0, .message_type = 0x0215, .sequence = 1, .ack_sequence = 0, .session_id = 1, .timestamp_ns = 1 }, &[_]u8{}, &out),
+    );
+}
+
+test "frame update section tables reject malformed ordering and kinds" {
+    const a = std.testing.allocator;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(a);
+    const header: FrameUpdateHeader = .{
+        .frame_id = 1,
+        .frame_generation = 1,
+        .sequence = 1,
+        .redisplay_generation = 1,
+        .logical_x = 0,
+        .logical_y = 0,
+        .logical_width = 10,
+        .logical_height = 10,
+        .physical_x = 0,
+        .physical_y = 0,
+        .physical_width = 10,
+        .physical_height = 10,
+        .scale = 1.0,
+        .dpi_x = 96,
+        .dpi_y = 96,
+        .damage_mode = 1,
+        .update_cause = 1,
+        .coalesced_count = 0,
+        .timestamp_ns = 1,
+    };
+
+    const duplicate = [_]Section{
+        .{ .kind = SectionKind.damage, .records = &[_]u8{} },
+        .{ .kind = SectionKind.damage, .records = &[_]u8{} },
+    };
+    try std.testing.expectError(Error.InvalidTable, encodeFrameUpdate(a, .{ .header = header, .sections = &duplicate }, &out));
+
+    const reserved = [_]Section{.{ .kind = 13, .records = &[_]u8{} }};
+    try std.testing.expectError(Error.InvalidTable, encodeFrameUpdate(a, .{ .header = header, .sections = &reserved }, &out));
+
+    // Duplicate known sections are rejected after decode as well.
+    const valid = [_]Section{.{ .kind = SectionKind.damage, .records = &[_]u8{} }};
+    var wire: std.ArrayList(u8) = .empty;
+    defer wire.deinit(a);
+    try encodeFrameUpdate(a, .{ .header = header, .sections = &valid }, &wire);
+    try wire.appendSlice(a, &[_]u8{ 9, 0, 0, 0, 0, 0, 0, 0 });
+    wire.items[88] = 2; // section_count is immediately after the 88-byte prefix
+    try std.testing.expectError(Error.InvalidTable, decodeFrameUpdate(a, wire.items));
 }
 
 test "frame update section tables round trip" {

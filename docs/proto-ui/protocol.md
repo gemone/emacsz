@@ -707,7 +707,7 @@ payload_hash      u32
 payload           payload_size bytes
 ```
 
-The v1 decoder rejects compressed, encrypted, and fragmented payloads until those transports are negotiated and implemented. A zero `payload_hash` disables checksum validation; otherwise it is CRC-32C over payload bytes.
+All flag bits 10-15 are reserved and invalid in v1. The v1 decoder rejects compressed, encrypted, fragmented, and lone-final-fragment payloads until those transports are negotiated and implemented. A zero `payload_hash` disables checksum validation; otherwise it is CRC-32C over payload bytes.
 
 ### 28.2 FRAME_UPDATE concrete header
 

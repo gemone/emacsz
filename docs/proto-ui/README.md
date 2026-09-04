@@ -33,11 +33,6 @@ Available:
 | [`architecture.md`](architecture.md) | System components, ownership model, backend integration, state model, failure rules, and compatibility contract |
 | [`protocol.md`](protocol.md) | Complete EUP v1 wire protocol, envelope, message IDs, payload semantics, and state machines |
 | [`capabilities.md`](capabilities.md) | Backend, frontend, renderer, widget, and PGTK parity capability matrices |
-
-Planned:
-
-| Document | Contents |
-|---|---|
 | `sdl3-frontend.md` | SDL3 process model, window handling, input bridge, rendering pipeline, and platform integration |
 | `performance.md` | Performance tiers, budgets, test scenarios, instrumentation, and regression gates |
 | `implementation-plan.md` | Workstreams, concrete tasks, acceptance gates, and final definition of done |

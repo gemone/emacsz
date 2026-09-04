@@ -70,7 +70,10 @@ pub fn writeReplay(
 }
 
 pub fn readReplay(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ![][]const u8 {
-    const data = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64 * 1024 * 1024));
+    const data = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64 * 1024 * 1024)) catch |err| switch (err) {
+        error.FileTooBig, error.StreamTooLong => return protocol.Error.Unsupported,
+        else => return err,
+    };
     defer gpa.free(data);
     if (data.len < 8 or !std.mem.eql(u8, data[0..4], &replay_magic))
         return protocol.Error.InvalidEnvelope;
@@ -150,4 +153,61 @@ test "memory sink rejects stale and duplicate producer sequences" {
             .timestamp_ns = 2,
         }, &[_]u8{}),
     );
+}
+
+test "replay file round trip" {
+    const a = std.testing.allocator;
+    var io_threaded: std.Io.Threaded = .init_single_threaded;
+    const io = io_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/roundtrip", .{tmp.sub_path});
+    defer a.free(path);
+    const messages = [_][]const u8{ "first", "", "third-message" };
+    try writeReplay(a, io, path, &messages);
+
+    const loaded = try readReplay(a, io, path);
+    defer freeReplay(a, loaded);
+    try std.testing.expectEqual(messages.len, loaded.len);
+    try std.testing.expectEqualStrings(messages[0], loaded[0]);
+    try std.testing.expectEqualStrings(messages[1], loaded[1]);
+    try std.testing.expectEqualStrings(messages[2], loaded[2]);
+}
+
+test "replay file rejects bad count short length and oversized input" {
+    const a = std.testing.allocator;
+    var io_threaded: std.Io.Threaded = .init_single_threaded;
+    const io = io_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const prefix = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/", .{tmp.sub_path});
+    defer a.free(prefix);
+
+    const bad_count = [_]u8{ 'E', 'R', 'P', '1', 0xff, 0xff, 0xff, 0xff };
+    const bad_count_path = try std.fmt.allocPrint(a, "{s}bad-count", .{prefix});
+    defer a.free(bad_count_path);
+    try tmp.dir.writeFile(io, .{ .sub_path = "bad-count", .data = &bad_count });
+    try std.testing.expectError(protocol.Error.InvalidEnvelope, readReplay(a, io, bad_count_path));
+
+    const short_length = [_]u8{ 'E', 'R', 'P', '1', 1, 0, 0, 0, 8, 0, 0, 0, 1, 2 };
+    const short_path = try std.fmt.allocPrint(a, "{s}short-length", .{prefix});
+    defer a.free(short_path);
+    try tmp.dir.writeFile(io, .{ .sub_path = "short-length", .data = &short_length });
+    try std.testing.expectError(protocol.Error.TrailingBytes, readReplay(a, io, short_path));
+
+    const truncated = [_]u8{ 'E', 'R', 'P', '1', 1, 0, 0, 0 };
+    const truncated_path = try std.fmt.allocPrint(a, "{s}truncated", .{prefix});
+    defer a.free(truncated_path);
+    try tmp.dir.writeFile(io, .{ .sub_path = "truncated", .data = &truncated });
+    try std.testing.expectError(protocol.Error.InvalidEnvelope, readReplay(a, io, truncated_path));
+
+    const oversized_size = 64 * 1024 * 1024 + 1;
+    const oversized = try a.alloc(u8, oversized_size);
+    defer a.free(oversized);
+    @memset(oversized, 'R');
+    const oversized_path = try std.fmt.allocPrint(a, "{s}oversized", .{prefix});
+    defer a.free(oversized_path);
+    try tmp.dir.writeFile(io, .{ .sub_path = "oversized", .data = oversized });
+    try std.testing.expectError(protocol.Error.Unsupported, readReplay(a, io, oversized_path));
 }
