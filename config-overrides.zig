@@ -138,7 +138,12 @@ pub const windows_overrides = [_]Override{
     // undef must be explicit here.
     .{ .name = "HAVE_STACK_OVERFLOW_HANDLING" },
     .{ .name = "HAVE_TIMERFD" },
-    .{ .name = "HAVE__SETJMP" },
+    // _setjmp/_longjmp: plain register-restore non-local exit (no SEH
+    // unwind walk).  The MSVC CRT's full longjmp calls RtlUnwindEx, which
+    // walks JIT/AOT frames; with the plain variant the handler resumption
+    // is a direct rsp/rip restore, so handler-carrying units compile and
+    // the JIT condition-case path works identically to MinGW.
+    .{ .name = "HAVE__SETJMP", .value = "1" },
     .{ .name = "HAVE_SIGSETJMP" },
     .{ .name = "HAVE_MMAP" },
     .{ .name = "HAVE_MEMMEM" },

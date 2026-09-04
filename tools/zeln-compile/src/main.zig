@@ -605,21 +605,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             std.process.exit(1);
         };
         defer freeFileUnit(gpa, file_unit);
-        // MSVC-ABI gate: the pushhandler trio (Bpushcatch /
-        // Bpushconditioncase) resumes via longjmp INTO this native frame's
-        // setjmp.  That contract holds on glibc/mingw, but on the MSVC ABI
-        // (SEH unwinding + UCRT) the longjmp across the JIT-compiled frame
-        // silently terminates the process (exit 40, no backtrace; isolated
-        // repro: load a .zeln whose defun runs condition-case, then signal
-        // through it).  Until the emitter gains an SEH-correct handler
-        // lowering, REJECT handler-carrying units on msvc: exit non-zero so
-        // the populate driver records the file in SKIP-LIST and the dumped
-        // emacs transparently falls back to interpreting the .elc (the
-        // designed tolerance path; handler-free fns still go native).
-        if (envTargetIsMsvc(&env_map) and fileUsesPushHandler(file_unit.fns)) {
-            std.debug.print("zeln-compile: msvc-abi unit uses pushhandler (condition-case/catch); skipping native emission (interpreter fallback)\n", .{});
-            std.process.exit(1);
-        }
+        // MSVC-ABI pushhandler gate REMOVED: config-overrides.zig now
+        // defines HAVE__SETJMP=1 for Windows, so sys_setjmp/sys_longjmp
+        // expand to _setjmp/_longjmp (direct register restore, no SEH
+        // unwinding).  Handler-carrying units (Bpushcatch /
+        // Bpushconditioncase) are safe on MSVC for the same reason they
+        // are on MinGW; the coverage floor no longer needs an msvc
+        // exemption.
         ll_body = emitFileLLVM(gpa, file_unit.fns, abi_hash, file_unit.top_blob, zunit, fdo_counts, fdo_fallbacks, fdo_final) catch |err| {
             std.debug.print("zeln-compile: file emit failed: {s}\n", .{@errorName(err)});
             std.process.exit(1);
