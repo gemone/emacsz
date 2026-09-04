@@ -388,6 +388,10 @@ pub fn build(b: *std.Build) void {
     const enable_native_comp = b.option(bool, "native-comp", "Enable the gccjit native-comp path (.eln, HAVE_NATIVE_COMP); default OFF") orelse false;
     const enable_modules = b.option(bool, "modules", "Enable upstream dynamic modules (HAVE_MODULES)") orelse false;
     const enable_modules_zig = b.option(bool, "modules-zig", "Enable the Zig dynamic-module subsystem (HAVE_MODULES_ZIG)") orelse false;
+    // Proto-UI W1: the EUP protocol module is independent of Emacs internals.
+    // The option currently gates protocol/transport conformance tests; the
+    // terminal registration and HAVE_PROTO_UI seam arrive in W2.
+    const enable_proto_ui = b.option(bool, "proto-ui", "Enable EUP protocol and transport tests (terminal backend arrives in W2)") orelse false;
 
     // Target-derived flags.  `target` is resolved at line 64, so target.result
     // is in scope here; computing these early lets the make-docfile / doc-scan
@@ -403,6 +407,25 @@ pub fn build(b: *std.Build) void {
     // "WindowsSdkNotFound").  Only fires for the msvc ABI; gnu backend is
     // self-contained on Windows.
     if (target.result.abi == .msvc) probeMsvcToolchain(b);
+
+    if (enable_proto_ui) {
+        const proto_ui_module = b.createModule(.{
+            .root_source_file = b.path("src/proto-ui/root.zig"),
+            // Protocol conformance is a host tool and must run even when the
+            // surrounding Emacs graph is configured for a foreign target.
+            .target = b.graph.host,
+            .optimize = optimize,
+        });
+        const proto_ui_tests = b.addTest(.{
+            .root_module = proto_ui_module,
+        });
+        const run_proto_ui_tests = b.addRunArtifact(proto_ui_tests);
+        const proto_ui_unit_step = b.step(
+            "proto-ui-unit",
+            "Run EUP protocol encode/decode conformance tests",
+        );
+        proto_ui_unit_step.dependOn(&run_proto_ui_tests.step);
+    }
     // modules_runtime: the SHARED module runtime turns on once when EITHER
     // module switch is on AND the target can actually dlopen.  Gates the
     // shared runtime -- HAVE_MODULES macro, emacs-module.c compile,
@@ -4719,6 +4742,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build check-zeln        - M2b: 582 built-in tests via .zeln
         \\  zig build check-zeln-jit    - 582 built-in tests with AOT + runtime JIT
         \\  zig build zeln-jit-unit     - zeln-jit emitter/compiler unit tests
+        \\  zig build -Dproto-ui=true proto-ui-unit - EUP protocol/transport tests
         \\  zig build zeln-jit-smoke    - executable in-process JIT/error-path gate
         \\  zig build zeln-jit-bench    - interpreter/AOT/JIT performance comparison
         \\  zig build zeln-fdo          - Z5: auto profile-guided recompile loop
