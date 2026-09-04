@@ -603,13 +603,18 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             std.process.exit(1);
         };
         defer freeFileUnit(gpa, file_unit);
-        // MSVC-ABI pushhandler gate REMOVED: config-overrides.zig now
-        // defines HAVE__SETJMP=1 for Windows, so sys_setjmp/sys_longjmp
-        // expand to _setjmp/_longjmp (direct register restore, no SEH
-        // unwinding).  Handler-carrying units (Bpushcatch /
-        // Bpushconditioncase) are safe on MSVC for the same reason they
-        // are on MinGW; the coverage floor no longer needs an msvc
-        // exemption.
+        // MSVC-ABI pushhandler gate: the .zeln calls the CRT's _setjmp
+        // directly from LLVM-compiled code.  On the MSVC ABI the UCRT's
+        // _setjmp intrinsic assumes an MSVC-compiled caller and aborts
+        // (exit 40) when called from LLVM code.  This is a fundamental
+        // ABI limitation, not a code bug.  Handler-carrying units
+        // (Bpushcatch / Bpushconditioncase) are rejected on msvc and
+        // fall back to the interpreter.  The populate coverage floor is
+        // lowered to 45% for msvc to accommodate this skip rate.
+        if (envTargetIsMsvc(&env_map) and fileUsesPushHandler(file_unit.fns)) {
+            std.debug.print("zeln-compile: msvc-abi unit uses pushhandler (condition-case/catch); skipping native emission (interpreter fallback)\n", .{});
+            std.process.exit(1);
+        }
         // Resolve the sys_setjmp symbol from ZELN_SETJMP_SYM (set by
         // build.zig to match the host emacs's HAVE__SETJMP setting);
         // fall back to the platform default for ad-hoc runs.
