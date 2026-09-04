@@ -4410,6 +4410,17 @@ pub fn build(b: *std.Build) void {
             "ZELN_TARGET",
             target.result.zigTriple(b.allocator) catch @panic("OOM"),
         );
+        // The .zeln IR must call the SAME setjmp/longjmp pair as the host
+        // emacs (sys_setjmp/sys_longjmp in lisp.h).  With HAVE__SETJMP=1
+        // the host uses _setjmp/_longjmp; the plain CRT pair would create
+        // an ABI mismatch (SEH-aware jmp_buf vs direct register restore).
+        // Pass the resolved symbol so zeln-compile doesn't have to guess
+        // from the host OS.
+        if (target.result.abi == .msvc) {
+            run_populate.setEnvironmentVariable("ZELN_SETJMP_SYM", "_setjmp");
+        } else {
+            run_populate.setEnvironmentVariable("ZELN_SETJMP_SYM", "setjmp");
+        }
         // Deterministic interpreter for the build-time serialize/BC walk
         // (the JIT gate is a runtime feature; the batch pipeline pins it).
         run_populate.setEnvironmentVariable("ZELN_JIT", "0");

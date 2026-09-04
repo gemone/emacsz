@@ -32,13 +32,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-// sys_setjmp symbol for the emitted IR, mirroring src/lisp.h:2273-2287 so
-// the .zeln's non-local exit stays ABI-identical to the host emacs: glibc
-// (HAVE__SETJMP) and darwin export _setjmp/_longjmp, but windows-gnu's
-// CRT only has the plain pair (zig's bundled mingw has no _setjmp --
-// lld-link fails with 'undefined symbol: _setjmp'), and the host emacs
-// binary there compiles the #else branch (plain setjmp/longjmp) too.
-const setjmp_sym: []const u8 = if (builtin.os.tag == .windows) "setjmp" else "_setjmp";
+// Default sys_setjmp symbol for the emitted IR, mirroring
+// src/lisp.h:2273-2287.  build.zig resolves the ACTUAL symbol (matching
+// the host emacs's sys_setjmp/sys_longjmp expansion) and passes it via
+// ZELN_SETJMP_SYM; this default is only a fallback for ad-hoc runs.
+const setjmp_sym_default: []const u8 = if (builtin.os.tag == .windows) "setjmp" else "_setjmp";
 
 // "ZUNT" little-endian. Written by src/compz.c's serializers.
 const ZUNIT_MAGIC: u32 = 0x5A554E54;
@@ -612,7 +610,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         // Bpushconditioncase) are safe on MSVC for the same reason they
         // are on MinGW; the coverage floor no longer needs an msvc
         // exemption.
-        ll_body = emitFileLLVM(gpa, file_unit.fns, abi_hash, file_unit.top_blob, zunit, fdo_counts, fdo_fallbacks, fdo_final) catch |err| {
+        // Resolve the sys_setjmp symbol from ZELN_SETJMP_SYM (set by
+        // build.zig to match the host emacs's HAVE__SETJMP setting);
+        // fall back to the platform default for ad-hoc runs.
+        const setjmp_sym = env_map.get("ZELN_SETJMP_SYM") orelse setjmp_sym_default;
+        ll_body = emitFileLLVM(gpa, file_unit.fns, abi_hash, file_unit.top_blob, zunit, fdo_counts, fdo_fallbacks, fdo_final, setjmp_sym) catch |err| {
             std.debug.print("zeln-compile: file emit failed: {s}\n", .{@errorName(err)});
             std.process.exit(1);
         };
@@ -1686,6 +1688,7 @@ fn emitNativeFn(
     emit_counters: bool,
     fn_index: u64,
     weights: [2]u64,
+    setjmp_sym: []const u8,
 ) !void {
     const opcodes = unit.opcodes;
     if (opcodes.len == 0) return error.EmptyBytecode;
@@ -1948,7 +1951,7 @@ fn emitNativeFn(
             .noarg => try emitNoArg(em, ins.idx),
             .unary_pop => try emitUnaryPop(em, ins.idx),
             .pushhandler => {
-                try emitPushHandler(em, ins.idx, ins.target, ins.end);
+                try emitPushHandler(em, ins.idx, ins.target, ins.end, setjmp_sym);
                 block_open = false;
             },
             .goto_ => {
@@ -2026,6 +2029,7 @@ fn emitFileLLVM(
     fdo_counts: std.StringHashMap(u64),
     fdo_fallbacks: std.StringHashMap(u64),
     fdo_final: bool,
+    setjmp_sym: []const u8,
 ) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);
@@ -2229,7 +2233,7 @@ fn emitFileLLVM(
         // fdo_counters[slot] — under hot-first reorder slot != orig_i.
         // The fn GLOBALS keep orig_i (zeln_fn_<orig_i>); only the
         // counter index follows the table order.
-        try emitNativeFn(gpa, &em, fn_name, drr, unit, this_hot, !fdo_final, slot, w);
+        try emitNativeFn(gpa, &em, fn_name, drr, unit, this_hot, !fdo_final, slot, w, setjmp_sym);
         // The subr's function-slot entry for this fn: an exact-arity
         // trampoline (or a MANY alias) — see emitTrampoline.
         try emitTrampoline(&em, fn_name, unit.args_template, orig_i);
@@ -2305,7 +2309,7 @@ fn emitM1LLVM(gpa: std.mem.Allocator, unit: M1Unit, abi_hash: []const u8, zunit_
         .opcodes = unit.opcodes,
         .consts = unit.consts,
     };
-    return emitFileLLVM(gpa, fns, abi_hash, "", zunit_bytes, fdo_counts, fdo_fallbacks, fdo_final);
+    return emitFileLLVM(gpa, fns, abi_hash, "", zunit_bytes, fdo_counts, fdo_fallbacks, fdo_final, setjmp_sym_default);
 }
 
 // ---- Per-opcode IR fragments.  Each assumes a block is currently open
@@ -3032,7 +3036,7 @@ fn emitUnaryPop(em: *Emitter, idx: u64) !void {
 // this frame, whose alloca virtual stack survives).  0 -> guarded body (next
 // insn); nonzero -> resume block: call IDX_RESUME (restores %top + PUSHes the
 // caught value) then br to the handler block (FETCH2 dest).
-fn emitPushHandler(em: *Emitter, type_raw: u64, target: u32, fall_off: u32) !void {
+fn emitPushHandler(em: *Emitter, type_raw: u64, target: u32, fall_off: u32, setjmp_sym: []const u8) !void {
     // POP the tag.
     const t = try em.loadTop();
     const tag = em.fresh();
