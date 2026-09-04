@@ -202,8 +202,13 @@ fn validateEnvelopeFlags(flags: u16) Error!void {
     if (flags & ~known_flag_mask != 0) return Error.InvalidEnvelope;
 }
 
+fn extensionMessageType(message_type: u16) bool {
+    return message_type >= 0xf000 and message_type <= 0xfffe;
+}
+
 fn validMessageType(message_type: u16) bool {
-    return message_type != 0 and message_type != Message.invalid and knownMessage(message_type);
+    return message_type != 0 and message_type != Message.invalid and
+        (knownMessage(message_type) or extensionMessageType(message_type));
 }
 
 pub fn encodeEnvelope(
@@ -242,8 +247,8 @@ pub fn decodeEnvelope(data: []const u8) Error!Payload {
     if (!std.mem.eql(u8, try reader.bytes(Magic.len), &Magic)) return Error.InvalidEnvelope;
     if (try reader.readU16() != major_version) return Error.InvalidVersion;
     const minor = try reader.readU16();
-    // Minor additions are compatible; unknown minor values are accepted at
-    // envelope level and ignored by handlers that do not understand them.
+    // Minor additions are compatible; envelope readers ignore unknown minor
+    // values and payload handlers must ignore fields they do not understand.
     _ = minor;
     const flags = try reader.readU16();
     const message_type = try reader.readU16();
@@ -606,6 +611,28 @@ test "optional and required message policy follows EUP classes" {
     try std.testing.expect(optionalMessage(Flags.debug, Message.hello));
     try std.testing.expect(optionalMessage(0, 0xf001));
     try std.testing.expectEqual(Class.unknown, messageClass(0x1234));
+}
+
+test "extension envelope messages round trip and remain optional" {
+    const a = std.testing.allocator;
+    const payload = [_]u8{ 'v', 'n', 'd', 'r' };
+    var wire: std.ArrayList(u8) = .empty;
+    defer wire.deinit(a);
+    try encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = 0xf001,
+        .sequence = 9,
+        .ack_sequence = 0,
+        .session_id = 1,
+        .timestamp_ns = 2,
+    }, &payload, &wire);
+    const decoded = try decodeEnvelope(wire.items);
+    try std.testing.expectEqual(@as(u16, 0xf001), decoded.envelope.message_type);
+    try std.testing.expectEqual(Class.extension, messageClass(0xf001));
+    try std.testing.expect(optionalMessage(0, 0xf001));
+    try std.testing.expectEqualSlices(u8, &payload, decoded.bytes);
+    try std.testing.expect(validMessageType(0xfffe));
+    try std.testing.expect(!validMessageType(0xffff));
 }
 
 test "envelope encoder rejects unsupported and unknown states" {
