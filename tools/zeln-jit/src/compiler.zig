@@ -349,8 +349,12 @@ fn registerWindowsUnwind(
     //   bits 11-8: UnwindOp   — operation code
     //   bits 15-12: OpInfo    — register / operand info
     const uw = struct {
-        fn code(op: u16, opinfo: u16, offset: u16) u16 {
-            return (offset << 8) | (opinfo << 4) | op;
+        fn code(unwind_op: u16, op_info: u16, code_offset: u16) u16 {
+            // UNWIND_CODE (u16, little-endian):
+            //   bits  7-0: CodeOffset
+            //   bits 11-8: UnwindOp
+            //   bits 15-12: OpInfo
+            return (op_info << 12) | (unwind_op << 8) | code_offset;
         }
     }.code;
 
@@ -2993,4 +2997,45 @@ test "inline representation predicates keep exact fallback" {
     try testing.expectEqual(qt, listp.entry(0, &args));
     operand = 42;
     try testing.expectEqual(@as(u64, 0x3003), listp.entry(0, &args));
+}
+
+test "WinX64 UNWIND_CODE encoding matches PE/COFF spec" {
+    // UNWIND_CODE u16 (little-endian):
+    //   bits  7-0: CodeOffset
+    //   bits 11-8: UnwindOp
+    //   bits 15-12: OpInfo
+    const uw = struct {
+        fn code(unwind_op: u16, op_info: u16, code_offset: u16) u16 {
+            return (op_info << 12) | (unwind_op << 8) | code_offset;
+        }
+    }.code;
+
+    // UWOP_PUSH_NONVOL (op=0) of r14 (opinfo=14) at prologue offset 10
+    const push_r14 = uw(0, 14, 10);
+    try testing.expectEqual(@as(u16, 0xE00A), push_r14);
+    // Decode back
+    try testing.expectEqual(@as(u16, 10), push_r14 & 0xFF); // CodeOffset
+    try testing.expectEqual(@as(u16, 0), (push_r14 >> 8) & 0xF); // UnwindOp
+    try testing.expectEqual(@as(u16, 14), (push_r14 >> 12) & 0xF); // OpInfo
+
+    // UWOP_PUSH_NONVOL of rbp (opinfo=5) at offset 1
+    const push_rbp = uw(0, 5, 1);
+    try testing.expectEqual(@as(u16, 0x5001), push_rbp);
+    try testing.expectEqual(@as(u16, 1), push_rbp & 0xFF);
+    try testing.expectEqual(@as(u16, 0), (push_rbp >> 8) & 0xF);
+    try testing.expectEqual(@as(u16, 5), (push_rbp >> 12) & 0xF);
+
+    // UWOP_ALLOC_SMALL (op=2) of 64 bytes (opinfo = 64/8-1 = 7) at offset 17
+    const alloc_64 = uw(2, 7, 17);
+    try testing.expectEqual(@as(u16, 0x7211), alloc_64);
+    try testing.expectEqual(@as(u16, 17), alloc_64 & 0xFF);
+    try testing.expectEqual(@as(u16, 2), (alloc_64 >> 8) & 0xF);
+    try testing.expectEqual(@as(u16, 7), (alloc_64 >> 12) & 0xF);
+
+    // UWOP_ALLOC_LARGE (op=1, opinfo=0) at offset 17
+    const alloc_large = uw(1, 0, 17);
+    try testing.expectEqual(@as(u16, 0x0111), alloc_large);
+    try testing.expectEqual(@as(u16, 17), alloc_large & 0xFF);
+    try testing.expectEqual(@as(u16, 1), (alloc_large >> 8) & 0xF);
+    try testing.expectEqual(@as(u16, 0), (alloc_large >> 12) & 0xF);
 }
