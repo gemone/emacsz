@@ -874,7 +874,7 @@ fn emitSpikeLLVM(gpa: std.mem.Allocator, consts: []Const, abi_hash: []const u8) 
         \\  ret i64 %rv
         \\}
         \\
-        \\define dso_local ptr @zeln_entry() {
+        \\define dllexport ptr @zeln_entry() {
         \\entry:
         \\  ret ptr @zeln_entry_global
         \\}
@@ -2256,7 +2256,7 @@ fn emitFileLLVM(
     try em.wf("  i64 {d},\n", .{fns.len});
     try em.w("  ptr @zeln_zunit_blob_data\n}\n\n");
 
-    try em.w("define dso_local ptr @zeln_entry() {\n");
+    try em.w("define dllexport ptr @zeln_entry() {\n");
     try em.w("entry:\n");
     try em.w("  ret ptr @zeln_entry_global\n");
     try em.w("}\n");
