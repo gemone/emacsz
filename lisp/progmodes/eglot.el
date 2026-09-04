@@ -187,7 +187,8 @@
                      ("1.12" . "29.2")
                      ("1.12" . "29.3")
                      ("1.12.29" . "29.4")
-                     ("1.17.30" . "30.1")))
+                     ("1.17.30" . "30.1")
+                     ("1.24.31" . "31.1")))
 
 (defun eglot-alternatives (alternatives)
   "Compute server-choosing function for `eglot-server-programs'.
@@ -248,6 +249,7 @@ automatically)."
     ((cmake-mode cmake-ts-mode)
      . ,(eglot-alternatives '(("neocmakelsp" "stdio") "cmake-language-server")))
     (vimrc-mode . ("vim-language-server" "--stdio"))
+    (vala-mode . ("vala-language-server"))
     ((python-mode python-ts-mode)
      . ,(eglot-alternatives
          '(("rass" "python")
@@ -600,7 +602,8 @@ This is done by sending an additional '$/cancelRequest' notification
 every time Eglot decides to forget a request.  The effect of this
 notification is implementation defined, and is only useful for some
 servers."
-  :type 'boolean)
+  :type 'boolean
+  :package-version '(Eglot . "1.22"))
 
 (defface eglot-code-action-indicator-face
   '((t (:inherit warning :weight bold)))
@@ -2477,21 +2480,24 @@ the previous reports for TOKEN.")
                  #'eglot--after-set-visited-file-name-hook t)
     (remove-hook 'before-save-hook #'eglot--signal-textDocument/willSave t)
     (remove-hook 'after-save-hook #'eglot--signal-textDocument/didSave t)
-    (remove-hook 'xref-backend-functions #'eglot-xref-backend t)
+    (unless (eglot--stay-out-of-p 'xref)
+      (remove-hook 'xref-backend-functions #'eglot-xref-backend t))
     (remove-hook 'completion-at-point-functions #'eglot-completion-at-point t)
     (remove-hook 'completion-in-region-mode-hook #'eglot--capf-session-flush t)
     (remove-hook 'company-after-completion-hook #'eglot--capf-session-flush t)
     (remove-hook 'change-major-mode-hook #'eglot--managed-mode-off t)
     (remove-hook 'post-self-insert-hook #'eglot--post-self-insert-hook t)
     (remove-hook 'pre-command-hook #'eglot--pre-command-hook t)
-    (dolist (f (list #'eglot-hover-eldoc-function
-                     #'eglot-signature-eldoc-function
-                     #'eglot-highlight-eldoc-function
-                     #'eglot-code-action-suggestion))
-        (remove-hook 'eldoc-documentation-functions f t))
+    (unless (eglot--stay-out-of-p 'eldoc)
+      (dolist (f (list #'eglot-hover-eldoc-function
+                       #'eglot-signature-eldoc-function
+                       #'eglot-highlight-eldoc-function
+                       #'eglot-code-action-suggestion))
+        (remove-hook 'eldoc-documentation-functions f t)))
     (cl-loop for (var . saved-binding) in eglot--saved-bindings
              do (set (make-local-variable var) saved-binding))
-    (remove-function (local 'imenu-create-index-function) #'eglot-imenu)
+    (unless (eglot--stay-out-of-p 'imenu)
+      (remove-function (local 'imenu-create-index-function) #'eglot-imenu))
     (eglot--flymake-reset)
     (setq eglot--flymake-report-fn nil)
     (run-hooks 'eglot-managed-mode-hook)
@@ -2961,19 +2967,22 @@ THINGS are either registrations or unregisterations (sic)."
     (cond
      ((eq external t) (browse-url uri))
      ((file-readable-p (setq filename (eglot-uri-to-path uri)))
-      ;; Use run-with-timer to avoid nested client requests like the
-      ;; "synchronous imenu" floated in bug#62116 presumably caused by
-      ;; which-func-mode.
-      (run-with-timer
-       0 nil
-       (lambda ()
-         (with-current-buffer (find-file-noselect filename)
-           (cond (takeFocus
-                  (pop-to-buffer (current-buffer))
-                  (select-frame-set-input-focus (selected-frame)))
-                 ((display-buffer (current-buffer))))
-           (when selection
-             (eglot--goto selection))))))
+      ;; Really ensure this runs when it is safe to run it.
+      ;; run-with-timer avoid nested client requests like the
+      ;; "synchronous imenu" floated in bug#62116, while the
+      ;; "post-command once" trick is for bug#81538.
+      (cl-labels ((findit ()
+                  (remove-hook 'post-command-hook #'findit)
+                  (with-current-buffer (find-file-noselect filename)
+                    (cond (takeFocus
+                           (pop-to-buffer (current-buffer))
+                           (select-frame-set-input-focus (selected-frame)))
+                          ((display-buffer (current-buffer))))
+                    (when selection
+                      (eglot--goto selection)))))
+                (if this-command
+                    (add-hook 'post-command-hook #'findit)
+                  (run-at-time 0 nil #'findit))))
      (t (setq success :json-false)))
     `(:success ,success)))
 
@@ -3825,6 +3834,55 @@ If BUFFER, switch to it before."
        (eglot--request (eglot--current-server-or-lose)
                        :workspace/symbol
                        `(:query ,pattern))))))
+
+(cl-defmethod xref-backend-xref-kinds ((_backend (eql eglot)))
+  (delq
+   nil
+   (list
+    (when (eglot-server-capable :declarationProvider)
+      '( :kind declaration :name "declaration" :key ?d
+         :prompt-format "Find %s of"))
+    (when (eglot-server-capable :implementationProvider)
+      '( :kind implementation :name "implementation" :key ?i
+         :prompt-format "Find %s of"))
+    (when (eglot-server-capable :typeDefinitionProvider)
+      '( :kind type-definition :name "type definition" :key ?t
+         :prompt-format "Find %s of")))))
+
+(cl-defmethod xref-backend-xrefs-by-kind ((_backend (eql eglot)) id kind)
+  ;; First check whether ID is an identifier from the workspace.
+  (let ((probe (eglot--recover-workspace-symbol-meta id)))
+    (if (not probe)
+        ;; Symbol at point, or prompted input without match.
+        ;; FIXME: Might want to handle the latter differently.
+        (eglot--lsp-xrefs-for-method
+         (cl-ecase kind
+           (declaration :textDocument/declaration)
+           (implementation :textDocument/implementation)
+           (type-definition :textDocument/typeDefinition)))
+      ;; Function was selected from the prompt.  We do the best-effort
+      ;; thing, basically saving the user the extra 'C-u M-.'.
+      (eglot--dbind ((WorkspaceSymbol) name location)
+          (get-text-property 0 'eglot--lsp-workspaceSymbol probe)
+        (eglot--dbind ((Location) uri range) location
+          (let* ((match (eglot--xref-make-match name uri range))
+                 (loc (xref-match-item-location match))
+                 (bl (buffer-list)))
+            (save-current-buffer
+              (unwind-protect
+                  (progn
+                    (xref--goto-location loc)
+                    (when (eglot-current-server)
+                      ;; Only works if the definition buffer is "managed",
+                      ;; unfortunately.  Querying non-expecting server is
+                      ;; likely to error with something like
+                      ;;   "trying to get AST for non-added document"
+                      ;; But `eglot-extend-to-xref' can help.
+                      (xref-backend-xrefs-by-kind 'eglot
+                                                  "LSP identifier at point"
+                                                  kind)))
+                (unless (memq (current-buffer) bl)
+                  (kill-buffer))))))))))
 
 
 ;;; Eglot interactive commands and helpers
@@ -4960,8 +5018,8 @@ not watching some directories" eglot-max-file-watches)
                       (:*       "\\*"                   eglot--glob-emit-*)
                       (:?       "\\?"                   eglot--glob-emit-?)
                       (:{}      "{[^{}]+}"              eglot--glob-emit-{})
-                      (:range   "\\[\\^?[^][/,*{}]+\\]" eglot--glob-emit-range)
-                      (:literal "[^][,*?{}]+"           eglot--glob-emit-self))
+                      (:range   "\\[\\^?[^][/*{}]+\\]"  eglot--glob-emit-range)
+                      (:literal "[^][*?{}]+"            eglot--glob-emit-self))
      until (eobp)
      collect (cl-loop
               for (_token regexp emitter) in grammar
@@ -5402,11 +5460,13 @@ initial delay and repeat rate, and may not be 100% accurate."
          (defcustom eglot-semantic-token-types
            ',types "LSP-supplied semantic types Eglot should consider."
            :type '(set ,@(mapcar (lambda (o) `(const ,o)) types))
-           :group 'eglot-semantic-fontification)
+           :group 'eglot-semantic-fontification
+           :package-version '(Eglot . "1.20"))
          (defcustom eglot-semantic-token-modifiers
            ',modifiers "LSP-supplied semantic modifiers Eglot should consider."
            :type '(set ,@(mapcar (lambda (o) `(const ,o)) modifiers))
-           :group 'eglot-semantic-fontification)))))
+           :group 'eglot-semantic-fontification
+           :package-version '(Eglot . "1.20"))))))
 
 (eglot--semtok-define-things)
 
