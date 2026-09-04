@@ -853,21 +853,16 @@ pub fn build(b: *std.Build) void {
     mdf.root_module.addIncludePath(mdf_config.file.dirname());
     mdf.step.dependOn(mdf_config.step);
 
-    // Run `make-docfile -d src -g <names>` and capture stdout as globals.h.
-    // make-docfile only rewrites a trailing ".o" to ".c"/".m" (scan_c_file at
-    // ~line 809), so a bare basename is NOT accepted — pass the full
-    // "foo.c" name. Just strip the leading "src/" prefix so the name resolves
-    // after the -d src chdir. On a Linux TTY build there is no NS_OBJC_OBJ, so
-    // base_obj == doc_obj.
+    // Run `make-docfile -d src -g <sources>` and capture stdout as globals.h.
+    // make-docfile resolves absolute source paths despite `-d src`, and
+    // addFileArg makes Zig hash each scanned file.  This matters because an
+    // upstream edit can add DEFVAR/DEFUN surface without changing argv.
     const run_mdf = b.addRunArtifact(mdf);
     run_mdf.addArg("-d");
     run_mdf.addArg("src");
     run_mdf.addArg("-g");
     for (base_sources) |s| {
-        // Strip leading "src/"; keep the ".c" extension.
-        var name: []const u8 = s;
-        if (std.mem.startsWith(u8, name, "src/")) name = name["src/".len..];
-        run_mdf.addArg(name);
+        run_mdf.addFileArg(b.path(s));
     }
     // Autotools folds $(DBUS_OBJ)/$(DYNLIB_OBJ)/$(NOTIFY_OBJ) into base_obj
     // (and thus doc_obj) on Linux; parseBaseSources drops $(...) vars, so the
@@ -878,7 +873,7 @@ pub fn build(b: *std.Build) void {
     // for parity with the compile gate.
     if (target.result.os.tag == .linux) {
         const linux_doc_sources = [_][]const u8{ "dbusbind.c", "dynlib.c", "inotify.c" };
-        for (linux_doc_sources) |name| run_mdf.addArg(name);
+        for (linux_doc_sources) |name| run_mdf.addFileArg(b.path(b.fmt("src/{s}", .{name})));
         // -Dpgtk: the GUI modules' DEFVAR/DEFUN surface (pgtkterm.c's
         // Vpgtk_* vars, pgtkfns.c's Fpgtk_* / frame parameters, fontset.c's
         // Fquery_fontset, fringe.c's Voverflow_newline_into_fringe,
@@ -892,7 +887,9 @@ pub fn build(b: *std.Build) void {
                 "fringe.c",  "image.c",     "ftfont.c",        "ftcrfont.c",
                 "hbfont.c",  "gtkutil.c",   "emacsgtkfixed.c",
             };
-            for (pgtk_doc_sources) |name| run_mdf.addArg(name);
+            for (pgtk_doc_sources) |name| {
+                run_mdf.addFileArg(b.path(b.fmt("src/{s}", .{name})));
+            }
         }
     }
     // kqueue.c is compiled only on BSD/macOS, so its DEFSYM/defsubr
@@ -903,7 +900,7 @@ pub fn build(b: *std.Build) void {
     // otherwise the Q* macros are missing and the Fkqueue_* forward
     // references are undeclared.
     if (target.result.os.tag == .macos) {
-        run_mdf.addArg("kqueue.c");
+        run_mdf.addFileArg(b.path("src/kqueue.c"));
     }
     // The w32 modules are compiled into the Windows build, so their
     // EXFUN/DEFVAR/DEFSYM declarations must reach globals.h too,
@@ -925,7 +922,7 @@ pub fn build(b: *std.Build) void {
             // w32inevt.c.
                 "w32term.c",
         };
-        for (windows_doc_sources) |name| run_mdf.addArg(name);
+        for (windows_doc_sources) |name| run_mdf.addFileArg(b.path(b.fmt("src/{s}", .{name})));
         // -Dgui: the GUI modules' DEFVAR/DEFUN surface (fringe.c's
         // Voverflow_newline_into_fringe, fontset.c's Fquery_fontset,
         // w32fns.c's Qauto/QCrelief, menu.c/xfaces.c consumers, ...) must
@@ -940,7 +937,9 @@ pub fn build(b: *std.Build) void {
                 // their own DEFUN bodies via globals.h declarations).
                   "w32image.c",  "w32cygwinx.c",
             };
-            for (gui_doc_sources) |name| run_mdf.addArg(name);
+            for (gui_doc_sources) |name| {
+                run_mdf.addFileArg(b.path(b.fmt("src/{s}", .{name})));
+            }
         }
     }
     // emacs-module.c (when -Dmodules=true) carries the module runtime's
@@ -955,7 +954,7 @@ pub fn build(b: *std.Build) void {
     // resulting globals.h externs are then unused-but-harmless.)  Track-B
     // B-Z: widened from enable_modules to modules_runtime so the Zig module
     // subsystem (-Dmodules-zig) also pulls in the shared runtime here.
-    if (modules_runtime) run_mdf.addArg("emacs-module.c");
+    if (modules_runtime) run_mdf.addFileArg(b.path("src/emacs-module.c"));
     // compz.c (when -Dnative-comp-zig=true) carries the ZELN DEFUNs
     // (Scomp_z_load_zeln, Scomp_z_write_spike_zunit, ...) and the DEFVAR_LISP
     // slots (Vzeln_abi_hash, Vnative_comp_zeln_load_path,
@@ -990,8 +989,9 @@ pub fn build(b: *std.Build) void {
     const run_doc = b.addRunArtifact(mdf);
     run_doc.addArg("-d");
     run_doc.addArg("src");
-    // SOME_MACHINE_OBJECTS as in Makefile.in:477-488 (.o names; make-docfile
-    // rewrites the extension to .c after the -d chdir).
+    // SOME_MACHINE_OBJECTS as in Makefile.in:477-488.  Keep `.o` argv names:
+    // make-docfile writes them into DOC and rewrites them only when opening
+    // the source.  addFileInput tracks that source without changing argv.
     const some_machine_objects = [_][]const u8{
         "dosfns.o",        "msdos.o",      "xterm.o",
         "xfns.o",          "xmenu.o",      "xselect.o",
@@ -1013,7 +1013,13 @@ pub fn build(b: *std.Build) void {
         "androidselect.c", "androidvfs.c", "sfntfont-android.c",
         "sfntfont.c",
     };
-    for (some_machine_objects) |name| run_doc.addArg(name);
+    for (some_machine_objects) |name| {
+        run_doc.addArg(name);
+        const stem = name[0 .. name.len - 1];
+        const extension = if (std.mem.startsWith(u8, name, "ns") or
+            std.mem.startsWith(u8, name, "macfont")) "m" else "c";
+        run_doc.addFileInput(b.path(b.fmt("src/{s}{s}", .{ stem, extension })));
+    }
     for (base_sources) |s| {
         var name: []const u8 = s;
         if (std.mem.startsWith(u8, name, "src/")) name = name["src/".len..];
@@ -1021,14 +1027,15 @@ pub fn build(b: *std.Build) void {
         // .c but writes the ^_S record with the name as given, and
         // help-C-file-name matches that record against build-files
         // (buildobj.h), which holds .o names.
-        const o_name = std.fmt.allocPrint(b.allocator, "{s}.o", .{name[0 .. name.len - 2]}) catch @panic("OOM");
+        const o_name = b.fmt("{s}.o", .{name[0 .. name.len - 2]});
         run_doc.addArg(o_name);
+        run_doc.addFileInput(b.path(s));
     }
     if (target.result.os.tag == .linux) {
         const linux_doc_sources = [_][]const u8{ "dbusbind.c", "dynlib.c", "inotify.c" };
         for (linux_doc_sources) |name| {
-            const o_name = std.fmt.allocPrint(b.allocator, "{s}o", .{name[0 .. name.len - 1]}) catch @panic("OOM");
-            run_doc.addArg(o_name);
+            run_doc.addArg(b.fmt("{s}o", .{name[0 .. name.len - 1]}));
+            run_doc.addFileInput(b.path(b.fmt("src/{s}", .{name})));
         }
     }
     // Scan emacs-module.c for its doc strings when modules are on, so its
@@ -1037,7 +1044,10 @@ pub fn build(b: *std.Build) void {
     // doc_obj uses (make-docfile rewrites to .c after the -d src chdir).
     // Track-B B-Z: widened to modules_runtime so the doc strings are scanned
     // under the Zig module subsystem too.
-    if (modules_runtime) run_doc.addArg("emacs-module.o");
+    if (modules_runtime) {
+        run_doc.addArg("emacs-module.o");
+        run_doc.addFileInput(b.path("src/emacs-module.c"));
+    }
     const doc_capture = run_doc.captureStdOut(.{ .basename = "DOC" });
     // Install etc/DOC into the source tree with the native
     // UpdateSourceFiles step (no shell; etc/DOC is a gitignored
