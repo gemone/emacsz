@@ -167,6 +167,163 @@ pub fn buildScene(gpa: std.mem.Allocator, facts: FrameFacts, snapshot_index: u64
     return scene;
 }
 
+/// Encodes and validates a transport snapshot in `scene`, returning owned EUP
+/// messages. The first snapshot includes `FRAME_CREATE`; later ones are
+/// update-only and inherit the scene's contiguous sequence.
+pub fn appendWireSnapshot(
+    gpa: std.mem.Allocator,
+    facts: FrameFacts,
+    scene: *frontend.Scene,
+    messages: *std.ArrayList([]const u8),
+) !void {
+    if (facts.frame_width <= 0 or facts.frame_height <= 0 or
+        facts.window_width <= 0 or facts.window_height <= 0 or
+        facts.window_width > facts.frame_width or
+        facts.window_height > facts.frame_height) return error.InvalidFrameFacts;
+
+    const initial = scene.frame == null;
+    var sequence = scene.next_sequence orelse 1;
+
+    if (initial) {
+        var create_payload: [8]u8 = undefined;
+        std.mem.writeInt(u32, create_payload[0..4], 1, .little);
+        std.mem.writeInt(u32, create_payload[4..8], 1, .little);
+        var create_message: std.ArrayList(u8) = .empty;
+        defer create_message.deinit(gpa);
+        try protocol.encodeEnvelope(gpa, .{
+            .flags = 0,
+            .message_type = protocol.Message.frame_create,
+            .sequence = sequence,
+            .ack_sequence = 0,
+            .session_id = 0x1001,
+            .frame_id = 1,
+            .timestamp_ns = sequence,
+        }, &create_payload, &create_message);
+        const retained_create = try gpa.dupe(u8, create_message.items);
+        messages.append(gpa, retained_create) catch |err| {
+            gpa.free(retained_create);
+            return err;
+        };
+        try scene.apply(retained_create);
+        sequence += 1;
+    }
+
+    const update_sequence = sequence;
+    var window_bytes: std.ArrayList(u8) = .empty;
+    defer window_bytes.deinit(gpa);
+    try frontend.encodeWindow(gpa, .{
+        .id = 1001,
+        .frame_id = 1,
+        .x = 0,
+        .y = 0,
+        .width = facts.window_width,
+        .height = facts.window_height,
+    }, &window_bytes);
+
+    var row_bytes: std.ArrayList(u8) = .empty;
+    defer row_bytes.deinit(gpa);
+    const row_count: i32 = 15;
+    const row_height = @max(1, @divTrunc(facts.window_height, row_count));
+    var row_index: i32 = 0;
+    while (row_index < row_count) : (row_index += 1) {
+        try frontend.encodeRow(gpa, .{
+            .window_id = 1001,
+            .index = @intCast(row_index),
+            .flags = 0,
+            .x = 0,
+            .y = row_index * row_height,
+            .width = facts.window_width,
+            .height = row_height,
+            .ascent = @min(16, row_height),
+            .descent = row_height - @min(16, row_height),
+            .baseline = @min(16, row_height),
+            .visible_height = row_height,
+        }, &row_bytes);
+    }
+
+    var cursor_bytes: std.ArrayList(u8) = .empty;
+    defer cursor_bytes.deinit(gpa);
+    try frontend.encodeCursor(gpa, .{
+        .window_id = 1001,
+        .x = 8,
+        .y = row_height,
+        .width = 2,
+        .height = @max(2, @min(18, row_height)),
+        .kind = 1,
+        .visible = true,
+        .active = true,
+    }, &cursor_bytes);
+
+    var damage_bytes: std.ArrayList(u8) = .empty;
+    defer damage_bytes.deinit(gpa);
+    try frontend.encodeRect(gpa, .{
+        .x = 0,
+        .y = 0,
+        .width = facts.frame_width,
+        .height = facts.frame_height,
+    }, &damage_bytes);
+
+    var present_bytes: std.ArrayList(u8) = .empty;
+    defer present_bytes.deinit(gpa);
+    try frontend.encodePresentHint(gpa, .{
+        .mode = 0,
+        .flags = 0,
+        .deadline_ns = 0,
+    }, &present_bytes);
+
+    const sections = [_]protocol.Section{
+        .{ .kind = protocol.SectionKind.windows, .records = window_bytes.items },
+        .{ .kind = protocol.SectionKind.rows, .records = row_bytes.items },
+        .{ .kind = protocol.SectionKind.cursors, .records = cursor_bytes.items },
+        .{ .kind = protocol.SectionKind.damage, .records = damage_bytes.items },
+        .{ .kind = protocol.SectionKind.present_hint, .records = present_bytes.items },
+    };
+    var update_payload: std.ArrayList(u8) = .empty;
+    defer update_payload.deinit(gpa);
+    try protocol.encodeFrameUpdate(gpa, .{
+        .header = .{
+            .frame_id = 1,
+            .frame_generation = 1,
+            .sequence = update_sequence,
+            .redisplay_generation = scene.stats.frame_updates + 1,
+            .logical_x = 0,
+            .logical_y = 0,
+            .logical_width = facts.frame_width,
+            .logical_height = facts.frame_height,
+            .physical_x = 0,
+            .physical_y = 0,
+            .physical_width = facts.frame_width,
+            .physical_height = facts.frame_height,
+            .scale = 1,
+            .dpi_x = 96,
+            .dpi_y = 96,
+            .damage_mode = 2,
+            .update_cause = 1,
+            .coalesced_count = 0,
+            .timestamp_ns = update_sequence,
+        },
+        .sections = &sections,
+    }, &update_payload);
+
+    var update_message: std.ArrayList(u8) = .empty;
+    defer update_message.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = protocol.Flags.delta | protocol.Flags.coalescable,
+        .message_type = protocol.Message.frame_update,
+        .sequence = update_sequence,
+        .ack_sequence = 0,
+        .session_id = scene.session_id orelse 0x1001,
+        .frame_id = 1,
+        .timestamp_ns = update_sequence,
+    }, update_payload.items, &update_message);
+    const retained_update = try gpa.dupe(u8, update_message.items);
+    messages.append(gpa, retained_update) catch |err| {
+        gpa.free(retained_update);
+        return err;
+    };
+    try scene.apply(retained_update);
+}
+
 test "parses and validates bounded frame facts" {
     const a = std.testing.allocator;
     const facts = try parse(a, "{\"frame_width\":100,\"frame_height\":80,\"window_width\":90,\"window_height\":70}");
@@ -183,4 +340,30 @@ test "builds a validated EUP snapshot scene" {
     try std.testing.expectEqual(@as(usize, 1), scene.windows.items.len);
     try std.testing.expectEqual(@as(usize, 15), scene.rows.items.len);
     try std.testing.expectEqual(@as(i32, 110), scene.windows.items[0].width);
+}
+
+test "wire snapshots advance contiguous scene sequences" {
+    const a = std.testing.allocator;
+    const parsed = try parse(a, "{\"frame_width\":120,\"frame_height\":90,\"window_width\":110,\"window_height\":75}");
+    const invalid = FrameFacts{ .frame_width = 0, .frame_height = 90, .window_width = 0, .window_height = 0 };
+    var messages: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (messages.items) |message| a.free(message);
+        messages.deinit(a);
+    }
+    var empty_scene = frontend.Scene.init(a);
+    defer empty_scene.deinit();
+    try std.testing.expectError(error.InvalidFrameFacts, appendWireSnapshot(a, invalid, &empty_scene, &messages));
+
+    var scene = frontend.Scene.init(a);
+    defer scene.deinit();
+    try appendWireSnapshot(a, parsed, &scene, &messages);
+    try std.testing.expectEqual(@as(usize, 2), messages.items.len);
+    try std.testing.expectEqual(@as(u64, 1), scene.stats.frame_updates);
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+
+    try appendWireSnapshot(a, parsed, &scene, &messages);
+    try std.testing.expectEqual(@as(usize, 3), messages.items.len);
+    try std.testing.expectEqual(@as(u64, 2), scene.stats.frame_updates);
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
 }

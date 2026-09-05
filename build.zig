@@ -667,6 +667,29 @@ pub fn build(b: *std.Build) void {
             "Open real Emacs, continuously observe public facts, and render them in SDL3",
         );
         sdl3_emacs_smoke_step.dependOn(&run_sdl3_emacs_smoke.step);
+
+        const run_sdl3_epxl_facts = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=1000",
+        });
+        run_sdl3_epxl_facts.setCwd(b.path("."));
+        run_sdl3_epxl_facts.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_epxl_facts.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_epxl_facts.step.dependOn(step);
+        const sdl3_epxl_facts_step = b.step(
+            "sdl3-epxl-facts-smoke",
+            "Stream real Emacs facts through token-authenticated EPXL into SDL3",
+        );
+        sdl3_epxl_facts_step.dependOn(&run_sdl3_epxl_facts.step);
     }
     if (proto_frame_smoke_dep) |frame_step| {
         if (proto_sdl_fixture_dep) |fixture_step| fixture_step.dependOn(frame_step);

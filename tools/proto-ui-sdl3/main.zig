@@ -50,7 +50,7 @@ const SDL_Rect = extern struct {
     h: c_int,
 };
 
-const Mode = enum { replay, live, publisher, emacs };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -61,6 +61,7 @@ const Config = struct {
     token: live.Token = undefined,
     emacs_path: []const u8 = "",
     module_path: []const u8 = "",
+    facts_path: []const u8 = "",
     auto_quit_ms: u32 = 250,
 };
 
@@ -149,6 +150,7 @@ fn freeConfig(gpa: std.mem.Allocator, config: *const Config) void {
     if (config.replay_path.len != 0) gpa.free(config.replay_path);
     if (config.endpoint.len != 0) gpa.free(config.endpoint);
     if (config.token_path.len != 0) gpa.free(config.token_path);
+    if (config.facts_path.len != 0) gpa.free(config.facts_path);
 }
 
 fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
@@ -192,6 +194,90 @@ fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
         if (control.kind != .ack) return error.ExpectedAck;
         try acks.ack(control.sequence);
     }
+}
+
+fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
+    _ = std.Io.Dir.cwd().deleteFile(io, config.facts_path) catch {};
+    _ = std.Io.Dir.cwd().deleteFile(io, config.endpoint) catch {};
+    const eval = try std.fmt.allocPrint(
+        gpa,
+        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let ((frame (selected-frame)) (path (expand-file-name (format \"%s\" (format \"{s}\"))))) (while t (with-temp-file path (insert (proto-ui-frame-facts frame))) (sit-for 0.1))))",
+        .{ config.module_path, config.facts_path },
+    );
+    defer gpa.free(eval);
+    var child_environment = try buildDisplayEnvironment(gpa);
+    defer child_environment.deinit();
+    var emacs_child = try std.process.spawn(io, .{
+        .argv = &.{ config.emacs_path, "--batch", "--eval", eval },
+        .environ_map = &child_environment,
+    });
+    defer emacs_child.kill(io);
+
+    const address = try std.Io.net.UnixAddress.init(config.endpoint);
+    var server = try address.listen(io, .{ .kernel_backlog = 1 });
+    defer server.deinit(io);
+    var stream = try server.accept(io);
+    defer stream.close(io);
+
+    var read_buffer: [16 * 1024]u8 = undefined;
+    var write_buffer: [16 * 1024]u8 = undefined;
+    var reader = stream.reader(io, &read_buffer);
+    var writer = stream.writer(io, &write_buffer);
+
+    var hello_bytes: [live.handshake_size]u8 = undefined;
+    try reader.interface.readSliceAll(&hello_bytes);
+    const hello = try live.decodeHandshake(&hello_bytes);
+    if (hello.kind != .client_hello or !live.tokenEql(&config.token, &hello.token))
+        return error.InvalidHandshake;
+    var ready: [live.handshake_size]u8 = undefined;
+    live.encodeHandshake(.{ .kind = .server_ready }, &ready);
+    try writer.interface.writeAll(&ready);
+    try writer.interface.flush();
+
+    var acks = live.AckTracker.init(1);
+    var waited_ms: u32 = 0;
+    var facts_wait_ms: u32 = 0;
+    var shared = SharedFacts{};
+    var scene = frontend.Scene.init(gpa);
+    defer scene.deinit();
+    const publish_duration = @max(100, config.auto_quit_ms / 2);
+    while (scene.stats.frame_updates == 0 and facts_wait_ms < 1000) : (facts_wait_ms += 20) {
+        try pollEmacsFacts(&shared, gpa, io, config.facts_path);
+        if (shared.version != 0) break;
+        try io.sleep(.fromMilliseconds(20), .awake);
+    }
+    while (waited_ms < publish_duration) {
+        const facts_bytes = std.Io.Dir.cwd().readFileAlloc(io, config.facts_path, gpa, .limited(64 * 1024)) catch |err| switch (err) {
+            error.FileNotFound => {
+                try io.sleep(.fromMilliseconds(20), .awake);
+                waited_ms += 20;
+                continue;
+            },
+            else => return err,
+        };
+        defer gpa.free(facts_bytes);
+        const snapshot = try facts.parse(gpa, facts_bytes);
+        var wire_messages: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (wire_messages.items) |message| gpa.free(message);
+            wire_messages.deinit(gpa);
+        }
+        try facts.appendWireSnapshot(gpa, snapshot, &scene, &wire_messages);
+        for (wire_messages.items) |message| {
+            const envelope = (try protocol.decodeEnvelope(message)).envelope;
+            try acks.markSent(envelope.sequence);
+            try live.writeFrame(&writer.interface, message);
+            try writer.interface.flush();
+            var control_bytes: [live.control_size]u8 = undefined;
+            try reader.interface.readSliceAll(&control_bytes);
+            const control = try live.decodeControl(&control_bytes);
+            if (control.kind != .ack) return error.ExpectedAck;
+            try acks.ack(control.sequence);
+        }
+        try io.sleep(.fromMilliseconds(100), .awake);
+        waited_ms += 100;
+    }
+    if (scene.stats.frame_updates == 0) return error.NoEmacsFacts;
 }
 
 fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !frontend.Scene {
@@ -373,13 +459,19 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             try setString(gpa, &config.module_path, args.next() orelse return error.MissingModulePath);
         } else if (std.mem.eql(u8, arg, "--emacs-facts")) {
             config.mode = .emacs;
+        } else if (std.mem.eql(u8, arg, "--facts-publisher")) {
+            config.mode = .facts_publisher;
+        } else if (std.mem.eql(u8, arg, "--emacs-epxl-smoke")) {
+            config.mode = .emacs_epxl;
+        } else if (std.mem.eql(u8, arg, "--facts")) {
+            try setString(gpa, &config.facts_path, args.next() orelse return error.MissingFactsPath);
         } else {
             std.debug.print("sdl3-emacs-smoke: unknown argument {s}\n", .{arg});
             return error.UnknownArgument;
         }
     }
 
-    if (config.mode != .emacs and config.replay_path.len == 0) return error.MissingReplayPath;
+    if ((config.mode == .replay or config.mode == .live) and config.replay_path.len == 0) return error.MissingReplayPath;
     if (config.auto_quit_ms > 10_000) return error.AutoQuitMsOutOfRange;
 
     var io_threaded: std.Io.Threaded = .init(gpa, .{});
@@ -391,6 +483,17 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         if (config.token_path.len == 0) return error.MissingTokenPath;
         config.token = try readTokenFile(gpa, io, config.token_path);
         try runPublisher(gpa, io, &config);
+        return;
+    }
+
+    if (config.mode == .facts_publisher) {
+        if (config.emacs_path.len == 0) return error.MissingEmacsPath;
+        if (config.module_path.len == 0) return error.MissingModulePath;
+        if (config.facts_path.len == 0) return error.MissingFactsPath;
+        if (config.endpoint.len == 0) return error.MissingEndpoint;
+        if (config.token_path.len == 0) return error.MissingTokenPath;
+        config.token = try readTokenFile(gpa, io, config.token_path);
+        try runFactsPublisher(gpa, io, &config);
         return;
     }
 
@@ -498,6 +601,56 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         },
         .publisher => unreachable,
         .emacs => unreachable,
+        .emacs_epxl => blk: {
+            var token_bytes: [8]u8 = undefined;
+            try io.randomSecure(&token_bytes);
+            try io.randomSecure(&config.token);
+            const suffix = std.fmt.bytesToHex(token_bytes, .lower);
+            const private_dir = try std.fmt.allocPrint(gpa, ".zig-cache/proto-ui-epxl-{s}", .{suffix});
+            errdefer gpa.free(private_dir);
+            const directory_permissions: std.Io.Dir.Permissions = if (native_os == .windows)
+                .default_dir
+            else
+                @enumFromInt(0o700);
+            try std.Io.Dir.cwd().createDir(io, private_dir, directory_permissions);
+            errdefer std.Io.Dir.cwd().deleteTree(io, private_dir) catch {};
+            config.token_path = try std.fmt.allocPrint(gpa, "{s}/token", .{private_dir});
+            config.endpoint = try std.fmt.allocPrint(gpa, "{s}/live.sock", .{private_dir});
+            const current_dir = try std.process.currentPathAlloc(io, gpa);
+            defer gpa.free(current_dir);
+            const absolute_module_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ current_dir, config.module_path });
+            defer gpa.free(absolute_module_path);
+            config.facts_path = try std.fmt.allocPrint(gpa, "{s}/.zig-cache/proto-ui-epxl-{s}/facts.json", .{ current_dir, suffix });
+            try writeTokenFile(io, config.token_path, &config.token);
+            var child = try std.process.spawn(io, .{
+                .argv = &.{
+                    config.self_exe,
+                    "--facts-publisher",
+                    "--emacs",
+                    config.emacs_path,
+                    "--module",
+                    absolute_module_path,
+                    "--facts",
+                    config.facts_path,
+                    "--endpoint",
+                    config.endpoint,
+                    "--token-file",
+                    config.token_path,
+                    "--auto-quit-ms=500",
+                },
+            });
+            errdefer child.kill(io);
+            const loaded = runLiveFrontend(gpa, io, &config) catch |err| {
+                child.kill(io);
+                return err;
+            };
+            const term = try child.wait(io);
+            if (term != .exited or term.exited != 0) return error.PublisherFailed;
+            std.Io.Dir.cwd().deleteTree(io, private_dir) catch {};
+            gpa.free(private_dir);
+            break :blk loaded;
+        },
+        .facts_publisher => unreachable,
     };
     defer scene.deinit();
     if (scene.stats.frame_updates == 0) return error.NoFrameUpdate;

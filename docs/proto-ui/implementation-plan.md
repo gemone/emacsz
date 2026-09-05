@@ -72,6 +72,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W9d real Emacs facts to EUP/SDL3 snapshot | Approved |
 | W9e continuous real Emacs public-fact stream | Approved |
 | W9f continuous facts validated as EUP snapshots | Approved |
+| W9g authenticated EPXL continuous facts transport | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in continuous Emacs public-fact modes; the Emacs mode is process/public-API observation, not EUP transport or redisplay-hook streaming |
 
 The workstream sections below retain their historical review records and
@@ -916,6 +917,39 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-smoke -
 The smoke must observe multiple snapshots and each changed snapshot must pass
 through `Scene.apply`.
 
+### W9g — Authenticated EPXL continuous facts transport (approved)
+
+Goal: move the W9f validated snapshots across the local EPXL transport with an
+ephemeral authenticated client and ACK progression.
+
+Implemented:
+
+1. `sdl3-epxl-facts-smoke` creates a per-run `0700` directory, generates an
+   ephemeral 256-bit EPXL token, and owns the facts/endpoint/token artifacts.
+2. A publisher child loads the adapter-owned module in a real batch Emacs,
+   observes public frame facts every 100 ms, and writes each atomic JSON
+   snapshot.
+3. The publisher authenticates the SDL client over a local Unix socket, converts
+   each observed snapshot into a scene-validated contiguous EUP sequence, sends
+   `FRAME_CREATE` followed by `FRAME_UPDATE`, and requires an ACK for every
+   message.
+4. The SDL parent reconnects using the token, validates each received frame
+   through `frontend.Scene`, and reports the rendered snapshot count.
+5. Cleanup removes the private artifacts and terminates children on normal,
+   timeout, and error paths.
+
+This remains public-fact observation over a snapshot artifact.  It does not yet
+stream redisplay internals, text, faces, resources, input, or recovery.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-facts-smoke --summary all
+```
+
+The smoke must apply multiple EUP updates in SDL3 without printing or retaining
+the ephemeral token.
+
 ### W10 — GPU renderer path
 
 Goal: add optional acceleration without making it required.
@@ -1162,6 +1196,10 @@ zig build -Dproto-ui=true proto-ui-abi
 zig build -Dproto-ui=true proto-ui-conformance
 zig build -Dproto-ui=true proto-ui-boundary
 zig build -Dproto-ui=true proto-ui-boundary-audit
+zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-live-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-facts-smoke
 zig build -Dsdl3-frontend=true sdl3-ui-smoke
 zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke
 ```
