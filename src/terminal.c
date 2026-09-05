@@ -775,6 +775,12 @@ proto_delete_terminal (struct terminal *terminal)
     proto_terminal = NULL;
 }
 
+static void
+proto_set_frame_visible (struct frame *frame, bool visible_p)
+{
+  SET_FRAME_VISIBLE (frame, visible_p);
+}
+
 /* Handler for signals raised while a lifecycle-only proto frame is built.
    An unfinished frame is not in Vframe_list; free its resources directly.  */
 static Lisp_Object
@@ -1202,6 +1208,18 @@ redisplay-to-EUP encoder path without rendering.  */)
   return make_uint (proto_ui_frame_update_count (session_id));
 }
 
+DEFUN ("proto-ui-frame-update-count", Fproto_ui_frame_update_count,
+       Sproto_ui_frame_update_count, 1, 1, 0,
+       doc: /* Return the number of committed EUP FRAME_UPDATE messages for FRAME's session.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  if (!FRAME_PROTO_P (f) || !FRAME_PROTO_OUTPUT (f))
+    error ("FRAME is not a proto-ui frame");
+  return make_uint (proto_ui_frame_update_count
+                    (FRAME_PROTO_OUTPUT (f)->session_id));
+}
+
 DEFUN ("proto-ui-create-terminal", Fproto_ui_create_terminal,
        Sproto_ui_create_terminal, 0, 0, 0,
        doc: /* Create the headless EUP terminal used by proto-ui.
@@ -1233,6 +1251,7 @@ Use `proto-ui-create-frame' to create a frame on this terminal.  */)
   proto_terminal->kboard->reference_count++;
   proto_terminal->delete_terminal_hook = proto_delete_terminal;
   proto_terminal->delete_frame_hook = proto_delete_frame;
+  proto_terminal->frame_visible_invisible_hook = proto_set_frame_visible;
   proto_terminal->rif = &proto_redisplay_interface;
   proto_terminal->proto_session_id = session_id;
   proto_terminal->proto_terminal_id = terminal_id;
@@ -1246,8 +1265,8 @@ DEFUN ("proto-ui-create-frame", Fproto_ui_create_frame,
        Sproto_ui_create_frame, 0, 0, 0,
        doc: /* Create a headless frame owned by proto-ui.
 The frame has the `proto' output identity and a stable EUP frame ID.
-It is invisible and intentionally has no face or render state yet.  W4b
-captures metadata but does not render.  */)
+It is invisible and intentionally has no face or render state yet.  W4b/W4c
+capture metadata and visibility/count observability without rendering.  */)
   (void)
 {
   if (!proto_terminal || !proto_terminal->name)
@@ -1335,6 +1354,8 @@ or some time later.  */);
   DEFSYM (Qproto_frame, "proto-frame");
   DEFSYM (Qproto_ui_capture_frame_update, "proto-ui-capture-frame-update");
   defsubr (&Sproto_ui_capture_frame_update);
+  DEFSYM (Qproto_ui_frame_update_count, "proto-ui-frame-update-count");
+  defsubr (&Sproto_ui_frame_update_count);
   defsubr (&Sproto_ui_create_frame);
 #endif
 

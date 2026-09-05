@@ -3509,13 +3509,14 @@ static void make_frame_visible_1 (Lisp_Object);
 
 DEFUN ("make-frame-visible", Fmake_frame_visible, Smake_frame_visible,
        0, 1, "",
-       doc: /* Make the frame FRAME visible (assuming it is an X window).
+       doc: /* Make the frame FRAME visible using its terminal backend.
 If omitted, FRAME defaults to the currently selected frame.  */)
   (Lisp_Object frame)
 {
   struct frame *f = decode_live_frame (frame);
 
-  if (FRAME_WINDOW_P (f) && FRAME_TERMINAL (f)->frame_visible_invisible_hook)
+  if ((FRAME_WINDOW_P (f) || FRAME_PROTO_P (f))
+      && FRAME_TERMINAL (f)->frame_visible_invisible_hook)
     FRAME_TERMINAL (f)->frame_visible_invisible_hook (f, true);
 
   if (is_tty_child_frame (f))
@@ -3557,6 +3558,7 @@ DEFUN ("make-frame-invisible", Fmake_frame_invisible, Smake_frame_invisible,
 If omitted, FRAME defaults to the currently selected frame.
 On graphical displays, invisible frames are not updated and are
 usually not displayed at all, even in a window system's \"taskbar\".
+Headless proto frames use the backend visibility flag.
 
 Normally you may not make FRAME invisible if all other frames are
 invisible, but if the second optional argument FORCE is non-nil, you may
@@ -3574,7 +3576,8 @@ visible ancestor of FRAME instead.  */)
   if (NILP (force) && !other_frames (f, true, false))
     error ("Attempt to make invisible the sole visible or iconified frame");
 
-  if (FRAME_WINDOW_P (f) && FRAME_TERMINAL (f)->frame_visible_invisible_hook)
+  if ((FRAME_WINDOW_P (f) || FRAME_PROTO_P (f))
+      && FRAME_TERMINAL (f)->frame_visible_invisible_hook)
     FRAME_TERMINAL (f)->frame_visible_invisible_hook (f, false);
 
   if (is_tty_child_frame (f))

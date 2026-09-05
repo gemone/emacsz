@@ -2,7 +2,7 @@
 
 Status: normative design baseline
 Protocol: EUP v1
-Implementation status: specification complete. W1-W3c approved: protocol/transport, registration, terminal lifecycle, and lifecycle-only frame objects. W4a approved: synthetic `FRAME_UPDATE` capture. W4b approved: real after-update window geometry and row metadata, capped at 256 rows. W4c-a approved: bounded redisplay damage capture and safe hook coverage. Glyphs/faces/fonts/images, rendering, and graphic predicates remain W4c-b+.
+Implementation status: specification complete. W1-W3c approved: protocol/transport, registration, terminal lifecycle, and lifecycle-only frame objects. W4a approved: synthetic `FRAME_UPDATE` capture. W4b approved: real after-update window geometry and row metadata, capped at 256 rows. W4c-a approved: bounded redisplay damage capture and safe hook coverage. W4c-b0 approved: headless frame visibility and update-count observability. Glyphs/faces/fonts/images, rendering, and graphic predicates remain W4c-b1+.
 
 ## 1. Purpose
 
@@ -109,10 +109,13 @@ Current lifecycle/redisplay contract by implementation slice:
 * **W4c-a** captures bounded redisplay damage from write/clear/scroll/draw
   seams, tracks window-update completion, and keeps no-damage updates on the
   conservative full-frame fallback.  It is metadata-only and does not render.
+* **W4c-b0** lets the headless terminal control the real frame visibility flag
+  and exposes committed-update counts for observation.  It does not change
+  matrix allocation, `FRAME_WINDOW_P`, or rendering.
 
 Rendering, generic graphic `make-frame`, and `display-graphic-p` remain
 disabled until later W4 slices.  Cursor emission is conditional on the
-redisplay path; headless W4b capture is not a graphic-frame contract.
+redisplay path; headless W4b/W4c capture is not a graphic-frame contract.
 
 Final W4+ graphic contract: a completed proto frame will be a real graphic
 Emacs frame; normal `make-frame` and `display-graphic-p` will return the

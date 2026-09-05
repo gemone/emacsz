@@ -26,7 +26,7 @@ Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existin
 | Memory sink and replay-file transport | Partial |
 | SDL3 frontend design | Documented |
 | Performance baseline | Documented |
-| Build option `-Dproto-ui` | W2 registration, W3a lifecycle identity, W3b terminal lifecycle, W4b window/row metadata, W4c-a damage capture |
+| Build option `-Dproto-ui` | W2 registration, W3a lifecycle identity, W3b terminal lifecycle, W4b window/row metadata, W4c-a damage capture, W4c-b0 visibility/count observability |
 | W2 registration seam | Approved |
 | W3a lifecycle identity | Approved |
 | W3b terminal lifecycle | Approved |
@@ -34,9 +34,10 @@ Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existin
 | W4a redisplay begin/cursor/flush capture | Approved |
 | W4b window/row metadata capture | Approved |
 | W4c-a damage/hook coverage | Approved |
+| W4c-b0 headless frame visibility/count observability | Approved |
 | Automated W3c frame smoke | Implemented |
 | `output_proto` terminal | Approved |
-| Redisplay capture | Partial: W4a synthetic + W4b window/row metadata + W4c-a damage |
+| Redisplay capture | Partial: W4a synthetic + W4b window/row metadata + W4c-a damage; W4c-b0 observability |
 | Resource model | Not implemented |
 | SDL3 frontend | Not implemented |
 | Real SDL3 Emacs smoke test | Not achieved |
@@ -333,9 +334,26 @@ Acceptance:
 Backend tests prove payload ordering, multiple damage rectangles, fallback
 damage mode, invalid rectangle rejection, and atomic overflow behavior.  The
 Emacs smoke still uses its deterministic synthetic gate and proves the C
-integration/link remains clean.  Real-frame fixtures remain W4c-b.
+integration/link remains clean.  Real-frame fixtures remain W4c-b1.
 
-#### W4c-b — Real-frame redisplay fixtures (pending)
+#### W4c-b0 — Headless frame display observability (approved)
+
+Goal: add the minimum frame-control and observation surface needed before
+driving real redisplay.
+
+Tasks:
+
+1. Let the headless proto terminal set real Emacs frame visibility without an
+   OS window.
+2. Expose the committed `FRAME_UPDATE` count without forcing a synthetic
+   capture.
+3. Verify visible/invisible transitions, count isolation, synthetic capture,
+   and cleanup in smoke.
+
+Acceptance: the smoke proves all three.  This is not a redisplay fixture and
+does not make `FRAME_WINDOW_P` true.
+
+#### W4c-b1 — Real-frame redisplay fixtures (pending)
 
 Tasks:
 
