@@ -85,6 +85,11 @@ The intrusive normal-RIF fixture prototype that modified these boundaries was
 quarantined rather than merged.  Normal-RIF streaming is blocked until an
 adapter-owned redesign satisfies this document.
 
+The approved redesign is defined by
+[`zig-build-adapter.md`](zig-build-adapter.md): versioned ABI tables,
+generated Proto-UI-owned shims, adapter-owned state, and `zig build` embedding
+without rewriting tracked inherited C files.
+
 ## 6. Review and acceptance gates
 
 Every Proto-UI patch must document:

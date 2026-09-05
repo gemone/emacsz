@@ -20,7 +20,8 @@ Its responsibilities are deliberately narrow:
 The implementation is adapter-first.  New Proto-UI policy and state belong in
 the Zig adapter, protocol tooling, SDL3 frontend, Lisp integration, or build
 glue—not in inherited Emacs C source.  See
-[`adapter-boundary.md`](adapter-boundary.md).
+[`adapter-boundary.md`](adapter-boundary.md) and
+[`zig-build-adapter.md`](zig-build-adapter.md).
 
 ## 2. Component map
 

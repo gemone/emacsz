@@ -396,6 +396,9 @@ required intrusive changes to inherited Emacs C code.  Do not resume that
 patch.  Redesign the workstream so a Proto-UI-owned adapter observes the
 normal RIF path through a stable, separately owned seam.
 
+Normative redesign:
+[`zig-build-adapter.md`](zig-build-adapter.md).
+
 Tasks:
 
 1. Define adapter-owned streaming state and lifecycle.
