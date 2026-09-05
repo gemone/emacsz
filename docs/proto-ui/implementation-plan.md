@@ -60,14 +60,15 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | `output_proto` terminal | Rolled back with runtime integration |
 | Redisplay capture | Rolled back; adapter ABI v1 contract only |
 | Resource model | Not implemented |
-| SDL3 frontend | Partial: EUP replay/local live scene and window/renderer lifecycle; no Emacs seam, input, faces, or complete live recovery |
+| SDL3 frontend | Partial: EUP replay/local live scene and window/renderer lifecycle; public Emacs frame facts available, but no streaming bridge, input, faces, or complete live recovery |
 | Real SDL3 Emacs smoke test | Not achieved |
 | Adapter-first C boundary | Required; no new inherited-C Proto-UI edits |
 | W9a independent SDL3 lifecycle smoke | Approved |
 | W9b SDL3 EUP replay scene renderer | Approved |
 | W9c-a local live EUP transport smoke | Approved |
 | W9c-b live ACK backpressure | Approved |
-| W9c-c1 Emacs dynamic-module seam | Approved |
+| W9c-c1 Emacs dynamic-module seam | Approved: identity/string + public frame facts |
+| W9c-c2 public frame-fact observation | Approved (display-capable host) |
 | Build option `-Dsdl3-frontend` | Independent EUP-replay/local live SDL3 renderer; no Emacs seam yet |
 
 The workstream sections below retain their historical review records and
@@ -802,11 +803,15 @@ Implemented:
    suffix varies).
 2. The module verifies GPL identity, environment ABI version, function
    registration, Lisp string extraction, and string creation.
-3. `proto-ui-module` builds the adapter-owned artifact; a batch gate loads it
+3. `proto-ui-frame-facts` observes public Emacs APIs (`frame-selected-window`,
+   `frame-pixel-width`, `frame-pixel-height`, `window-pixel-width`, and
+   `window-pixel-height`) and returns bounded JSON facts.  It does not inspect
+   redisplay internals.
+4. `proto-ui-module` builds the adapter-owned artifact; a batch gate loads it
    through `module-load` and verifies `proto-ui-echo`.
 
-This seam is intentionally display-neutral.  It does not yet expose redisplay,
-input, resources, fonts, or a real Emacs frame.
+The seam is intentionally public-API-only.  It does not expose redisplay
+internals, input, resources, fonts, text content, or a complete Proto-UI frame.
 
 Acceptance:
 
@@ -816,6 +821,13 @@ zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke --summary all
 
 The gate builds a modules-enabled Emacs and loads the adapter module in the same
 batch process.
+
+On a display-capable host, `proto-ui-frame-fact-smoke` opens Emacs briefly,
+observes public frame/window dimensions, validates the JSON fields, and exits:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true proto-ui-frame-fact-smoke --summary all
+```
 
 ### W10 — GPU renderer path
 

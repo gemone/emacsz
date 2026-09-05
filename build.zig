@@ -602,7 +602,11 @@ pub fn build(b: *std.Build) void {
             "./zig-out/bin/emacs",
             "--batch",
             "--eval",
-            "(module-load (expand-file-name \"proto-ui-module.so\" \"zig-out/proto-ui\"))",
+            std.fmt.allocPrint(
+                b.allocator,
+                "(module-load (expand-file-name \"proto-ui-module{s}\" \"zig-out/proto-ui\"))",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
             "--eval",
             "(unless (string= (proto-ui-echo \"seam\") \"proto-ui:seam\") (error \"proto-ui module mismatch\"))",
         });
@@ -614,6 +618,23 @@ pub fn build(b: *std.Build) void {
             "Build a modules-enabled Emacs and verify the adapter-owned module seam",
         );
         proto_module_smoke_step.dependOn(&proto_module_smoke.step);
+
+        const proto_frame_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs",
+            "--eval",
+            std.fmt.allocPrint(
+                b.allocator,
+                "(progn (module-load (expand-file-name \"proto-ui-module{s}\" \"zig-out/proto-ui\")) (let ((success nil) (facts nil)) (unwind-protect (progn (setq facts (proto-ui-frame-facts (selected-frame))) (setq success (and (string-match \"\\\"frame_width\\\":[0-9]+\" facts) (string-match \"\\\"window_height\\\":[0-9]+\" facts))) (princ facts))) (kill-emacs (if success 0 1)))) (unless success (error \"Proto-UI frame-fact smoke failed\")))",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+        });
+        proto_frame_smoke.setCwd(b.path("."));
+        proto_frame_smoke.step.dependOn(&proto_module_smoke.step);
+        const proto_frame_smoke_step = b.step(
+            "proto-ui-frame-fact-smoke",
+            "Open Emacs on a display, observe public frame facts, and exit",
+        );
+        proto_frame_smoke_step.dependOn(&proto_frame_smoke.step);
     }
 
     // modules_zig_provider: when on, src/dynlib.c is dropped from the compile
@@ -4977,6 +4998,7 @@ pub fn build(b: *std.Build) void {
         \\
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module - Emacs dynamic-module seam
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke - verify module seam in batch Emacs
+        \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-frame-fact-smoke - public frame facts on a display
         \\
         \\SDL3 frontend path (opt-in: -Dsdl3-frontend=true):
         \\  zig build -Dsdl3-frontend=true sdl3-ui-smoke - independent EUP replay renderer

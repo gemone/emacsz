@@ -2,7 +2,7 @@
 
 Status: normative design baseline
 Protocol: EUP v1
-Implementation status: specification complete.  Historical W1-W4c-b0 direct-core runtime integration was rolled back to enforce the adapter-first boundary.  W4c-b1-p0, W4c-b1-t0, and W4c-b1-b0 are approved.  They provide the adapter-only EUP codec, bounded transport/replay, adapter ABI, non-normative ABI summary generation, and fake-host conformance; no inherited C/Lisp runtime integration is present.  Glyph, face, font, and image resources, rendering, and generic graphic predicates remain pending adapter-first work. The SDL3 frontend can render deterministic EUP replay and local authenticated Unix-stream sessions with ACK backpressure.  An opt-in dynamic-module seam supports Lisp-level identity/string calls only; it is not a direct redisplay interface and exposes no input, fonts, resources, or frames yet.
+Implementation status: specification complete.  Historical W1-W4c-b0 direct-core runtime integration was rolled back to enforce the adapter-first boundary.  W4c-b1-p0, W4c-b1-t0, and W4c-b1-b0 are approved.  They provide the adapter-only EUP codec, bounded transport/replay, adapter ABI, non-normative ABI summary generation, and fake-host conformance; no inherited C/Lisp runtime integration is present.  Glyph, face, font, and image resources, rendering, and generic graphic predicates remain pending adapter-first work. The SDL3 frontend can render deterministic EUP replay and local authenticated Unix-stream sessions with ACK backpressure.  An opt-in dynamic-module seam supports Lisp-level identity/string calls and public frame/window dimension facts; it is not a direct redisplay interface and exposes no input, fonts, resources, or complete frames yet.
 
 ## 1. Purpose
 
