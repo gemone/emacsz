@@ -4441,9 +4441,7 @@ pub fn build(b: *std.Build) void {
         // invokes RtlUnwind which cannot walk LLVM-generated .zeln frames
         // (fundamental ABI limitation; exit 40).  Populate coverage gate
         // still proves compilation.
-        if (target.result.abi != .msvc) {
-            zeln_diff_step.dependOn(&diff_harness.step);
-        }
+        zeln_diff_step.dependOn(&diff_harness.step);
 
         // ---- M2b cache-population step (deliverable 1) --------------------
         // populate-zeln-cache: walk lisp/**/*.elc, serialize each to a
@@ -4554,9 +4552,7 @@ pub fn build(b: *std.Build) void {
         // whether the .zeln is compiled for GNU or MSVC target.  The
         // populate-zeln-cache coverage gate (48.5% > 45%) still proves
         // the .zeln compilation pipeline works.
-        if (target.result.abi != .msvc) {
-            run_check_zeln.setEnvironmentVariable("ZELN_LOAD_PATH", "zig-out/zeln-cache");
-        }
+        run_check_zeln.setEnvironmentVariable("ZELN_LOAD_PATH", "zig-out/zeln-cache");
         run_check_zeln.step.dependOn(&run_populate.step);
         run_check_zeln.step.dependOn(&run_dump_compiled.step);
         run_check_zeln.step.dependOn(&run_loaddefs_final.step);
@@ -4639,9 +4635,7 @@ pub fn build(b: *std.Build) void {
             "Z7: multi-fixture PGO closed-loop test (6 workload shapes)",
         );
         // MSVC host: SKIP (same .zeln execution limitation as zeln-diff).
-        if (target.result.abi != .msvc) {
-            zeln_pgo_step.dependOn(&run_pgo.step);
-        }
+        zeln_pgo_step.dependOn(&run_pgo.step);
 
         // ---- zeln-jit-unit: run the emitter/compiler tests from the root
         // graph.  The smoke gate depends on these so an executable gate
@@ -5309,3 +5303,6 @@ fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
     }
     return false;
 }
+
+
+
