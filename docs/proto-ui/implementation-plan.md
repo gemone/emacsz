@@ -60,7 +60,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | `output_proto` terminal | Rolled back with runtime integration |
 | Redisplay capture | Rolled back; adapter ABI v1 contract only |
 | Resource model | Not implemented |
-| SDL3 frontend | Partial: real public Emacs frame-fact snapshot can be encoded as EUP and rendered; no continuous streaming, input, faces, or complete live recovery |
+| SDL3 frontend | Partial: continuous real Emacs public-fact stream rendered as adapter-owned scene; no EUP streaming, input, faces, or complete live recovery |
 | Real SDL3 Emacs smoke test | Not achieved |
 | Adapter-first C boundary | Required; no new inherited-C Proto-UI edits |
 | W9a independent SDL3 lifecycle smoke | Approved |
@@ -70,7 +70,8 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W9c-c1 Emacs dynamic-module seam | Approved: identity/string + public frame facts |
 | W9c-c2 public frame-fact observation | Approved (display-capable host) |
 | W9d real Emacs facts to EUP/SDL3 snapshot | Approved |
-| Build option `-Dsdl3-frontend` | Independent EUP-replay/local live SDL3 renderer; no Emacs seam yet |
+| W9e continuous real Emacs public-fact stream | Approved |
+| Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in continuous Emacs public-fact modes; the Emacs mode is process/public-API observation, not EUP transport or redisplay-hook streaming |
 
 The workstream sections below retain their historical review records and
 implementation details.  The Current status table is authoritative when an
@@ -857,6 +858,33 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-ui-smoke --su
 
 The build log proves that Emacs facts (for example, `1276x1323`) were encoded
 into two EUP messages and rendered by SDL3 as one update.
+
+### W9e — Continuous real Emacs public-fact stream (approved)
+
+Goal: replace the one-shot W9d snapshot with repeated observation from a real
+Emacs process and render changes in SDL3.
+
+Implemented:
+
+1. `sdl3-emacs-smoke` starts a real batch modules-enabled Emacs child that loads the
+   adapter-owned module, selects a live frame, observes public frame facts every
+   100 ms, and writes an atomic snapshot artifact.
+2. SDL3 polls and validates those facts, preserves the latest version, and
+   renders frame/window/row/cursor geometry continuously.
+3. The parent guarantees child cleanup when the smoke exits normally, on user
+   quit, or after the timeout.
+
+This stream is adapter-owned and public-API-only.  It is not yet EPXL transport,
+redisplay-hook streaming, text, faces, resources, or input.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-smoke --summary all
+```
+
+The smoke must report multiple observed public-fact snapshots and render them in
+a real SDL3 window.
 
 ### W10 — GPU renderer path
 

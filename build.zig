@@ -506,6 +506,7 @@ pub fn build(b: *std.Build) void {
     }
     var proto_frame_smoke_dep: ?*std.Build.Step = null;
     var proto_sdl_fixture_dep: ?*std.Build.Step = null;
+    var sdl3_frontend_dep: ?*std.Build.Step = null;
     if (enable_sdl3_frontend) {
         const proto_ui_module = b.createModule(.{
             .target = b.graph.host,
@@ -534,6 +535,7 @@ pub fn build(b: *std.Build) void {
         sdl3_frontend.root_module.linkSystemLibrary("sdl3", .{});
         sdl3_frontend.root_module.addImport("proto_ui", proto_ui_module);
         b.installArtifact(sdl3_frontend);
+        sdl3_frontend_dep = &sdl3_frontend.step;
 
         const run_sdl3_fixture = b.addRunArtifact(sdl3_replay_fixture);
         run_sdl3_fixture.addArg("zig-out/proto-ui/frame-facts.json");
@@ -642,6 +644,29 @@ pub fn build(b: *std.Build) void {
             "Open Emacs on a display, observe public frame facts, and exit",
         );
         proto_frame_smoke_step.dependOn(&proto_frame_smoke.step);
+
+        const run_sdl3_emacs_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--emacs-facts",
+            "--auto-quit-ms=1000",
+        });
+        run_sdl3_emacs_smoke.setCwd(b.path("."));
+        run_sdl3_emacs_smoke.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_emacs_smoke.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_emacs_smoke.step.dependOn(step);
+        const sdl3_emacs_smoke_step = b.step(
+            "sdl3-emacs-smoke",
+            "Open real Emacs, continuously observe public facts, and render them in SDL3",
+        );
+        sdl3_emacs_smoke_step.dependOn(&run_sdl3_emacs_smoke.step);
     }
     if (proto_frame_smoke_dep) |frame_step| {
         if (proto_sdl_fixture_dep) |fixture_step| fixture_step.dependOn(frame_step);
@@ -5014,6 +5039,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module - Emacs dynamic-module seam
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke - verify module seam in batch Emacs
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-frame-fact-smoke - public frame facts on a display
+        \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-smoke - continuous public Emacs facts
         \\
         \\SDL3 frontend path (opt-in: -Dsdl3-frontend=true):
         \\  zig build -Dsdl3-frontend=true sdl3-ui-smoke - real Emacs facts/EUP replay renderer

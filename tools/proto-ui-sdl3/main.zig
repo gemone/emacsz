@@ -49,7 +49,7 @@ const SDL_Rect = extern struct {
     h: c_int,
 };
 
-const Mode = enum { replay, live, publisher };
+const Mode = enum { replay, live, publisher, emacs };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -58,7 +58,22 @@ const Config = struct {
     endpoint: []const u8 = "",
     token_path: []const u8 = "",
     token: live.Token = undefined,
+    emacs_path: []const u8 = "",
+    module_path: []const u8 = "",
     auto_quit_ms: u32 = 250,
+};
+
+const FrameFacts = struct {
+    frame_width: i32,
+    frame_height: i32,
+    window_width: i32,
+    window_height: i32,
+};
+
+const SharedFacts = struct {
+    mutex: std.Io.Mutex = .init,
+    facts: ?FrameFacts = null,
+    version: u64 = 0,
 };
 
 fn sdlFail(what: []const u8) error{SdlFailed} {
@@ -259,6 +274,79 @@ fn findSceneWindow(scene: *frontend.Scene, id: u64) ?frontend.Window {
     return null;
 }
 
+fn renderFacts(facts: FrameFacts, renderer: *SDL_Renderer, window: *SDL_Window) !void {
+    var output_w: c_int = 0;
+    var output_h: c_int = 0;
+    SDL_GetWindowSize(window, &output_w, &output_h);
+    if (output_w <= 0 or output_h <= 0) return error.InvalidOutputGeometry;
+    const scale: f32 = @min(
+        @as(f32, @floatFromInt(output_w)) / @as(f32, @floatFromInt(facts.frame_width)),
+        @as(f32, @floatFromInt(output_h)) / @as(f32, @floatFromInt(facts.frame_height)),
+    );
+
+    if (!SDL_SetRenderDrawColor(renderer, 0x18, 0x20, 0x2a, 255)) return sdlFail("SDL_SetRenderDrawColor");
+    if (!SDL_RenderClear(renderer)) return sdlFail("SDL_RenderClear");
+
+    const row_count: i32 = 15;
+    const row_height = @max(1, @divTrunc(facts.window_height, row_count));
+    var index: i32 = 0;
+    while (index < row_count) : (index += 1) {
+        const stripe: u8 = if (@mod(index, 2) == 0) 0x33 else 0x2b;
+        try drawRect(renderer, .{
+            .x = @intFromFloat(0),
+            .y = @intFromFloat(@as(f32, @floatFromInt(index * row_height)) * scale),
+            .w = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(facts.window_width)) * scale))),
+            .h = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(row_height)) * scale))),
+        }, stripe, stripe + 0x0d, 0x3a);
+    }
+
+    if (!SDL_SetRenderDrawColor(renderer, 0x71, 0xa6, 0xf2, 255)) return sdlFail("SDL_SetRenderDrawColor");
+    const border_w = @as(c_int, @intFromFloat(@as(f32, @floatFromInt(facts.window_width)) * scale));
+    const border_h = @as(c_int, @intFromFloat(@as(f32, @floatFromInt(facts.window_height)) * scale));
+    if (!SDL_RenderFillRect(renderer, &.{ .x = 0, .y = 0, .w = border_w, .h = 1 })) return sdlFail("SDL_RenderFillRect");
+    if (!SDL_RenderFillRect(renderer, &.{ .x = 0, .y = border_h - 1, .w = border_w, .h = 1 })) return sdlFail("SDL_RenderFillRect");
+    if (!SDL_RenderFillRect(renderer, &.{ .x = 0, .y = 0, .w = 1, .h = border_h })) return sdlFail("SDL_RenderFillRect");
+    if (!SDL_RenderFillRect(renderer, &.{ .x = border_w - 1, .y = 0, .w = 1, .h = border_h })) return sdlFail("SDL_RenderFillRect");
+
+    try drawRect(renderer, .{
+        .x = @intFromFloat(8 * scale),
+        .y = @intFromFloat(@as(f32, @floatFromInt(row_height)) * scale),
+        .w = 2,
+        .h = @intFromFloat(18 * scale),
+    }, 0xff, 0xd5, 0x4d);
+
+    if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
+}
+
+fn parseFacts(gpa: std.mem.Allocator, bytes: []const u8) !FrameFacts {
+    const parsed = try std.json.parseFromSlice(FrameFacts, gpa, bytes, .{});
+    defer parsed.deinit();
+    const facts = parsed.value;
+    if (facts.frame_width <= 0 or facts.frame_height <= 0 or
+        facts.window_width <= 0 or facts.window_height <= 0 or
+        facts.window_width > facts.frame_width or
+        facts.window_height > facts.frame_height) return error.InvalidFrameFacts;
+    return facts;
+}
+
+fn readFactsFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !?FrameFacts {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer gpa.free(bytes);
+    return try parseFacts(gpa, bytes);
+}
+
+fn pollEmacsFacts(shared: *SharedFacts, gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
+    if (try readFactsFile(gpa, io, path)) |facts| {
+        shared.mutex.lockUncancelable(io);
+        defer shared.mutex.unlock(io);
+        shared.facts = facts;
+        shared.version += 1;
+    }
+}
+
 pub fn main(minimal: std.process.Init.Minimal) !void {
     const gpa = std.heap.smp_allocator;
     var args = try std.process.Args.Iterator.initAllocator(minimal.args, gpa);
@@ -290,10 +378,19 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .live;
         } else if (std.mem.eql(u8, arg, "--publisher")) {
             config.mode = .publisher;
-        } else return error.UnknownArgument;
+        } else if (std.mem.eql(u8, arg, "--emacs")) {
+            try setString(gpa, &config.emacs_path, args.next() orelse return error.MissingEmacsPath);
+        } else if (std.mem.eql(u8, arg, "--module")) {
+            try setString(gpa, &config.module_path, args.next() orelse return error.MissingModulePath);
+        } else if (std.mem.eql(u8, arg, "--emacs-facts")) {
+            config.mode = .emacs;
+        } else {
+            std.debug.print("sdl3-emacs-smoke: unknown argument {s}\n", .{arg});
+            return error.UnknownArgument;
+        }
     }
 
-    if (config.replay_path.len == 0) return error.MissingReplayPath;
+    if (config.mode != .emacs and config.replay_path.len == 0) return error.MissingReplayPath;
     if (config.auto_quit_ms > 10_000) return error.AutoQuitMsOutOfRange;
 
     var io_threaded: std.Io.Threaded = .init(gpa, .{});
@@ -305,6 +402,61 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         if (config.token_path.len == 0) return error.MissingTokenPath;
         config.token = try readTokenFile(gpa, io, config.token_path);
         try runPublisher(gpa, io, &config);
+        return;
+    }
+
+    if (config.mode == .emacs) {
+        if (config.emacs_path.len == 0) return error.MissingEmacsPath;
+        if (config.module_path.len == 0) return error.MissingModulePath;
+        const facts_path = ".zig-cache/proto-ui-emacs-facts.json";
+        _ = std.Io.Dir.cwd().deleteFile(io, facts_path) catch {};
+        const eval = try std.fmt.allocPrint(
+            gpa,
+            "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let ((frame (selected-frame)) (path (expand-file-name (format \"%s\" (format \"{s}\"))))) (while t (with-temp-file path (insert (proto-ui-frame-facts frame))) (sit-for 0.1))))",
+            .{ config.module_path, facts_path },
+        );
+        defer gpa.free(eval);
+        var child_environment = try buildDisplayEnvironment(gpa);
+        defer child_environment.deinit();
+        var child = try std.process.spawn(io, .{
+            .argv = &.{ config.emacs_path, "--batch", "--eval", eval },
+            .environ_map = &child_environment,
+        });
+        defer child.kill(io);
+
+        if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
+        defer SDL_Quit();
+        const window = SDL_CreateWindow("Emacs Proto-UI Continuous Facts", 960, 600, SDL_WINDOW_RESIZABLE) orelse return sdlFail("SDL_CreateWindow");
+        defer SDL_DestroyWindow(window);
+        const renderer = SDL_CreateRenderer(window, null) orelse return sdlFail("SDL_CreateRenderer");
+        defer SDL_DestroyRenderer(renderer);
+
+        var shared = SharedFacts{};
+        var last_version: u64 = 0;
+        var latest: FrameFacts = .{ .frame_width = 800, .frame_height = 600, .window_width = 780, .window_height = 560 };
+        var waited_ms: u32 = 0;
+        while (waited_ms < config.auto_quit_ms) {
+            try pollEmacsFacts(&shared, gpa, io, facts_path);
+            shared.mutex.lockUncancelable(io);
+            const changed = shared.version != last_version;
+            if (changed) {
+                last_version = shared.version;
+                latest = shared.facts.?;
+            }
+            shared.mutex.unlock(io);
+            try renderFacts(latest, renderer, window);
+
+            var quit = false;
+            var event: SDL_Event = .{};
+            while (SDL_PollEvent(&event)) {
+                if (event.type == SDL_EVENT_QUIT) quit = true;
+            }
+            if (quit) break;
+            SDL_Delay(50);
+            waited_ms += 50;
+        }
+        if (last_version == 0) return error.NoEmacsFacts;
+        std.debug.print("sdl3-emacs-smoke: observed {d} public fact snapshot(s); lifecycle OK\n", .{last_version});
         return;
     }
 
@@ -345,6 +497,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             break :blk loaded;
         },
         .publisher => unreachable,
+        .emacs => unreachable,
     };
     defer scene.deinit();
     if (scene.stats.frame_updates == 0) return error.NoFrameUpdate;
@@ -380,4 +533,23 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     }
 
     std.debug.print("sdl3-eup-smoke: lifecycle OK ({s})\n", .{if (quit) "closed by quit event" else "auto timeout"});
+}
+
+fn buildDisplayEnvironment(gpa: std.mem.Allocator) !std.process.Environ.Map {
+    var map = std.process.Environ.Map.init(gpa);
+    errdefer map.deinit();
+    const names = [_][*:0]const u8{
+        "DISPLAY",          "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR",
+        "XDG_SESSION_TYPE", "XDG_DATA_DIRS",   "XDG_CONFIG_DIRS",
+        "HOME",             "PATH",            "LANG",
+        "LC_ALL",           "LC_CTYPE",        "XMODIFIERS",
+        "GTK_IM_MODULE",    "QT_IM_MODULE",
+    };
+    for (names) |name| {
+        const value = std.c.getenv(name) orelse continue;
+        const value_slice: []const u8 = std.mem.span(value);
+        const name_slice: []const u8 = std.mem.span(name);
+        try map.put(try gpa.dupe(u8, name_slice), value_slice);
+    }
+    return map;
 }
