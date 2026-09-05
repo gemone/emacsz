@@ -643,6 +643,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     defer gpa.free(zeln_tmp_path);
     const ll_path = try std.fmt.allocPrint(gpa, "{s}.ll", .{out_zeln_path});
     defer gpa.free(ll_path);
+    const c_wrapper_path = try std.fmt.allocPrint(
+        gpa,
+        "{s}.tmp-{x}.zsj.c",
+        .{ out_zeln_path, serial },
+    );
+    defer gpa.free(c_wrapper_path);
     defer {
         // These are no-ops after the two successful renames.
         cwd.deleteFile(io, ll_tmp_path) catch {};
@@ -657,12 +663,6 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // the CRT check.  The wrapper is a leaf function that preserves all
     // callee-saved registers, so the .zeln's r12/r13/r14 (virtual stack,
     // freloc base, consts) survive the setjmp/longjmp round-trip.
-    const c_wrapper_path = try std.fmt.allocPrint(
-        gpa,
-        "{s}.tmp-{x}.zsj.c",
-        .{ out_zeln_path, serial },
-    );
-    defer gpa.free(c_wrapper_path);
     const c_wrapper_src =
         \\#include <setjmp.h>
         \\int zeln_setjmp(void *buf) {
