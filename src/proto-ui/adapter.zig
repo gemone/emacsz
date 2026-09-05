@@ -115,6 +115,7 @@ pub const integration_points = [_]IntegrationPoint{
     .{ .id = "live_transport", .owner = .adapter, .status = .partial, .summary = "EPXL v1 local Unix handshake, frames, ACK backpressure; reconnect/coalescing pending" },
     .{ .id = "live_backpressure", .owner = .adapter, .status = .partial, .summary = "one-message EPXL ACK window; reconnect/coalescing pending" },
     .{ .id = "adapter_abi", .owner = .adapter, .status = .partial, .summary = "versioned host and adapter tables" },
+    .{ .id = "emacs_module_seam", .owner = .adapter, .status = .partial, .summary = "opt-in dynamic-module identity/string bridge; display capture pending" },
     .{ .id = "normal_rif_streaming", .owner = .adapter, .status = .blocked, .summary = "normal-RIF streaming pending thin-shim embedding" },
     .{ .id = "build_embedding", .owner = .build, .status = .designed, .summary = "zig-build generated manifest and adapter linkage" },
     .{ .id = "sdl3_frontend", .owner = .frontend, .status = .partial, .summary = "SDL3 EUP replay scene with window/row/cursor geometry; live session, text, input, and Emacs frame pending" },
@@ -173,6 +174,7 @@ pub fn classifyPath(path: []const u8) BoundaryClass {
     if (hasPathPrefix(path, "docs/proto-ui/")) return .documentation;
     if (hasPathPrefix(path, "tools/proto-ui/")) return .adapter;
     if (hasPathPrefix(path, "tools/proto-ui-sdl3/")) return .frontend;
+    if (hasPathPrefix(path, "tools/proto-ui-emacs-module/")) return .adapter;
     if (hasPathPrefix(path, "zig-cache/proto-ui/")) return .adapter;
     if (hasPathPrefix(path, "zig-out/include/proto-ui/")) return .adapter;
     if (std.mem.eql(u8, path, "build.zig")) return .build;

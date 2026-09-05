@@ -567,6 +567,55 @@ pub fn build(b: *std.Build) void {
     // macOS and Windows.  Off-by-default behaviour is untouched (both switches
     // off => false, byte-identical build).
     const modules_runtime = (enable_modules or enable_modules_zig) and !is_musl;
+    // Proto-UI stable dynamic-module seam (adapter-owned).  Requires Emacs
+    // modules and the opt-in Proto-UI graph.  It installs a separately owned
+    // module and batch gate; it does not modify any inherited C source.
+    var proto_module_smoke_dep: ?*std.Build.Step = null;
+    if (modules_runtime and enable_proto_ui) {
+        const proto_module_mod = b.createModule(.{
+            .target = target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+            .root_source_file = b.path("tools/proto-ui-emacs-module/main.zig"),
+        });
+        proto_module_mod.addIncludePath(b.path("src"));
+        const proto_module_lib = b.addLibrary(.{
+            .name = "proto-ui-module",
+            .root_module = proto_module_mod,
+            .linkage = .dynamic,
+        });
+        const proto_suffix: []const u8 = switch (target.result.os.tag) {
+            .macos => ".dylib",
+            .windows => ".dll",
+            else => ".so",
+        };
+        const proto_module_install = b.addInstallFileWithDir(
+            proto_module_lib.getEmittedBin(),
+            .prefix,
+            std.fmt.allocPrint(b.allocator, "proto-ui/proto-ui-module{s}", .{proto_suffix}) catch @panic("OOM"),
+        );
+        const proto_module_step = b.step("proto-ui-module", "Build the adapter-owned Emacs dynamic-module seam");
+        proto_module_step.dependOn(&proto_module_install.step);
+        b.getInstallStep().dependOn(&proto_module_install.step);
+
+        const proto_module_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs",
+            "--batch",
+            "--eval",
+            "(module-load (expand-file-name \"proto-ui-module.so\" \"zig-out/proto-ui\"))",
+            "--eval",
+            "(unless (string= (proto-ui-echo \"seam\") \"proto-ui:seam\") (error \"proto-ui module mismatch\"))",
+        });
+        proto_module_smoke.setCwd(b.path("."));
+        proto_module_smoke.step.dependOn(&proto_module_install.step);
+        proto_module_smoke_dep = &proto_module_smoke.step;
+        const proto_module_smoke_step = b.step(
+            "proto-ui-module-smoke",
+            "Build a modules-enabled Emacs and verify the adapter-owned module seam",
+        );
+        proto_module_smoke_step.dependOn(&proto_module_smoke.step);
+    }
+
     // modules_zig_provider: when on, src/dynlib.c is dropped from the compile
     // and the tools/emacs-dynlib Zig package provides the dynlib_* ABI instead
     // (Track-B B-Z, HAVE_MODULES_ZIG).  POSIX-only this cycle (the package
@@ -4187,6 +4236,7 @@ pub fn build(b: *std.Build) void {
     run_smoke.step.dependOn(emacs_wrapper_step);
     const smoke_step = b.step("smoke", "Verify the dumped emacs starts and evaluates Lisp");
     smoke_step.dependOn(&run_smoke.step);
+    if (proto_module_smoke_dep) |step| step.dependOn(&run_smoke.step);
 
     // `check` step: run a broad set of built-in ert test suites with the
     // dumped emacs (582 tests across 40 suites today: alloc, version,
@@ -4924,6 +4974,9 @@ pub fn build(b: *std.Build) void {
         \\
         \\Proto-UI path (opt-in: -Dproto-ui=true):
         \\  zig build -Dproto-ui=true proto-ui-unit - adapter, EUP protocol, and transport tests
+        \\
+        \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module - Emacs dynamic-module seam
+        \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke - verify module seam in batch Emacs
         \\
         \\SDL3 frontend path (opt-in: -Dsdl3-frontend=true):
         \\  zig build -Dsdl3-frontend=true sdl3-ui-smoke - independent EUP replay renderer

@@ -67,6 +67,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W9b SDL3 EUP replay scene renderer | Approved |
 | W9c-a local live EUP transport smoke | Approved |
 | W9c-b live ACK backpressure | Approved |
+| W9c-c1 Emacs dynamic-module seam | Approved |
 | Build option `-Dsdl3-frontend` | Independent EUP-replay/local live SDL3 renderer; no Emacs seam yet |
 
 The workstream sections below retain their historical review records and
@@ -788,6 +789,33 @@ Review gates:
 1. Transport security and local IPC boundary.
 2. Sequence/resource recovery.
 3. No inherited-C runtime coupling.
+
+### W9c-c1 — Adapter-owned Emacs dynamic-module seam (approved)
+
+Goal: establish a stable, opt-in Emacs seam without modifying inherited GNU
+Emacs C source.
+
+Implemented:
+
+1. `tools/proto-ui-emacs-module/main.zig` implements the Emacs dynamic-module
+   ABI in Zig and installs `zig-out/proto-ui/proto-ui-module.so` (platform
+   suffix varies).
+2. The module verifies GPL identity, environment ABI version, function
+   registration, Lisp string extraction, and string creation.
+3. `proto-ui-module` builds the adapter-owned artifact; a batch gate loads it
+   through `module-load` and verifies `proto-ui-echo`.
+
+This seam is intentionally display-neutral.  It does not yet expose redisplay,
+input, resources, fonts, or a real Emacs frame.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke --summary all
+```
+
+The gate builds a modules-enabled Emacs and loads the adapter module in the same
+batch process.
 
 ### W10 — GPU renderer path
 
