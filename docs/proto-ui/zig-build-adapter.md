@@ -69,6 +69,7 @@ inherited Emacs C files in place.
 src/proto-ui/
   adapter.zig           authoritative ABI/ownership manifest and runtime
   protocol.zig          EUP codec and assigned message tables
+  transport.zig         bounded memory sink and ERP1 replay codec
   conformance.zig       fake-host ABI conformance
   abi_gen.zig           generated C header and ABI summary
   boundary_audit.zig    changed-path boundary classifier

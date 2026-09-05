@@ -424,7 +424,7 @@ pub fn build(b: *std.Build) void {
         const run_proto_ui_tests = b.addRunArtifact(proto_ui_tests);
         const proto_ui_unit_step = b.step(
             "proto-ui-unit",
-            "Run adapter and EUP protocol unit tests",
+            "Run adapter, EUP protocol, and transport unit tests",
         );
         proto_ui_unit_step.dependOn(&run_proto_ui_tests.step);
 
@@ -494,8 +494,9 @@ pub fn build(b: *std.Build) void {
 
         const boundary_step = b.step(
             "proto-ui-boundary",
-            "Generate adapter ABI, run fake-host conformance, and audit boundary paths",
+            "Run unit tests, generate adapter ABI, run conformance, and audit paths",
         );
+        boundary_step.dependOn(&run_proto_ui_tests.step);
         boundary_step.dependOn(&run_abi_gen.step);
         boundary_step.dependOn(&install_abi_header.step);
         boundary_step.dependOn(&install_abi_manifest.step);
@@ -4869,7 +4870,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build zeln-pgo          - Z7: multi-fixture PGO test (6 workload shapes)
         \\
         \\Proto-UI path (opt-in: -Dproto-ui=true):
-        \\  zig build -Dproto-ui=true proto-ui-unit - adapter and EUP protocol tests
+        \\  zig build -Dproto-ui=true proto-ui-unit - adapter, EUP protocol, and transport tests
         \\
         \\Native-comp gccjit path (opt-in: -Dnative-comp=true, native glibc-Linux;
         \\  requires libgccjit). Coexists with -Dnative-comp-zig: when both are on,

@@ -6,8 +6,8 @@ Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existin
 Historical runtime record: W0's schema design remains normative.  W1-W4c-b0
 section headings, acceptance commands, and present-tense implementation notes
 are historical review records.  Their runtime code and inherited C/Lisp
-integration were rolled back; the current status table and W4c-b1-p0/W4c-b1-b0
-describe the only implemented Proto-UI surface.
+integration were rolled back; the current status table and W4c-b1-p0/t0/b0
+describe the implemented adapter-only Proto-UI surface.
 
 Hard constraint: adapter-first.  New behavior is implemented in the Zig
 adapter, SDL3 frontend, Lisp integration, replay/protocol tooling, or build
@@ -37,10 +37,10 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | EUP protocol specification | Documented |
 | Capability/PGTK parity matrix | Documented |
 | EUP envelope/resource/FRAME_UPDATE codec | Implemented (adapter-only) |
-| Memory sink and replay-file transport | Designed; prior implementation rolled back |
+| Memory sink and replay-file transport | Implemented (adapter-only) |
 | SDL3 frontend design | Documented |
 | Performance baseline | Documented |
-| Build option `-Dproto-ui` | Adapter-only EUP codec, ABI/summary generation, unit tests, fake-host conformance, and boundary audit; no Emacs runtime integration |
+| Build option `-Dproto-ui` | Adapter-only EUP codec/transport, ABI/summary generation, unit tests, fake-host conformance, and boundary audit; no Emacs runtime integration |
 | W2 registration seam | Approved historically; runtime integration rolled back |
 | W3a lifecycle identity | Approved historically; runtime integration rolled back |
 | W3b terminal lifecycle | Approved historically; runtime integration rolled back |
@@ -51,6 +51,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W4c-b0 headless frame visibility/count observability | Approved historically; runtime integration rolled back |
 | W4c-b1-b0 adapter ABI and fake-host conformance | Approved (adapter-only) |
 | W4c-b1-p0 adapter-only EUP protocol codec | Approved (adapter-only) |
+| W4c-b1-t0 adapter-only bounded transport/replay | Approved (adapter-only) |
 | Automated W3c frame smoke | Rolled back with runtime integration |
 | `output_proto` terminal | Rolled back with runtime integration |
 | Redisplay capture | Rolled back; adapter ABI v1 contract only |
@@ -424,6 +425,26 @@ Acceptance:
 `zig build -Dproto-ui=true proto-ui-unit --summary all` passes 18/18.  The
 implementation is adapter-only, has no Emacs runtime seam, and the changed-path
 boundary audit rejects inherited C edits.
+
+#### W4c-b1-t0 — Adapter-only bounded transport/replay (approved)
+
+Goal: provide deterministic in-memory sequencing and durable replay without
+attaching a socket or Emacs runtime seam.
+
+Implemented:
+
+1. `src/proto-ui/transport.zig` owns a bounded `MemorySink` that encodes EUP
+   envelopes, assigns ordered sequences, rejects stale sequences, and evicts
+   the oldest record beyond 256 entries.
+2. `ERP1` replay files store a u32 message count and length-prefixed messages.
+3. The reader enforces the 64 MiB ceiling and rejects bad magic/count, short
+   lengths, truncation, and trailing corruption without returning partial
+   ownership.
+
+Acceptance:
+
+`zig build -Dproto-ui=true proto-ui-unit --summary all` passes 23/23.  The
+transport remains adapter-only and is not linked into Emacs.
 
 #### W4c-b1-b0 — Adapter ABI and fake-host conformance (approved)
 
