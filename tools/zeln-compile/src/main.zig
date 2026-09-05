@@ -683,7 +683,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         "cc",
         "-shared",
         "-fPIC",
-        "-O2",
+        "-O3",
         "-fvisibility=default",
     });
     // Explicit -target when the caller passes ZELN_TARGET (build.zig sets
@@ -3118,3 +3118,4 @@ fn appendCStringLiteral(
 fn gpaAlloc(comptime T: type, n: u64) ![]T {
     return std.heap.smp_allocator.alloc(T, @intCast(n));
 }
+
