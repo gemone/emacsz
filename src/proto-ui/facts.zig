@@ -15,9 +15,43 @@ pub const FrameFacts = struct {
     window_height: i32,
 };
 
+pub const max_text_lines: usize = 32;
+pub const max_text_columns: usize = 120;
+
+pub const TextLines = struct {
+    lines: [][]const u8 = &.{},
+    owner: []u8 = &.{},
+
+    pub fn deinit(self: *TextLines, gpa: std.mem.Allocator) void {
+        if (self.lines.len != 0) gpa.free(self.lines);
+        if (self.owner.len != 0) gpa.free(self.owner);
+        self.* = .{};
+    }
+
+    pub fn eql(self: TextLines, other: TextLines) bool {
+        if (self.lines.len != other.lines.len) return false;
+        for (self.lines, other.lines) |left, right| {
+            if (!std.mem.eql(u8, left, right)) return false;
+        }
+        return true;
+    }
+};
+
+pub const Snapshot = struct {
+    facts: FrameFacts,
+    text: TextLines = .{},
+
+    pub fn eql(left: Snapshot, right: Snapshot) bool {
+        return factsEql(left.facts, right.facts) and left.text.eql(right.text);
+    }
+
+    pub fn deinit(self: *Snapshot, gpa: std.mem.Allocator) void {
+        self.text.deinit(gpa);
+    }
+};
 pub const Error = std.json.ParseError(std.json.Scanner) || error{InvalidFrameFacts};
 
-pub fn eql(left: FrameFacts, right: FrameFacts) bool {
+pub fn factsEql(left: FrameFacts, right: FrameFacts) bool {
     return std.meta.eql(left, right);
 }
 
@@ -32,12 +66,41 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) Error!FrameFacts {
     return facts;
 }
 
+pub fn parseText(gpa: std.mem.Allocator, bytes: []const u8) !TextLines {
+    var count: usize = 0;
+    var total: usize = 0;
+    var lines: [max_text_lines][]const u8 = undefined;
+    const body = if (std.mem.endsWith(u8, bytes, "\n")) bytes[0 .. bytes.len - 1] else bytes;
+    var iterator = std.mem.splitScalar(u8, body, '\n');
+    while (iterator.next()) |line| {
+        if (count == max_text_lines or line.len > max_text_columns) return error.InvalidTextFacts;
+        for (line) |byte| {
+            if (byte < 0x20 or byte > 0x7e) return error.InvalidTextFacts;
+        }
+        lines[count] = line;
+        total += line.len;
+        count += 1;
+    }
+
+    const slices = try gpa.alloc([]const u8, count);
+    errdefer gpa.free(slices);
+    const owner = try gpa.alloc(u8, total);
+    errdefer gpa.free(owner);
+    var offset: usize = 0;
+    for (lines[0..count], 0..) |line, index| {
+        @memcpy(owner[offset..][0..line.len], line);
+        slices[index] = owner[offset..][0..line.len];
+        offset += line.len;
+    }
+    return .{ .lines = slices, .owner = owner };
+}
+
 test "unchanged facts compare equal for publisher coalescing" {
     const first = FrameFacts{ .frame_width = 80, .frame_height = 25, .window_width = 80, .window_height = 23 };
     var second = first;
-    try std.testing.expect(eql(first, second));
+    try std.testing.expect(factsEql(first, second));
     second.window_height += 1;
-    try std.testing.expect(!eql(first, second));
+    try std.testing.expect(!factsEql(first, second));
 }
 
 pub fn buildScene(gpa: std.mem.Allocator, facts: FrameFacts, snapshot_index: u64) !frontend.Scene {
@@ -185,6 +248,7 @@ pub fn buildScene(gpa: std.mem.Allocator, facts: FrameFacts, snapshot_index: u64
 pub fn appendWireSnapshot(
     gpa: std.mem.Allocator,
     facts: FrameFacts,
+    text: []const []const u8,
     scene: *frontend.Scene,
     messages: *std.ArrayList([]const u8),
 ) !void {
@@ -283,10 +347,19 @@ pub fn appendWireSnapshot(
         .deadline_ns = 0,
     }, &present_bytes);
 
+    var text_bytes: std.ArrayList(u8) = .empty;
+    defer text_bytes.deinit(gpa);
+    if (text.len > max_text_lines) return error.InvalidTextFacts;
+    for (text, 0..) |line, index| {
+        if (line.len > max_text_columns) return error.InvalidTextFacts;
+        try frontend.encodeTextLine(gpa, .{ .row_index = @intCast(index), .line = line }, &text_bytes);
+    }
+
     const sections = [_]protocol.Section{
         .{ .kind = protocol.SectionKind.windows, .records = window_bytes.items },
         .{ .kind = protocol.SectionKind.rows, .records = row_bytes.items },
         .{ .kind = protocol.SectionKind.cursors, .records = cursor_bytes.items },
+        .{ .kind = protocol.SectionKind.extension_min, .records = text_bytes.items },
         .{ .kind = protocol.SectionKind.damage, .records = damage_bytes.items },
         .{ .kind = protocol.SectionKind.present_hint, .records = present_bytes.items },
     };
@@ -365,17 +438,39 @@ test "wire snapshots advance contiguous scene sequences" {
     }
     var empty_scene = frontend.Scene.init(a);
     defer empty_scene.deinit();
-    try std.testing.expectError(error.InvalidFrameFacts, appendWireSnapshot(a, invalid, &empty_scene, &messages));
+    try std.testing.expectError(error.InvalidFrameFacts, appendWireSnapshot(a, invalid, &.{}, &empty_scene, &messages));
 
     var scene = frontend.Scene.init(a);
     defer scene.deinit();
-    try appendWireSnapshot(a, parsed, &scene, &messages);
+    try appendWireSnapshot(a, parsed, &.{}, &scene, &messages);
     try std.testing.expectEqual(@as(usize, 2), messages.items.len);
     try std.testing.expectEqual(@as(u64, 1), scene.stats.frame_updates);
     try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
 
-    try appendWireSnapshot(a, parsed, &scene, &messages);
+    try appendWireSnapshot(a, parsed, &.{}, &scene, &messages);
     try std.testing.expectEqual(@as(usize, 3), messages.items.len);
     try std.testing.expectEqual(@as(u64, 2), scene.stats.frame_updates);
     try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+}
+
+test "wire snapshot carries validated public text lines" {
+    const a = std.testing.allocator;
+    const parsed = try parse(a, "{\"frame_width\":120,\"frame_height\":90,\"window_width\":110,\"window_height\":75}");
+    var text = try parseText(a, "Emacs Proto-UI\nvisible ASCII\n");
+    defer text.deinit(a);
+    try std.testing.expectEqual(@as(usize, 2), text.lines.len);
+    try std.testing.expectEqualStrings("visible ASCII", text.lines[1]);
+
+    var messages: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (messages.items) |message| a.free(message);
+        messages.deinit(a);
+    }
+    var scene = frontend.Scene.init(a);
+    defer scene.deinit();
+    try appendWireSnapshot(a, parsed, text.lines, &scene, &messages);
+    try std.testing.expectEqual(@as(usize, 2), scene.text.items.len);
+    try std.testing.expectEqualStrings("Emacs Proto-UI", scene.text.items[0].bytes);
+    try std.testing.expectEqualStrings("visible ASCII", scene.text.items[1].bytes);
+    try std.testing.expectError(error.InvalidTextFacts, parseText(a, "bad\n\x00"));
 }

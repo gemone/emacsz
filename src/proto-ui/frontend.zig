@@ -73,6 +73,16 @@ pub const PresentHint = struct {
     deadline_ns: u64,
 };
 
+pub const TextLine = struct {
+    row_index: u32,
+    bytes: [:0]const u8,
+};
+
+pub const TextLineWire = struct {
+    row_index: u32,
+    line: []const u8,
+};
+
 const window_record_size: usize = 40;
 const row_record_size: usize = 56;
 const cursor_record_size: usize = 56;
@@ -273,6 +283,23 @@ pub fn encodePresentHint(a: std.mem.Allocator, hint: PresentHint, out: *std.Arra
     try putU64(out, a, hint.deadline_ns);
 }
 
+pub fn encodeTextLine(a: std.mem.Allocator, line: TextLineWire, out: *std.ArrayList(u8)) !void {
+    try putU32(out, a, line.row_index);
+    try putU32(out, a, @intCast(line.line.len));
+    try out.appendSlice(a, line.line);
+}
+
+pub fn decodeTextLine(bytes: []const u8) Error!TextLineWire {
+    if (bytes.len < 8) return Error.InvalidTable;
+    const length = std.mem.readInt(u32, bytes[4..8], .little);
+    if (bytes.len != 8 + length) return Error.InvalidTable;
+    const payload = bytes[8..];
+    for (payload) |byte| {
+        if (byte < 0x20 or byte > 0x7e) return Error.InvalidTable;
+    }
+    return .{ .row_index = std.mem.readInt(u32, bytes[0..4], .little), .line = payload };
+}
+
 pub fn decodePresentHint(bytes: []const u8) Error!PresentHint {
     if (bytes.len != present_record_size) return Error.InvalidTable;
     var reader: Reader = .{ .bytes = bytes };
@@ -303,6 +330,7 @@ pub const Scene = struct {
     rows: std.ArrayList(Row) = .empty,
     cursor: ?Cursor = null,
     damage: std.ArrayList(Rect) = .empty,
+    text: std.ArrayList(TextLine) = .empty,
     present: ?PresentHint = null,
     stats: ApplyStats = .{},
 
@@ -314,9 +342,12 @@ pub const Scene = struct {
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
         self.damage.deinit(self.allocator);
+        for (self.text.items) |line| self.allocator.free(line.bytes);
+        self.text.deinit(self.allocator);
         self.windows = .empty;
         self.rows = .empty;
         self.damage = .empty;
+        self.text = .empty;
         self.session_id = null;
         self.next_sequence = null;
         self.frame = null;
@@ -379,6 +410,8 @@ pub const Scene = struct {
         defer rows.deinit(self.allocator);
         var damage: std.ArrayList(Rect) = .empty;
         defer damage.deinit(self.allocator);
+        var text: std.ArrayList(TextLine) = .empty;
+        defer text.deinit(self.allocator);
         var cursor: ?Cursor = null;
         var present: ?PresentHint = null;
 
@@ -443,6 +476,24 @@ pub const Scene = struct {
                     if (section.records.len != present_record_size or present != null) return Error.InvalidTable;
                     present = try decodePresentHint(section.records);
                 },
+                protocol.SectionKind.extension_min => {
+                    var offset: usize = 0;
+                    while (offset < section.records.len) {
+                        if (section.records.len - offset < 8) return Error.InvalidTable;
+                        const length = std.mem.readInt(u32, section.records[offset + 4 ..][0..4], .little);
+                        const record_length = 8 + length;
+                        if (record_length > section.records.len - offset) return Error.InvalidTable;
+                        const wire = try decodeTextLine(section.records[offset..][0..record_length]);
+                        for (text.items) |old| {
+                            if (old.row_index == wire.row_index) return Error.InvalidTable;
+                        }
+                        if (wire.row_index >= rows.items.len) return Error.InvalidMessage;
+                        const owned = try self.allocator.dupeZ(u8, wire.line);
+                        errdefer self.allocator.free(owned);
+                        try text.append(self.allocator, .{ .row_index = wire.row_index, .bytes = owned });
+                        offset += record_length;
+                    }
+                },
                 else => {},
             }
         }
@@ -463,12 +514,15 @@ pub const Scene = struct {
         const old_windows = self.windows;
         const old_rows = self.rows;
         const old_damage = self.damage;
+        const old_text = self.text;
         self.windows = windows;
         self.rows = rows;
         self.damage = damage;
+        self.text = text;
         windows = old_windows;
         rows = old_rows;
         damage = old_damage;
+        text = old_text;
         self.frame_header = update.header;
         self.cursor = cursor;
         self.present = present;

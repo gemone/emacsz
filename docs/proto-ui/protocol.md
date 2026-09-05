@@ -947,6 +947,13 @@ same one-message ACK window, then sends `RESYNC_COMPLETE` with the last coherent
 sequence.  General sequence-gap, resource, history, and publisher-crash recovery
 remain future work.
 
+The adapter-owned `0x8000` frame-update extension carries bounded facts-profile
+text.  Each record is `u32 row_index`, `u32 byte_length`, and UTF-8 bytes; the
+current producer restricts bytes to printable ASCII, limits lines to 32 and
+columns to 120, and maps every row index to a row in the same update.  This is
+not the normative `GLYPH_RUN` path and must not be used to claim shaped-text or
+face/font compatibility.
+
 #### Security and limits
 
 EPXL v1 is local trusted IPC, not a wide-area protocol.  The endpoint directory

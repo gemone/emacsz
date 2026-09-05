@@ -34,6 +34,7 @@ extern fn SDL_SetRenderDrawColor(renderer: *SDL_Renderer, r: u8, g: u8, b: u8, a
 extern fn SDL_RenderClear(renderer: *SDL_Renderer) bool;
 extern fn SDL_RenderFillRect(renderer: *SDL_Renderer, rect: ?*const SDL_Rect) bool;
 extern fn SDL_RenderPresent(renderer: *SDL_Renderer) bool;
+extern fn SDL_RenderDebugText(renderer: *SDL_Renderer, x: f32, y: f32, text: [*:0]const u8) bool;
 extern fn SDL_PollEvent(event: *SDL_Event) bool;
 extern fn SDL_Delay(ms: c_uint) void;
 extern fn SDL_GetError() [*:0]const u8;
@@ -110,6 +111,15 @@ fn renderScene(scene: *frontend.Scene, renderer: *SDL_Renderer, window: *SDL_Win
         };
         const stripe: u8 = if (row.index % 2 == 0) 0x33 else 0x2b;
         try drawRect(renderer, row_rect, stripe, stripe + 0x0d, 0x3a);
+    }
+
+    if (!SDL_SetRenderDrawColor(renderer, 0xe8, 0xee, 0xf6, 255)) return sdlFail("SDL_SetRenderDrawColor");
+    for (scene.text.items) |line| {
+        const owner = findSceneWindow(scene, scene.rows.items[line.row_index].window_id) orelse continue;
+        const row = scene.rows.items[line.row_index];
+        const text_x: f32 = @floatFromInt(owner.x + row.x + 2);
+        const text_y: f32 = @floatFromInt(owner.y + row.y + @max(1, row.baseline - 8));
+        if (!SDL_RenderDebugText(renderer, text_x, text_y, line.bytes)) return sdlFail("SDL_RenderDebugText");
     }
 
     for (scene.windows.items) |scene_window| {
@@ -199,11 +209,14 @@ fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
 
 fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
     _ = std.Io.Dir.cwd().deleteFile(io, config.facts_path) catch {};
+    const text_path = try std.fmt.allocPrint(gpa, "{s}.txt", .{config.facts_path});
+    defer gpa.free(text_path);
+    _ = std.Io.Dir.cwd().deleteFile(io, text_path) catch {};
     _ = std.Io.Dir.cwd().deleteFile(io, config.endpoint) catch {};
     const eval = try std.fmt.allocPrint(
         gpa,
-        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let ((frame (selected-frame)) (path (expand-file-name (format \"%s\" (format \"{s}\"))))) (with-temp-file path (insert (proto-ui-frame-facts frame))) (sit-for 0.2) (set-frame-size frame 90 30) (while t (with-temp-file path (insert (proto-ui-frame-facts frame))) (sit-for 0.1))))",
-        .{ config.module_path, config.facts_path },
+        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (text-path (expand-file-name (format \"%s\" (format \"{s}\"))))) (with-current-buffer (window-buffer window) (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII text\\n\")) (with-temp-file text-path (insert (with-current-buffer (window-buffer window) (buffer-substring-no-properties (window-start window) (window-end window))))) (with-temp-file path (insert (proto-ui-frame-facts frame))) (sit-for 0.2) (set-frame-size frame 90 30) (while t (with-temp-file text-path (insert (with-current-buffer (window-buffer window) (buffer-substring-no-properties (window-start window) (window-end window))))) (with-temp-file path (insert (proto-ui-frame-facts frame))) (sit-for 0.1))))",
+        .{ config.module_path, config.facts_path, text_path },
     );
     defer gpa.free(eval);
     var child_environment = try buildDisplayEnvironment(gpa);
@@ -221,7 +234,8 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     var shared = SharedFacts{};
     var scene = frontend.Scene.init(gpa);
     defer scene.deinit();
-    var published: ?facts.FrameFacts = null;
+    var published: ?facts.Snapshot = null;
+    defer if (published != null) published.?.deinit(gpa);
     const publish_duration = @max(100, config.auto_quit_ms / 2);
 
     for (0..@max(1, config.resync_sessions)) |session_index| {
@@ -256,9 +270,12 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
             try io.sleep(.fromMilliseconds(20), .awake);
         }
         if (shared.facts == null) return error.NoEmacsFacts;
-        published = shared.facts;
+        const text_bytes = try std.Io.Dir.cwd().readFileAlloc(io, text_path, gpa, .limited(64 * 1024));
+        defer gpa.free(text_bytes);
+        const initial_text = try facts.parseText(gpa, text_bytes);
+        published = .{ .facts = shared.facts.?, .text = initial_text };
         var acks = live.AckTracker.init(1);
-        try sendSnapshotMessages(gpa, published.?, &scene, &acks, &reader, &writer);
+        try sendSnapshotMessages(gpa, published.?.facts, published.?.text.lines, &scene, &acks, &reader, &writer);
         const complete_sequence = scene.next_sequence.? - 1;
         try live.writeControl(&writer.interface, .{ .kind = .resync_complete, .sequence = complete_sequence });
         try writer.interface.flush();
@@ -275,17 +292,31 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
                 else => return err,
             };
             defer gpa.free(facts_bytes);
-            const snapshot = try facts.parse(gpa, facts_bytes);
+            const next_facts = try facts.parse(gpa, facts_bytes);
+            const next_text_bytes = std.Io.Dir.cwd().readFileAlloc(io, text_path, gpa, .limited(64 * 1024)) catch |err| switch (err) {
+                error.FileNotFound => {
+                    try io.sleep(.fromMilliseconds(20), .awake);
+                    waited_ms += 20;
+                    continue;
+                },
+                else => return err,
+            };
+            defer gpa.free(next_text_bytes);
+            var next_text = try facts.parseText(gpa, next_text_bytes);
+            errdefer next_text.deinit(gpa);
+            var next = facts.Snapshot{ .facts = next_facts, .text = next_text };
             if (published) |previous| {
-                if (facts.eql(previous, snapshot)) {
+                if (previous.eql(next)) {
+                    next.deinit(gpa);
                     try io.sleep(.fromMilliseconds(20), .awake);
                     waited_ms += 20;
                     continue;
                 }
             }
-            published = snapshot;
+            if (published) |*previous| previous.deinit(gpa);
+            published = next;
             var change_acks = live.AckTracker.init(1);
-            try sendSnapshotMessages(gpa, snapshot, &scene, &change_acks, &reader, &writer);
+            try sendSnapshotMessages(gpa, next.facts, next.text.lines, &scene, &change_acks, &reader, &writer);
             try io.sleep(.fromMilliseconds(100), .awake);
             waited_ms += 100;
         }
@@ -302,6 +333,7 @@ fn readControlExact(reader: anytype) !live.Control {
 fn sendSnapshotMessages(
     gpa: std.mem.Allocator,
     snapshot: facts.FrameFacts,
+    text: []const []const u8,
     scene: *frontend.Scene,
     acks: *live.AckTracker,
     reader: anytype,
@@ -312,7 +344,7 @@ fn sendSnapshotMessages(
         for (messages.items) |message| gpa.free(message);
         messages.deinit(gpa);
     }
-    try facts.appendWireSnapshot(gpa, snapshot, scene, &messages);
+    try facts.appendWireSnapshot(gpa, snapshot, text, scene, &messages);
     for (messages.items) |message| {
         const envelope = (try protocol.decodeEnvelope(message)).envelope;
         try acks.markSent(envelope.sequence);
@@ -421,6 +453,13 @@ fn findSceneWindow(scene: *frontend.Scene, id: u64) ?frontend.Window {
         if (window.id == id) return window;
     }
     return null;
+}
+
+fn sceneHasText(scene: *const frontend.Scene, needle: []const u8) bool {
+    for (scene.text.items) |line| {
+        if (std.mem.indexOf(u8, line.bytes, needle) != null) return true;
+    }
+    return false;
 }
 
 fn renderFacts(snapshot: FrameFacts, renderer: *SDL_Renderer, window: *SDL_Window) !void {
@@ -744,6 +783,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     defer scene.deinit();
     if ((config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect) and scene.stats.frame_updates != 2)
         return error.UnexpectedFactUpdateCount;
+    if ((config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect) and
+        !sceneHasText(&scene, "Emacs Proto-UI")) return error.NoEmacsText;
     if (scene.stats.frame_updates == 0) return error.NoFrameUpdate;
     if (scene.frame_header == null) return error.NoFrameHeader;
 

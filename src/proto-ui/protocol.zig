@@ -372,6 +372,7 @@ pub const SectionKind = struct {
     pub const resources: u32 = 10;
     pub const present_hint: u32 = 11;
     pub const commit_token: u32 = 12;
+    pub const extension_min: u32 = 0x8000;
 };
 
 pub const Section = struct {

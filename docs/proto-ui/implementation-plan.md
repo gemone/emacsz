@@ -75,7 +75,8 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W9g authenticated EPXL continuous facts transport | Approved |
 | W9h real-fact producer coalescing | Approved |
 | W9i authenticated EPXL resync reconnect | Approved |
-| Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
+| W9j public ASCII text observation | Approved |
+| Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
 
 The workstream sections below retain their historical review records and
 implementation details.  The Current status table is authoritative when an
@@ -1017,6 +1018,42 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-s
 
 Both sessions must complete `RESYNC_*` successfully and the final SDL3 scene
 must render two validated updates.
+
+### W9j — Public ASCII text observation (approved)
+
+Goal: move the first real visible-window text from public Emacs APIs through
+EPXL into the SDL3 renderer, while keeping the full glyph/face/font model
+adapter-first and explicitly future work.
+
+Implemented:
+
+1. The facts smoke observes visible window text with public
+   `window-buffer`, `window-start`, `window-end`, and
+   `buffer-substring-no-properties` calls.
+2. `facts.parseText` bounds text to 32 lines and 120 printable-ASCII columns per
+   line and owns decoded line storage.
+3. `appendWireSnapshot` emits adapter-owned extension section `0x8000`; each
+   record maps one text line to an existing row index and is length bounded.
+4. `frontend.Scene` decodes text atomically with the rest of `FRAME_UPDATE`,
+   validates row mapping, uniqueness, ordering limits, and printable ASCII, and
+   owns the null-terminated line storage.
+5. SDL3 renders each line with its debug text facility at the mapped row.  The
+   EPXL resync smoke fails unless the recovered scene contains the public text
+   marker `Emacs Proto-UI`.
+
+This is an observation-first ASCII bridge, not complete Emacs text display.  It
+does not yet model tabs, overlays, display properties, BiDi, shaping, faces,
+fonts, glyphs, CJK, images, scroll-backed viewport semantics, or redisplay-hook
+authoritative rows.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-smoke --summary all
+```
+
+The gate must recover, validate, and render real public window text containing
+the `Emacs Proto-UI` marker.
 
 ### W10 — GPU renderer path
 
