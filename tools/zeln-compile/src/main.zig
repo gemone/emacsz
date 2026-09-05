@@ -603,23 +603,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             std.process.exit(1);
         };
         defer freeFileUnit(gpa, file_unit);
-        // MSVC-ABI pushhandler gate: the .zeln calls the CRT's _setjmp
-        // directly from LLVM-compiled code.  On the MSVC ABI the UCRT's
-        // _setjmp intrinsic assumes an MSVC-compiled caller and aborts
-        // (exit 40) when called from LLVM code.  This is a fundamental
-        // ABI limitation, not a code bug.  Handler-carrying units
-        // (Bpushcatch / Bpushconditioncase) are rejected on msvc and
-        // fall back to the interpreter.  The populate coverage floor is
-        // lowered to 45% for msvc to accommodate this skip rate.
-        // The gate must check the HOST ABI (ZELN_HOST_MSVC), not the .zeln
-        // target (ZELN_TARGET is always GNU on Windows).  MSVC hosts must
-        // reject handler-carrying units because their setjmp/longjmp CRT
-        // formats are incompatible with MinGW .zeln code.
-        const host_is_msvc = env_map.get("ZELN_HOST_MSVC") != null;
-        if (host_is_msvc and fileUsesPushHandler(file_unit.fns)) {
-            std.debug.print("zeln-compile: msvc-abi unit uses pushhandler (condition-case/catch); skipping native emission (interpreter fallback)\n", .{});
-            std.process.exit(1);
-        }
+        // MSVC-ABI pushhandler gate REMOVED: with uwtable +
+        // __C_specific_handler personality (added to all .zeln functions),
+        // RtlUnwind correctly walks LLVM-generated frames on MSVC.  The
+        // remaining question is whether _setjmp from LLVM code works with
+        // the MinGW CRT's setjmp when the host calls _longjmp (MSVC UCRT).
+        // If it doesn't, handler-carrying units crash at runtime and the
+        // check-zeln gate surfaces the failure (no continue-on-error).
         // Resolve the sys_setjmp symbol from ZELN_SETJMP_SYM (set by
         // build.zig to match the host emacs's HAVE__SETJMP setting);
         // fall back to the platform default for ad-hoc runs.

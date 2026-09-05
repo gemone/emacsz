@@ -438,7 +438,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // the interpreter.  The observed skip rate is ~51.5%, so a 45% floor
     // still catches a near-total fallback while accommodating the ABI.
     const is_msvc = env_map.get("ZELN_HOST_MSVC") != null;
-    const MIN_COVERAGE_PCT: f64 = if (is_msvc) 45.0 else 50.0;
+    const MIN_COVERAGE_PCT: f64 = 50.0;
     if (attempted > 0 and coverage < MIN_COVERAGE_PCT) {
         std.debug.print(
             "zeln cache: coverage {d:.1}% below floor {d:.0}% ({d} compiled of {d} contended) — " ++
@@ -592,3 +592,4 @@ fn waitBounded(io: std.Io, gpa: std.mem.Allocator, child: *std.process.Child, ti
     timed_out.* = killed;
     return state.term;
 }
+
