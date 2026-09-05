@@ -4074,12 +4074,12 @@ pub fn build(b: *std.Build) void {
     const smoke_step = b.step("smoke", "Verify the dumped emacs starts and evaluates Lisp");
     smoke_step.dependOn(&run_smoke.step);
 
-    // proto-ui-smoke: verify a real EUP terminal and lifecycle-only frame can
-    // be created and deleted.  Rendering/graphic predicates remain W4+.
+    // proto-ui-smoke: verify a real EUP terminal/lifecycle-only frame and
+    // one synthetic FRAME_UPDATE.  Rendering and graphic predicates are W4+.
     if (enable_proto_ui) {
         const run_proto_ui_smoke = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/emacs", "--batch",
-            "--eval",              "(let* ((terminal (proto-ui-create-terminal)) (frame (proto-ui-create-frame))) (unless (and (eq (framep frame) 'proto) (eq (frame-live-p frame) 'proto) (equal (frame-parameter frame 'name) \"proto-1\") (null (frame-visible-p frame)) (null (display-graphic-p frame))) (error \"proto-ui frame lifecycle failed\")) (delete-frame frame) (unless (and (null (frame-live-p frame)) (null (display-graphic-p frame))) (error \"proto-ui frame deletion failed\")) (unless (null (terminal-live-p terminal)) (error \"proto-ui terminal cleanup failed\")))",
+            "--eval",              "(let* ((terminal (proto-ui-create-terminal)) (frame (proto-ui-create-frame)) (updates (proto-ui-capture-frame-update frame))) (unless (and (eq updates 1) (eq (framep frame) 'proto) (eq (frame-live-p frame) 'proto) (equal (frame-parameter frame 'name) \"proto-1\") (null (frame-visible-p frame)) (null (display-graphic-p frame))) (error \"proto-ui frame update failed\")) (delete-frame frame) (unless (and (null (frame-live-p frame)) (null (display-graphic-p frame)) (null (terminal-live-p terminal))) (error \"proto-ui frame cleanup failed\")))",
         });
         run_proto_ui_smoke.setCwd(b.path("."));
         run_proto_ui_smoke.step.dependOn(&run_dump_compiled.step);
@@ -4087,7 +4087,7 @@ pub fn build(b: *std.Build) void {
         run_proto_ui_smoke.step.dependOn(emacs_wrapper_step);
         const proto_ui_smoke_step = b.step(
             "proto-ui-smoke",
-            "Create and delete a real lifecycle-only proto Emacs frame",
+            "Create/delete a lifecycle-only proto frame and capture one FRAME_UPDATE",
         );
         proto_ui_smoke_step.dependOn(&run_proto_ui_smoke.step);
     }
@@ -4432,7 +4432,8 @@ pub fn build(b: *std.Build) void {
         // The single handle the M1 gate drives.
         const zeln_diff_step = b.step(
             "zeln-diff",
-            "M1 differential test: interpreter vs .zeln on the corpus (N/N identical)",        );
+            "M1 differential test: interpreter vs .zeln on the corpus (N/N identical)",
+        );
         // MSVC host: SKIP.  The zeln-diff harness loads .zeln files and
         // funcalls their native entry points.  On MSVC, the host's longjmp
         // invokes RtlUnwind which cannot walk LLVM-generated .zeln frames
@@ -4633,7 +4634,8 @@ pub fn build(b: *std.Build) void {
         run_pgo.step.dependOn(emacs_wrapper_step);
         const zeln_pgo_step = b.step(
             "zeln-pgo",
-            "Z7: multi-fixture PGO closed-loop test (6 workload shapes)",        );
+            "Z7: multi-fixture PGO closed-loop test (6 workload shapes)",
+        );
         // MSVC host: SKIP (same .zeln execution limitation as zeln-diff).
         if (target.result.abi != .msvc) {
             zeln_pgo_step.dependOn(&run_pgo.step);
@@ -5305,5 +5307,3 @@ fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
     }
     return false;
 }
-
-

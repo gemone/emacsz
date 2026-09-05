@@ -772,7 +772,55 @@ marks the frontend view dead.  Terminal-to-frame ownership is tracked by the
 backend state machine.  W3 memory-sink messages deterministically emit
 `timestamp_ns = 0`; a real transport replaces this with a monotonic timestamp.
 
-### 28.5 Replay-file container
+### 28.5 W4a FRAME_UPDATE wire subset
+
+`FRAME_UPDATE` payload begins with ASCII magic `"FUP1"` followed by the
+concrete 88-byte header described conceptually in section 12.  After the
+header is a u32 section count followed by length-prefixed sections.
+
+The W4a encoder emits these known sections in ascending order:
+
+1. `CURSORS` (kind 5), when a cursor was captured.
+2. `DAMAGE` (kind 9), always emitting one conservative full-frame rectangle.
+3. `PRESENT_HINT` (kind 11).
+
+The cursor record is 56 bytes:
+
+```text
+window_id         u64
+x                 i32
+y                 i32
+width             i32
+height            i32
+cursor_kind       u8
+visible           u8
+active            u8
+reserved          29 bytes
+```
+
+The damage record is 16 bytes:
+
+```text
+x                 i32
+y                 i32
+width             i32
+height            i32
+```
+
+The present-hint record is 16 bytes:
+
+```text
+present_mode      u32 (0 = vsync in W4a)
+flags             u32 (bit 0 = damage-only allowed)
+deadline_ns       u64 (0 = no deadline)
+```
+
+W4a intentionally emits full-frame damage only.  Coordinates are logical
+frame-relative pixels.  At most one cursor is captured per frame in this
+subset.  Concrete row, glyph, face, font, and image tables remain later W4
+work and must not be assumed present from this subset.
+
+### 28.6 Replay-file container
 
 W1 replay files are a transport capture, not a new EUP message:
 

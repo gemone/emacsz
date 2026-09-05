@@ -150,6 +150,7 @@ struct proto_output
     uint64_t frame_id;
     uint32_t frame_generation;
     bool destroy_sent;
+    bool update_active;
   };
 #endif
 

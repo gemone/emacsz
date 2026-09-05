@@ -31,6 +31,7 @@ Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existin
 | W3a lifecycle identity | Approved |
 | W3b terminal lifecycle | Approved |
 | W3c lifecycle-only frame objects | Approved |
+| W4a redisplay begin/cursor/flush capture | Approved |
 | Automated W3c frame smoke | Implemented |
 | `output_proto` terminal | Approved |
 | Redisplay capture | Not implemented |
@@ -153,6 +154,14 @@ Review gates:
 2. Build/default-config isolation.
 3. Emacs backend ABI compatibility.
 
+#### W4a evidence
+
+1. `src/proto-ui/backend.zig` implements frame redisplay generations, cursor state, full-damage `FRAME_UPDATE`, and stable window IDs.
+2. `src/terminal.c` installs update-begin, cursor, and flush hooks through `proto_redisplay_interface`.
+3. `zig build -Dproto-ui=true proto-ui-unit --summary all` passes 18/18.
+4. `zig build -Dproto-ui=true proto-ui-smoke --summary all` creates a real lifecycle-only frame, captures exactly one `FRAME_UPDATE`, and verifies deletion/cleanup.
+5. The dedicated reviewer completed three-plus passes and approved W4a.
+
 ### W3a — Headless lifecycle identity (approved)
 
 Goal: implement protocol-safe frame identity and emitted lifecycle messages
@@ -243,7 +252,24 @@ Review gates:
 
 Automated gate: `zig build -Dproto-ui=true proto-ui-smoke`.
 
-### W4 — Redisplay capture foundation
+### W4a — Synthetic redisplay capture foundation (in review)
+
+Goal: prove the first redisplay-interface-to-EUP path without rendering.
+
+Tasks:
+
+1. Install a proto `redisplay_interface`.
+2. Capture update-begin and flush boundaries.
+3. Assign stable proto window IDs.
+4. Capture cursor geometry/state.
+5. Emit exactly one conservative full-damage `FRAME_UPDATE` with cursor,
+   damage, and present-hint sections.
+
+Deliberate limitation: update-end is a no-op in W4a.  Glyph, face, font,
+image, partial-damage, and real redisplay capture remain W4b/W4c.
+
+
+### W4b — Full redisplay capture
 
 Goal: make normal redisplay visible in EUP.
 

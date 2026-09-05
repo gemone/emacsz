@@ -700,6 +700,13 @@ extern int proto_ui_terminal_create (uint64_t, uint64_t *);
 extern int proto_ui_frame_create (uint64_t, uint64_t, uint64_t *);
 extern int proto_ui_frame_destroy (uint64_t, uint64_t);
 extern int proto_ui_terminal_destroy (uint64_t, uint64_t);
+extern int proto_ui_frame_update_begin (uint64_t, uint64_t);
+extern int proto_ui_window_create (uint64_t, uint64_t, uint64_t *);
+extern int proto_ui_frame_cursor (uint64_t, uint64_t, uint64_t,
+                                  int, int, int, int,
+                                  unsigned char, bool, bool);
+extern int proto_ui_frame_flush (uint64_t, uint64_t, int, int);
+extern int proto_ui_frame_update_count (uint64_t);
 
 static struct terminal *proto_terminal;
 static intmax_t proto_frame_count;
@@ -784,6 +791,103 @@ proto_do_unwind_create_frame (Lisp_Object frame)
   proto_unwind_create_frame (frame);
 }
 
+static uint64_t
+proto_window_id (struct frame *frame, struct window *window)
+{
+  if (WINDOW_PROTO_ID (window) != 0)
+    return WINDOW_PROTO_ID (window);
+  uint64_t id;
+  if (proto_ui_window_create (FRAME_PROTO_OUTPUT (frame)->session_id,
+                              FRAME_PROTO_OUTPUT (frame)->frame_id,
+                              &id) != 0 || id == 0)
+    return 0;
+  WINDOW_PROTO_ID (window) = id;
+  return id;
+}
+
+static void
+proto_update_window_begin (struct window *window)
+{
+  struct frame *frame = XFRAME (WINDOW_FRAME (window));
+  struct proto_output *output = FRAME_PROTO_OUTPUT (frame);
+  if (!output || output->frame_id == 0)
+    return;
+  if (proto_ui_frame_update_begin (output->session_id, output->frame_id) != 0)
+    return;
+  output->update_active = true;
+}
+
+static void
+proto_draw_window_cursor (struct window *window,
+                          struct glyph_row *glyph_row,
+                          int x, int y,
+                          enum text_cursor_kinds cursor_type,
+                          int cursor_width, bool on_p, bool active_p)
+{
+  struct frame *frame = XFRAME (WINDOW_FRAME (window));
+  struct proto_output *output = FRAME_PROTO_OUTPUT (frame);
+  if (!output || !output->update_active)
+    return;
+  uint64_t window_id = proto_window_id (frame, window);
+  if (window_id == 0)
+    return;
+  (void) glyph_row;
+  proto_ui_frame_cursor (output->session_id, output->frame_id, window_id,
+                         x, y, cursor_width, FRAME_LINE_HEIGHT (frame),
+                         (unsigned char) cursor_type, on_p, active_p);
+}
+
+static void
+proto_flush_display (struct frame *frame)
+{
+  struct proto_output *output = FRAME_PROTO_OUTPUT (frame);
+  if (!output || !output->update_active)
+    return;
+  if (proto_ui_frame_flush (output->session_id, output->frame_id,
+                            FRAME_PIXEL_WIDTH (frame),
+                            FRAME_PIXEL_HEIGHT (frame)) != 0)
+    return;
+  output->update_active = false;
+}
+
+static struct redisplay_interface proto_redisplay_interface = {
+  .update_window_begin_hook = proto_update_window_begin,
+  .update_window_end_hook = NULL,
+  .flush_display = proto_flush_display,
+  .draw_window_cursor = proto_draw_window_cursor,
+};
+
+static void
+proto_capture_frame_update (struct frame *frame)
+{
+  struct proto_output *output = FRAME_PROTO_OUTPUT (frame);
+  if (!output)
+    error ("proto-ui frame is not initialized");
+  if (proto_ui_frame_update_begin (output->session_id,
+                                   output->frame_id) != 0)
+    error ("proto-ui frame update begin failed");
+  output->update_active = true;
+  if (proto_ui_frame_flush (output->session_id, output->frame_id,
+                            FRAME_PIXEL_WIDTH (frame),
+                            FRAME_PIXEL_HEIGHT (frame)) != 0)
+    error ("proto-ui frame update flush failed");
+  output->update_active = false;
+}
+
+DEFUN ("proto-ui-capture-frame-update", Fproto_ui_capture_frame_update,
+       Sproto_ui_capture_frame_update, 1, 1, 0,
+       doc: /* Capture one synthetic FRAME_UPDATE for a lifecycle-only proto FRAME.
+This W4a gate proves the redisplay-to-EUP encoder path without rendering.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  if (!FRAME_PROTO_P (f))
+    error ("FRAME is not a proto-ui frame");
+  proto_capture_frame_update (f);
+  uint64_t session_id = FRAME_PROTO_OUTPUT (f)->session_id;
+  return make_uint (proto_ui_frame_update_count (session_id));
+}
+
 DEFUN ("proto-ui-create-terminal", Fproto_ui_create_terminal,
        Sproto_ui_create_terminal, 0, 0, 0,
        doc: /* Create the headless EUP terminal used by proto-ui.
@@ -815,6 +919,7 @@ This is W3 lifecycle plumbing; it does not yet create proto frames.  */)
   proto_terminal->kboard->reference_count++;
   proto_terminal->delete_terminal_hook = proto_delete_terminal;
   proto_terminal->delete_frame_hook = proto_delete_frame;
+  proto_terminal->rif = &proto_redisplay_interface;
   proto_terminal->proto_session_id = session_id;
   proto_terminal->proto_terminal_id = terminal_id;
 
@@ -914,6 +1019,8 @@ or some time later.  */);
 #ifdef HAVE_PROTO_UI
   defsubr (&Sproto_ui_create_terminal);
   DEFSYM (Qproto_frame, "proto-frame");
+  DEFSYM (Qproto_ui_capture_frame_update, "proto-ui-capture-frame-update");
+  defsubr (&Sproto_ui_capture_frame_update);
   defsubr (&Sproto_ui_create_frame);
 #endif
 

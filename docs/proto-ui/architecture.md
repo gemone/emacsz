@@ -2,7 +2,7 @@
 
 Status: normative design baseline
 Protocol: EUP v1
-Implementation status: specification complete; W1 protocol/transport skeleton complete; W2 registration complete; W3a lifecycle identity, W3b terminal lifecycle, and W3c lifecycle-only frame objects complete; rendering and graphic predicates W4+
+Implementation status: specification complete. W1-W3c approved: protocol/transport, registration, terminal lifecycle, and lifecycle-only frame objects. W4a in review: synthetic `FRAME_UPDATE` capture (cursor, full damage, present hint); real redisplay, rendering, and graphic predicates remain W4+.
 
 ## 1. Purpose
 
@@ -96,10 +96,11 @@ Proto-UI adds a new terminal type:
 output_proto
 ```
 
-Current W3c lifecycle contract: real, invisible Emacs frame objects exist
-through `proto-ui-create-frame`; `framep` reports `proto`, but rendering,
-generic graphic `make-frame`, and `display-graphic-p` remain disabled until
-W4.
+Current W4a lifecycle/redisplay contract: real, invisible Emacs frame objects
+exist and can emit one synthetic `FRAME_UPDATE` containing cursor state, full
+damage, and present hints.  Rendering, generic graphic `make-frame`, and
+`display-graphic-p` remain disabled until later W4 slices.  W4a intentionally
+captures one cursor per frame and emits no row/glyph/face/font tables.
 
 Final W4+ graphic contract: a completed proto frame will be a real graphic
 Emacs frame; normal `make-frame` and `display-graphic-p` will return the

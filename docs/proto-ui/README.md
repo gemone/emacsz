@@ -20,7 +20,7 @@ The completed system must:
 
 ## 2. Current status
 
-The repository contains the complete English design baseline. W1 includes an approved EUP protocol/transport skeleton with focused tests. W2/W3b add approved opt-in Emacs registration and real terminal lifecycle; generic graphic frame creation/rendering is still W4+, while lifecycle-only invisible frame objects are implemented, it does **not** yet capture redisplay, create a real SDL3 window, or satisfy the final objective.
+The repository contains the complete English design baseline. W1/W2/W3c add the approved EUP protocol/transport skeleton, opt-in Emacs registration, real terminal lifecycle, and lifecycle-only invisible frame objects. W4a adds a reviewed synthetic `FRAME_UPDATE` capture path. Generic graphic frame creation, real redisplay, SDL3 windows, and the final objective remain W4+ work.
 
 The documentation in this directory is the source of truth for the implementation workstreams.
 
