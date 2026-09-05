@@ -884,7 +884,7 @@ fn emitSpikeLLVM(gpa: std.mem.Allocator, consts: []Const, abi_hash: []const u8) 
         \\  ret i64 %rv
         \\}
         \\
-        \\define dllexport ptr @zeln_entry() {
+        \\define dllexport ptr @zeln_entry() uwtable personality ptr @__C_specific_handler {
         \\entry:
         \\  ret ptr @zeln_entry_global
         \\}
@@ -1786,9 +1786,9 @@ fn emitNativeFn(
     // profile was given (is_hot false) so the non-FDO output is
     // byte-identical to before.
     if (is_hot) {
-        try em.wf("define internal i64 @{s}(i64 %nargs, ptr %args) #1 {{\n", .{fn_name});
+        try em.wf("define internal i64 @{s}(i64 %nargs, ptr %args) #1 personality ptr @__C_specific_handler {{\n", .{fn_name});
     } else {
-        try em.wf("define internal i64 @{s}(i64 %nargs, ptr %args) {{\n", .{fn_name});
+        try em.wf("define internal i64 @{s}(i64 %nargs, ptr %args) uwtable personality ptr @__C_specific_handler {{\n", .{fn_name});
     }
     try em.w("entry:\n");
     try em.wif("%stack = alloca [{d} x i64], align 8\n", .{stack_slots});
@@ -2201,11 +2201,17 @@ fn emitFileLLVM(
     try em.wf("; sys_setjmp symbol per target (see setjmp_sym): {s}\n", .{setjmp_sym});
     try em.wf("declare i32 @{s}(ptr) #0\n", .{setjmp_sym});
     try em.w("attributes #0 = { nounwind returns_twice }\n");
+    // MSVC SEH personality for RtlUnwind compatibility: the MSVC CRT's
+    // longjmp on x64 invokes RtlUnwind, which walks every stack frame
+    // and calls the personality routine from .xdata.  MinGW's default
+    // personality is incompatible; __C_specific_handler (exported by
+    // ntdll) is the MSVC C personality that both unwinders understand.
+    try em.w("declare i32 @__C_specific_handler(ptr, ptr, ptr, ptr)\n");
     // FDO: `hot` function attribute for profile-identified hot fns
     // (LLVM layout hint).  Emitted unconditionally; #1 is only
     // referenced when is_hot fired for at least one fn, and an unused
     // attribute group is dropped by -O2 with no cost.
-    try em.w("attributes #1 = { hot }\n");
+    try em.w("attributes #1 = { hot uwtable }\n");
     // memset intrinsic: zero each native fn's alloca virtual stack at entry
     // (see emitNativeFn) so conservative C-stack GC never marks alloca
     // garbage as a live object.
@@ -2259,7 +2265,7 @@ fn emitFileLLVM(
     try em.wf("  i64 {d},\n", .{fns.len});
     try em.w("  ptr @zeln_zunit_blob_data\n}\n\n");
 
-    try em.w("define dllexport ptr @zeln_entry() {\n");
+    try em.w("define dllexport ptr @zeln_entry() uwtable personality ptr @__C_specific_handler {\n");
     try em.w("entry:\n");
     try em.w("  ret ptr @zeln_entry_global\n");
     try em.w("}\n");
@@ -2290,7 +2296,7 @@ fn emitTrampoline(em: *Emitter, fn_global: []const u8, args_template: u32, idx: 
         if (k > 0) try em.w(", ");
         try em.wf("i64 %a{d}", .{k});
     }
-    try em.w(") {\nentry:\n");
+    try em.w(") uwtable personality ptr @__C_specific_handler {\nentry:\n");
     try em.wf("  %arr = alloca [{d} x i64], align 8\n", .{nonrest});
     for (0..nonrest) |k| {
         const p = em.fresh();
@@ -3112,3 +3118,8 @@ fn appendCStringLiteral(
 fn gpaAlloc(comptime T: type, n: u64) ![]T {
     return std.heap.smp_allocator.alloc(T, @intCast(n));
 }
+
+
+
+
+
