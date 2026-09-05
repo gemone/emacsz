@@ -74,6 +74,9 @@ src/proto-ui/
   abi_gen.zig           generated C header and ABI summary
   boundary_audit.zig    changed-path boundary classifier
   root.zig              module/test aggregator
+
+tools/proto-ui-sdl3/
+  main.zig              independent window/renderer lifecycle smoke
 ```
 
 Generated content is written only to:

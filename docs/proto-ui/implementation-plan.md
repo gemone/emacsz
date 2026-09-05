@@ -39,6 +39,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | EUP envelope/resource/FRAME_UPDATE codec | Implemented (adapter-only) |
 | Memory sink and replay-file transport | Implemented (adapter-only) |
 | SDL3 frontend design | Documented |
+| SDL3 window/renderer lifecycle | Implemented (independent frontend smoke) |
 | Performance baseline | Documented |
 | Build option `-Dproto-ui` | Adapter-only EUP codec/transport, ABI/summary generation, unit tests, fake-host conformance, and boundary audit; no Emacs runtime integration |
 | W2 registration seam | Approved historically; runtime integration rolled back |
@@ -56,9 +57,11 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | `output_proto` terminal | Rolled back with runtime integration |
 | Redisplay capture | Rolled back; adapter ABI v1 contract only |
 | Resource model | Not implemented |
-| SDL3 frontend | Not implemented |
+| SDL3 frontend | Partial: window/renderer lifecycle only; no EUP session, scene, input, or Emacs frame yet |
 | Real SDL3 Emacs smoke test | Not achieved |
 | Adapter-first C boundary | Required; no new inherited-C Proto-UI edits |
+| W9a independent SDL3 lifecycle smoke | Approved |
+| Build option `-Dsdl3-frontend` | Independent window/renderer lifecycle smoke; no EUP client yet |
 
 The workstream sections below retain their historical review records and
 implementation details.  The Current status table is authoritative when an
@@ -625,7 +628,31 @@ Review gates:
 2. Device ordering.
 3. No frontend-owned command policy.
 
-### W9 — SDL3 frontend skeleton
+### W9a — Independent SDL3 window lifecycle (approved)
+
+Goal: validate the real OS window, renderer selection, event pump, and clean
+shutdown before adding protocol state.
+
+Implemented:
+
+1. `-Dsdl3-frontend=true` builds the independent `proto-ui-sdl3` executable
+   from `tools/proto-ui-sdl3/main.zig` and links the system SDL3 package.
+2. `sdl3-ui-smoke` initializes video, creates a resizable 800×600 window,
+   creates the default renderer, clears/presents one opaque frame, pumps quit
+   events, and exits after 80 ms unless closed first.
+3. SDL errors are reported with `SDL_GetError`; shutdown occurs through defer
+   even when a later lifecycle operation fails.
+
+Acceptance:
+
+```sh
+zig build -Dsdl3-frontend=true sdl3-ui-smoke --summary all
+```
+
+The command opens a real SDL3 window on a display-capable host.  It does not
+connect to Emacs, decode EUP, render text, or imply final SDL3 acceptance.
+
+### W9b — EUP-connected SDL3 frontend skeleton (planned)
 
 Goal: open a real window from a live proto frame.
 
@@ -900,13 +927,13 @@ zig build -Dproto-ui=true proto-ui-abi
 zig build -Dproto-ui=true proto-ui-conformance
 zig build -Dproto-ui=true proto-ui-boundary
 zig build -Dproto-ui=true proto-ui-boundary-audit
+zig build -Dsdl3-frontend=true sdl3-ui-smoke
 ```
 
 Planned steps:
 
 ```sh
 zig build -Dproto-ui=true proto-ui-roundtrip
-zig build -Dproto-ui=true proto-ui-smoke
 zig build -Dproto-ui=true proto-ui-replay-test
 zig build -Dproto-ui=true proto-ui-fuzz
 zig build -Dproto-ui=true proto-ui-bench

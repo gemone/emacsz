@@ -115,7 +115,7 @@ pub const integration_points = [_]IntegrationPoint{
     .{ .id = "adapter_abi", .owner = .adapter, .status = .partial, .summary = "versioned host and adapter tables" },
     .{ .id = "normal_rif_streaming", .owner = .adapter, .status = .blocked, .summary = "normal-RIF streaming pending thin-shim embedding" },
     .{ .id = "build_embedding", .owner = .build, .status = .designed, .summary = "zig-build generated manifest and adapter linkage" },
-    .{ .id = "sdl3_frontend", .owner = .frontend, .status = .planned, .summary = "window, input, renderer, and presentation process" },
+    .{ .id = "sdl3_frontend", .owner = .frontend, .status = .partial, .summary = "independent window/renderer lifecycle smoke; EUP, scene, input, and Emacs frame pending" },
 };
 
 pub const ManifestIssue = struct {
@@ -170,6 +170,7 @@ pub fn classifyPath(path: []const u8) BoundaryClass {
     if (hasPathPrefix(path, "src/proto-ui/")) return .adapter;
     if (hasPathPrefix(path, "docs/proto-ui/")) return .documentation;
     if (hasPathPrefix(path, "tools/proto-ui/")) return .adapter;
+    if (hasPathPrefix(path, "tools/proto-ui-sdl3/")) return .frontend;
     if (hasPathPrefix(path, "zig-cache/proto-ui/")) return .adapter;
     if (hasPathPrefix(path, "zig-out/include/proto-ui/")) return .adapter;
     if (std.mem.eql(u8, path, "build.zig")) return .build;
@@ -357,6 +358,7 @@ test "path classifier separates adapter and inherited C" {
     try std.testing.expectEqual(BoundaryClass.adapter, classifyPath("src/proto-ui/adapter.zig"));
     try std.testing.expectEqual(BoundaryClass.build, classifyPath("build.zig"));
     try std.testing.expectEqual(BoundaryClass.documentation, classifyPath("docs/proto-ui/adapter-boundary.md"));
+    try std.testing.expectEqual(BoundaryClass.frontend, classifyPath("tools/proto-ui-sdl3/main.zig"));
     try std.testing.expectEqual(BoundaryClass.inherited_c, classifyPath("src/xdisp.c"));
     try std.testing.expect(isNewInheritedCoreEdit("src/xdisp.c"));
     try std.testing.expect(!isNewInheritedCoreEdit("src/proto-ui/runtime.zig"));
