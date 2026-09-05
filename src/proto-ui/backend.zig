@@ -1,10 +1,11 @@
-//! W3 Emacs-facing lifecycle ABI for the opt-in proto-ui backend.
+//! Emacs-facing lifecycle and redisplay-capture ABI for the opt-in proto-ui
+//! backend.
 //!
 //! This module owns protocol-level identity for headless terminal sessions and
-//! frames.  It intentionally does not create Emacs terminal objects or frames;
-//! A future C integration layer will own the corresponding Emacs objects and
-//! call this ABI so EUP IDs and lifecycle messages cannot diverge.  The export
-//! functions are called only from the Emacs main thread during W3.
+//! frames.  The C integration layer owns the corresponding Emacs objects and
+//! calls this ABI so EUP IDs, lifecycle messages, and frame-update metadata
+//! cannot diverge.  The export functions are called only from the Emacs main
+//! thread.
 
 const std = @import("std");
 const protocol = @import("protocol.zig");
@@ -17,6 +18,7 @@ pub const abi_version: u32 = 1;
 pub const LifecycleError = error{
     InvalidTerminal,
     InvalidFrame,
+    RowLimit,
     SessionLimit,
     OutOfMemory,
 };
@@ -33,7 +35,37 @@ pub const Frame = struct {
     live: bool = true,
     redisplay_generation: u64 = 0,
     update_active: bool = false,
+    capture_failed: bool = false,
     cursor: ?CursorState = null,
+    update_rows: [max_update_rows]RowState = undefined,
+    update_row_count: usize = 0,
+};
+
+pub const Window = struct {
+    id: u64,
+    frame_id: u64,
+    live: bool = true,
+    x: i32 = 0,
+    y: i32 = 0,
+    width: i32 = 0,
+    height: i32 = 0,
+};
+
+pub const max_update_rows: usize = 256;
+pub const row_record_size: usize = 56;
+
+pub const RowState = struct {
+    window_id: u64,
+    row_index: u32,
+    flags: u32 = 0,
+    x: i32 = 0,
+    y: i32 = 0,
+    width: i32 = 0,
+    height: i32 = 0,
+    ascent: i32 = 0,
+    descent: i32 = 0,
+    baseline: i32 = 0,
+    visible_height: i32 = 0,
 };
 
 pub const CursorState = struct {
@@ -55,6 +87,7 @@ pub const Session = struct {
     next_window_id: u64 = 1,
     terminals: std.AutoHashMapUnmanaged(u64, Terminal) = .{},
     frames: std.AutoHashMapUnmanaged(u64, Frame) = .{},
+    windows: std.AutoHashMapUnmanaged(u64, Window) = .{},
     sink: transport.MemorySink,
     frame_create_count: u64 = 0,
     frame_destroy_count: u64 = 0,
@@ -74,6 +107,7 @@ pub const Session = struct {
     pub fn destroy(self: *Session) void {
         self.terminals.deinit(self.allocator);
         self.frames.deinit(self.allocator);
+        self.windows.deinit(self.allocator);
         self.sink.deinit();
         self.allocator.destroy(self);
     }
@@ -93,6 +127,22 @@ pub const Session = struct {
             return LifecycleError.InvalidTerminal;
         if (!terminal.live) return LifecycleError.InvalidTerminal;
         terminal.live = false;
+
+        // A terminal can only be destroyed after its C frames are detached.
+        // Remove terminal-local metadata now so repeated capture cannot grow
+        // maps for dead objects.
+        var frame_it = self.frames.iterator();
+        while (frame_it.next()) |entry| {
+            if (entry.value_ptr.terminal_id == terminal_id) {
+                _ = self.frames.remove(entry.key_ptr.*);
+                var window_it = self.windows.iterator();
+                while (window_it.next()) |window_entry| {
+                    if (window_entry.value_ptr.frame_id == entry.key_ptr.*)
+                        _ = self.windows.remove(window_entry.key_ptr.*);
+                }
+            }
+        }
+        _ = self.terminals.remove(terminal_id);
     }
 
     pub fn createFrame(self: *Session, terminal_id: u64) !u64 {
@@ -130,8 +180,32 @@ pub const Session = struct {
         if (self.next_window_id == 0 or
             self.next_window_id > std.math.maxInt(u32)) return LifecycleError.SessionLimit;
         const id = self.next_window_id;
+        try self.windows.ensureUnusedCapacity(self.allocator, 1);
+        self.windows.putAssumeCapacity(id, .{
+            .id = id,
+            .frame_id = frame_id,
+        });
         self.next_window_id += 1;
         return id;
+    }
+
+    pub fn setWindowGeometry(
+        self: *Session,
+        window_id: u64,
+        frame_id: u64,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) !void {
+        const window = self.windows.getPtr(window_id) orelse
+            return LifecycleError.InvalidFrame;
+        if (window.frame_id != frame_id or !window.live)
+            return LifecycleError.InvalidFrame;
+        window.x = x;
+        window.y = y;
+        window.width = width;
+        window.height = height;
     }
 
     pub fn destroyFrame(self: *Session, frame_id: u64) !void {
@@ -148,6 +222,14 @@ pub const Session = struct {
             frame.id,
             frame.generation,
         );
+        // The EUP view is dead and the C frame is going away.  Remove stable
+        // state so redisplay-frequency lifecycle churn cannot grow maps.
+        _ = self.frames.remove(frame_id);
+        var window_it = self.windows.iterator();
+        while (window_it.next()) |entry| {
+            if (entry.value_ptr.frame_id == frame_id)
+                _ = self.windows.remove(entry.key_ptr.*);
+        }
         self.frame_destroy_count += 1;
     }
 
@@ -160,7 +242,48 @@ pub const Session = struct {
             return LifecycleError.SessionLimit;
         frame.redisplay_generation += 1;
         frame.update_active = true;
+        frame.capture_failed = false;
         frame.cursor = null;
+        frame.update_row_count = 0;
+    }
+
+    pub fn recordRow(
+        self: *Session,
+        frame_id: u64,
+        window_id: u64,
+        row_index: u32,
+        flags: u32,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        ascent: i32,
+        descent: i32,
+        baseline: i32,
+        visible_height: i32,
+    ) !void {
+        const frame = self.frames.getPtr(frame_id) orelse
+            return LifecycleError.InvalidFrame;
+        if (!frame.update_active) return LifecycleError.InvalidFrame;
+        if (window_id == 0) return LifecycleError.InvalidFrame;
+        if (frame.update_row_count >= frame.update_rows.len) {
+            frame.capture_failed = true;
+            return LifecycleError.RowLimit;
+        }
+        frame.update_rows[frame.update_row_count] = .{
+            .window_id = window_id,
+            .row_index = row_index,
+            .flags = flags,
+            .x = x,
+            .y = y,
+            .width = width,
+            .height = height,
+            .ascent = ascent,
+            .descent = descent,
+            .baseline = baseline,
+            .visible_height = visible_height,
+        };
+        frame.update_row_count += 1;
     }
 
     pub fn recordCursor(
@@ -191,6 +314,14 @@ pub const Session = struct {
         };
     }
 
+    pub fn cancelFrame(self: *Session, frame_id: u64) void {
+        if (self.frames.getPtr(frame_id)) |frame| {
+            frame.update_active = false;
+            frame.cursor = null;
+            frame.update_row_count = 0;
+        }
+    }
+
     pub fn flushFrame(
         self: *Session,
         frame_id: u64,
@@ -201,6 +332,7 @@ pub const Session = struct {
             return LifecycleError.InvalidFrame;
         if (!frame.live or !frame.update_active)
             return LifecycleError.InvalidFrame;
+        if (frame.capture_failed) return LifecycleError.RowLimit;
         if (logical_width < 0 or logical_height < 0)
             return LifecycleError.InvalidFrame;
         if (self.sink.next_sequence == std.math.maxInt(u64))
@@ -209,8 +341,8 @@ pub const Session = struct {
         const sequence = self.sink.next_sequence;
         const frame_id32: u32 = @intCast(frame.id);
 
-        // W4a emits a conservative full-frame damage rectangle.  Concrete
-        // row/glyph tables arrive in the next redisplay slice.
+        // W4b emits conservative full-frame damage plus captured row/window
+        // metadata.  Concrete glyph/face/font/image tables remain W5+.
         var cursor_record: [56]u8 = undefined;
         var has_cursor = false;
         if (frame.cursor) |cursor| {
@@ -237,8 +369,61 @@ pub const Session = struct {
         std.mem.writeInt(u32, present[4..8], 1, .little); // damage allowed
         std.mem.writeInt(u64, present[8..16], 0, .little); // no deadline
 
-        var sections: [3]protocol.Section = undefined;
+        var sections: [5]protocol.Section = undefined;
         var section_count: usize = 0;
+        var window_payload: std.ArrayList(u8) = .empty;
+        defer window_payload.deinit(self.allocator);
+        var window_count: u32 = 0;
+        var window_it = self.windows.valueIterator();
+        while (window_it.next()) |window| {
+            if (window.frame_id != frame.id or !window.live) continue;
+            if (window_payload.items.len > std.math.maxInt(u32) - 40)
+                return LifecycleError.SessionLimit;
+            try window_payload.ensureUnusedCapacity(self.allocator, 40);
+            var entry: [40]u8 = undefined;
+            std.mem.writeInt(u64, entry[0..8], window.id, .little);
+            std.mem.writeInt(u32, entry[8..12], frame_id32, .little);
+            std.mem.writeInt(i32, entry[12..16], window.x, .little);
+            std.mem.writeInt(i32, entry[16..20], window.y, .little);
+            std.mem.writeInt(i32, entry[20..24], window.width, .little);
+            std.mem.writeInt(i32, entry[24..28], window.height, .little);
+            @memset(entry[28..40], 0);
+            window_payload.appendSliceAssumeCapacity(&entry);
+            window_count += 1;
+        }
+        if (window_count > 0) {
+            sections[section_count] = .{
+                .kind = protocol.SectionKind.windows,
+                .records = window_payload.items,
+            };
+            section_count += 1;
+        }
+        if (frame.update_row_count > 0) {
+            const count = frame.update_row_count;
+            if (count * row_record_size > std.math.maxInt(u32))
+                return LifecycleError.SessionLimit;
+            var rows_payload: [max_update_rows * row_record_size]u8 = undefined;
+            for (frame.update_rows[0..count], 0..) |row, index| {
+                const base = index * row_record_size;
+                std.mem.writeInt(u64, rows_payload[base..][0..8], row.window_id, .little);
+                std.mem.writeInt(u32, rows_payload[base + 8 ..][0..4], row.row_index, .little);
+                std.mem.writeInt(u32, rows_payload[base + 12 ..][0..4], row.flags, .little);
+                std.mem.writeInt(i32, rows_payload[base + 16 ..][0..4], row.x, .little);
+                std.mem.writeInt(i32, rows_payload[base + 20 ..][0..4], row.y, .little);
+                std.mem.writeInt(i32, rows_payload[base + 24 ..][0..4], row.width, .little);
+                std.mem.writeInt(i32, rows_payload[base + 28 ..][0..4], row.height, .little);
+                std.mem.writeInt(i32, rows_payload[base + 32 ..][0..4], row.ascent, .little);
+                std.mem.writeInt(i32, rows_payload[base + 36 ..][0..4], row.descent, .little);
+                std.mem.writeInt(i32, rows_payload[base + 40 ..][0..4], row.baseline, .little);
+                std.mem.writeInt(i32, rows_payload[base + 44 ..][0..4], row.visible_height, .little);
+                @memset(rows_payload[base + 48 .. base + 56], 0);
+            }
+            sections[section_count] = .{
+                .kind = protocol.SectionKind.rows,
+                .records = rows_payload[0 .. count * row_record_size],
+            };
+            section_count += 1;
+        }
         if (has_cursor) {
             sections[section_count] = .{
                 .kind = protocol.SectionKind.cursors,
@@ -301,7 +486,7 @@ pub const Session = struct {
     }
 
     pub fn frameMessageCount(self: *Session, frame_id: u64) usize {
-        // W4a emits one FRAME_UPDATE per successful flush.
+        // W4a/W4b emits one FRAME_UPDATE per successful flush.
         _ = frame_id;
         return self.frame_update_count;
     }
@@ -416,6 +601,13 @@ export fn proto_ui_frame_update_begin(session_id: u64, frame_id: u64) c_int {
     return 0;
 }
 
+export fn proto_ui_frame_update_cancel(session_id: u64, frame_id: u64) c_int {
+    const session = lifecycle_session orelse return -1;
+    if (session.id != session_id) return -1;
+    session.cancelFrame(frame_id);
+    return 0;
+}
+
 export fn proto_ui_window_create(
     session_id: u64,
     frame_id: u64,
@@ -425,6 +617,55 @@ export fn proto_ui_window_create(
     if (session.id != session_id) return -1;
     const id = session.createWindow(frame_id) catch return -1;
     window_id.* = id;
+    return 0;
+}
+
+export fn proto_ui_window_geometry(
+    session_id: u64,
+    window_id: u64,
+    frame_id: u64,
+    x: c_int,
+    y: c_int,
+    width: c_int,
+    height: c_int,
+) c_int {
+    const session = lifecycle_session orelse return -1;
+    if (session.id != session_id) return -1;
+    session.setWindowGeometry(window_id, frame_id, @intCast(x), @intCast(y), @intCast(width), @intCast(height)) catch return -1;
+    return 0;
+}
+
+export fn proto_ui_frame_row(
+    session_id: u64,
+    frame_id: u64,
+    window_id: u64,
+    row_index: u32,
+    flags: u32,
+    x: c_int,
+    y: c_int,
+    width: c_int,
+    height: c_int,
+    ascent: c_int,
+    descent: c_int,
+    baseline: c_int,
+    visible_height: c_int,
+) c_int {
+    const session = lifecycle_session orelse return -1;
+    if (session.id != session_id) return -1;
+    session.recordRow(
+        frame_id,
+        window_id,
+        row_index,
+        flags,
+        @intCast(x),
+        @intCast(y),
+        @intCast(width),
+        @intCast(height),
+        @intCast(ascent),
+        @intCast(descent),
+        @intCast(baseline),
+        @intCast(visible_height),
+    ) catch return -1;
     return 0;
 }
 
@@ -572,8 +813,10 @@ test "frame update captures full damage and cursor" {
     const terminal_id = try session.createTerminal();
     const frame_id = try session.createFrame(terminal_id);
     const window_id = try session.createWindow(frame_id);
+    try session.setWindowGeometry(window_id, frame_id, 10, 20, 300, 180);
 
     try session.beginFrame(frame_id);
+    try session.recordRow(frame_id, window_id, 0, 0, 10, 20, 300, 20, 14, 4, 14, 20);
     try session.recordCursor(frame_id, window_id, 4, 8, 2, 16, 0, true, true);
     try session.flushFrame(frame_id, 320, 200);
 
@@ -586,12 +829,57 @@ test "frame update captures full damage and cursor" {
     try std.testing.expectEqual(frame_id, update.header.frame_id);
     try std.testing.expectEqual(@as(u64, 1), update.header.redisplay_generation);
     try std.testing.expectEqual(@as(i32, 320), update.header.logical_width);
-    try std.testing.expectEqual(@as(usize, 3), update.sections.len);
-    try std.testing.expectEqual(protocol.SectionKind.cursors, update.sections[0].kind);
-    try std.testing.expectEqual(protocol.SectionKind.damage, update.sections[1].kind);
-    try std.testing.expectEqual(@as(usize, 16), update.sections[1].records.len);
-    try std.testing.expectEqual(@as(i32, 320), std.mem.readInt(i32, update.sections[1].records[8..12], .little));
-    try std.testing.expectEqual(@as(usize, 56), update.sections[0].records.len);
+    try std.testing.expectEqual(@as(usize, 5), update.sections.len);
+    try std.testing.expectEqual(protocol.SectionKind.windows, update.sections[0].kind);
+    try std.testing.expectEqual(@as(usize, 40), update.sections[0].records.len);
     try std.testing.expectEqual(window_id, std.mem.readInt(u64, update.sections[0].records[0..8], .little));
-    try std.testing.expectEqual(protocol.SectionKind.present_hint, update.sections[2].kind);
+    try std.testing.expectEqual(@as(i32, 300), std.mem.readInt(i32, update.sections[0].records[20..24], .little));
+    try std.testing.expectEqual(protocol.SectionKind.rows, update.sections[1].kind);
+    try std.testing.expectEqual(@as(usize, 56), update.sections[1].records.len);
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, update.sections[1].records[8..12], .little));
+    try std.testing.expectEqual(protocol.SectionKind.cursors, update.sections[2].kind);
+    try std.testing.expectEqual(@as(usize, 56), update.sections[2].records.len);
+    try std.testing.expectEqual(window_id, std.mem.readInt(u64, update.sections[2].records[0..8], .little));
+    try std.testing.expectEqual(protocol.SectionKind.damage, update.sections[3].kind);
+    try std.testing.expectEqual(@as(usize, 16), update.sections[3].records.len);
+    try std.testing.expectEqual(@as(i32, 320), std.mem.readInt(i32, update.sections[3].records[8..12], .little));
+    try std.testing.expectEqual(protocol.SectionKind.present_hint, update.sections[4].kind);
+}
+
+test "window geometry rejects mismatched frame ownership" {
+    const a = std.testing.allocator;
+    const session = try Session.create(a, 5);
+    defer session.destroy();
+    const terminal_id = try session.createTerminal();
+    const frame_id = try session.createFrame(terminal_id);
+    const window_id = try session.createWindow(frame_id);
+    try session.setWindowGeometry(window_id, frame_id, 1, 2, 30, 40);
+    try std.testing.expectError(
+        LifecycleError.InvalidFrame,
+        session.setWindowGeometry(window_id, frame_id + 1, 3, 4, 50, 60),
+    );
+    const window = session.windows.get(window_id).?;
+    try std.testing.expectEqual(@as(i32, 30), window.width);
+    try std.testing.expectEqual(@as(i32, 40), window.height);
+}
+
+test "row capture enforces fixed update capacity" {
+    const a = std.testing.allocator;
+    const session = try Session.create(a, 6);
+    defer session.destroy();
+    const terminal_id = try session.createTerminal();
+    const frame_id = try session.createFrame(terminal_id);
+    const window_id = try session.createWindow(frame_id);
+    try session.beginFrame(frame_id);
+
+    for (0..max_update_rows) |row_index| {
+        try session.recordRow(frame_id, window_id, @intCast(row_index), 0, 0, @intCast(row_index), 10, 8, 6, 2, 6, 8);
+    }
+    try std.testing.expectError(
+        LifecycleError.RowLimit,
+        session.recordRow(frame_id, window_id, max_update_rows, 0, 0, @intCast(max_update_rows), 10, 8, 6, 2, 6, 8),
+    );
+    try std.testing.expectError(LifecycleError.RowLimit, session.flushFrame(frame_id, 100, 100));
+    try std.testing.expect(session.frames.get(frame_id).?.capture_failed);
+    try std.testing.expectEqual(@as(usize, max_update_rows), session.frames.get(frame_id).?.update_row_count);
 }

@@ -388,11 +388,11 @@ pub fn build(b: *std.Build) void {
     const enable_native_comp = b.option(bool, "native-comp", "Enable the gccjit native-comp path (.eln, HAVE_NATIVE_COMP); default OFF") orelse false;
     const enable_modules = b.option(bool, "modules", "Enable upstream dynamic modules (HAVE_MODULES)") orelse false;
     const enable_modules_zig = b.option(bool, "modules-zig", "Enable the Zig dynamic-module subsystem (HAVE_MODULES_ZIG)") orelse false;
-    // Proto-UI W3: the EUP protocol/lifecycle module is independent of Emacs
-    // internals.
+    // Proto-UI: the EUP module is independent of Emacs UI internals.
     // The option enables HAVE_PROTO_UI registration, real terminal lifecycle,
-    // lifecycle-only frame identity, and protocol/transport conformance tests.
-    // GPU rendering and graphic-frame predicates arrive in W4+.
+    // frame identity, protocol/transport conformance tests, and W4b window/row
+    // metadata capture.  GPU rendering and graphic-frame predicates arrive
+    // later.
     const enable_proto_ui = b.option(bool, "proto-ui", "Enable EUP proto-ui registration, lifecycle identity, and transport tests") orelse false;
 
     // Target-derived flags.  `target` is resolved at line 64, so target.result
@@ -1719,9 +1719,9 @@ pub fn build(b: *std.Build) void {
     });
     const zeln_jit_lib =
         b.addLibrary(.{ .name = "zeln-jit", .root_module = zeln_jit_mod });
-    // proto-ui W3: the opt-in terminal lifecycle/registration ABI linked
-    // into temacs when HAVE_PROTO_UI is enabled.  Built ReleaseFast like other
-    // leaf Zig ABI libraries.  Real frame objects arrive in a later workstream.
+    // proto-ui W4a/W4b: the opt-in lifecycle/registration and redisplay
+    // capture ABI linked into temacs when HAVE_PROTO_UI is enabled.  Built
+    // ReleaseFast like other leaf Zig ABI libraries.
     if (enable_proto_ui) {
         const proto_ui_mod = b.createModule(.{
             .root_source_file = b.path("src/proto-ui/backend.zig"),
@@ -4074,8 +4074,9 @@ pub fn build(b: *std.Build) void {
     const smoke_step = b.step("smoke", "Verify the dumped emacs starts and evaluates Lisp");
     smoke_step.dependOn(&run_smoke.step);
 
-    // proto-ui-smoke: verify a real EUP terminal/lifecycle-only frame and
-    // one synthetic FRAME_UPDATE.  Rendering and graphic predicates are W4+.
+    // proto-ui-smoke: verify a real EUP terminal/frame and one synthetic
+    // FRAME_UPDATE carrying W4b window/row metadata.  Rendering and graphic
+    // predicates are W4+.
     if (enable_proto_ui) {
         const run_proto_ui_smoke = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/emacs", "--batch",
@@ -4087,7 +4088,7 @@ pub fn build(b: *std.Build) void {
         run_proto_ui_smoke.step.dependOn(emacs_wrapper_step);
         const proto_ui_smoke_step = b.step(
             "proto-ui-smoke",
-            "Create/delete a lifecycle-only proto frame and capture one FRAME_UPDATE",
+            "Create/delete a proto frame and capture one FRAME_UPDATE with metadata",
         );
         proto_ui_smoke_step.dependOn(&run_proto_ui_smoke.step);
     }

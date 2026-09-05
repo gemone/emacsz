@@ -772,17 +772,48 @@ marks the frontend view dead.  Terminal-to-frame ownership is tracked by the
 backend state machine.  W3 memory-sink messages deterministically emit
 `timestamp_ns = 0`; a real transport replaces this with a monotonic timestamp.
 
-### 28.5 W4a FRAME_UPDATE wire subset
+### 28.5 W4a/W4b FRAME_UPDATE wire subset
 
 `FRAME_UPDATE` payload begins with ASCII magic `"FUP1"` followed by the
 concrete 88-byte header described conceptually in section 12.  After the
 header is a u32 section count followed by length-prefixed sections.
 
-The W4a encoder emits these known sections in ascending order:
+The W4a/W4b encoder emits these known sections in ascending order:
 
-1. `CURSORS` (kind 5), when a cursor was captured.
-2. `DAMAGE` (kind 9), always emitting one conservative full-frame rectangle.
-3. `PRESENT_HINT` (kind 11).
+1. `WINDOWS` (kind 2), for captured window geometry.
+2. `ROWS` (kind 3), for captured row metadata.
+3. `CURSORS` (kind 5), when a cursor was captured.
+4. `DAMAGE` (kind 9), always emitting one conservative full-frame rectangle.
+5. `PRESENT_HINT` (kind 11).
+
+The window record is 40 bytes:
+
+```text
+window_id         u64
+frame_id          u32
+x                 i32
+y                 i32
+width             i32
+height            i32
+reserved          12 bytes
+```
+
+The row record is 56 bytes:
+
+```text
+window_id         u64
+row_index         u32
+flags             u32
+x                 i32
+y                 i32
+width             i32
+height            i32
+ascent            i32
+descent           i32
+baseline          i32
+visible_height    i32
+reserved          8 bytes
+```
 
 The cursor record is 56 bytes:
 
@@ -810,15 +841,25 @@ height            i32
 The present-hint record is 16 bytes:
 
 ```text
-present_mode      u32 (0 = vsync in W4a)
+present_mode      u32 (0 = vsync in W4a/W4b)
 flags             u32 (bit 0 = damage-only allowed)
 deadline_ns       u64 (0 = no deadline)
 ```
 
-W4a intentionally emits full-frame damage only.  Coordinates are logical
-frame-relative pixels.  At most one cursor is captured per frame in this
-subset.  Concrete row, glyph, face, font, and image tables remain later W4
-work and must not be assumed present from this subset.
+In W4b, row `flags` is `0`.  All `reserved` bytes in the window, row, and
+cursor records are zero; the present-hint record has no reserved bytes.  The
+row cap is 256 records per frame update.  When capture exceeds the cap, the
+backend marks the update capture failed and rejects/cancels the flush; it
+never commits an incomplete update.
+
+Window and row records are upserts for the state observed during the current
+update, not a complete historical table or a guarantee that every visible
+window/row was rewritten.  Coordinates are logical frame/window-relative
+pixels.  A row ID is currently its zero-based window row index.  The cursor
+section is optional and present only when the backend captured a cursor; W4a
+capture always emits one, while non-GUI proto paths may emit none.  Concrete
+glyph, face, font, and image tables remain later W4/W5 work and must not be
+assumed present from this subset.
 
 ### 28.6 Replay-file container
 

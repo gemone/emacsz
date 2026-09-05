@@ -1,20 +1,23 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 
+pub const max_retained_messages: usize = 256;
+
 pub const MemorySink = struct {
-    arena: std.heap.ArenaAllocator,
+    allocator: std.mem.Allocator,
     messages: std.ArrayList([]const u8) = .empty,
     next_sequence: u64 = 1,
 
-    /// Messages are owned by the internal arena and remain valid only until
-    /// `deinit`.  Callers may retain the returned slice only within that
-    /// lifetime.
+    /// Messages are owned by the bounded sink.  A returned slice remains valid
+    /// only until that message is evicted (after 256 newer messages) or
+    /// `deinit` is called.
     pub fn init(child: std.mem.Allocator) MemorySink {
-        return .{ .arena = std.heap.ArenaAllocator.init(child) };
+        return .{ .allocator = child };
     }
 
     pub fn deinit(self: *MemorySink) void {
-        self.arena.deinit();
+        for (self.messages.items) |message| self.allocator.free(message);
+        self.messages.deinit(self.allocator);
     }
 
     pub fn send(
@@ -22,8 +25,9 @@ pub const MemorySink = struct {
         envelope_in: protocol.Envelope,
         payload: []const u8,
     ) ![]const u8 {
-        const a = self.arena.allocator();
+        const a = self.allocator;
         var message: std.ArrayList(u8) = .empty;
+        defer message.deinit(a);
         var envelope = envelope_in;
         var next_sequence = self.next_sequence;
         if (envelope.sequence == 0) {
@@ -37,10 +41,16 @@ pub const MemorySink = struct {
             return protocol.Error.InvalidSequence;
         }
         try protocol.encodeEnvelope(a, envelope, payload, &message);
-        try self.messages.append(a, message.items);
+        const retained = try a.dupe(u8, message.items);
+        errdefer a.free(retained);
+        try self.messages.append(a, retained);
+        while (self.messages.items.len > max_retained_messages) {
+            const oldest = self.messages.orderedRemove(0);
+            a.free(oldest);
+        }
         // Advance only after encoding and sink ownership have succeeded.
         self.next_sequence = next_sequence;
-        return message.items;
+        return retained;
     }
 };
 
@@ -210,4 +220,25 @@ test "replay file rejects bad count short length and oversized input" {
     defer a.free(oversized_path);
     try tmp.dir.writeFile(io, .{ .sub_path = "oversized", .data = oversized });
     try std.testing.expectError(protocol.Error.Unsupported, readReplay(a, io, oversized_path));
+}
+
+test "memory sink evicts oldest messages beyond bound" {
+    const a = std.testing.allocator;
+    var sink = MemorySink.init(a);
+    defer sink.deinit();
+    for (0..max_retained_messages + 1) |i| {
+        var sequence: [8]u8 = undefined;
+        std.mem.writeInt(u64, &sequence, i, .little);
+        _ = try sink.send(.{
+            .flags = 0,
+            .message_type = protocol.Message.hello,
+            .sequence = 0,
+            .ack_sequence = 0,
+            .session_id = 1,
+            .timestamp_ns = 0,
+        }, &sequence);
+    }
+    try std.testing.expectEqual(max_retained_messages, sink.messages.items.len);
+    try std.testing.expectEqual(@as(u64, 2), (try protocol.decodeEnvelope(sink.messages.items[0])).envelope.sequence);
+    try std.testing.expectEqual(@as(u64, max_retained_messages + 1), (try protocol.decodeEnvelope(sink.messages.items[max_retained_messages - 1])).envelope.sequence);
 }

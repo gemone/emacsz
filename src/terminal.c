@@ -701,10 +701,18 @@ extern int proto_ui_frame_create (uint64_t, uint64_t, uint64_t *);
 extern int proto_ui_frame_destroy (uint64_t, uint64_t);
 extern int proto_ui_terminal_destroy (uint64_t, uint64_t);
 extern int proto_ui_frame_update_begin (uint64_t, uint64_t);
+extern int proto_ui_frame_update_cancel (uint64_t, uint64_t);
 extern int proto_ui_window_create (uint64_t, uint64_t, uint64_t *);
+extern int proto_ui_window_geometry (uint64_t, uint64_t, uint64_t,
+                                     int, int, int, int);
+extern int proto_ui_frame_row (uint64_t, uint64_t, uint64_t,
+                               uint32_t, uint32_t,
+                               int, int, int, int, int, int, int, int);
+#ifdef HAVE_WINDOW_SYSTEM
 extern int proto_ui_frame_cursor (uint64_t, uint64_t, uint64_t,
                                   int, int, int, int,
                                   unsigned char, bool, bool);
+#endif
 extern int proto_ui_frame_flush (uint64_t, uint64_t, int, int);
 extern int proto_ui_frame_update_count (uint64_t);
 
@@ -806,16 +814,48 @@ proto_window_id (struct frame *frame, struct window *window)
 }
 
 static void
+proto_after_update_window_line (struct window *window,
+                                struct glyph_row *row)
+{
+  struct frame *frame = XFRAME (WINDOW_FRAME (window));
+  struct proto_output *output = FRAME_PROTO_OUTPUT (frame);
+  if (!output || !output->update_active)
+    return;
+  uint64_t window_id = proto_window_id (frame, window);
+  if (window_id == 0)
+    return;
+  uint32_t row_index = (uint32_t) MATRIX_ROW_VPOS (row,
+                                                   window->desired_matrix);
+  proto_ui_frame_row (output->session_id, output->frame_id, window_id,
+                      row_index, 0, row->x, row->y,
+                      row->pixel_width, row->height, row->ascent,
+                      row->height - row->ascent, row->y + row->ascent,
+                      row->visible_height);
+}
+
+static void
 proto_update_window_begin (struct window *window)
 {
   struct frame *frame = XFRAME (WINDOW_FRAME (window));
   struct proto_output *output = FRAME_PROTO_OUTPUT (frame);
   if (!output || output->frame_id == 0)
     return;
+  uint64_t window_id = proto_window_id (frame, window);
+  if (window_id == 0)
+    return;
+  if (proto_ui_window_geometry (output->session_id, window_id,
+                                output->frame_id,
+                                WINDOW_LEFT_PIXEL_EDGE (window),
+                                WINDOW_TOP_PIXEL_EDGE (window),
+                                WINDOW_PIXEL_WIDTH (window),
+                                WINDOW_PIXEL_HEIGHT (window)) != 0)
+    return;
   if (proto_ui_frame_update_begin (output->session_id, output->frame_id) != 0)
     return;
   output->update_active = true;
 }
+
+#ifdef HAVE_WINDOW_SYSTEM
 
 static void
 proto_draw_window_cursor (struct window *window,
@@ -837,29 +877,39 @@ proto_draw_window_cursor (struct window *window,
                          (unsigned char) cursor_type, on_p, active_p);
 }
 
+#endif
+
 static void
 proto_flush_display (struct frame *frame)
 {
   struct proto_output *output = FRAME_PROTO_OUTPUT (frame);
   if (!output || !output->update_active)
     return;
-  if (proto_ui_frame_flush (output->session_id, output->frame_id,
-                            FRAME_PIXEL_WIDTH (frame),
-                            FRAME_PIXEL_HEIGHT (frame)) != 0)
-    return;
+  int rc = proto_ui_frame_flush (output->session_id, output->frame_id,
+                                 FRAME_PIXEL_WIDTH (frame),
+                                 FRAME_PIXEL_HEIGHT (frame));
   output->update_active = false;
+  if (rc != 0)
+    {
+      proto_ui_frame_update_cancel (output->session_id, output->frame_id);
+      output->capture_failed = true;
+    }
 }
 
 static struct redisplay_interface proto_redisplay_interface = {
   .update_window_begin_hook = proto_update_window_begin,
+  .after_update_window_line_hook = proto_after_update_window_line,
   .update_window_end_hook = NULL,
   .flush_display = proto_flush_display,
+#ifdef HAVE_WINDOW_SYSTEM
   .draw_window_cursor = proto_draw_window_cursor,
+#endif
 };
 
 static void
 proto_capture_frame_update (struct frame *frame)
 {
+  struct frame *f = frame;
   struct proto_output *output = FRAME_PROTO_OUTPUT (frame);
   if (!output)
     error ("proto-ui frame is not initialized");
@@ -867,17 +917,41 @@ proto_capture_frame_update (struct frame *frame)
                                    output->frame_id) != 0)
     error ("proto-ui frame update begin failed");
   output->update_active = true;
-  if (proto_ui_frame_flush (output->session_id, output->frame_id,
-                            FRAME_PIXEL_WIDTH (frame),
-                            FRAME_PIXEL_HEIGHT (frame)) != 0)
-    error ("proto-ui frame update flush failed");
+  output->capture_failed = false;
+  struct window *window = XWINDOW (f->root_window);
+  uint64_t window_id = proto_window_id (f, window);
+  if (window_id != 0
+      && proto_ui_frame_row (output->session_id, output->frame_id, window_id,
+                             0, 0, 0, 0, FRAME_PIXEL_WIDTH (f),
+                             FRAME_LINE_HEIGHT (f), FRAME_LINE_HEIGHT (f), 0,
+                             FRAME_LINE_HEIGHT (f), FRAME_LINE_HEIGHT (f)) != 0)
+    {
+      output->update_active = false;
+      proto_ui_frame_update_cancel (output->session_id, output->frame_id);
+      error ("proto-ui frame row capture failed");
+    }
+  int rc = proto_ui_frame_flush (output->session_id, output->frame_id,
+                                 FRAME_PIXEL_WIDTH (frame),
+                                 FRAME_PIXEL_HEIGHT (frame));
   output->update_active = false;
+  if (rc != 0)
+    {
+      proto_ui_frame_update_cancel (output->session_id, output->frame_id);
+      error ("proto-ui frame update flush failed");
+    }
+  if (output->capture_failed)
+    {
+      output->update_active = false;
+      proto_ui_frame_update_cancel (output->session_id, output->frame_id);
+      error ("proto-ui frame row capture exceeded limit");
+    }
 }
 
 DEFUN ("proto-ui-capture-frame-update", Fproto_ui_capture_frame_update,
        Sproto_ui_capture_frame_update, 1, 1, 0,
-       doc: /* Capture one synthetic FRAME_UPDATE for a lifecycle-only proto FRAME.
-This W4a gate proves the redisplay-to-EUP encoder path without rendering.  */)
+       doc: /* Capture one synthetic FRAME_UPDATE for a headless proto FRAME.
+The update carries W4b window/row metadata and proves the redisplay-to-EUP
+encoder path without rendering.  */)
   (Lisp_Object frame)
 {
   struct frame *f = decode_live_frame (frame);
@@ -892,7 +966,7 @@ DEFUN ("proto-ui-create-terminal", Fproto_ui_create_terminal,
        Sproto_ui_create_terminal, 0, 0, 0,
        doc: /* Create the headless EUP terminal used by proto-ui.
 Return the terminal object.  Repeated calls return the same live terminal.
-This is W3 lifecycle plumbing; it does not yet create proto frames.  */)
+Use `proto-ui-create-frame' to create a frame on this terminal.  */)
   (void)
 {
   uint64_t session_id, terminal_id;
@@ -930,10 +1004,10 @@ This is W3 lifecycle plumbing; it does not yet create proto frames.  */)
 
 DEFUN ("proto-ui-create-frame", Fproto_ui_create_frame,
        Sproto_ui_create_frame, 0, 0, 0,
-       doc: /* Create a lifecycle-only headless frame owned by proto-ui.
+       doc: /* Create a headless frame owned by proto-ui.
 The frame has the `proto' output identity and a stable EUP frame ID.
-It is invisible and intentionally has no face or render state yet; W4
-adds redisplay capture.  This is W3c lifecycle plumbing.  */)
+It is invisible and intentionally has no face or render state yet.  W4b
+captures metadata but does not render.  */)
   (void)
 {
   if (!proto_terminal || !proto_terminal->name)

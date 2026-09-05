@@ -26,15 +26,16 @@ Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existin
 | Memory sink and replay-file transport | Partial |
 | SDL3 frontend design | Documented |
 | Performance baseline | Documented |
-| Build option `-Dproto-ui` | W2 registration, W3a lifecycle identity, W3b terminal lifecycle |
+| Build option `-Dproto-ui` | W2 registration, W3a lifecycle identity, W3b terminal lifecycle, W4b window/row metadata |
 | W2 registration seam | Approved |
 | W3a lifecycle identity | Approved |
 | W3b terminal lifecycle | Approved |
 | W3c lifecycle-only frame objects | Approved |
 | W4a redisplay begin/cursor/flush capture | Approved |
+| W4b window/row metadata capture | Approved |
 | Automated W3c frame smoke | Implemented |
 | `output_proto` terminal | Approved |
-| Redisplay capture | Not implemented |
+| Redisplay capture | Partial: W4a synthetic + W4b window/row metadata |
 | Resource model | Not implemented |
 | SDL3 frontend | Not implemented |
 | Real SDL3 Emacs smoke test | Not achieved |
@@ -252,7 +253,7 @@ Review gates:
 
 Automated gate: `zig build -Dproto-ui=true proto-ui-smoke`.
 
-### W4a — Synthetic redisplay capture foundation (in review)
+### W4a — Synthetic redisplay capture foundation (approved)
 
 Goal: prove the first redisplay-interface-to-EUP path without rendering.
 
@@ -269,46 +270,63 @@ Deliberate limitation: update-end is a no-op in W4a.  Glyph, face, font,
 image, partial-damage, and real redisplay capture remain W4b/W4c.
 
 
-### W4b — Full redisplay capture
+### W4b — Window and row metadata capture (approved)
 
-Goal: make normal redisplay visible in EUP.
+Goal: add the first real after-update window and row metadata capture without
+rendering or claiming full redisplay parity.
 
 Tasks:
 
-1. Implement update begin/end capture.
-2. Implement window geometry and zone capture.
-3. Implement row creation/update/deletion.
-4. Implement clear-area damage.
-5. Implement cursor capture.
-6. Implement frame flush boundary.
-7. Encode these into composite `FRAME_UPDATE`.
-8. Add redisplay replay fixtures.
+1. Maintain stable proto window IDs and geometry.
+2. Capture zero-based row index and row metrics.
+3. Encode bounded WINDOWS/ROWS sections in `FRAME_UPDATE`.
+4. Mark row-cap failures and reject the update.
+5. Remove window/row state on frame/terminal destruction.
 
-Deliverables:
-
-* Backend redisplay interface.
-* Damage accumulator.
-* `FRAME_UPDATE` encoder integration.
+Deliberate limitations: no glyph runs, face/font/image resources, partial row
+updates, clear-area hooks, replay fixtures, or update-end semantics.
 
 Acceptance:
 
-A headless test inserts text, runs redisplay, and asserts:
+A metadata-only backend gate proves:
 
 ```text
 update begin
-window patch
-row update
-glyph run
-cursor update
-damage
-flush
+stable window ID and geometry
+zero-based row index and metrics
+ordered WINDOWS/ROWS/DAMAGE/PRESENT_HINT sections
+zero row flags and zero reserved bytes
+256-row cap; exceeding it marks capture failed
+rejected/cancelled flush commits no partial update
+frame/window removal clears metadata
 ```
 
 Review gates:
 
-1. Redisplay hook coverage.
-2. Atomic update correctness.
-3. Absence of buffer text layout in frontend.
+1. `zig build -Dproto-ui=true proto-ui-unit` on native Linux, musl Linux, and
+   Windows targets.
+2. `zig build -Dproto-ui=true proto-ui-smoke`.
+3. Atomic-update and cleanup assertions.
+4. Absence of glyph, face, font, image, and buffer-text layout claims.
+
+### W4c — Full redisplay capture (pending)
+
+Goal: cover the full redisplay-interface surface without rendering.
+
+Tasks:
+
+1. Capture update-begin/end and frame flush boundaries for real frames.
+2. Capture row creation/update/deletion and clear-area damage.
+3. Capture partial damage and coalescing.
+4. Preserve glyph matrices, cursor, scrolling, truncation, continuation, and
+   BiDi visual-order semantics for later encoding.
+5. Add real-frame redisplay fixtures and replay captures.
+6. Keep failure atomic: reject incomplete updates.
+
+Acceptance:
+
+Real frame redisplay emits coherent `FRAME_UPDATE` metadata and damage without
+rendering.  Glyph, face, font, and image resource capture remain W5.
 
 ### W5 — Glyph, face, and font capture
 

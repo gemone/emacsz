@@ -2,7 +2,7 @@
 
 Status: normative design baseline
 Protocol: EUP v1
-Implementation status: specification complete. W1-W3c approved: protocol/transport, registration, terminal lifecycle, and lifecycle-only frame objects. W4a in review: synthetic `FRAME_UPDATE` capture (cursor, full damage, present hint); real redisplay, rendering, and graphic predicates remain W4+.
+Implementation status: specification complete. W1-W3c approved: protocol/transport, registration, terminal lifecycle, and lifecycle-only frame objects. W4a approved: synthetic `FRAME_UPDATE` capture. W4b approved: real after-update window geometry and row metadata, capped at 256 rows. Glyphs/faces/fonts/images, rendering, and graphic predicates remain W4c+.
 
 ## 1. Purpose
 
@@ -96,11 +96,20 @@ Proto-UI adds a new terminal type:
 output_proto
 ```
 
-Current W4a lifecycle/redisplay contract: real, invisible Emacs frame objects
-exist and can emit one synthetic `FRAME_UPDATE` containing cursor state, full
-damage, and present hints.  Rendering, generic graphic `make-frame`, and
-`display-graphic-p` remain disabled until later W4 slices.  W4a intentionally
-captures one cursor per frame and emits no row/glyph/face/font tables.
+Current lifecycle/redisplay contract by implementation slice:
+
+* **W3c** creates real, invisible Emacs frame objects.
+* **W4a** emits one synthetic `FRAME_UPDATE` with one captured cursor,
+  conservative full-frame damage, and a present hint.
+* **W4b** captures real after-update window geometry and row metadata.  A
+  capped update retains at most 256 current-update row records; exceeding the
+  cap marks capture failed and rejects/cancels the flush.  Windows and rows are
+  upserts for the current update, not a complete historical UI table.  Glyph,
+  face, font, and image sections remain absent.
+
+Rendering, generic graphic `make-frame`, and `display-graphic-p` remain
+disabled until later W4 slices.  Cursor emission is conditional on the
+redisplay path; headless W4b capture is not a graphic-frame contract.
 
 Final W4+ graphic contract: a completed proto frame will be a real graphic
 Emacs frame; normal `make-frame` and `display-graphic-p` will return the
