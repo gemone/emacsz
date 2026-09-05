@@ -326,6 +326,12 @@ pub const Scene = struct {
         self.stats = .{};
     }
 
+    /// Discards display state before an authenticated RESYNC_BEGIN.  Allocator
+    /// identity is preserved so the same scene can continue after recovery.
+    pub fn resetForResync(self: *Scene) void {
+        self.deinit();
+    }
+
     pub fn apply(self: *Scene, message: []const u8) Error!void {
         const payload = try protocol.decodeEnvelope(message);
         const previous_session = self.session_id;
@@ -729,4 +735,23 @@ test "scene replacement is allocation atomic" {
     scene.allocator = a;
     try std.testing.expect(successful);
     try std.testing.expectEqual(@as(i32, 11), scene.rows.items[0].width);
+}
+
+test "resync reset allows a coherent scene replay" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+    const first = try updateMessage(a, 2, 7, 7, 10, 0);
+    defer a.free(first);
+    try scene.apply(first);
+    try std.testing.expectEqual(@as(u64, 1), scene.stats.frame_updates);
+
+    scene.resetForResync();
+    try std.testing.expectEqual(@as(u64, 0), scene.stats.frame_updates);
+    try scene.apply(create);
+    try scene.apply(first);
+    try std.testing.expectEqual(@as(u64, 1), scene.stats.frame_updates);
 }

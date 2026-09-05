@@ -50,7 +50,7 @@ const SDL_Rect = extern struct {
     h: c_int,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -63,6 +63,7 @@ const Config = struct {
     module_path: []const u8 = "",
     facts_path: []const u8 = "",
     auto_quit_ms: u32 = 250,
+    resync_sessions: u32 = 1,
 };
 
 const FrameFacts = facts.FrameFacts;
@@ -216,77 +217,111 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     const address = try std.Io.net.UnixAddress.init(config.endpoint);
     var server = try address.listen(io, .{ .kernel_backlog = 1 });
     defer server.deinit(io);
-    var stream = try server.accept(io);
-    defer stream.close(io);
 
-    var read_buffer: [16 * 1024]u8 = undefined;
-    var write_buffer: [16 * 1024]u8 = undefined;
-    var reader = stream.reader(io, &read_buffer);
-    var writer = stream.writer(io, &write_buffer);
-
-    var hello_bytes: [live.handshake_size]u8 = undefined;
-    try reader.interface.readSliceAll(&hello_bytes);
-    const hello = try live.decodeHandshake(&hello_bytes);
-    if (hello.kind != .client_hello or !live.tokenEql(&config.token, &hello.token))
-        return error.InvalidHandshake;
-    var ready: [live.handshake_size]u8 = undefined;
-    live.encodeHandshake(.{ .kind = .server_ready }, &ready);
-    try writer.interface.writeAll(&ready);
-    try writer.interface.flush();
-
-    var acks = live.AckTracker.init(1);
-    var waited_ms: u32 = 0;
-    var facts_wait_ms: u32 = 0;
     var shared = SharedFacts{};
     var scene = frontend.Scene.init(gpa);
     defer scene.deinit();
     var published: ?facts.FrameFacts = null;
     const publish_duration = @max(100, config.auto_quit_ms / 2);
-    while (scene.stats.frame_updates == 0 and facts_wait_ms < 1000) : (facts_wait_ms += 20) {
-        try pollEmacsFacts(&shared, gpa, io, config.facts_path);
-        if (shared.version != 0) break;
-        try io.sleep(.fromMilliseconds(20), .awake);
-    }
-    while (waited_ms < publish_duration) {
-        const facts_bytes = std.Io.Dir.cwd().readFileAlloc(io, config.facts_path, gpa, .limited(64 * 1024)) catch |err| switch (err) {
-            error.FileNotFound => {
-                try io.sleep(.fromMilliseconds(20), .awake);
-                waited_ms += 20;
-                continue;
-            },
-            else => return err,
-        };
-        defer gpa.free(facts_bytes);
-        const snapshot = try facts.parse(gpa, facts_bytes);
-        if (published) |previous| {
-            if (facts.eql(previous, snapshot)) {
-                try io.sleep(.fromMilliseconds(20), .awake);
-                waited_ms += 20;
-                continue;
+
+    for (0..@max(1, config.resync_sessions)) |session_index| {
+        var stream = try server.accept(io);
+        defer stream.close(io);
+        var read_buffer: [16 * 1024]u8 = undefined;
+        var write_buffer: [16 * 1024]u8 = undefined;
+        var reader = stream.reader(io, &read_buffer);
+        var writer = stream.writer(io, &write_buffer);
+
+        var hello_bytes: [live.handshake_size]u8 = undefined;
+        try reader.interface.readSliceAll(&hello_bytes);
+        const hello = try live.decodeHandshake(&hello_bytes);
+        if (hello.kind != .client_hello or !live.tokenEql(&config.token, &hello.token))
+            return error.InvalidHandshake;
+        var ready: [live.handshake_size]u8 = undefined;
+        live.encodeHandshake(.{ .kind = .server_ready }, &ready);
+        try writer.interface.writeAll(&ready);
+        try writer.interface.flush();
+
+        const request = try readControlExact(&reader);
+        if (request.kind != .resync_request or request.sequence != 1)
+            return error.InvalidResyncRequest;
+        scene.resetForResync();
+        try live.writeControl(&writer.interface, .{ .kind = .resync_begin, .sequence = 1 });
+        try writer.interface.flush();
+
+        var facts_wait_ms: u32 = 0;
+        while (shared.version == 0 and facts_wait_ms < 1000) : (facts_wait_ms += 20) {
+            try pollEmacsFacts(&shared, gpa, io, config.facts_path);
+            if (shared.version != 0) break;
+            try io.sleep(.fromMilliseconds(20), .awake);
+        }
+        if (shared.facts == null) return error.NoEmacsFacts;
+        published = shared.facts;
+        var acks = live.AckTracker.init(1);
+        try sendSnapshotMessages(gpa, published.?, &scene, &acks, &reader, &writer);
+        const complete_sequence = scene.next_sequence.? - 1;
+        try live.writeControl(&writer.interface, .{ .kind = .resync_complete, .sequence = complete_sequence });
+        try writer.interface.flush();
+
+        if (session_index + 1 < @max(1, config.resync_sessions)) continue;
+        var waited_ms: u32 = 0;
+        while (waited_ms < publish_duration) {
+            const facts_bytes = std.Io.Dir.cwd().readFileAlloc(io, config.facts_path, gpa, .limited(64 * 1024)) catch |err| switch (err) {
+                error.FileNotFound => {
+                    try io.sleep(.fromMilliseconds(20), .awake);
+                    waited_ms += 20;
+                    continue;
+                },
+                else => return err,
+            };
+            defer gpa.free(facts_bytes);
+            const snapshot = try facts.parse(gpa, facts_bytes);
+            if (published) |previous| {
+                if (facts.eql(previous, snapshot)) {
+                    try io.sleep(.fromMilliseconds(20), .awake);
+                    waited_ms += 20;
+                    continue;
+                }
             }
+            published = snapshot;
+            var change_acks = live.AckTracker.init(1);
+            try sendSnapshotMessages(gpa, snapshot, &scene, &change_acks, &reader, &writer);
+            try io.sleep(.fromMilliseconds(100), .awake);
+            waited_ms += 100;
         }
-        published = snapshot;
-        var wire_messages: std.ArrayList([]const u8) = .empty;
-        defer {
-            for (wire_messages.items) |message| gpa.free(message);
-            wire_messages.deinit(gpa);
-        }
-        try facts.appendWireSnapshot(gpa, snapshot, &scene, &wire_messages);
-        for (wire_messages.items) |message| {
-            const envelope = (try protocol.decodeEnvelope(message)).envelope;
-            try acks.markSent(envelope.sequence);
-            try live.writeFrame(&writer.interface, message);
-            try writer.interface.flush();
-            var control_bytes: [live.control_size]u8 = undefined;
-            try reader.interface.readSliceAll(&control_bytes);
-            const control = try live.decodeControl(&control_bytes);
-            if (control.kind != .ack) return error.ExpectedAck;
-            try acks.ack(control.sequence);
-        }
-        try io.sleep(.fromMilliseconds(100), .awake);
-        waited_ms += 100;
     }
     if (scene.stats.frame_updates == 0) return error.NoEmacsFacts;
+}
+
+fn readControlExact(reader: anytype) !live.Control {
+    var bytes: [live.control_size]u8 = undefined;
+    try reader.interface.readSliceAll(&bytes);
+    return live.decodeControl(&bytes);
+}
+
+fn sendSnapshotMessages(
+    gpa: std.mem.Allocator,
+    snapshot: facts.FrameFacts,
+    scene: *frontend.Scene,
+    acks: *live.AckTracker,
+    reader: anytype,
+    writer: anytype,
+) !void {
+    var messages: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (messages.items) |message| gpa.free(message);
+        messages.deinit(gpa);
+    }
+    try facts.appendWireSnapshot(gpa, snapshot, scene, &messages);
+    for (messages.items) |message| {
+        const envelope = (try protocol.decodeEnvelope(message)).envelope;
+        try acks.markSent(envelope.sequence);
+        try live.writeFrame(&writer.interface, message);
+        try writer.interface.flush();
+        const control = try readControlExact(reader);
+        if (control.kind != .ack) return error.ExpectedAck;
+        try acks.ack(control.sequence);
+    }
 }
 
 fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !frontend.Scene {
@@ -322,8 +357,29 @@ fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !f
     var zero_token: live.Token = [_]u8{0} ** live.token_len;
     if (!live.tokenEql(&zero_token, &ready.token)) return error.InvalidHandshake;
 
+    const use_resync = config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect;
     var scene = frontend.Scene.init(gpa);
     errdefer scene.deinit();
+    var resync_complete = false;
+    if (use_resync) {
+        try live.writeControl(&writer.interface, .{ .kind = .resync_request, .sequence = 1 });
+        try writer.interface.flush();
+        const begin = try readControlExact(&reader);
+        if (begin.kind != .resync_begin or begin.sequence != 1) return error.InvalidResyncRequest;
+        scene.resetForResync();
+        for (0..2) |_| {
+            const message = (try live.readFrame(&reader.interface, gpa)) orelse return error.IncompleteResync;
+            defer gpa.free(message);
+            const envelope = (try protocol.decodeEnvelope(message)).envelope;
+            try scene.apply(message);
+            try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
+            try writer.interface.flush();
+        }
+        const complete = try readControlExact(&reader);
+        if (complete.kind != .resync_complete) return error.IncompleteResync;
+        if (complete.sequence != scene.next_sequence.? - 1) return error.InvalidSequence;
+        resync_complete = true;
+    }
     while (true) {
         const message = (try live.readFrame(&reader.interface, gpa)) orelse break;
         defer gpa.free(message);
@@ -331,7 +387,9 @@ fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !f
         try scene.apply(message);
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
+        if (use_resync and !resync_complete) return error.IncompleteResync;
     }
+    if (use_resync and !resync_complete) return error.IncompleteResync;
     if (scene.stats.frame_updates == 0) return error.NoFrameUpdate;
     return scene;
 }
@@ -409,6 +467,70 @@ fn renderFacts(snapshot: FrameFacts, renderer: *SDL_Renderer, window: *SDL_Windo
     if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
 }
 
+fn runEmacsEpxlSession(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    config: *Config,
+    sessions: u32,
+) !frontend.Scene {
+    var token_bytes: [8]u8 = undefined;
+    try io.randomSecure(&token_bytes);
+    try io.randomSecure(&config.token);
+    const suffix = std.fmt.bytesToHex(token_bytes, .lower);
+    const private_dir = try std.fmt.allocPrint(gpa, ".zig-cache/proto-ui-epxl-{s}", .{suffix});
+    errdefer gpa.free(private_dir);
+    const directory_permissions: std.Io.Dir.Permissions = if (native_os == .windows)
+        .default_dir
+    else
+        @enumFromInt(0o700);
+    try std.Io.Dir.cwd().createDir(io, private_dir, directory_permissions);
+    errdefer std.Io.Dir.cwd().deleteTree(io, private_dir) catch {};
+    config.token_path = try std.fmt.allocPrint(gpa, "{s}/token", .{private_dir});
+    config.endpoint = try std.fmt.allocPrint(gpa, "{s}/live.sock", .{private_dir});
+    const current_dir = try std.process.currentPathAlloc(io, gpa);
+    defer gpa.free(current_dir);
+    const absolute_module_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ current_dir, config.module_path });
+    defer gpa.free(absolute_module_path);
+    const resync_sessions_arg = try std.fmt.allocPrint(gpa, "--resync-sessions={d}", .{sessions});
+    defer gpa.free(resync_sessions_arg);
+    config.facts_path = try std.fmt.allocPrint(gpa, "{s}/.zig-cache/proto-ui-epxl-{s}/facts.json", .{ current_dir, suffix });
+    try writeTokenFile(io, config.token_path, &config.token);
+    config.resync_sessions = sessions;
+
+    var child = try std.process.spawn(io, .{
+        .argv = &.{
+            config.self_exe,
+            "--facts-publisher",
+            "--emacs",
+            config.emacs_path,
+            "--module",
+            absolute_module_path,
+            "--facts",
+            config.facts_path,
+            "--endpoint",
+            config.endpoint,
+            "--token-file",
+            config.token_path,
+            resync_sessions_arg,
+            "--auto-quit-ms=500",
+        },
+    });
+    errdefer child.kill(io);
+    var loaded: ?frontend.Scene = null;
+    errdefer if (loaded != null) loaded.?.deinit();
+    for (0..sessions) |_| {
+        const session = try runLiveFrontend(gpa, io, config);
+        if (loaded != null) loaded.?.deinit();
+        loaded = session;
+        try io.sleep(.fromMilliseconds(100), .awake);
+    }
+    const term = try child.wait(io);
+    if (term != .exited or term.exited != 0) return error.PublisherFailed;
+    std.Io.Dir.cwd().deleteTree(io, private_dir) catch {};
+    gpa.free(private_dir);
+    return loaded.?;
+}
+
 fn parseFacts(gpa: std.mem.Allocator, bytes: []const u8) !FrameFacts {
     return facts.parse(gpa, bytes);
 }
@@ -444,6 +566,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         const replay_prefix = "--replay=";
         const quit_prefix = "--auto-quit-ms=";
         const endpoint_prefix = "--endpoint=";
+        const resync_sessions_prefix = "--resync-sessions=";
         if (std.mem.eql(u8, arg, "--replay")) {
             try setString(gpa, &config.replay_path, args.next() orelse return error.MissingReplayPath);
         } else if (std.mem.startsWith(u8, arg, replay_prefix)) {
@@ -452,6 +575,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             try setString(gpa, &config.endpoint, args.next() orelse return error.MissingEndpoint);
         } else if (std.mem.startsWith(u8, arg, endpoint_prefix)) {
             try setString(gpa, &config.endpoint, arg[endpoint_prefix.len..]);
+        } else if (std.mem.startsWith(u8, arg, resync_sessions_prefix)) {
+            config.resync_sessions = try std.fmt.parseInt(u32, arg[resync_sessions_prefix.len..], 10);
         } else if (std.mem.eql(u8, arg, "--token-file")) {
             try setString(gpa, &config.token_path, args.next() orelse return error.MissingTokenFile);
         } else if (std.mem.eql(u8, arg, "--auto-quit-ms")) {
@@ -472,6 +597,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .facts_publisher;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-smoke")) {
             config.mode = .emacs_epxl;
+        } else if (std.mem.eql(u8, arg, "--emacs-epxl-reconnect-smoke")) {
+            config.mode = .emacs_epxl_reconnect;
         } else if (std.mem.eql(u8, arg, "--facts")) {
             try setString(gpa, &config.facts_path, args.next() orelse return error.MissingFactsPath);
         } else {
@@ -610,59 +737,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         },
         .publisher => unreachable,
         .emacs => unreachable,
-        .emacs_epxl => blk: {
-            var token_bytes: [8]u8 = undefined;
-            try io.randomSecure(&token_bytes);
-            try io.randomSecure(&config.token);
-            const suffix = std.fmt.bytesToHex(token_bytes, .lower);
-            const private_dir = try std.fmt.allocPrint(gpa, ".zig-cache/proto-ui-epxl-{s}", .{suffix});
-            errdefer gpa.free(private_dir);
-            const directory_permissions: std.Io.Dir.Permissions = if (native_os == .windows)
-                .default_dir
-            else
-                @enumFromInt(0o700);
-            try std.Io.Dir.cwd().createDir(io, private_dir, directory_permissions);
-            errdefer std.Io.Dir.cwd().deleteTree(io, private_dir) catch {};
-            config.token_path = try std.fmt.allocPrint(gpa, "{s}/token", .{private_dir});
-            config.endpoint = try std.fmt.allocPrint(gpa, "{s}/live.sock", .{private_dir});
-            const current_dir = try std.process.currentPathAlloc(io, gpa);
-            defer gpa.free(current_dir);
-            const absolute_module_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ current_dir, config.module_path });
-            defer gpa.free(absolute_module_path);
-            config.facts_path = try std.fmt.allocPrint(gpa, "{s}/.zig-cache/proto-ui-epxl-{s}/facts.json", .{ current_dir, suffix });
-            try writeTokenFile(io, config.token_path, &config.token);
-            var child = try std.process.spawn(io, .{
-                .argv = &.{
-                    config.self_exe,
-                    "--facts-publisher",
-                    "--emacs",
-                    config.emacs_path,
-                    "--module",
-                    absolute_module_path,
-                    "--facts",
-                    config.facts_path,
-                    "--endpoint",
-                    config.endpoint,
-                    "--token-file",
-                    config.token_path,
-                    "--auto-quit-ms=500",
-                },
-            });
-            errdefer child.kill(io);
-            const loaded = runLiveFrontend(gpa, io, &config) catch |err| {
-                child.kill(io);
-                return err;
-            };
-            const term = try child.wait(io);
-            if (term != .exited or term.exited != 0) return error.PublisherFailed;
-            std.Io.Dir.cwd().deleteTree(io, private_dir) catch {};
-            gpa.free(private_dir);
-            break :blk loaded;
-        },
+        .emacs_epxl => try runEmacsEpxlSession(gpa, io, &config, 1),
+        .emacs_epxl_reconnect => try runEmacsEpxlSession(gpa, io, &config, 2),
         .facts_publisher => unreachable,
     };
     defer scene.deinit();
-    if (config.mode == .emacs_epxl and scene.stats.frame_updates != 2)
+    if ((config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect) and scene.stats.frame_updates != 2)
         return error.UnexpectedFactUpdateCount;
     if (scene.stats.frame_updates == 0) return error.NoFrameUpdate;
     if (scene.frame_header == null) return error.NoFrameHeader;

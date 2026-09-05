@@ -690,6 +690,29 @@ pub fn build(b: *std.Build) void {
             "Stream real Emacs facts through token-authenticated EPXL into SDL3",
         );
         sdl3_epxl_facts_step.dependOn(&run_sdl3_epxl_facts.step);
+
+        const run_sdl3_epxl_reconnect = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-reconnect-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=1000",
+        });
+        run_sdl3_epxl_reconnect.setCwd(b.path("."));
+        run_sdl3_epxl_reconnect.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_epxl_reconnect.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_epxl_reconnect.step.dependOn(step);
+        const sdl3_epxl_reconnect_step = b.step(
+            "sdl3-epxl-resync-smoke",
+            "Reconnect SDL3 and recover real Emacs facts with an authenticated resync",
+        );
+        sdl3_epxl_reconnect_step.dependOn(&run_sdl3_epxl_reconnect.step);
     }
     if (proto_frame_smoke_dep) |frame_step| {
         if (proto_sdl_fixture_dep) |fixture_step| fixture_step.dependOn(frame_step);

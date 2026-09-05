@@ -937,8 +937,15 @@ reserved          u32 (must be zero)
 
 `ACK` confirms processing of one EPXL EUP frame.  EPXL v1 uses a
 one-message sliding window: the publisher waits for ACK `N` before sending
-sequence `N+1`.  `RESYNC_*` kinds are frozen for wire compatibility; their
-full recovery state machine is future work.
+sequence `N+1`.
+
+The adapter facts profile uses the frozen controls for an initial-session
+resync.  After an authenticated hello, the frontend sends
+`RESYNC_REQUEST(sequence=1)`.  The publisher resets its scene, replies with
+`RESYNC_BEGIN(1)`, sends a complete `FRAME_CREATE` and `FRAME_UPDATE` under the
+same one-message ACK window, then sends `RESYNC_COMPLETE` with the last coherent
+sequence.  General sequence-gap, resource, history, and publisher-crash recovery
+remain future work.
 
 #### Security and limits
 

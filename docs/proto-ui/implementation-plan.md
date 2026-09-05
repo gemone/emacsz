@@ -60,7 +60,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | `output_proto` terminal | Rolled back with runtime integration |
 | Redisplay capture | Rolled back; adapter ABI v1 contract only |
 | Resource model | Not implemented |
-| SDL3 frontend | Partial: continuous real Emacs public-fact stream validated as EUP snapshots and rendered; no EPXL streaming, input, faces, or complete live recovery |
+| SDL3 frontend | Partial: token-authenticated EPXL facts streaming with producer coalescing and initial-session resync; no redisplay streaming, input, faces, or full recovery |
 | Real SDL3 Emacs smoke test | Not achieved |
 | Adapter-first C boundary | Required; no new inherited-C Proto-UI edits |
 | W9a independent SDL3 lifecycle smoke | Approved |
@@ -74,7 +74,8 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W9f continuous facts validated as EUP snapshots | Approved |
 | W9g authenticated EPXL continuous facts transport | Approved |
 | W9h real-fact producer coalescing | Approved |
-| Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in continuous Emacs public-fact modes; the Emacs mode is process/public-API observation, not EUP transport or redisplay-hook streaming |
+| W9i authenticated EPXL resync reconnect | Approved |
+| Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
 
 The workstream sections below retain their historical review records and
 implementation details.  The Current status table is authoritative when an
@@ -982,6 +983,41 @@ the changed frame-size transition.  Repeated unchanged facts must not create EUP
 frames.
 The smoke returns `UnexpectedFactUpdateCount` for any other count.
 
+### W9i — Authenticated EPXL resync reconnect (approved)
+
+Goal: prove that a second authenticated SDL frontend can reconnect to the same
+adapter-owned Emacs publisher and receive a coherent scene instead of stale or
+partial sequence state.
+
+Implemented:
+
+1. Added the EPXL initial-session recovery profile: the frontend sends
+   `RESYNC_REQUEST(1)`, the publisher validates authentication and sends
+   `RESYNC_BEGIN(1)`, emits a coherent `FRAME_CREATE` plus `FRAME_UPDATE`, and
+   closes with `RESYNC_COMPLETE` at the last coherent sequence.
+2. Added `frontend.Scene.resetForResync` so recovery discards old display state
+   while preserving the validated scene owner and allocator.
+3. The facts publisher now accepts a bounded number of sequential sessions,
+   resets its scene for each authenticated resync, assigns sequences from one,
+   ACKs every EUP frame, and then continues normal fact streaming on the final
+   session.
+4. `sdl3-epxl-resync-smoke` connects two SDL frontend sessions to one live
+   Emacs publisher, validates both complete snapshots, renders the final scene,
+   and cleans up the private token/socket/facts artifacts.
+
+This is an initial-session recovery profile for the bounded facts scene.  It
+does not yet detect arbitrary sequence gaps after normal traffic, recover
+resources, replay history, or recover a crashed publisher.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-smoke --summary all
+```
+
+Both sessions must complete `RESYNC_*` successfully and the final SDL3 scene
+must render two validated updates.
+
 ### W10 — GPU renderer path
 
 Goal: add optional acceleration without making it required.
@@ -1232,6 +1268,7 @@ zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-smoke
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-live-smoke
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-facts-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-smoke
 zig build -Dsdl3-frontend=true sdl3-ui-smoke
 zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke
 ```
