@@ -41,6 +41,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | SDL3 frontend design | Documented |
 | SDL3 window/renderer lifecycle | Implemented (independent frontend smoke) |
 | EUP replay scene client | Implemented (window/row/cursor geometry only) |
+| Local live EUP transport handshake | Implemented (token-authenticated Unix stream) |
 | Performance baseline | Documented |
 | Build option `-Dproto-ui` | Adapter-only EUP codec/transport, ABI/summary generation, unit tests, fake-host conformance, and boundary audit; no Emacs runtime integration |
 | W2 registration seam | Approved historically; runtime integration rolled back |
@@ -58,12 +59,13 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | `output_proto` terminal | Rolled back with runtime integration |
 | Redisplay capture | Rolled back; adapter ABI v1 contract only |
 | Resource model | Not implemented |
-| SDL3 frontend | Partial: EUP replay scene and window/renderer lifecycle; no live transport, input, faces, or Emacs frame |
+| SDL3 frontend | Partial: EUP replay/local live scene and window/renderer lifecycle; no Emacs seam, input, faces, or complete live recovery |
 | Real SDL3 Emacs smoke test | Not achieved |
 | Adapter-first C boundary | Required; no new inherited-C Proto-UI edits |
 | W9a independent SDL3 lifecycle smoke | Approved |
 | W9b SDL3 EUP replay scene renderer | Approved |
-| Build option `-Dsdl3-frontend` | Independent EUP-replay SDL3 renderer; no live transport or Emacs frame yet |
+| W9c-a local live EUP transport smoke | Approved |
+| Build option `-Dsdl3-frontend` | Independent EUP-replay/local live SDL3 renderer; no Emacs seam yet |
 
 The workstream sections below retain their historical review records and
 implementation details.  The Current status table is authoritative when an
@@ -685,18 +687,52 @@ zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke --summary all
 The smoke opens a real SDL3 window and reports one applied update with one
 window and 15 rows.  It does not connect to Emacs or imply final acceptance.
 
-### W9c — SDL3 live EUP transport session (planned)
+### W9c-a — Local live EUP transport smoke (approved)
 
-Goal: replace deterministic ERP1 replay input with an authenticated local live
-EUP transport owned outside inherited Emacs C source.
+Goal: prove an authenticated local stream can carry the same EUP messages that
+the replay path validates, without adding an Emacs seam.
+
+Implemented:
+
+1. `src/proto-ui/live.zig` freezes EPXL v1: a 44-byte handshake, two message
+   kinds, a 256-bit token, constant-time token comparison, and bounded
+   length-prefixed EUP frames up to 16 MiB.
+2. The SDL executable's `--publisher` mode reads an ERP1 source, listens on a
+   Unix stream endpoint, authenticates one client, sends the server-ready
+   handshake, and length-prefixes every EUP message.
+3. `sdl3-live-smoke` generates an ephemeral 256-bit token, creates a private
+   `0700` smoke directory and `0600` token file, starts the publisher as a
+   separate process, connects from the SDL frontend, verifies the token and
+   zero server-ready token, applies the live stream to the same scene validator,
+   and renders the resulting frame.  The private directory is removed on the
+   normal path and on post-spawn errors.
+
+Not yet implemented: full reconnect/resync recovery, dynamic adapter-owned
+publishing, frame coalescing/backpressure, and nonblocking Emacs redisplay.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-live-smoke --summary all
+```
+
+The smoke runs two OS processes over a private local Unix stream and renders
+one live session update.  The source remains deterministic until the adapter
+has a stable Emacs seam.
+
+### W9c-b — Complete SDL3 live EUP transport (planned)
+
+Goal: replace deterministic ERP1 source with a live adapter publisher and add
+recovery/backpressure semantics.
 
 Tasks:
 
-1. Freeze local transport handshake and session token handling.
-2. Implement frontend reconnect/resync behavior.
-3. Add a separately owned adapter-side transport publisher.
-4. Preserve frame-update coalescing and backpressure.
-5. Keep Emacs redisplay nonblocking when the frontend is slow or absent.
+1. Implement frontend reconnect/resync behavior.
+2. Add a separately owned adapter-side transport publisher with capability
+   negotiation.
+3. Preserve frame-update coalescing and backpressure.
+4. Keep Emacs redisplay nonblocking when the frontend is slow or absent.
+5. Add invalid-token, truncated-frame, reconnect, and slow-client tests.
 
 Review gates:
 
@@ -920,6 +956,7 @@ Final evidence:
 
 ```sh
 zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-live-smoke
 zig build -Dproto-ui=true proto-ui-replay-test
 zig build -Dproto-ui=true proto-ui-fuzz
 zig build -Dproto-ui=true proto-ui-bench
@@ -961,7 +998,7 @@ zig build -Dproto-ui=true proto-ui-replay-test
 zig build -Dproto-ui=true proto-ui-fuzz
 zig build -Dproto-ui=true proto-ui-bench
 zig build -Dproto-ui=true proto-ui-diff
-zig build -Dproto-ui=true proto-ui-live-session-test
+zig build -Dproto-ui=true proto-ui-live-recovery-test
 ```
 
 Step names may be adjusted during W1/W2, but each listed verification must have a final equivalent.

@@ -393,7 +393,7 @@ pub fn build(b: *std.Build) void {
     // it does not alter inherited Emacs C/Lisp source or enable runtime
     // integration.
     const enable_proto_ui = b.option(bool, "proto-ui", "Build adapter-only EUP codec/ABI and run conformance plus boundary tests") orelse false;
-    const enable_sdl3_frontend = b.option(bool, "sdl3-frontend", "Build the independent SDL3 EUP-replay renderer and smoke it") orelse false;
+    const enable_sdl3_frontend = b.option(bool, "sdl3-frontend", "Build independent SDL3 EUP replay/local-live renderer and smoke it") orelse false;
 
     // Target-derived flags.  `target` is resolved at line 64, so target.result
     // is in scope here; computing these early lets the make-docfile / doc-scan
@@ -544,6 +544,17 @@ pub fn build(b: *std.Build) void {
             "Generate an EUP replay, open SDL3, and render its scene",
         );
         sdl3_smoke_step.dependOn(&run_sdl3_smoke.step);
+
+        const run_sdl3_live = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_live.addArg("--live-smoke");
+        run_sdl3_live.addArg("--replay");
+        run_sdl3_live.addFileArg(replay_file);
+        run_sdl3_live.addArg("--auto-quit-ms=180");
+        const sdl3_live_step = b.step(
+            "sdl3-live-smoke",
+            "Run a token-authenticated local publisher and render its live EUP stream",
+        );
+        sdl3_live_step.dependOn(&run_sdl3_live.step);
     }
     // modules_runtime: the SHARED module runtime turns on once when EITHER
     // module switch is on AND the target can actually dlopen.  Gates the
@@ -4916,6 +4927,7 @@ pub fn build(b: *std.Build) void {
         \\
         \\SDL3 frontend path (opt-in: -Dsdl3-frontend=true):
         \\  zig build -Dsdl3-frontend=true sdl3-ui-smoke - independent EUP replay renderer
+        \\  zig build -Dsdl3-frontend=true sdl3-live-smoke - local authenticated live publisher + renderer
         \\
         \\Native-comp gccjit path (opt-in: -Dnative-comp=true, native glibc-Linux;
         \\  requires libgccjit). Coexists with -Dnative-comp-zig: when both are on,

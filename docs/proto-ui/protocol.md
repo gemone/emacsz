@@ -887,3 +887,48 @@ bytes              length bytes containing one full EUP envelope/payload
 ```
 
 The container is little-endian. Readers must enforce an implementation-defined maximum file size; W1 uses 64 MiB. A malformed count or length terminates the replay read without executing partial messages.
+
+### 28.7 EPXL v1 local live transport
+
+EPXL is an optional local Unix-stream framing for EUP.  It is not a replacement
+for EUP capability negotiation and carries only complete EUP messages.
+
+#### Handshake
+
+Both directions use one exact 44-byte record:
+
+```text
+magic             4 bytes ("EPXL")
+version           u16 (1, little endian)
+kind              u16 (1 = client hello, 2 = server ready)
+token             32 bytes
+```
+
+The publisher listens on an adapter-owned local endpoint and accepts one
+client.  The client sends `client hello` containing the 256-bit token.  The
+publisher compares the token with constant-time semantics, then replies with
+`server ready` and a zero token.  Any bad magic, version, kind, or token is a
+transport failure and closes the stream.
+
+#### Frame
+
+After the handshake, each EUP message is:
+
+```text
+length            u32 (little endian)
+message           length bytes containing one complete EUP envelope/payload
+```
+
+Length zero is invalid.  The canonical local-transport ceiling is 16 MiB per
+EUP message.  A malformed length closes the transport; receivers must not
+expose a partial message to the scene.
+
+#### Security and limits
+
+EPXL v1 is local trusted IPC, not a wide-area protocol.  The endpoint directory
+filesystem permissions are part of the security boundary.  Production publishers
+must generate a fresh token for every session, place the endpoint in a private
+directory, constrain the token file to owner-only access, and remove stale
+endpoints before listening.  Implementations must keep secret comparison
+constant time.  Compression, encryption, fragment reassembly, and
+external-network deployment remain transport-level future work.
