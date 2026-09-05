@@ -1127,6 +1127,34 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-input-sm
 The gate must apply the bounded input and verify that both text and cursor reflect
 the new public point.
 
+### W9m — Bounded editing intents (planned)
+
+Goal: extend the facts-profile input bridge beyond text insertion with a small,
+explicit set of non-text editing intents while keeping keymap compatibility out
+of scope.
+
+Tasks:
+
+1. Add a bounded `KEY_EVENT` facts-profile codec for pressed, unmodified
+   `backspace`.
+2. Use a separate frontend-to-core sequence, require transport ACK, and preserve
+   the existing one-message EUP ACK window.
+3. Replace the raw input artifact with a two-line adapter-owned action record:
+   `text` plus printable-ASCII payload, or `key` plus `backspace`.
+4. In the smoke bridge, apply text with public `insert` and backspace with public
+   `delete-char`; synchronize public window point after each action.
+5. Add an edit smoke that inserts `XY`, applies backspace, and verifies the final
+   public text is `XEmacs Proto-UI` with cursor at line 1, column 1.
+
+Deliberate exclusions: modifiers, repeats, commands, keymaps, macros, region and
+mark, undo, kill/yank, CJK/IME, and redisplay-owned cursor semantics.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-edit-smoke
+```
+
 ### W10 — GPU renderer path
 
 Goal: add optional acceleration without making it required.
