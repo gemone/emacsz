@@ -93,6 +93,12 @@ pub fn writeFrame(writer: anytype, message: []const u8) !void {
     try writer.writeAll(message);
 }
 
+pub fn writeControl(writer: anytype, control: Control) !void {
+    var bytes: [control_size]u8 = undefined;
+    encodeControl(control, &bytes);
+    try writer.writeAll(&bytes);
+}
+
 pub fn readFrame(reader: anytype, allocator: std.mem.Allocator) !?[]u8 {
     var header: [4]u8 = undefined;
     header[0] = reader.takeByte() catch |err| switch (err) {
@@ -169,4 +175,105 @@ test "stream frame reader separates clean eof from truncation" {
     try std.testing.expectEqual(max_frame_len, try decodeFrameLength(&maximum));
     std.mem.writeInt(u32, &maximum, max_frame_len + 1, .little);
     try std.testing.expectError(Error.InvalidEnvelope, decodeFrameLength(&maximum));
+}
+
+pub const control_magic = [4]u8{ 'E', 'P', 'X', 'C' };
+pub const control_size: usize = 20;
+
+pub const Control = struct {
+    kind: Kind,
+    sequence: u64,
+    version: u16 = version,
+
+    pub const Kind = enum(u16) {
+        ack = 1,
+        resync_request = 2,
+        resync_begin = 3,
+        resync_complete = 4,
+    };
+};
+
+pub fn encodeControl(control: Control, out: *[control_size]u8) void {
+    @memcpy(out[0..control_magic.len], &control_magic);
+    std.mem.writeInt(u16, out[4..6], control.version, .little);
+    std.mem.writeInt(u16, out[6..8], @intFromEnum(control.kind), .little);
+    std.mem.writeInt(u64, out[8..16], control.sequence, .little);
+    std.mem.writeInt(u32, out[16..20], 0, .little);
+}
+
+pub fn decodeControl(bytes: *const [control_size]u8) Error!Control {
+    if (!std.mem.eql(u8, bytes[0..control_magic.len], &control_magic)) return Error.InvalidEnvelope;
+    const version_value = std.mem.readInt(u16, bytes[4..6], .little);
+    if (version_value != version) return Error.HandshakeVersion;
+    const kind_value = std.mem.readInt(u16, bytes[6..8], .little);
+    const kind: Control.Kind = switch (kind_value) {
+        1 => .ack,
+        2 => .resync_request,
+        3 => .resync_begin,
+        4 => .resync_complete,
+        else => return Error.InvalidEnvelope,
+    };
+    const sequence = std.mem.readInt(u64, bytes[8..16], .little);
+    if (sequence == 0) return Error.InvalidSequence;
+    if (std.mem.readInt(u32, bytes[16..20], .little) != 0) return Error.InvalidEnvelope;
+    return .{ .kind = kind, .sequence = sequence, .version = version_value };
+}
+
+pub const AckTracker = struct {
+    next_sequence: ?u64 = null,
+    last_acked: ?u64 = null,
+    outstanding: usize = 0,
+    max_outstanding: usize,
+    blocked: bool = false,
+
+    pub fn init(max_outstanding: usize) AckTracker {
+        return .{ .max_outstanding = @max(max_outstanding, 1) };
+    }
+
+    pub fn canSend(self: AckTracker) bool {
+        return self.outstanding < self.max_outstanding;
+    }
+
+    pub fn markSent(self: *AckTracker, sequence: u64) Error!void {
+        if (self.outstanding >= self.max_outstanding) return Error.Unsupported;
+        if (self.next_sequence) |expected| {
+            if (sequence != expected) return Error.InvalidSequence;
+        }
+        if (self.next_sequence == null) self.next_sequence = sequence;
+        self.outstanding += 1;
+        self.blocked = self.outstanding == self.max_outstanding;
+    }
+
+    pub fn ack(self: *AckTracker, sequence: u64) Error!void {
+        if (self.outstanding == 0 or self.next_sequence == null or sequence != self.next_sequence.?)
+            return Error.InvalidSequence;
+        self.outstanding -= 1;
+        self.last_acked = sequence;
+        self.next_sequence = std.math.add(u64, sequence, 1) catch return Error.Unsupported;
+        self.blocked = self.outstanding == self.max_outstanding;
+    }
+};
+
+test "control codec round trip and validates reserved bytes" {
+    var bytes: [control_size]u8 = undefined;
+    encodeControl(.{ .kind = .ack, .sequence = 12 }, &bytes);
+    const control = try decodeControl(&bytes);
+    try std.testing.expectEqual(Control.Kind.ack, control.kind);
+    try std.testing.expectEqual(@as(u64, 12), control.sequence);
+    bytes[16] = 1;
+    try std.testing.expectError(Error.InvalidEnvelope, decodeControl(&bytes));
+}
+
+test "ack tracker enforces bounded in-flight traffic and contiguous order" {
+    var tracker = AckTracker.init(1);
+    try std.testing.expect(tracker.canSend());
+    try tracker.markSent(1);
+    try std.testing.expect(!tracker.canSend());
+    try std.testing.expectError(Error.Unsupported, tracker.markSent(2));
+    try std.testing.expectError(Error.InvalidSequence, tracker.ack(2));
+    try tracker.ack(1);
+    try std.testing.expect(tracker.canSend());
+    try tracker.markSent(2);
+    try tracker.ack(2);
+    try std.testing.expectEqual(@as(u64, 2), tracker.last_acked.?);
 }

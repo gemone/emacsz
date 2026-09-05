@@ -42,6 +42,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | SDL3 window/renderer lifecycle | Implemented (independent frontend smoke) |
 | EUP replay scene client | Implemented (window/row/cursor geometry only) |
 | Local live EUP transport handshake | Implemented (token-authenticated Unix stream) |
+| Live EUP ACK backpressure | Implemented (one in-flight message) |
 | Performance baseline | Documented |
 | Build option `-Dproto-ui` | Adapter-only EUP codec/transport, ABI/summary generation, unit tests, fake-host conformance, and boundary audit; no Emacs runtime integration |
 | W2 registration seam | Approved historically; runtime integration rolled back |
@@ -65,6 +66,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W9a independent SDL3 lifecycle smoke | Approved |
 | W9b SDL3 EUP replay scene renderer | Approved |
 | W9c-a local live EUP transport smoke | Approved |
+| W9c-b live ACK backpressure | Approved |
 | Build option `-Dsdl3-frontend` | Independent EUP-replay/local live SDL3 renderer; no Emacs seam yet |
 
 The workstream sections below retain their historical review records and
@@ -708,7 +710,7 @@ Implemented:
    normal path and on post-spawn errors.
 
 Not yet implemented: full reconnect/resync recovery, dynamic adapter-owned
-publishing, frame coalescing/backpressure, and nonblocking Emacs redisplay.
+publishing, frame coalescing, and nonblocking Emacs redisplay.
 
 Acceptance:
 
@@ -720,19 +722,66 @@ The smoke runs two OS processes over a private local Unix stream and renders
 one live session update.  The source remains deterministic until the adapter
 has a stable Emacs seam.
 
-### W9c-b — Complete SDL3 live EUP transport (planned)
+### W9c-b — Live ACK backpressure (approved)
 
-Goal: replace deterministic ERP1 source with a live adapter publisher and add
-recovery/backpressure semantics.
+Goal: prevent an unbounded publisher from outrunning the SDL frontend.
+
+Implemented:
+
+1. EPXL v1 defines a 20-byte control frame with `ACK`, `RESYNC_REQUEST`,
+   `RESYNC_BEGIN`, and `RESYNC_COMPLETE` kinds.  `ACK` is implemented.
+2. The publisher allows one outstanding EUP frame, waits for its contiguous
+   `ACK`, and rejects stale, duplicate, out-of-order, or unexpected control
+   frames with `AckTracker`.
+3. After the scene validates and atomically applies each live EUP message, the
+   frontend sends an `ACK` for that transport sequence.
+
+This is transport backpressure only; producer-side coalescing of superseded
+frame updates remains future work because final sequence assignment must happen
+after coalescing.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-live-smoke --summary all
+```
+
+The smoke completes only when both processes exchange contiguous EUP-sequence
+ACKs for every live message.
+
+### W9c-c — Live recovery and coalescing (planned)
+
+Goal: recover safely after transport interruption and avoid publishing superseded
+display work.
 
 Tasks:
 
-1. Implement frontend reconnect/resync behavior.
-2. Add a separately owned adapter-side transport publisher with capability
-   negotiation.
-3. Preserve frame-update coalescing and backpressure.
-4. Keep Emacs redisplay nonblocking when the frontend is slow or absent.
-5. Add invalid-token, truncated-frame, reconnect, and slow-client tests.
+1. Implement frontend reconnect with a new authenticated EPXL session.
+2. Request and receive resync snapshots using `RESYNC_REQUEST`, `RESYNC_BEGIN`,
+   and `RESYNC_COMPLETE`.
+3. Assign final EUP sequences after producer-side coalescing.
+4. Maintain one pending update per frame and drop only superseded frames.
+5. Add slow-client, disconnected-client, malformed-control, and interrupted-body
+   tests.
+
+Review gates:
+
+1. No partially applied or stale frame reaches the frontend scene.
+2. Sequence/resource recovery is deterministic.
+3. Publisher memory remains bounded.
+
+### W9c-d — Adapter-owned Emacs live publisher (planned)
+
+Goal: replace the deterministic ERP1 source with a live publisher fed by a
+stable, adapter-owned Emacs seam.
+
+Tasks:
+
+1. Select and implement an adapter-owned seam without inherited GNU Emacs C
+   edits.
+2. Publish authoritative Emacs display state over the existing EPXL ACK window.
+3. Keep Emacs redisplay nonblocking when the frontend is slow or absent.
+4. Verify process lifecycle, secret/token handling, and crash containment.
 
 Review gates:
 

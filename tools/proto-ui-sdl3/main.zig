@@ -169,10 +169,18 @@ fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
 
     const messages = try transport.readReplay(gpa, io, config.replay_path);
     defer transport.freeReplay(gpa, messages);
+    var acks = live.AckTracker.init(1);
     for (messages) |message| {
+        const envelope = (try protocol.decodeEnvelope(message)).envelope;
+        try acks.markSent(envelope.sequence);
         try live.writeFrame(&writer.interface, message);
+        try writer.interface.flush();
+        var control_bytes: [live.control_size]u8 = undefined;
+        try reader.interface.readSliceAll(&control_bytes);
+        const control = try live.decodeControl(&control_bytes);
+        if (control.kind != .ack) return error.ExpectedAck;
+        try acks.ack(control.sequence);
     }
-    try writer.interface.flush();
 }
 
 fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !frontend.Scene {
@@ -213,7 +221,10 @@ fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !f
     while (true) {
         const message = (try live.readFrame(&reader.interface, gpa)) orelse break;
         defer gpa.free(message);
+        const envelope = (try protocol.decodeEnvelope(message)).envelope;
         try scene.apply(message);
+        try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
+        try writer.interface.flush();
     }
     if (scene.stats.frame_updates == 0) return error.NoFrameUpdate;
     return scene;

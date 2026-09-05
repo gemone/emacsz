@@ -112,7 +112,8 @@ pub const IntegrationPoint = struct {
 pub const integration_points = [_]IntegrationPoint{
     .{ .id = "eup_codec", .owner = .protocol, .status = .implemented, .summary = "adapter-only EUP envelope, capability, and FRAME_UPDATE codec" },
     .{ .id = "transport", .owner = .adapter, .status = .implemented, .summary = "adapter-only bounded memory sink and ERP1 replay-file codec" },
-    .{ .id = "live_transport", .owner = .adapter, .status = .partial, .summary = "EPXL v1 local Unix handshake and frames; reconnect/coalescing/backpressure pending" },
+    .{ .id = "live_transport", .owner = .adapter, .status = .partial, .summary = "EPXL v1 local Unix handshake, frames, ACK backpressure; reconnect/coalescing pending" },
+    .{ .id = "live_backpressure", .owner = .adapter, .status = .partial, .summary = "one-message EPXL ACK window; reconnect/coalescing pending" },
     .{ .id = "adapter_abi", .owner = .adapter, .status = .partial, .summary = "versioned host and adapter tables" },
     .{ .id = "normal_rif_streaming", .owner = .adapter, .status = .blocked, .summary = "normal-RIF streaming pending thin-shim embedding" },
     .{ .id = "build_embedding", .owner = .build, .status = .designed, .summary = "zig-build generated manifest and adapter linkage" },

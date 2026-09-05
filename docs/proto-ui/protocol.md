@@ -923,6 +923,23 @@ Length zero is invalid.  The canonical local-transport ceiling is 16 MiB per
 EUP message.  A malformed length closes the transport; receivers must not
 expose a partial message to the scene.
 
+#### Control frame
+
+Control records are separate from EUP and use one exact 20-byte record:
+
+```text
+magic             4 bytes ("EPXC")
+version           u16 (1, little endian)
+kind              u16 (1=ACK, 2=RESYNC_REQUEST, 3=RESYNC_BEGIN, 4=RESYNC_COMPLETE)
+sequence          u64 (little endian, never zero)
+reserved          u32 (must be zero)
+```
+
+`ACK` confirms processing of one EPXL EUP frame.  EPXL v1 uses a
+one-message sliding window: the publisher waits for ACK `N` before sending
+sequence `N+1`.  `RESYNC_*` kinds are frozen for wire compatibility; their
+full recovery state machine is future work.
+
 #### Security and limits
 
 EPXL v1 is local trusted IPC, not a wide-area protocol.  The endpoint directory
