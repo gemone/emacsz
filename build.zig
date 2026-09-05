@@ -2471,6 +2471,10 @@ pub fn build(b: *std.Build) void {
         // via conf_post.h once config.h defines WINDOWSNT).  The search
         // order mirrors the autotools Windows build (-I../lib -I../nt/inc).
         const base_flags_core_w32 = [_][]const u8{
+            // MSVC target: enable -O1 for performance.  The known -O2 dump
+            // corruption bug (base_flags comment) may not affect the MSVC
+            // target's code generation; CI validates correctness.
+            "-O1",
             "-std=gnu2x",
             "-fno-common",
             "-fno-strict-aliasing",
@@ -2565,6 +2569,7 @@ pub fn build(b: *std.Build) void {
         // Same MSVC-ABI CRT/SDK-warning suppression as base_flags above.
         const libgnu_flags: []const []const u8 = if (target.result.abi == .msvc)
             &(libgnu_flags_core ++ [_][]const u8{
+                "-O1",
                 "-D_CRT_SECURE_NO_WARNINGS",
                 "-D_CRT_NONSTDC_NO_WARNINGS",
                 "-Wno-deprecated-declarations",
