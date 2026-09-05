@@ -22,7 +22,9 @@ The completed system must:
 
 ## 2. Current status
 
-The repository contains the complete English design baseline. W1-W3c add the approved EUP protocol/transport skeleton, opt-in Emacs registration, real terminal lifecycle, and lifecycle-only invisible frame objects. W4a adds a reviewed synthetic `FRAME_UPDATE` capture path. W4b adds reviewed real after-update window geometry and row metadata capture bounded to 256 rows. W4c-a adds reviewed bounded damage capture and safe redisplay-interface coverage. W4c-b0 adds reviewed headless frame visibility transitions and update-count observability. W4c-b1-a's direct-core real-row fixture was reverted and quarantined under the adapter-first rule. Glyph, face, font, and image resource capture, generic graphic frame creation, SDL3 windows, and the final objective remain pending adapter-first work.
+The repository contains the complete English design baseline.  Historical W1-W4c-b0 direct-core prototypes were reviewed, but their inherited C/Lisp integration has been rolled back under the adapter-first rule.  The current implemented surface is adapter-only: it defines ABI v1, validates capture state with a fake host, and audits boundary paths through `zig build`.  Glyph, face, font, and image resource capture, Emacs runtime integration, generic graphic frame creation, SDL3 windows, and the final objective remain pending adapter-first work.
+
+W4c-b1-b0 adds the versioned adapter ABI, a fake-host conformance harness, and generated ABI artifacts under `zig-out/include/proto-ui`; it introduces no runtime integration.  Inherited C/Lisp changes in the rollback patch are restoration-only and return Proto-UI runtime files to their pre-Proto-UI state.  The adapter source is the authoritative ownership manifest; generated JSON is only a non-normative ABI summary.
 
 The documentation in this directory is the source of truth for the implementation workstreams.
 
@@ -115,7 +117,7 @@ When enabled:
 zig build -Dproto-ui=true
 ```
 
-must add `output_proto` without removing or weakening any existing backend.
+must not alter existing TTY, PGTK, Windows, macOS, Haiku, or Android behavior in the current adapter-only slice.  The eventual runtime-integration goal is to expose `output_proto` only after a separately owned stable seam and review.
 
 PGTK remains the reference full-capability graphic backend. Proto-UI is compared against PGTK semantics but does not replace PGTK.
 

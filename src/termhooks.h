@@ -23,8 +23,6 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 /* Miscellanea.   */
 
-#include <stdint.h>
-
 #include "lisp.h"
 #include "dispextern.h"
 #include "systime.h" /* for Time */
@@ -67,9 +65,6 @@ enum output_method
   output_pgtk,
   output_haiku,
   output_android,
-#ifdef HAVE_PROTO_UI
-  output_proto,
-#endif
 };
 
 /* Input queue declarations and hooks.  */
@@ -561,12 +556,6 @@ struct terminal
   /* Window-based redisplay interface for this device (0 for tty
      devices). */
   struct redisplay_interface *rif;
-
-#ifdef HAVE_PROTO_UI
-  /* Identity assigned by the opt-in EUP lifecycle backend.  */
-  uint64_t proto_session_id;
-  uint64_t proto_terminal_id;
-#endif
 
   /* Frame-based redisplay interface. */
 

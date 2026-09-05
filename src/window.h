@@ -417,13 +417,6 @@ struct window
        Vwindow_scroll_functions; also by Frecenter with argument.  */
     bool_bf optional_new_start : 1;
 
-#ifdef HAVE_PROTO_UI
-    /* Stable EUP identity assigned on first proto redisplay capture.  */
-    uint64_t proto_window_id;
-#endif
-
-
-
     /* True means the cursor is currently displayed.  This can be
        set to zero by functions overpainting the cursor image.  */
     bool_bf phys_cursor_on_p : 1;
@@ -499,13 +492,6 @@ XWINDOW (Lisp_Object a)
   eassert (WINDOWP (a));
   return XUNTAG (a, Lisp_Vectorlike, struct window);
 }
-
-/* Stable per-window identity used by the opt-in proto-ui backend.  */
-#ifdef HAVE_PROTO_UI
-# define WINDOW_PROTO_ID(w) ((w)->proto_window_id)
-#else
-# define WINDOW_PROTO_ID(w) ((void) (w), 0ull)
-#endif
 
 /* Most code should use these functions to set Lisp fields in struct
    window.  */

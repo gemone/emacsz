@@ -69,13 +69,19 @@ A shim is not a license to embed Proto-UI in Emacs.
 
 Some earlier Proto-UI slices modified inherited C files to prove the terminal
 and redisplay seam.  Those slices are historical transition work.  Under this
-document they are frozen:
+document they are frozen.  Their runtime edits have now been rolled back from
+the working tree; current Proto-UI work is adapter-only:
 
 1. No new inherited-C modifications may be added on top of them.
 2. They do not justify further direct-core coupling.
 3. They must be replaced by the adapter design before Proto-UI can be declared
    complete.
 4. Any direct-core behavior they introduce needs a compatibility test.
+
+The rollback restores `frame.c`, `frame.h`, `terminal.c`, `termhooks.h`,
+`window.h`, `config.h.in`, and `loadup.el` to their pre-Proto-UI state and
+removes the temporary `output_proto` Lisp terminal.  No Proto-UI runtime
+symbol is linked into Emacs.
 
 In particular, direct edits to `xdisp.c`, `dispnew.c`, `xfaces.c`, `frame.c`,
 `frame.h`, `window.h`, or `terminal.c` for real-redisplay fixture work are

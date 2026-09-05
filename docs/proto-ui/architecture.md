@@ -2,7 +2,7 @@
 
 Status: normative design baseline
 Protocol: EUP v1
-Implementation status: specification complete. W1-W3c approved: protocol/transport, registration, terminal lifecycle, and lifecycle-only frame objects. W4a approved: synthetic `FRAME_UPDATE` capture. W4b approved: real after-update window geometry and row metadata, capped at 256 rows. W4c-a approved: bounded redisplay damage capture and safe hook coverage. W4c-b0 approved: headless frame visibility and update-count observability. W4c-b1-a's direct-core real-row fixture was reverted and quarantined under the adapter-first rule. Glyph, face, font, and image resources, rendering, and generic graphic predicates remain pending adapter-first work.
+Implementation status: specification complete.  Historical W1-W4c-b0 direct-core runtime integration was rolled back to enforce the adapter-first boundary.  W4c-b1-b0 is approved: it provides the adapter ABI, non-normative ABI summary generation, and fake-host conformance; no inherited C/Lisp runtime integration is present.  Glyph, face, font, and image resources, rendering, and generic graphic predicates remain pending adapter-first work.
 
 ## 1. Purpose
 

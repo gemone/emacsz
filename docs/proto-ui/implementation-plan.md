@@ -3,6 +3,12 @@
 Status: active planning baseline
 Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existing Emacs behavior
 
+Historical runtime record: W0's schema design remains normative.  W1-W4c-b0
+section headings, acceptance commands, and present-tense implementation notes
+are historical review records.  Their runtime code and inherited C/Lisp
+integration were rolled back; the current status table and W4c-b1-b0 describe
+the only implemented Proto-UI surface.
+
 Hard constraint: adapter-first.  New behavior is implemented in the Zig
 adapter, SDL3 frontend, Lisp integration, replay/protocol tooling, or build
 glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
@@ -34,22 +40,27 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | Memory sink and replay-file transport | Partial |
 | SDL3 frontend design | Documented |
 | Performance baseline | Documented |
-| Build option `-Dproto-ui` | W2 registration, W3a lifecycle identity, W3b terminal lifecycle, W4b window/row metadata, W4c-a damage capture, W4c-b0 visibility/count observability; W4c-b1-a direct-core fixture reverted |
-| W2 registration seam | Approved |
-| W3a lifecycle identity | Approved |
-| W3b terminal lifecycle | Approved |
-| W3c lifecycle-only frame objects | Approved |
-| W4a redisplay begin/cursor/flush capture | Approved |
-| W4b window/row metadata capture | Approved |
-| W4c-a damage/hook coverage | Approved |
-| W4c-b0 headless frame visibility/count observability | Approved |
-| Automated W3c frame smoke | Implemented |
-| `output_proto` terminal | Approved |
-| Redisplay capture | Partial: W4a synthetic + W4b window/row metadata + W4c-a damage; W4c-b0 observability; W4c-b1-a direct-core fixture reverted |
+| Build option `-Dproto-ui` | Adapter ABI/summary generation, adapter unit tests, fake-host conformance, and boundary audit only; no Emacs runtime integration |
+| W2 registration seam | Approved historically; runtime integration rolled back |
+| W3a lifecycle identity | Approved historically; runtime integration rolled back |
+| W3b terminal lifecycle | Approved historically; runtime integration rolled back |
+| W3c lifecycle-only frame objects | Approved historically; runtime integration rolled back |
+| W4a redisplay begin/cursor/flush capture | Approved historically; runtime integration rolled back |
+| W4b window/row metadata capture | Approved historically; runtime integration rolled back |
+| W4c-a damage/hook coverage | Approved historically; runtime integration rolled back |
+| W4c-b0 headless frame visibility/count observability | Approved historically; runtime integration rolled back |
+| W4c-b1-b0 adapter ABI and fake-host conformance | Approved (adapter-only) |
+| Automated W3c frame smoke | Rolled back with runtime integration |
+| `output_proto` terminal | Rolled back with runtime integration |
+| Redisplay capture | Rolled back; adapter ABI v1 contract only |
 | Resource model | Not implemented |
 | SDL3 frontend | Not implemented |
 | Real SDL3 Emacs smoke test | Not achieved |
 | Adapter-first C boundary | Required; no new inherited-C Proto-UI edits |
+
+The workstream sections below retain their historical review records and
+implementation details.  The Current status table is authoritative when an
+older section says that rolled-back runtime code is present.
 
 ## 3. Workstreams
 
@@ -80,9 +91,10 @@ Acceptance:
 * Every message has direction, payload summary, QoS class, and state effect.
 * Every required capability has a fallback.
 
-Status: approved. The W1 protocol/transport skeleton is complete.
+Historical status: approved before the adapter-first rollback.  The W1
+protocol/transport implementation is no longer present.
 
-Implemented W1 evidence:
+Historical implemented W1 evidence (runtime code rolled back):
 
 1. `src/proto-ui/protocol.zig` encodes/decodes the 62-byte envelope, capability name/value table, resource identity, and the `FRAME_UPDATE` concrete header/section envelope.
 2. `src/proto-ui/transport.zig` implements ordered memory-sink and bounded replay-file primitives.
@@ -90,7 +102,7 @@ Implemented W1 evidence:
 4. The dedicated reviewer completed three-plus passes and approved the W1 skeleton on commit `9548f0a6a4d`.
 5. Native, foreign-target host-runner, clean-export, and default-build gates were reproduced by the reviewer.
 
-### W1 — Protocol implementation skeleton
+### W1 — Protocol implementation skeleton (historical; runtime rolled back)
 
 Goal: implement EUP encode/decode independently of Emacs.
 
@@ -389,7 +401,32 @@ fixture, observes exactly one committed update, then runs the synthetic capture
 as a second update.  It does not encode glyphs, faces, fonts, images, cursors,
 scroll optimization, or rendering.
 
-#### W4c-b1-b — Adapter-first normal-RIF streaming redesign (blocked pending design)
+#### W4c-b1-b0 — Adapter ABI and fake-host conformance (approved)
+
+Goal: establish the versioned adapter/ABI contract before any new redisplay
+integration.
+
+Implemented:
+
+1. `src/proto-ui/adapter.zig` owns host/adapter table definitions, capture
+   state, row/damage limits, generation validation, and cancellation.
+2. `src/proto-ui/conformance.zig` provides a fake host with only opaque IDs,
+   generations, and geometry.
+3. `src/proto-ui/abi_gen.zig` emits `abi_v1.h` and a non-normative ABI
+   summary named `manifest.json` into
+   `zig-out/include/proto-ui` as build artifacts.
+4. `proto-ui-conformance` validates complete capture, partial capture, bad
+   ABI, null callback, generation mismatch, and cancellation.
+5. `proto-ui-boundary` runs ABI generation, fake-host conformance, and the
+   classifier smoke audit.  Full changed-path auditing uses
+   `zig build -Dproto-ui=true proto-ui-boundary-audit -- path/to/file`.
+
+Acceptance:
+
+All generated files are installed outside tracked inherited C sources.  The
+fake-host conformance harness and adapter unit tests pass with `zig build`.
+
+#### W4c-b1-b1 — Normal-RIF streaming through the adapter (blocked pending design)
 
 The first direct-core prototype was rejected and quarantined because it
 required intrusive changes to inherited Emacs C code.  Do not resume that

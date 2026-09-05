@@ -388,13 +388,10 @@ pub fn build(b: *std.Build) void {
     const enable_native_comp = b.option(bool, "native-comp", "Enable the gccjit native-comp path (.eln, HAVE_NATIVE_COMP); default OFF") orelse false;
     const enable_modules = b.option(bool, "modules", "Enable upstream dynamic modules (HAVE_MODULES)") orelse false;
     const enable_modules_zig = b.option(bool, "modules-zig", "Enable the Zig dynamic-module subsystem (HAVE_MODULES_ZIG)") orelse false;
-    // Proto-UI: the EUP module is independent of Emacs UI internals.
-    // The option enables HAVE_PROTO_UI registration, real terminal lifecycle,
-    // frame identity, protocol/transport conformance tests, W4b window/row
-    // metadata, W4c-a damage capture, and W4c-b0 visibility/count
-    // observability.  GPU rendering and graphic-frame predicates arrive
-    // W4c-b1+.
-    const enable_proto_ui = b.option(bool, "proto-ui", "Enable EUP proto-ui registration, lifecycle identity, and transport tests") orelse false;
+    // Proto-UI is adapter-only.  The option builds the versioned ABI, tests
+    // it with a fake host, and audits changed paths; it does not alter any
+    // inherited Emacs C/Lisp source or enable runtime integration.
+    const enable_proto_ui = b.option(bool, "proto-ui", "Build adapter ABI/summary and run adapter conformance plus boundary tests") orelse false;
 
     // Target-derived flags.  `target` is resolved at line 64, so target.result
     // is in scope here; computing these early lets the make-docfile / doc-scan
@@ -414,8 +411,9 @@ pub fn build(b: *std.Build) void {
     if (enable_proto_ui) {
         const proto_ui_module = b.createModule(.{
             .root_source_file = b.path("src/proto-ui/root.zig"),
-            // Protocol conformance is a host tool and must run even when the
-            // surrounding Emacs graph is configured for a foreign target.
+            // Adapter conformance/testing is a host tool and must run even
+            // when the surrounding Emacs graph is configured for a foreign
+            // target.
             .target = b.graph.host,
             .optimize = optimize,
         });
@@ -425,9 +423,83 @@ pub fn build(b: *std.Build) void {
         const run_proto_ui_tests = b.addRunArtifact(proto_ui_tests);
         const proto_ui_unit_step = b.step(
             "proto-ui-unit",
-            "Run EUP protocol encode/decode conformance tests",
+            "Run adapter ABI/runtime/boundary classifier unit tests",
         );
         proto_ui_unit_step.dependOn(&run_proto_ui_tests.step);
+
+        // W4c-b1-b0: the adapter owns the authoritative ownership manifest;
+        // Zig build emits a versioned C header and a non-normative ABI
+        // summary.  They never overwrite tracked inherited C files.
+        const abi_gen_tool = b.addExecutable(.{
+            .name = "proto-ui-abi-gen",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/abi_gen.zig"),
+            }),
+        });
+        const run_abi_gen = b.addRunArtifact(abi_gen_tool);
+        const abi_header = run_abi_gen.addOutputFileArg("abi_v1.h");
+        const abi_manifest = run_abi_gen.addOutputFileArg("manifest.json");
+        const install_abi_header = b.addInstallFile(
+            abi_header,
+            "include/proto-ui/abi_v1.h",
+        );
+        const install_abi_manifest = b.addInstallFile(
+            abi_manifest,
+            "include/proto-ui/manifest.json",
+        );
+
+        const abi_gen_step = b.step(
+            "proto-ui-abi",
+            "Generate the versioned Proto-UI adapter ABI and non-normative summary",
+        );
+        abi_gen_step.dependOn(&run_abi_gen.step);
+        abi_gen_step.dependOn(&install_abi_header.step);
+        abi_gen_step.dependOn(&install_abi_manifest.step);
+
+        const conformance_tool = b.addExecutable(.{
+            .name = "proto-ui-conformance",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/conformance.zig"),
+            }),
+        });
+        const run_conformance = b.addRunArtifact(conformance_tool);
+        const conformance_step = b.step(
+            "proto-ui-conformance",
+            "Run fake-host adapter ABI conformance tests",
+        );
+        conformance_step.dependOn(&run_conformance.step);
+
+        const boundary_audit_tool = b.addExecutable(.{
+            .name = "proto-ui-boundary-audit",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/boundary_audit.zig"),
+            }),
+        });
+        const run_boundary_audit = b.addRunArtifact(boundary_audit_tool);
+        run_boundary_audit.addArg("src/proto-ui/adapter.zig");
+        run_boundary_audit.addArg("build.zig");
+        if (b.args) |user_args| run_boundary_audit.addArgs(user_args);
+        const boundary_audit_step = b.step(
+            "proto-ui-boundary-audit",
+            "Classifier smoke audit; append paths after -- for a changed-path audit",
+        );
+        boundary_audit_step.dependOn(&run_boundary_audit.step);
+
+        const boundary_step = b.step(
+            "proto-ui-boundary",
+            "Generate adapter ABI, run fake-host conformance, and audit boundary paths",
+        );
+        boundary_step.dependOn(&run_abi_gen.step);
+        boundary_step.dependOn(&install_abi_header.step);
+        boundary_step.dependOn(&install_abi_manifest.step);
+        boundary_step.dependOn(&run_conformance.step);
+        boundary_step.dependOn(&run_boundary_audit.step);
     }
     // modules_runtime: the SHARED module runtime turns on once when EITHER
     // module switch is on AND the target can actually dlopen.  Gates the
@@ -686,7 +758,6 @@ pub fn build(b: *std.Build) void {
         // Proto-UI is an independent opt-in backend identity and lifecycle
         // ABI.  It does not turn on HAVE_WINDOW_SYSTEM or any native-toolkit
         // dependency.
-        if (enable_proto_ui) image_defines.append(b.allocator, .{ .name = "HAVE_PROTO_UI", .value = "1" }) catch @panic("OOM");
         // The w32 GUI backend (mirrors configure.ac's HAVE_W32=yes branch:
         // AC_DEFINE HAVE_NTGUI, and window_system=w32 implies
         // HAVE_WINDOW_SYSTEM + POLL_FOR_INPUT + WINDOW_SYSTEM_OBJ).
@@ -1720,19 +1791,6 @@ pub fn build(b: *std.Build) void {
     });
     const zeln_jit_lib =
         b.addLibrary(.{ .name = "zeln-jit", .root_module = zeln_jit_mod });
-    // proto-ui W4a/W4b/W4c-a: the opt-in lifecycle/registration and redisplay
-    // capture ABI linked into temacs when HAVE_PROTO_UI is enabled.  Built
-    // ReleaseFast like other leaf Zig ABI libraries.
-    if (enable_proto_ui) {
-        const proto_ui_mod = b.createModule(.{
-            .root_source_file = b.path("src/proto-ui/backend.zig"),
-            .target = target,
-            .optimize = .ReleaseFast,
-        });
-        const proto_ui_lib =
-            b.addLibrary(.{ .name = "proto-ui", .root_module = proto_ui_mod });
-        exe.root_module.linkLibrary(proto_ui_lib);
-    }
     exe.root_module.linkLibrary(zeln_jit_lib);
 
     // emacs-nanosleep: an independent Zig package (tools/emacs-nanosleep)
@@ -4075,25 +4133,6 @@ pub fn build(b: *std.Build) void {
     const smoke_step = b.step("smoke", "Verify the dumped emacs starts and evaluates Lisp");
     smoke_step.dependOn(&run_smoke.step);
 
-    // proto-ui-smoke: verify a real EUP terminal/frame, W4b/W4c-a metadata and
-    // fallback damage, plus W4c-b0 visibility/count observability.  Rendering
-    // and graphic predicates are W4c-b1+.
-    if (enable_proto_ui) {
-        const run_proto_ui_smoke = b.addSystemCommand(&[_][]const u8{
-            "./zig-out/bin/emacs", "--batch",
-            "--eval",              "(let* ((terminal (proto-ui-create-terminal)) (frame (proto-ui-create-frame)) (before (proto-ui-frame-update-count frame)) (updates (proto-ui-capture-frame-update frame)) (after (proto-ui-frame-update-count frame))) (unless (and (eq before 0) (eq updates 1) (eq after 1) (eq (framep frame) 'proto) (eq (frame-live-p frame) 'proto) (equal (frame-parameter frame 'name) \"proto-1\") (null (frame-visible-p frame)) (null (display-graphic-p frame))) (error \"proto-ui frame update failed\")) (make-frame-visible frame) (unless (eq (frame-visible-p frame) t) (error \"proto-ui frame visibility failed\")) (make-frame-invisible frame t) (unless (null (frame-visible-p frame)) (error \"proto-ui frame invisibility failed\")) (delete-frame frame) (unless (and (null (frame-live-p frame)) (null (display-graphic-p frame)) (null (terminal-live-p terminal))) (error \"proto-ui frame cleanup failed\")))",
-        });
-        run_proto_ui_smoke.setCwd(b.path("."));
-        run_proto_ui_smoke.step.dependOn(&run_dump_compiled.step);
-        run_proto_ui_smoke.step.dependOn(&run_loaddefs_final.step);
-        run_proto_ui_smoke.step.dependOn(emacs_wrapper_step);
-        const proto_ui_smoke_step = b.step(
-            "proto-ui-smoke",
-            "Exercise headless proto frame visibility, update counting, and cleanup",
-        );
-        proto_ui_smoke_step.dependOn(&run_proto_ui_smoke.step);
-    }
-
     // `check` step: run a broad set of built-in ert test suites with the
     // dumped emacs (582 tests across 40 suites today: alloc, version,
     // byte-run, float-sup, cl-preloaded, button, delim-col, color, custom,
@@ -4829,7 +4868,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build zeln-pgo          - Z7: multi-fixture PGO test (6 workload shapes)
         \\
         \\Proto-UI path (opt-in: -Dproto-ui=true):
-        \\  zig build -Dproto-ui=true proto-ui-unit - EUP registration/protocol tests
+        \\  zig build -Dproto-ui=true proto-ui-unit - adapter ABI/runtime/boundary tests
         \\
         \\Native-comp gccjit path (opt-in: -Dnative-comp=true, native glibc-Linux;
         \\  requires libgccjit). Coexists with -Dnative-comp-zig: when both are on,

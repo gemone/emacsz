@@ -1,9 +1,5 @@
-pub const protocol = @import("protocol.zig");
-pub const backend = @import("backend.zig");
-pub const transport = @import("transport.zig");
+pub const adapter = @import("adapter.zig");
 
 test {
-    _ = protocol;
-    _ = backend;
-    _ = transport;
+    _ = adapter;
 }

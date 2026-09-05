@@ -130,8 +130,7 @@ The generated shim must not:
   "eup_minor": 0,
   "adapter": "proto-ui",
   "sources": [
-    "src/proto-ui/backend.zig",
-    "src/proto-ui/adapter/runtime.zig"
+    "src/proto-ui/adapter.zig"
   ],
   "generated": [
     "proto-ui/abi_v1.h",
@@ -145,7 +144,6 @@ The generated shim must not:
     "proto_ui_adapter_capture_damage",
     "proto_ui_adapter_capture_flush"
   ],
-  "inherited_c_edits": false
 }
 ```
 
@@ -241,10 +239,10 @@ messages remain reliable and ordered.
 
 ## 7. Workstream split
 
-### W4c-b1-b0 — ABI manifest and fake-host conformance
+### W4c-b1-b0 — ABI summary and fake-host conformance
 
 1. Add versioned host and adapter table descriptions.
-2. Generate ABI headers and ownership manifests from `zig build`.
+2. Generate ABI headers and a non-normative ABI summary from `zig build`.
 3. Implement a fake host conformance harness.
 4. Test success, bad ABI, bad generation, null callback, partial update, and
    cancellation paths.

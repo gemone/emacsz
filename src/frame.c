@@ -292,7 +292,6 @@ Value is:
  `ns' for an Emacs frame on a GNUstep or Macintosh Cocoa display,
  `pc' for a direct-write MS-DOS frame,
  `pgtk' for an Emacs frame running on pure GTK.
- `proto' for an EUP proto-ui frame.
  `haiku' for an Emacs frame running in Haiku.
  `android' for an Emacs frame running in Android.
 See also `frame-live-p'.  */)
@@ -319,10 +318,6 @@ See also `frame-live-p'.  */)
       return Qhaiku;
     case output_android:
       return Qandroid;
-#ifdef HAVE_PROTO_UI
-    case output_proto:
-      return Qproto;
-#endif
     default:
       emacs_abort ();
     }
@@ -3509,14 +3504,13 @@ static void make_frame_visible_1 (Lisp_Object);
 
 DEFUN ("make-frame-visible", Fmake_frame_visible, Smake_frame_visible,
        0, 1, "",
-       doc: /* Make the frame FRAME visible using its terminal backend.
+       doc: /* Make the frame FRAME visible (assuming it is an X window).
 If omitted, FRAME defaults to the currently selected frame.  */)
   (Lisp_Object frame)
 {
   struct frame *f = decode_live_frame (frame);
 
-  if ((FRAME_WINDOW_P (f) || FRAME_PROTO_P (f))
-      && FRAME_TERMINAL (f)->frame_visible_invisible_hook)
+  if (FRAME_WINDOW_P (f) && FRAME_TERMINAL (f)->frame_visible_invisible_hook)
     FRAME_TERMINAL (f)->frame_visible_invisible_hook (f, true);
 
   if (is_tty_child_frame (f))
@@ -3558,7 +3552,6 @@ DEFUN ("make-frame-invisible", Fmake_frame_invisible, Smake_frame_invisible,
 If omitted, FRAME defaults to the currently selected frame.
 On graphical displays, invisible frames are not updated and are
 usually not displayed at all, even in a window system's \"taskbar\".
-Headless proto frames use the backend visibility flag.
 
 Normally you may not make FRAME invisible if all other frames are
 invisible, but if the second optional argument FORCE is non-nil, you may
@@ -3576,8 +3569,7 @@ visible ancestor of FRAME instead.  */)
   if (NILP (force) && !other_frames (f, true, false))
     error ("Attempt to make invisible the sole visible or iconified frame");
 
-  if ((FRAME_WINDOW_P (f) || FRAME_PROTO_P (f))
-      && FRAME_TERMINAL (f)->frame_visible_invisible_hook)
+  if (FRAME_WINDOW_P (f) && FRAME_TERMINAL (f)->frame_visible_invisible_hook)
     FRAME_TERMINAL (f)->frame_visible_invisible_hook (f, false);
 
   if (is_tty_child_frame (f))
@@ -5091,13 +5083,13 @@ handle_frame_param (struct frame *f, Lisp_Object prop, Lisp_Object val,
   Lisp_Object param_index = Fget (prop, Qx_frame_parameter);
   if (FIXNATP (param_index) && XFIXNAT (param_index) < countof (frame_parms))
     {
-      if (FRAME_RIF (f) && FRAME_RIF (f)->frame_parm_handlers)
-        {
-          frame_parm_handler handler
-            = FRAME_RIF (f)->frame_parm_handlers[XFIXNAT (param_index)];
-          if (handler)
-            handler (f, val, old_value);
-        }
+      if (FRAME_RIF (f))
+	{
+	  frame_parm_handler handler
+	    = FRAME_RIF (f)->frame_parm_handlers[XFIXNAT (param_index)];
+	  if (handler)
+	    handler (f, val, old_value);
+	}
     }
 }
 
@@ -7267,9 +7259,6 @@ syms_of_frame (void)
   DEFSYM (Qpgtk, "pgtk");
   DEFSYM (Qhaiku, "haiku");
   DEFSYM (Qandroid, "android");
-#ifdef HAVE_PROTO_UI
-  DEFSYM (Qproto, "proto");
-#endif
   DEFSYM (Qvisible, "visible");
   DEFSYM (Qbuffer_predicate, "buffer-predicate");
   DEFSYM (Qbuffer_list, "buffer-list");
@@ -7280,18 +7269,6 @@ syms_of_frame (void)
   DEFSYM (Qtty_color_mode, "tty-color-mode");
   DEFSYM (Qtty, "tty");
   DEFSYM (Qtty_type, "tty-type");
-
-#ifdef HAVE_PROTO_UI
-  /* Verify the Zig registration library's ABI and EUP contract before the
-     Lisp feature becomes visible.  Real terminal lifecycle and lifecycle-only
-     frame objects are available; rendering and graphic predicates are W4+.
-  */
-  if (!proto_ui_registration_compatible (PROTO_UI_ABI_VERSION,
-					 PROTO_UI_EUP_MAJOR_VERSION,
-					 PROTO_UI_EUP_MINOR_VERSION))
-    emacs_abort ();
-  Fprovide (Qproto, Qnil);
-#endif
 
   DEFSYM (Qface_set_after_frame_default, "face-set-after-frame-default");
 
