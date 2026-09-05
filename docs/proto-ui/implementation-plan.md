@@ -73,6 +73,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W9e continuous real Emacs public-fact stream | Approved |
 | W9f continuous facts validated as EUP snapshots | Approved |
 | W9g authenticated EPXL continuous facts transport | Approved |
+| W9h real-fact producer coalescing | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in continuous Emacs public-fact modes; the Emacs mode is process/public-API observation, not EUP transport or redisplay-hook streaming |
 
 The workstream sections below retain their historical review records and
@@ -949,6 +950,37 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-facts-sm
 
 The smoke must apply multiple EUP updates in SDL3 without printing or retaining
 the ephemeral token.
+
+### W9h — Real-fact producer coalescing (approved)
+
+Goal: stop publishing byte-equivalent public-fact snapshots and assign EUP
+sequences only to a real state transition.
+
+Implemented:
+
+1. `FrameFacts` has a total equality predicate for adapter-owned coalescing.
+2. The Emacs fact loop writes an initial snapshot, changes the selected batch
+   frame's public size, then continues observing.
+3. The EPXL facts publisher compares each parsed snapshot with the last
+   published facts, drops unchanged repeats, and sends only the initial and
+   changed snapshots over the existing one-message ACK window.
+4. `appendWireSnapshot` remains the sole sequence assignment and scene
+   validation boundary, so coalescing cannot introduce gaps or stale frames.
+
+This is producer-side suppression at the public-fact adapter.  General
+redisplay coalescing, reconnect/resync, text, faces, resources, and input remain
+future work.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-facts-smoke --summary all
+```
+
+The smoke must apply exactly two updates: the initial real fact transition and
+the changed frame-size transition.  Repeated unchanged facts must not create EUP
+frames.
+The smoke returns `UnexpectedFactUpdateCount` for any other count.
 
 ### W10 — GPU renderer path
 

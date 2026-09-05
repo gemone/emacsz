@@ -17,6 +17,10 @@ pub const FrameFacts = struct {
 
 pub const Error = std.json.ParseError(std.json.Scanner) || error{InvalidFrameFacts};
 
+pub fn eql(left: FrameFacts, right: FrameFacts) bool {
+    return std.meta.eql(left, right);
+}
+
 pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) Error!FrameFacts {
     const parsed = try std.json.parseFromSlice(FrameFacts, gpa, bytes, .{});
     defer parsed.deinit();
@@ -26,6 +30,14 @@ pub fn parse(gpa: std.mem.Allocator, bytes: []const u8) Error!FrameFacts {
         facts.window_width > facts.frame_width or
         facts.window_height > facts.frame_height) return error.InvalidFrameFacts;
     return facts;
+}
+
+test "unchanged facts compare equal for publisher coalescing" {
+    const first = FrameFacts{ .frame_width = 80, .frame_height = 25, .window_width = 80, .window_height = 23 };
+    var second = first;
+    try std.testing.expect(eql(first, second));
+    second.window_height += 1;
+    try std.testing.expect(!eql(first, second));
 }
 
 pub fn buildScene(gpa: std.mem.Allocator, facts: FrameFacts, snapshot_index: u64) !frontend.Scene {

@@ -201,7 +201,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     _ = std.Io.Dir.cwd().deleteFile(io, config.endpoint) catch {};
     const eval = try std.fmt.allocPrint(
         gpa,
-        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let ((frame (selected-frame)) (path (expand-file-name (format \"%s\" (format \"{s}\"))))) (while t (with-temp-file path (insert (proto-ui-frame-facts frame))) (sit-for 0.1))))",
+        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let ((frame (selected-frame)) (path (expand-file-name (format \"%s\" (format \"{s}\"))))) (with-temp-file path (insert (proto-ui-frame-facts frame))) (sit-for 0.2) (set-frame-size frame 90 30) (while t (with-temp-file path (insert (proto-ui-frame-facts frame))) (sit-for 0.1))))",
         .{ config.module_path, config.facts_path },
     );
     defer gpa.free(eval);
@@ -240,6 +240,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     var shared = SharedFacts{};
     var scene = frontend.Scene.init(gpa);
     defer scene.deinit();
+    var published: ?facts.FrameFacts = null;
     const publish_duration = @max(100, config.auto_quit_ms / 2);
     while (scene.stats.frame_updates == 0 and facts_wait_ms < 1000) : (facts_wait_ms += 20) {
         try pollEmacsFacts(&shared, gpa, io, config.facts_path);
@@ -257,6 +258,14 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
         };
         defer gpa.free(facts_bytes);
         const snapshot = try facts.parse(gpa, facts_bytes);
+        if (published) |previous| {
+            if (facts.eql(previous, snapshot)) {
+                try io.sleep(.fromMilliseconds(20), .awake);
+                waited_ms += 20;
+                continue;
+            }
+        }
+        published = snapshot;
         var wire_messages: std.ArrayList([]const u8) = .empty;
         defer {
             for (wire_messages.items) |message| gpa.free(message);
@@ -653,6 +662,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .facts_publisher => unreachable,
     };
     defer scene.deinit();
+    if (config.mode == .emacs_epxl and scene.stats.frame_updates != 2)
+        return error.UnexpectedFactUpdateCount;
     if (scene.stats.frame_updates == 0) return error.NoFrameUpdate;
     if (scene.frame_header == null) return error.NoFrameHeader;
 
