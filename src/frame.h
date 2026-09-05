@@ -140,8 +140,18 @@ struct text_conversion_state
 
 #endif
 
-/* Opaque per-frame state owned by the opt-in EUP proto-ui backend.  */
-struct proto_output;
+#ifdef HAVE_PROTO_UI
+/* Per-frame state owned by the opt-in EUP proto-ui backend.  W3c creates
+   lifecycle-only frames; render-specific output data arrives later.  */
+struct proto_output
+  {
+    uint64_t session_id;
+    uint64_t terminal_id;
+    uint64_t frame_id;
+    uint32_t frame_generation;
+    bool destroy_sent;
+  };
+#endif
 
 /* The structure representing a frame.  */
 
@@ -1008,10 +1018,14 @@ extern bool proto_ui_registration_compatible (unsigned int abi_version,
 # define FRAME_WINDOW_P_NONPROTO(f) ((void) (f), false)
 #endif
 
-#ifdef HAVE_PROTO_UI
+#if defined HAVE_PROTO_UI && defined HAVE_PROTO_UI_FRAMES
 # define FRAME_WINDOW_P(f) (FRAME_PROTO_P (f) || FRAME_WINDOW_P_NONPROTO (f))
 #else
 # define FRAME_WINDOW_P(f) FRAME_WINDOW_P_NONPROTO (f)
+#endif
+
+#ifdef HAVE_PROTO_UI
+# define FRAME_PROTO_OUTPUT(f) ((f)->output_data.proto)
 #endif
 
 /* Dots per inch of the screen the frame F is on.  */

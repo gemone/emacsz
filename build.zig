@@ -390,9 +390,9 @@ pub fn build(b: *std.Build) void {
     const enable_modules_zig = b.option(bool, "modules-zig", "Enable the Zig dynamic-module subsystem (HAVE_MODULES_ZIG)") orelse false;
     // Proto-UI W3: the EUP protocol/lifecycle module is independent of Emacs
     // internals.
-    // The option enables HAVE_PROTO_UI registration, terminal lifecycle
-    // identity, and protocol/transport conformance tests.  Real proto frame
-    // creation arrives in a later workstream.
+    // The option enables HAVE_PROTO_UI registration, real terminal lifecycle,
+    // lifecycle-only frame identity, and protocol/transport conformance tests.
+    // GPU rendering and graphic-frame predicates arrive in W4+.
     const enable_proto_ui = b.option(bool, "proto-ui", "Enable EUP proto-ui registration, lifecycle identity, and transport tests") orelse false;
 
     // Target-derived flags.  `target` is resolved at line 64, so target.result
@@ -4073,6 +4073,24 @@ pub fn build(b: *std.Build) void {
     run_smoke.step.dependOn(emacs_wrapper_step);
     const smoke_step = b.step("smoke", "Verify the dumped emacs starts and evaluates Lisp");
     smoke_step.dependOn(&run_smoke.step);
+
+    // proto-ui-smoke: verify a real EUP terminal and lifecycle-only frame can
+    // be created and deleted.  Rendering/graphic predicates remain W4+.
+    if (enable_proto_ui) {
+        const run_proto_ui_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs", "--batch",
+            "--eval",              "(let* ((terminal (proto-ui-create-terminal)) (frame (proto-ui-create-frame))) (unless (and (eq (framep frame) 'proto) (eq (frame-live-p frame) 'proto) (equal (frame-parameter frame 'name) \"proto-1\") (null (frame-visible-p frame)) (null (display-graphic-p frame))) (error \"proto-ui frame lifecycle failed\")) (delete-frame frame) (unless (and (null (frame-live-p frame)) (null (display-graphic-p frame))) (error \"proto-ui frame deletion failed\")) (unless (null (terminal-live-p terminal)) (error \"proto-ui terminal cleanup failed\")))",
+        });
+        run_proto_ui_smoke.setCwd(b.path("."));
+        run_proto_ui_smoke.step.dependOn(&run_dump_compiled.step);
+        run_proto_ui_smoke.step.dependOn(&run_loaddefs_final.step);
+        run_proto_ui_smoke.step.dependOn(emacs_wrapper_step);
+        const proto_ui_smoke_step = b.step(
+            "proto-ui-smoke",
+            "Create and delete a real lifecycle-only proto Emacs frame",
+        );
+        proto_ui_smoke_step.dependOn(&run_proto_ui_smoke.step);
+    }
 
     // `check` step: run a broad set of built-in ert test suites with the
     // dumped emacs (582 tests across 40 suites today: alloc, version,

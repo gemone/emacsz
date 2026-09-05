@@ -695,21 +695,93 @@ delete_initial_terminal (struct terminal *terminal)
 
 #ifdef HAVE_PROTO_UI
 
-static struct terminal *proto_terminal;
+extern int proto_ui_lifecycle_session_create (uint64_t *);
+extern int proto_ui_terminal_create (uint64_t, uint64_t *);
+extern int proto_ui_frame_create (uint64_t, uint64_t, uint64_t *);
+extern int proto_ui_frame_destroy (uint64_t, uint64_t);
+extern int proto_ui_terminal_destroy (uint64_t, uint64_t);
 
-/* The generic terminal deletion path has already detached live frames when
-   this hook runs.  Marking the EUP terminal dead here keeps lifecycle state
-   synchronized.  */
+static struct terminal *proto_terminal;
+static intmax_t proto_frame_count;
+
+static void
+proto_delete_frame (struct frame *frame)
+{
+  struct proto_output *output = FRAME_PROTO_OUTPUT (frame);
+  if (output && output->frame_id != 0 && !output->destroy_sent)
+    {
+      output->destroy_sent = true;
+      if (proto_ui_frame_destroy (output->session_id,
+                                  output->frame_id) != 0)
+        emacs_abort ();
+    }
+  xfree (output);
+  FRAME_PROTO_OUTPUT (frame) = NULL;
+}
+
+/* Fdelete-terminal invokes this hook while the terminal is still live.  It
+   deletes remaining proto frames first, marks the EUP terminal dead, and then
+   lets generic terminal deletion reclaim Emacs-owned state.  */
 static void
 proto_delete_terminal (struct terminal *terminal)
 {
-  extern int proto_ui_terminal_destroy (uint64_t, uint64_t);
+  /* Ignore recursive deletion after the terminal is already dead.  */
+  if (!terminal->name)
+    return;
+
+  /* Fdelete-terminal invokes this hook before generic deletion.  Delete any
+     remaining proto frames first so EUP frame-destroy messages precede the
+     EUP terminal-destroy transition.  */
+  bool deleted_frame;
+  do
+    {
+      deleted_frame = false;
+      Lisp_Object tail, frame;
+      FOR_EACH_FRAME (tail, frame)
+        {
+          struct frame *f = XFRAME (frame);
+          if (FRAME_LIVE_P (f) && f->terminal == terminal)
+            {
+              delete_frame (frame, Qnoelisp);
+              deleted_frame = true;
+              break;
+            }
+        }
+    }
+  while (deleted_frame);
+
   if (proto_ui_terminal_destroy (terminal->proto_session_id,
                                  terminal->proto_terminal_id) != 0)
     emacs_abort ();
   delete_terminal (terminal);
   if (terminal == proto_terminal)
     proto_terminal = NULL;
+}
+
+/* Handler for signals raised while a lifecycle-only proto frame is built.
+   An unfinished frame is not in Vframe_list; free its resources directly.  */
+static Lisp_Object
+proto_unwind_create_frame (Lisp_Object frame)
+{
+  struct frame *f = XFRAME (frame);
+  if (!FRAME_LIVE_P (f))
+    return Qnil;
+
+  if (NILP (Fmemq (frame, Vframe_list)))
+    {
+      proto_delete_frame (f);
+      free_glyphs (f);
+      if (f->terminal)
+        f->terminal->reference_count--;
+      f->terminal = NULL;
+    }
+  return Qnil;
+}
+
+static void
+proto_do_unwind_create_frame (Lisp_Object frame)
+{
+  proto_unwind_create_frame (frame);
 }
 
 DEFUN ("proto-ui-create-terminal", Fproto_ui_create_terminal,
@@ -719,8 +791,6 @@ Return the terminal object.  Repeated calls return the same live terminal.
 This is W3 lifecycle plumbing; it does not yet create proto frames.  */)
   (void)
 {
-  extern int proto_ui_lifecycle_session_create (uint64_t *);
-  extern int proto_ui_terminal_create (uint64_t, uint64_t *);
   uint64_t session_id, terminal_id;
 
   if (proto_terminal && proto_terminal->name)
@@ -744,12 +814,69 @@ This is W3 lifecycle plumbing; it does not yet create proto frames.  */)
   proto_terminal->kboard = allocate_kboard (Qproto);
   proto_terminal->kboard->reference_count++;
   proto_terminal->delete_terminal_hook = proto_delete_terminal;
+  proto_terminal->delete_frame_hook = proto_delete_frame;
   proto_terminal->proto_session_id = session_id;
   proto_terminal->proto_terminal_id = terminal_id;
 
   Lisp_Object terminal;
   XSETTERMINAL (terminal, proto_terminal);
   return terminal;
+}
+
+DEFUN ("proto-ui-create-frame", Fproto_ui_create_frame,
+       Sproto_ui_create_frame, 0, 0, 0,
+       doc: /* Create a lifecycle-only headless frame owned by proto-ui.
+The frame has the `proto' output identity and a stable EUP frame ID.
+It is invisible and intentionally has no face or render state yet; W4
+adds redisplay capture.  This is W3c lifecycle plumbing.  */)
+  (void)
+{
+  if (!proto_terminal || !proto_terminal->name)
+    error ("proto-ui terminal is not created");
+
+  specpdl_ref count = SPECPDL_INDEX ();
+  struct frame *f = make_frame (true);
+  Lisp_Object frame;
+  XSETFRAME (frame, f);
+
+  f->output_method = output_proto;
+  f->terminal = proto_terminal;
+  FRAME_PROTO_OUTPUT (f) = xzalloc (sizeof *FRAME_PROTO_OUTPUT (f));
+  f->terminal->reference_count++;
+
+  /* Install cleanup before the first fallible EUP transition.  frame_id==0
+     tells the hook that no protocol frame was created yet.  */
+  FRAME_PROTO_OUTPUT (f)->session_id = proto_terminal->proto_session_id;
+  FRAME_PROTO_OUTPUT (f)->terminal_id = proto_terminal->proto_terminal_id;
+  FRAME_PROTO_OUTPUT (f)->frame_id = 0;
+  FRAME_PROTO_OUTPUT (f)->frame_generation = 0;
+  record_unwind_protect (proto_do_unwind_create_frame, frame);
+
+  uint64_t frame_id;
+  if (proto_ui_frame_create (proto_terminal->proto_session_id,
+                             proto_terminal->proto_terminal_id,
+                             &frame_id) != 0)
+    error ("proto-ui frame lifecycle creation failed");
+  FRAME_PROTO_OUTPUT (f)->frame_id = frame_id;
+  FRAME_PROTO_OUTPUT (f)->frame_generation = 1;
+
+  char name[32];
+  sprintf (name, "proto-%"PRIdMAX, ++proto_frame_count);
+  fset_name (f, build_string (name));
+  frame_set_id_from_params (f, Qnil);
+  SET_FRAME_VISIBLE (f, false);
+  adjust_frame_size (f, 80 * FRAME_COLUMN_WIDTH (f),
+                     24 * FRAME_LINE_HEIGHT (f), 5, true,
+                     Qproto_frame);
+  adjust_frame_glyphs (f);
+  calculate_costs (f);
+
+  f->can_set_window_size = true;
+  f->after_make_frame = true;
+
+  /* Officialize only after all fallible setup has succeeded.  */
+  Vframe_list = Fcons (frame, Vframe_list);
+  return unbind_to (count, frame);
 }
 
 #endif /* HAVE_PROTO_UI */
@@ -786,6 +913,8 @@ or some time later.  */);
 
 #ifdef HAVE_PROTO_UI
   defsubr (&Sproto_ui_create_terminal);
+  DEFSYM (Qproto_frame, "proto-frame");
+  defsubr (&Sproto_ui_create_frame);
 #endif
 
   Fprovide (intern_c_string ("multi-tty"), Qnil);

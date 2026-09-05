@@ -2,7 +2,7 @@
 
 Status: normative design baseline
 Protocol: EUP v1
-Implementation status: specification complete; W1 protocol/transport skeleton complete; W2 registration complete; W3a lifecycle identity and W3b terminal lifecycle complete; proto frame lifecycle pending
+Implementation status: specification complete; W1 protocol/transport skeleton complete; W2 registration complete; W3a lifecycle identity, W3b terminal lifecycle, and W3c lifecycle-only frame objects complete; rendering and graphic predicates W4+
 
 ## 1. Purpose
 
@@ -96,14 +96,14 @@ Proto-UI adds a new terminal type:
 output_proto
 ```
 
-A proto frame is a real graphic Emacs frame:
+Current W3c lifecycle contract: real, invisible Emacs frame objects exist
+through `proto-ui-create-frame`; `framep` reports `proto`, but rendering,
+generic graphic `make-frame`, and `display-graphic-p` remain disabled until
+W4.
 
-```elisp
-(make-frame '((window-system . proto)))
-(framep frame) => proto
-(window-system frame) => proto
-(display-graphic-p frame) => t
-```
+Final W4+ graphic contract: a completed proto frame will be a real graphic
+Emacs frame; normal `make-frame` and `display-graphic-p` will return the
+documented values.
 
 ### 4.2 Existing-file seams
 
@@ -112,7 +112,7 @@ No new C source file is added. Changes to existing C code are limited to generic
 | File | Required change |
 |---|---|
 | `src/termhooks.h` | Add `output_proto` to `enum output_method` |
-| `src/frame.h` | Add proto frame storage, `FRAME_PROTO_P`, and include it in `FRAME_WINDOW_P` |
+| `src/frame.h` | Add proto frame storage, `FRAME_PROTO_P`, lifecycle-only graphic predicate contract, and ABI declarations |
 | `src/frame.c` | Map proto frames and terminals to the `proto` Lisp symbol |
 | `src/terminal.c` | Recognize `output_proto` in terminal type conversion |
 | `src/dispnew.c` | Allow proto as an initial graphic window system |

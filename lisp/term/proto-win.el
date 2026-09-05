@@ -20,8 +20,8 @@
 ;;; Commentary:
 
 ;; W3 support for the opt-in headless EUP backend.  Real terminal lifecycle
-;; is implemented.  Frame creation remains intentionally unimplemented until
-;; the frame-lifecycle workstream lands.
+;; and lifecycle-only frame objects are implemented.  Rendering and generic
+;; graphic make-frame support remain future work.
 
 ;;; Code:
 
@@ -44,8 +44,8 @@
 
 (cl-defmethod frame-creation-function
   (params &context (window-system proto))
-  "Reject frame creation until the proto frame lifecycle is implemented."
-  (error "proto-ui frame creation is not implemented yet (parameters %S)"
+  "Reject generic graphic frame creation until W4 implements rendering."
+  (error "proto-ui graphic frame creation is not implemented yet (parameters %S)"
          params))
 
 (provide 'proto-win)

@@ -30,6 +30,8 @@ Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existin
 | W2 registration seam | Approved |
 | W3a lifecycle identity | Approved |
 | W3b terminal lifecycle | Approved |
+| W3c lifecycle-only frame objects | Approved |
+| Automated W3c frame smoke | Implemented |
 | `output_proto` terminal | Approved |
 | Redisplay capture | Not implemented |
 | Resource model | Not implemented |
@@ -121,7 +123,7 @@ Tasks:
 2. Define `HAVE_PROTO_UI` only when enabled.
 3. Add `output_proto` to the terminal enum behind the feature.
 4. Add proto frame storage and `FRAME_PROTO_P`.
-5. Include proto in graphic-frame predicates.
+5. Defer proto graphic-predicate integration until W4 (revised during W3c).
 6. Map `output_proto` to the `proto` Lisp symbol.
 7. Add empty initialization/frame-creation Lisp methods.
 8. Keep `-Dproto-ui=false` default behavior identical.
@@ -216,23 +218,30 @@ zig build -Dproto-ui=true --summary all
 
 Status: approved.
 
-### W3c — Real headless frame lifecycle (pending)
+### W3c — Lifecycle-only headless frame lifecycle (approved)
 
-Goal: create and delete a real proto frame without rendering.
+Goal: create and delete a real, invisible Emacs frame object with a stable
+EUP frame ID, while explicitly deferring rendering and `FRAME_WINDOW_P`
+support to W4+.
 
 Tasks:
 
-1. Implement frame creation parameter parsing.
-2. Create and release `output_proto` frame objects.
-3. Map Emacs frame objects to stable EUP frame IDs.
-4. Emit window-tree snapshots and geometry/state updates.
-5. Add a `make-frame` / `delete-frame` smoke test.
+1. Define lifecycle-only `struct proto_output`.
+2. Create real Emacs frame objects on a real `output_proto` terminal.
+3. Map Emacs frame objects to stable EUP session/frame IDs.
+4. Emit `FRAME_CREATE` / `FRAME_DESTROY` and roll back failed creation.
+5. Add `proto-ui-create-frame` and `delete-frame` lifecycle smoke coverage.
+
+Deliberate W3c limitation: proto frames are not `FRAME_WINDOW_P`, are
+invisible, and have no face/render state until W4 adds redisplay capture.
 
 Review gates:
 
 1. Emacs frame lifecycle correctness.
-2. Protocol snapshot coherence.
+2. Protocol frame create/destroy message coherence.
 3. Failure/deletion safety.
+
+Automated gate: `zig build -Dproto-ui=true proto-ui-smoke`.
 
 ### W4 — Redisplay capture foundation
 

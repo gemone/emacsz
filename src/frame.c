@@ -7280,8 +7280,9 @@ syms_of_frame (void)
 
 #ifdef HAVE_PROTO_UI
   /* Verify the Zig registration library's ABI and EUP contract before the
-     Lisp feature becomes visible.  Real terminal lifecycle is available;
-     proto frame integration is future work.  */
+     Lisp feature becomes visible.  Real terminal lifecycle and lifecycle-only
+     frame objects are available; rendering and graphic predicates are W4+.
+  */
   if (!proto_ui_registration_compatible (PROTO_UI_ABI_VERSION,
 					 PROTO_UI_EUP_MAJOR_VERSION,
 					 PROTO_UI_EUP_MINOR_VERSION))
