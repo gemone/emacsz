@@ -51,7 +51,7 @@ const SDL_Rect = extern struct {
     h: c_int,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_input };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -65,6 +65,7 @@ const Config = struct {
     facts_path: []const u8 = "",
     auto_quit_ms: u32 = 250,
     resync_sessions: u32 = 1,
+    auto_input: ?[]const u8 = null,
 };
 
 const FrameFacts = facts.FrameFacts;
@@ -212,11 +213,14 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     const text_path = try std.fmt.allocPrint(gpa, "{s}.txt", .{config.facts_path});
     defer gpa.free(text_path);
     _ = std.Io.Dir.cwd().deleteFile(io, text_path) catch {};
+    const input_path = try std.fmt.allocPrint(gpa, "{s}.keys", .{config.facts_path});
+    defer gpa.free(input_path);
+    _ = std.Io.Dir.cwd().deleteFile(io, input_path) catch {};
     _ = std.Io.Dir.cwd().deleteFile(io, config.endpoint) catch {};
     const eval = try std.fmt.allocPrint(
         gpa,
-        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (text-path (expand-file-name (format \"%s\" (format \"{s}\"))))) (with-current-buffer (window-buffer window) (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII text\\n\")) (with-temp-file text-path (insert (with-current-buffer (window-buffer window) (buffer-substring-no-properties (window-start window) (window-end window))))) (with-temp-file path (insert (proto-ui-frame-facts frame))) (sit-for 0.2) (set-frame-size frame 90 30) (while t (with-temp-file text-path (insert (with-current-buffer (window-buffer window) (buffer-substring-no-properties (window-start window) (window-end window))))) (with-temp-file path (insert (proto-ui-frame-facts frame))) (sit-for 0.1))))",
-        .{ config.module_path, config.facts_path, text_path },
+        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (text-path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\"))))) (with-current-buffer (window-buffer window) (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII text\\n\")) (with-temp-file text-path (insert (with-current-buffer (window-buffer window) (buffer-substring-no-properties (window-start window) (window-end window))))) (with-temp-file path (insert (proto-ui-frame-facts frame))) (sit-for 0.2) (set-frame-size frame 90 30) (while t (when (file-readable-p input-path) (let ((text (with-temp-buffer (insert-file-contents input-path) (buffer-string)))) (when (> (length text) 0) (with-current-buffer (window-buffer window) (goto-char (point-min)) (insert text)))) (delete-file input-path)) (with-temp-file text-path (insert (with-current-buffer (window-buffer window) (buffer-substring-no-properties (window-start window) (window-end window))))) (with-temp-file path (insert (proto-ui-frame-facts frame))) (sit-for 0.1))))",
+        .{ config.module_path, config.facts_path, text_path, input_path },
     );
     defer gpa.free(eval);
     var child_environment = try buildDisplayEnvironment(gpa);
@@ -236,6 +240,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     defer scene.deinit();
     var published: ?facts.Snapshot = null;
     defer if (published != null) published.?.deinit(gpa);
+    var input_sequence: u64 = 1;
     const publish_duration = @max(100, config.auto_quit_ms / 2);
 
     for (0..@max(1, config.resync_sessions)) |session_index| {
@@ -275,7 +280,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
         const initial_text = try facts.parseText(gpa, text_bytes);
         published = .{ .facts = shared.facts.?, .text = initial_text };
         var acks = live.AckTracker.init(1);
-        try sendSnapshotMessages(gpa, published.?.facts, published.?.text.lines, &scene, &acks, &reader, &writer);
+        try sendSnapshotMessages(gpa, published.?.facts, published.?.text.lines, &scene, &acks, io, &reader, &writer, input_path, &input_sequence);
         const complete_sequence = scene.next_sequence.? - 1;
         try live.writeControl(&writer.interface, .{ .kind = .resync_complete, .sequence = complete_sequence });
         try writer.interface.flush();
@@ -316,7 +321,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
             if (published) |*previous| previous.deinit(gpa);
             published = next;
             var change_acks = live.AckTracker.init(1);
-            try sendSnapshotMessages(gpa, next.facts, next.text.lines, &scene, &change_acks, &reader, &writer);
+            try sendSnapshotMessages(gpa, next.facts, next.text.lines, &scene, &change_acks, io, &reader, &writer, input_path, &input_sequence);
             try io.sleep(.fromMilliseconds(100), .awake);
             waited_ms += 100;
         }
@@ -330,14 +335,114 @@ fn readControlExact(reader: anytype) !live.Control {
     return live.decodeControl(&bytes);
 }
 
+fn sendAutoTextInput(
+    gpa: std.mem.Allocator,
+    writer: anytype,
+    reader: anytype,
+    text: []const u8,
+    envelope: protocol.Envelope,
+) !void {
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(gpa);
+    try frontend.encodeTextInput(gpa, .{ .text = text }, &payload);
+    var input_message: std.ArrayList(u8) = .empty;
+    defer input_message.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = protocol.Flags.requires_ack,
+        .message_type = protocol.Message.text_input,
+        .sequence = 1,
+        .ack_sequence = 0,
+        .session_id = envelope.session_id,
+        .frame_id = envelope.frame_id,
+        .timestamp_ns = 1,
+    }, payload.items, &input_message);
+    try live.writeFrame(&writer.interface, input_message.items);
+    try writer.interface.flush();
+    const input_ack = try readControlExact(reader);
+    if (input_ack.kind != .ack or input_ack.sequence != 1) return error.ExpectedInputAck;
+}
+
+fn writeInputArtifact(gpa: std.mem.Allocator, io: std.Io, path: []const u8, text: []const u8) !void {
+    const temporary_path = try std.fmt.allocPrint(gpa, "{s}.tmp", .{path});
+    defer gpa.free(temporary_path);
+    _ = std.Io.Dir.cwd().deleteFile(io, temporary_path) catch {};
+    {
+        var file = try std.Io.Dir.cwd().createFile(io, temporary_path, .{});
+        defer file.close(io);
+        var buffer: [256]u8 = undefined;
+        var writer = file.writer(io, &buffer);
+        try writer.interface.writeAll(text);
+        try writer.interface.flush();
+    }
+    std.Io.Dir.renameAbsolute(temporary_path, path, io) catch |err| {
+        _ = std.Io.Dir.cwd().deleteFile(io, temporary_path) catch {};
+        return err;
+    };
+}
+
+const Inbound = union(enum) {
+    control: live.Control,
+    frame: []u8,
+};
+
+fn readInbound(reader: anytype, gpa: std.mem.Allocator) !Inbound {
+    const header = try reader.interface.peekArray(4);
+    if (std.mem.eql(u8, header, &live.control_magic)) {
+        return .{ .control = try readControlExact(reader) };
+    }
+    return .{ .frame = (try live.readFrame(&reader.interface, gpa)) orelse return error.ExpectedFrame };
+}
+
+fn awaitFrameAck(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    reader: anytype,
+    writer: anytype,
+    expected_sequence: u64,
+    input_path: []const u8,
+    input_sequence: *u64,
+    expected_session_id: u64,
+    expected_frame_id: u32,
+) !void {
+    while (true) {
+        const inbound = try readInbound(reader, gpa);
+        switch (inbound) {
+            .control => |control| {
+                if (control.kind != .ack or control.sequence != expected_sequence) return error.ExpectedAck;
+                return;
+            },
+            .frame => |frame| {
+                defer gpa.free(frame);
+                const payload = try protocol.decodeEnvelope(frame);
+                if (payload.envelope.message_type != protocol.Message.text_input or
+                    payload.envelope.flags & protocol.Flags.requires_ack == 0 or
+                    payload.envelope.ack_sequence != 0 or
+                    payload.envelope.session_id != expected_session_id or
+                    payload.envelope.frame_id != expected_frame_id)
+                    return error.ExpectedAck;
+                const input = try frontend.decodeTextInput(payload.bytes);
+                if (payload.envelope.sequence != input_sequence.*)
+                    return error.InvalidSequence;
+                try writeInputArtifact(gpa, io, input_path, input.text);
+                try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = input_sequence.* });
+                try writer.interface.flush();
+                input_sequence.* += 1;
+            },
+        }
+    }
+}
+
 fn sendSnapshotMessages(
     gpa: std.mem.Allocator,
     snapshot: facts.FrameFacts,
     text: []const []const u8,
     scene: *frontend.Scene,
     acks: *live.AckTracker,
+    io: std.Io,
     reader: anytype,
     writer: anytype,
+    input_path: []const u8,
+    input_sequence: *u64,
 ) !void {
     var messages: std.ArrayList([]const u8) = .empty;
     defer {
@@ -350,9 +455,8 @@ fn sendSnapshotMessages(
         try acks.markSent(envelope.sequence);
         try live.writeFrame(&writer.interface, message);
         try writer.interface.flush();
-        const control = try readControlExact(reader);
-        if (control.kind != .ack) return error.ExpectedAck;
-        try acks.ack(control.sequence);
+        try awaitFrameAck(gpa, io, reader, writer, envelope.sequence, input_path, input_sequence, envelope.session_id, envelope.frame_id);
+        try acks.ack(envelope.sequence);
     }
 }
 
@@ -389,10 +493,12 @@ fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !f
     var zero_token: live.Token = [_]u8{0} ** live.token_len;
     if (!live.tokenEql(&zero_token, &ready.token)) return error.InvalidHandshake;
 
-    const use_resync = config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect;
+    const use_resync = config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect or
+        config.mode == .emacs_epxl_input;
     var scene = frontend.Scene.init(gpa);
     errdefer scene.deinit();
     var resync_complete = false;
+    var sent_input = false;
     if (use_resync) {
         try live.writeControl(&writer.interface, .{ .kind = .resync_request, .sequence = 1 });
         try writer.interface.flush();
@@ -404,6 +510,10 @@ fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !f
             defer gpa.free(message);
             const envelope = (try protocol.decodeEnvelope(message)).envelope;
             try scene.apply(message);
+            if (config.auto_input != null and !sent_input and envelope.message_type == protocol.Message.frame_update) {
+                try sendAutoTextInput(gpa, &writer, &reader, config.auto_input.?, envelope);
+                sent_input = true;
+            }
             try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
             try writer.interface.flush();
         }
@@ -417,6 +527,10 @@ fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !f
         defer gpa.free(message);
         const envelope = (try protocol.decodeEnvelope(message)).envelope;
         try scene.apply(message);
+        if (config.auto_input != null and !sent_input and envelope.message_type == protocol.Message.frame_update) {
+            try sendAutoTextInput(gpa, &writer, &reader, config.auto_input.?, envelope);
+            sent_input = true;
+        }
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
         if (use_resync and !resync_complete) return error.IncompleteResync;
@@ -638,6 +752,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_epxl;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-reconnect-smoke")) {
             config.mode = .emacs_epxl_reconnect;
+        } else if (std.mem.eql(u8, arg, "--emacs-epxl-input-smoke")) {
+            config.mode = .emacs_epxl_input;
+            config.auto_input = "X";
         } else if (std.mem.eql(u8, arg, "--facts")) {
             try setString(gpa, &config.facts_path, args.next() orelse return error.MissingFactsPath);
         } else {
@@ -778,6 +895,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .emacs => unreachable,
         .emacs_epxl => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_reconnect => try runEmacsEpxlSession(gpa, io, &config, 2),
+        .emacs_epxl_input => try runEmacsEpxlSession(gpa, io, &config, 1),
         .facts_publisher => unreachable,
     };
     defer scene.deinit();
@@ -785,6 +903,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         return error.UnexpectedFactUpdateCount;
     if ((config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect) and
         !sceneHasText(&scene, "Emacs Proto-UI")) return error.NoEmacsText;
+    if (config.mode == .emacs_epxl_input and scene.stats.frame_updates < 2)
+        return error.UnexpectedFactUpdateCount;
+    if (config.mode == .emacs_epxl_input and
+        !sceneHasText(&scene, "XEmacs Proto-UI")) return error.InputNotApplied;
     if (scene.stats.frame_updates == 0) return error.NoFrameUpdate;
     if (scene.frame_header == null) return error.NoFrameHeader;
 

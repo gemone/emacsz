@@ -83,11 +83,16 @@ pub const TextLineWire = struct {
     line: []const u8,
 };
 
+pub const TextInput = struct {
+    text: []const u8,
+};
+
 const window_record_size: usize = 40;
 const row_record_size: usize = 56;
 const cursor_record_size: usize = 56;
 const damage_record_size: usize = 16;
 const present_record_size: usize = 16;
+const max_text_columns: usize = 120;
 
 fn putU16(out: *std.ArrayList(u8), a: std.mem.Allocator, value: u16) !void {
     var bytes: [2]u8 = undefined;
@@ -298,6 +303,26 @@ pub fn decodeTextLine(bytes: []const u8) Error!TextLineWire {
         if (byte < 0x20 or byte > 0x7e) return Error.InvalidTable;
     }
     return .{ .row_index = std.mem.readInt(u32, bytes[0..4], .little), .line = payload };
+}
+
+pub fn encodeTextInput(a: std.mem.Allocator, input: TextInput, out: *std.ArrayList(u8)) !void {
+    if (input.text.len == 0 or input.text.len > max_text_columns) return Error.InvalidTable;
+    for (input.text) |byte| {
+        if (byte < 0x20 or byte > 0x7e) return Error.InvalidTable;
+    }
+    try putU32(out, a, @intCast(input.text.len));
+    try out.appendSlice(a, input.text);
+}
+
+pub fn decodeTextInput(bytes: []const u8) Error!TextInput {
+    if (bytes.len < 4) return Error.InvalidTable;
+    const length = std.mem.readInt(u32, bytes[0..4], .little);
+    if (bytes.len != 4 + length or length == 0 or length > max_text_columns) return Error.InvalidTable;
+    const text = bytes[4..];
+    for (text) |byte| {
+        if (byte < 0x20 or byte > 0x7e) return Error.InvalidTable;
+    }
+    return .{ .text = text };
 }
 
 pub fn decodePresentHint(bytes: []const u8) Error!PresentHint {
@@ -808,4 +833,25 @@ test "resync reset allows a coherent scene replay" {
     try scene.apply(create);
     try scene.apply(first);
     try std.testing.expectEqual(@as(u64, 1), scene.stats.frame_updates);
+}
+
+test "text input codec validates bounded printable ASCII" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try std.testing.expectError(Error.InvalidTable, decodeTextInput(bytes.items));
+    try std.testing.expectError(Error.InvalidTable, encodeTextInput(a, .{ .text = "" }, &bytes));
+    try encodeTextInput(a, .{ .text = "X" }, &bytes);
+    const decoded = try decodeTextInput(bytes.items);
+    try std.testing.expectEqualStrings("X", decoded.text);
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeTextInput(bytes.items));
+
+    var invalid: std.ArrayList(u8) = .empty;
+    defer invalid.deinit(a);
+    try invalid.appendSlice(a, &.{ 1, 0, 0, 0, 0 });
+    try std.testing.expectError(Error.InvalidTable, decodeTextInput(invalid.items));
+
+    const oversized = "a" ** 121;
+    try std.testing.expectError(Error.InvalidTable, encodeTextInput(a, .{ .text = oversized[0..] }, &bytes));
 }

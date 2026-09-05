@@ -954,6 +954,12 @@ columns to 120, and maps every row index to a row in the same update.  This is
 not the normative `GLYPH_RUN` path and must not be used to claim shaped-text or
 face/font compatibility.
 
+The facts profile also defines the `TEXT_INPUT` payload used by
+`0x0601`: `u32 byte_length` followed by printable-ASCII bytes.  Producers limit
+the text to 120 bytes.  The frontend sends this complete EUP message on its own
+frontend-to-core sequence; the core replies with the normal EPXL `ACK` control
+before applying the input intent.  This is not a full keyboard/keymap protocol.
+
 #### Security and limits
 
 EPXL v1 is local trusted IPC, not a wide-area protocol.  The endpoint directory

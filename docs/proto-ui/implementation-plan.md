@@ -60,7 +60,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | `output_proto` terminal | Rolled back with runtime integration |
 | Redisplay capture | Rolled back; adapter ABI v1 contract only |
 | Resource model | Not implemented |
-| SDL3 frontend | Partial: token-authenticated EPXL facts streaming with producer coalescing and initial-session resync; no redisplay streaming, input, faces, or full recovery |
+| SDL3 frontend | Partial: token-authenticated EPXL facts streaming with producer coalescing and initial-session resync; bounded ASCII input bridge only; no redisplay streaming, keyboard/keymap/IME input, faces, or full recovery |
 | Real SDL3 Emacs smoke test | Not achieved |
 | Adapter-first C boundary | Required; no new inherited-C Proto-UI edits |
 | W9a independent SDL3 lifecycle smoke | Approved |
@@ -76,7 +76,8 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W9h real-fact producer coalescing | Approved |
 | W9i authenticated EPXL resync reconnect | Approved |
 | W9j public ASCII text observation | Approved |
-| Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
+| W9k bounded ASCII text input bridge | Approved |
+| Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
 
 The workstream sections below retain their historical review records and
 implementation details.  The Current status table is authoritative when an
@@ -1055,6 +1056,40 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-s
 The gate must recover, validate, and render real public window text containing
 the `Emacs Proto-UI` marker.
 
+### W9k — Bounded ASCII text input bridge (approved)
+
+Goal: carry a bounded, adapter-owned text-input intent from SDL3 through EPXL to
+the public Emacs bridge and prove that the next observed text reflects it.
+
+Implemented:
+
+1. Added the facts-profile bounded ASCII `TEXT_INPUT` subset: a `u32` byte length followed by
+   printable-ASCII bytes, bounded to the facts-profile text column limit.
+2. The SDL frontend sends `TEXT_INPUT` on the same authenticated EPXL session
+   with a separate frontend-to-core sequence, requires a transport ACK, and then
+   acknowledges the pending core-to-frontend EUP frame.
+3. The publisher multiplexes controls and input frames, validates sequence,
+   message kind, and ASCII bounds, writes an adapter-owned input artifact, and
+   ACKs the input.
+4. The smoke Emacs bridge observes that artifact with public file APIs and
+   inserts the bounded ASCII text through public `insert`; the next public text
+   observation and `FRAME_UPDATE` expose the result to SDL3.
+5. `sdl3-epxl-input-smoke` fails unless the final scene contains
+   `XEmacs Proto-UI`.
+
+This is an observation-first text-input bridge, not Emacs command execution or
+keymap compatibility.  Keyboard modifiers, commands, macros, themes, CJK/IME,
+arbitrary buffers, point/region editing, and redisplay-owned cursors remain
+future work.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-input-smoke --summary all
+```
+
+The final scene must contain the applied input marker.
+
 ### W10 — GPU renderer path
 
 Goal: add optional acceleration without making it required.
@@ -1306,6 +1341,7 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-smoke
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-live-smoke
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-facts-smoke
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-input-smoke
 zig build -Dsdl3-frontend=true sdl3-ui-smoke
 zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke
 ```
