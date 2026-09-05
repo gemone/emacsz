@@ -88,16 +88,6 @@ jobs:
         with:
           version: 0.16.0
 
-      # Restore the zig global cache.  A cache-service hiccup must not fail
-      # the build, so restore is best-effort (continue-on-error).
-      - name: Restore zig global cache
-        uses: actions/cache/restore@v4
-        continue-on-error: true
-        with:
-          path: ${{ env.ZIG_GLOBAL_CACHE }}
-          key: zig-global-${{ matrix.os }}-${{ hashFiles('build.zig.zon', 'tools/**/build.zig.zon') }}
-          restore-keys: |
-            zig-global-${{ matrix.os }}-
 
       - name: Install system libraries (Linux)
         if: runner.os == 'Linux'
@@ -234,16 +224,6 @@ jobs:
           zig build -Dnative-comp=true -Dnative-comp-zig=true -Doptimize=ReleaseFast zeln-interop-smoke
 
       # Persist the zig global cache for the next run.  Always runs (even on
-      # a late step failure) and must not fail the job (cache-service 4xx
-      # is transient and non-fatal).
-      - name: Save zig global cache
-        uses: actions/cache/save@v4
-        if: always()
-        continue-on-error: true
-        with:
-          path: ${{ env.ZIG_GLOBAL_CACHE }}
-          key: zig-global-${{ matrix.os }}-${{ hashFiles('build.zig.zon', 'tools/**/build.zig.zon') }}
-
   # MSVC backend (acceptance 5.3 / objective 3.4): a second Windows job that
   # builds and tests with -Dtarget=x86_64-windows-msvc.  The windows-latest
   # runner ships Visual Studio Build Tools + Windows SDK preinstalled, which
@@ -269,15 +249,6 @@ jobs:
         uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.16.0
-
-      - name: Restore zig global cache
-        uses: actions/cache/restore@v4
-        continue-on-error: true
-        with:
-          path: ${{ env.ZIG_GLOBAL_CACHE }}
-          key: zig-global-msvc-${{ hashFiles('build.zig.zon', 'tools/**/build.zig.zon') }}
-          restore-keys: |
-            zig-global-msvc-
 
       # MSVC backend build.  -Dnative-comp-zig=true is set from the start
       # (mirroring the GNU job) so the ert and .zeln steps below reuse this
@@ -346,14 +317,6 @@ jobs:
           zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp=false -Dnative-comp-zig=true zeln-jit-smoke &&
           zig build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast -Dnative-comp=false -Dnative-comp-zig=true check-zeln-jit
 
-      - name: Save zig global cache (MSVC)
-        uses: actions/cache/save@v4
-        if: always()
-        continue-on-error: true
-        with:
-          path: ${{ env.ZIG_GLOBAL_CACHE }}
-          key: zig-global-msvc-${{ hashFiles('build.zig.zon', 'tools/**/build.zig.zon') }}
-
   # Full w32 GUI backend (-Dgui with the vendored image decoders) on BOTH
   # Windows ABIs.  Builds the GUI emacs and verifies the frame + image
   # surface: a batch probe checks system-configuration, (featurep 'w32)
@@ -383,16 +346,6 @@ jobs:
         uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.16.0
-
-      - name: Restore zig global cache
-        uses: actions/cache/restore@v4
-        continue-on-error: true
-        with:
-          path: ${{ env.ZIG_GLOBAL_CACHE }}
-          key: zig-global-gui-${{ matrix.abi }}-${{ hashFiles('build.zig.zon', 'tools/**/build.zig.zon') }}
-          restore-keys: |
-            zig-global-gui-${{ matrix.abi }}-
-            zig-global-windows-latest-
 
       # -Dgui + the three vendored image decoders; a SEPARATE cache dir so
       # the GUI config/header generation cannot pollute the console jobs.
@@ -427,10 +380,4 @@ jobs:
             --load "$PWD\gui-probe.el"
           if ($LASTEXITCODE -ne 0) { throw "GUI probe failed (exit $LASTEXITCODE)" }
 
-      - name: Save zig global cache (GUI)
-        uses: actions/cache/save@v4
-        if: always()
-        continue-on-error: true
-        with:
-          path: ${{ env.ZIG_GLOBAL_CACHE }}
-          key: zig-global-gui-${{ matrix.abi }}-${{ hashFiles('build.zig.zon', 'tools/**/build.zig.zon') }}
+
