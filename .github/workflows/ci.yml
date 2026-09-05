@@ -168,6 +168,13 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/zig-out/tmp"
           echo "TMPDIR=$GITHUB_WORKSPACE/zig-out/tmp" >> "$GITHUB_ENV"
 
+      # Performance baseline: measure interpreter speed on each platform.
+      # Results appear in the CI log for cross-platform comparison.
+      - name: Performance benchmark
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./zig-out/bin/emacs.exe --batch -l build-aux/bench-msvc.el 2>&1 | Write-Host
+
       - name: Built-in ert tests (582)
         env:
           ZIG_COMPILE_LISP_PROBE: ${{ runner.os == 'Windows' && '1' || '' }}
@@ -300,6 +307,10 @@ jobs:
             ./zig-out/bin/etags.exe --version
             ./zig-out/bin/emacsclient.exe --version
           }
+
+      - name: Performance benchmark (MSVC)
+        shell: pwsh
+        run: ./zig-out/bin/emacs.exe --batch -l build-aux/bench-msvc.el 2>&1 | Write-Host
 
       # Full ert suite for the MSVC backend.  The check pipeline runs the
       # dump itself (bootstrap-dump -> compile-lisp -> dump-compiled ->
