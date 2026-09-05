@@ -430,14 +430,6 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // run entirely on the interpreter and report a vacuous 582/582.  Require
     // a minimum share of the contended set to actually compile; a sub-floor
     // run exits non-zero so the gate fails loudly.
-    //
-    // MSVC ABI: the .zeln pushhandler mechanism requires calling the CRT's
-    // _setjmp from LLVM-compiled code, which the MSVC UCRT does not support
-    // (the CRT intrinsic assumes MSVC-compiled callers; exit 40).  zeln-
-    // compile rejects handler-carrying units on msvc; those fall back to
-    // the interpreter.  The observed skip rate is ~51.5%, so a 45% floor
-    // still catches a near-total fallback while accommodating the ABI.
-    const is_msvc = env_map.get("ZELN_HOST_MSVC") != null;
     const MIN_COVERAGE_PCT: f64 = 50.0;
     if (attempted > 0 and coverage < MIN_COVERAGE_PCT) {
         std.debug.print(
