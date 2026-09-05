@@ -388,10 +388,11 @@ pub fn build(b: *std.Build) void {
     const enable_native_comp = b.option(bool, "native-comp", "Enable the gccjit native-comp path (.eln, HAVE_NATIVE_COMP); default OFF") orelse false;
     const enable_modules = b.option(bool, "modules", "Enable upstream dynamic modules (HAVE_MODULES)") orelse false;
     const enable_modules_zig = b.option(bool, "modules-zig", "Enable the Zig dynamic-module subsystem (HAVE_MODULES_ZIG)") orelse false;
-    // Proto-UI is adapter-only.  The option builds the versioned ABI, tests
-    // it with a fake host, and audits changed paths; it does not alter any
-    // inherited Emacs C/Lisp source or enable runtime integration.
-    const enable_proto_ui = b.option(bool, "proto-ui", "Build adapter ABI/summary and run adapter conformance plus boundary tests") orelse false;
+    // Proto-UI is adapter-only.  The option builds the EUP codec and
+    // versioned ABI, tests them with a fake host, and audits changed paths;
+    // it does not alter inherited Emacs C/Lisp source or enable runtime
+    // integration.
+    const enable_proto_ui = b.option(bool, "proto-ui", "Build adapter-only EUP codec/ABI and run conformance plus boundary tests") orelse false;
 
     // Target-derived flags.  `target` is resolved at line 64, so target.result
     // is in scope here; computing these early lets the make-docfile / doc-scan
@@ -423,7 +424,7 @@ pub fn build(b: *std.Build) void {
         const run_proto_ui_tests = b.addRunArtifact(proto_ui_tests);
         const proto_ui_unit_step = b.step(
             "proto-ui-unit",
-            "Run adapter ABI/runtime/boundary classifier unit tests",
+            "Run adapter and EUP protocol unit tests",
         );
         proto_ui_unit_step.dependOn(&run_proto_ui_tests.step);
 
@@ -4868,7 +4869,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build zeln-pgo          - Z7: multi-fixture PGO test (6 workload shapes)
         \\
         \\Proto-UI path (opt-in: -Dproto-ui=true):
-        \\  zig build -Dproto-ui=true proto-ui-unit - adapter ABI/runtime/boundary tests
+        \\  zig build -Dproto-ui=true proto-ui-unit - adapter and EUP protocol tests
         \\
         \\Native-comp gccjit path (opt-in: -Dnative-comp=true, native glibc-Linux;
         \\  requires libgccjit). Coexists with -Dnative-comp-zig: when both are on,

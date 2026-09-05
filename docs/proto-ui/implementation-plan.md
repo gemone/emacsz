@@ -6,8 +6,8 @@ Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existin
 Historical runtime record: W0's schema design remains normative.  W1-W4c-b0
 section headings, acceptance commands, and present-tense implementation notes
 are historical review records.  Their runtime code and inherited C/Lisp
-integration were rolled back; the current status table and W4c-b1-b0 describe
-the only implemented Proto-UI surface.
+integration were rolled back; the current status table and W4c-b1-p0/W4c-b1-b0
+describe the only implemented Proto-UI surface.
 
 Hard constraint: adapter-first.  New behavior is implemented in the Zig
 adapter, SDL3 frontend, Lisp integration, replay/protocol tooling, or build
@@ -36,11 +36,11 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | Architecture specification | Documented |
 | EUP protocol specification | Documented |
 | Capability/PGTK parity matrix | Documented |
-| EUP envelope/resource/FRAME_UPDATE skeleton | Partial |
-| Memory sink and replay-file transport | Partial |
+| EUP envelope/resource/FRAME_UPDATE codec | Implemented (adapter-only) |
+| Memory sink and replay-file transport | Designed; prior implementation rolled back |
 | SDL3 frontend design | Documented |
 | Performance baseline | Documented |
-| Build option `-Dproto-ui` | Adapter ABI/summary generation, adapter unit tests, fake-host conformance, and boundary audit only; no Emacs runtime integration |
+| Build option `-Dproto-ui` | Adapter-only EUP codec, ABI/summary generation, unit tests, fake-host conformance, and boundary audit; no Emacs runtime integration |
 | W2 registration seam | Approved historically; runtime integration rolled back |
 | W3a lifecycle identity | Approved historically; runtime integration rolled back |
 | W3b terminal lifecycle | Approved historically; runtime integration rolled back |
@@ -50,6 +50,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W4c-a damage/hook coverage | Approved historically; runtime integration rolled back |
 | W4c-b0 headless frame visibility/count observability | Approved historically; runtime integration rolled back |
 | W4c-b1-b0 adapter ABI and fake-host conformance | Approved (adapter-only) |
+| W4c-b1-p0 adapter-only EUP protocol codec | Approved (adapter-only) |
 | Automated W3c frame smoke | Rolled back with runtime integration |
 | `output_proto` terminal | Rolled back with runtime integration |
 | Redisplay capture | Rolled back; adapter ABI v1 contract only |
@@ -400,6 +401,29 @@ The smoke creates a visible proto frame, inserts text, runs the real-row
 fixture, observes exactly one committed update, then runs the synthetic capture
 as a second update.  It does not encode glyphs, faces, fonts, images, cursors,
 scroll optimization, or rendering.
+
+#### W4c-b1-p0 — Adapter-only EUP protocol codec (approved)
+
+Goal: make the normative EUP v1 contract executable before adding transport or
+Emacs integration.
+
+Implemented:
+
+1. `src/proto-ui/protocol.zig` implements the 62-byte envelope, assigned
+   message-ID table, delivery classes, capability table, resource identity,
+   and 88-byte `FRAME_UPDATE` header/section codec.
+2. The decoder validates little-endian layout, CRC-32C integrity, reserved
+   flags, unsupported transport features, trailing bytes, canonical section
+   ordering, extension ranges, and untrusted allocation bounds.
+3. A canonical-table test pins the 164 assigned IDs from the normative
+   protocol tables and rejects unknown mapped classes, disorder, and the
+   invalid sentinel.
+
+Acceptance:
+
+`zig build -Dproto-ui=true proto-ui-unit --summary all` passes 18/18.  The
+implementation is adapter-only, has no Emacs runtime seam, and the changed-path
+boundary audit rejects inherited C edits.
 
 #### W4c-b1-b0 — Adapter ABI and fake-host conformance (approved)
 
@@ -838,23 +862,31 @@ The final evidence must also include the adapter-boundary audit from
 [`adapter-boundary.md`](adapter-boundary.md): no new inherited-C Proto-UI
 edits, default-build isolation, and a documented rollback path.
 
-## 4. Build/test surface to implement
+## 4. Build/test surface
 
-Planned build options:
+Build options:
 
 ```sh
 -Dproto-ui=true
 -Dsdl3-frontend=true
 ```
 
-Planned steps:
+Current steps:
 
 ```sh
 zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true proto-ui-abi
+zig build -Dproto-ui=true proto-ui-conformance
+zig build -Dproto-ui=true proto-ui-boundary
+zig build -Dproto-ui=true proto-ui-boundary-audit
+```
+
+Planned steps:
+
+```sh
 zig build -Dproto-ui=true proto-ui-roundtrip
 zig build -Dproto-ui=true proto-ui-smoke
 zig build -Dproto-ui=true proto-ui-replay-test
-zig build -Dproto-ui=true proto-ui-conformance
 zig build -Dproto-ui=true proto-ui-fuzz
 zig build -Dproto-ui=true proto-ui-bench
 zig build -Dproto-ui=true proto-ui-diff
@@ -875,7 +907,7 @@ Step names may be adjusted during W1/W2, but each listed verification must have 
 | SDL3 frontend architecture | Done |
 | Performance baseline | Done |
 | Workstream plan | Done |
-| Protocol schema examples | Pending W1 |
+| Protocol schema examples | Done (adapter-only) |
 | User runbook | Pending W9 |
 | Troubleshooting guide | Pending W13 |
 | Final capability status report | Pending W12/W16 |

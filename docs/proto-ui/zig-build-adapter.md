@@ -67,21 +67,21 @@ inherited Emacs C files in place.
 
 ```text
 src/proto-ui/
-  adapter/
-    host_v1.zig         ABI descriptions and validation
-    runtime.zig         session and capture orchestration
-    shim.c.zig          generated thin C-shim source template
-  backend.zig           existing Zig adapter ABI
-  protocol.zig          EUP codec and message tables
-  transport.zig         sink/replay transport primitives
+  adapter.zig           authoritative ABI/ownership manifest and runtime
+  protocol.zig          EUP codec and assigned message tables
+  conformance.zig       fake-host ABI conformance
+  abi_gen.zig           generated C header and ABI summary
+  boundary_audit.zig    changed-path boundary classifier
+  root.zig              module/test aggregator
 ```
 
 Generated content is written only to:
 
 ```text
-zig-cache/proto-ui/<hash>/
+.zig-cache/o/<hash>/
 zig-out/lib/
 zig-out/bin/
+zig-out/include/proto-ui/
 ```
 
 ### 4.2 Build phases

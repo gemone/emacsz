@@ -2,7 +2,7 @@
 
 Status: normative design baseline
 Protocol: EUP v1
-Implementation status: specification complete.  Historical W1-W4c-b0 direct-core runtime integration was rolled back to enforce the adapter-first boundary.  W4c-b1-b0 is approved: it provides the adapter ABI, non-normative ABI summary generation, and fake-host conformance; no inherited C/Lisp runtime integration is present.  Glyph, face, font, and image resources, rendering, and generic graphic predicates remain pending adapter-first work.
+Implementation status: specification complete.  Historical W1-W4c-b0 direct-core runtime integration was rolled back to enforce the adapter-first boundary.  W4c-b1-p0 and W4c-b1-b0 are approved: they provide the adapter-only EUP codec, adapter ABI, non-normative ABI summary generation, and fake-host conformance; no inherited C/Lisp runtime integration is present.  Glyph, face, font, and image resources, rendering, and generic graphic predicates remain pending adapter-first work.
 
 ## 1. Purpose
 
