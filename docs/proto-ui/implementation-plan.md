@@ -26,16 +26,17 @@ Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existin
 | Memory sink and replay-file transport | Partial |
 | SDL3 frontend design | Documented |
 | Performance baseline | Documented |
-| Build option `-Dproto-ui` | W2 registration, W3a lifecycle identity, W3b terminal lifecycle, W4b window/row metadata |
+| Build option `-Dproto-ui` | W2 registration, W3a lifecycle identity, W3b terminal lifecycle, W4b window/row metadata, W4c-a damage capture |
 | W2 registration seam | Approved |
 | W3a lifecycle identity | Approved |
 | W3b terminal lifecycle | Approved |
 | W3c lifecycle-only frame objects | Approved |
 | W4a redisplay begin/cursor/flush capture | Approved |
 | W4b window/row metadata capture | Approved |
+| W4c-a damage/hook coverage | Approved |
 | Automated W3c frame smoke | Implemented |
 | `output_proto` terminal | Approved |
-| Redisplay capture | Partial: W4a synthetic + W4b window/row metadata |
+| Redisplay capture | Partial: W4a synthetic + W4b window/row metadata + W4c-a damage |
 | Resource model | Not implemented |
 | SDL3 frontend | Not implemented |
 | Real SDL3 Emacs smoke test | Not achieved |
@@ -309,18 +310,41 @@ Review gates:
 3. Atomic-update and cleanup assertions.
 4. Absence of glyph, face, font, image, and buffer-text layout claims.
 
-### W4c — Full redisplay capture (pending)
+### W4c — Full redisplay capture
 
-Goal: cover the full redisplay-interface surface without rendering.
+#### W4c-a — Bounded damage capture and safe hook coverage (approved)
+
+Goal: remove unsafe null redisplay seams and capture actual damage rectangles
+without rendering.
 
 Tasks:
 
-1. Capture update-begin/end and frame flush boundaries for real frames.
-2. Capture row creation/update/deletion and clear-area damage.
-3. Capture partial damage and coalescing.
-4. Preserve glyph matrices, cursor, scrolling, truncation, continuation, and
-   BiDi visual-order semantics for later encoding.
-5. Add real-frame redisplay fixtures and replay captures.
+1. Track successful window-update boundaries before frame flush.
+2. Capture bounded write, clear, scroll, glyph-string, fringe, border, and
+   divider damage rectangles.
+3. Use partial damage when rectangles are captured; keep the conservative
+   full-frame fallback when none are captured.
+4. Enforce a 256-rectangle cap and reject/cancel overflow atomically.
+5. Use core glyph production without drawing; leave renderer-specific
+   overhangs and frame parameters explicitly unsupported in this slice.
+
+Acceptance:
+
+Backend tests prove payload ordering, multiple damage rectangles, fallback
+damage mode, invalid rectangle rejection, and atomic overflow behavior.  The
+Emacs smoke still uses its deterministic synthetic gate and proves the C
+integration/link remains clean.  Real-frame fixtures remain W4c-b.
+
+#### W4c-b — Real-frame redisplay fixtures (pending)
+
+Tasks:
+
+1. Drive real proto frame redisplay through batch-safe fixtures.
+2. Capture row creation/update/deletion and complete clear-area semantics.
+3. Capture coalescing and ensure damage/row/window snapshots agree.
+4. Preserve cursor, scrolling, truncation, continuation, and BiDi visual-order
+   semantics for later encoding.
+5. Add replay captures and compare synthetic versus real-frame output.
 6. Keep failure atomic: reject incomplete updates.
 
 Acceptance:

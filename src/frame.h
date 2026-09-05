@@ -152,6 +152,7 @@ struct proto_output
     bool destroy_sent;
     bool update_active;
     bool capture_failed;
+    bool window_update_seen;
   };
 #endif
 

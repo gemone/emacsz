@@ -713,6 +713,8 @@ extern int proto_ui_frame_cursor (uint64_t, uint64_t, uint64_t,
                                   int, int, int, int,
                                   unsigned char, bool, bool);
 #endif
+extern int proto_ui_frame_damage (uint64_t, uint64_t,
+                                  int, int, int, int);
 extern int proto_ui_frame_flush (uint64_t, uint64_t, int, int);
 extern int proto_ui_frame_update_count (uint64_t);
 
@@ -850,12 +852,216 @@ proto_update_window_begin (struct window *window)
                                 WINDOW_PIXEL_WIDTH (window),
                                 WINDOW_PIXEL_HEIGHT (window)) != 0)
     return;
+  if (output->update_active)
+    return;
   if (proto_ui_frame_update_begin (output->session_id, output->frame_id) != 0)
     return;
   output->update_active = true;
+  output->capture_failed = false;
+  output->window_update_seen = false;
+}
+
+static void
+proto_record_frame_damage (struct frame *frame, int x, int y,
+                           int width, int height)
+{
+  struct proto_output *output = FRAME_PROTO_OUTPUT (frame);
+  if (!output || !output->update_active || width <= 0 || height <= 0)
+    return;
+  (void) proto_ui_frame_damage (output->session_id, output->frame_id,
+                                x, y, width, height);
+}
+
+static void
+proto_record_row_damage (struct window *window, struct glyph_row *row)
+{
+  if (!row || row->pixel_width <= 0 || row->height <= 0)
+    return;
+  proto_record_frame_damage (XFRAME (WINDOW_FRAME (window)),
+                             WINDOW_LEFT_PIXEL_EDGE (window) + row->x,
+                             WINDOW_TOP_PIXEL_EDGE (window) + row->y,
+                             row->pixel_width, row->height);
+}
+
+static void
+proto_record_scroll_damage (struct window *window, struct run *run)
+{
+  struct frame *frame = XFRAME (WINDOW_FRAME (window));
+  int top = min (run->desired_y, run->current_y);
+  int bottom = max (run->desired_y, run->current_y);
+  int y = WINDOW_TOP_PIXEL_EDGE (window) + top;
+
+  if (run->height <= 0 || bottom > INT_MAX - run->height
+      || y > INT_MAX - (run->height + (bottom - top)))
+    return;
+  proto_record_frame_damage (frame, WINDOW_LEFT_PIXEL_EDGE (window), y,
+                             WINDOW_PIXEL_WIDTH (window),
+                             run->height + (bottom - top));
+}
+
+static void
+proto_update_window_end (struct window *window, bool cursor_on_p,
+                         bool mouse_face_overwritten_p)
+{
+  struct frame *frame = XFRAME (WINDOW_FRAME (window));
+  struct proto_output *output = FRAME_PROTO_OUTPUT (frame);
+  (void) window;
+  (void) cursor_on_p;
+  (void) mouse_face_overwritten_p;
+  if (output && output->update_active)
+    output->window_update_seen = true;
 }
 
 #ifdef HAVE_WINDOW_SYSTEM
+
+static void
+proto_write_glyphs (struct window *window, struct glyph_row *row,
+                    struct glyph *string, enum glyph_row_area area, int len)
+{
+  /* The generic path advances the output cursor and invalidates an
+     overwritten physical cursor; RIF draw/clear hooks capture damage.  */
+  gui_write_glyphs (window, row, string, area, len);
+}
+
+static void
+proto_insert_glyphs (struct window *window, struct glyph_row *row,
+                     struct glyph *start, enum glyph_row_area area, int len)
+{
+  /* Preserve the generic cursor/shift semantics; shift and draw hooks
+     capture the affected frame rectangles.  */
+  gui_insert_glyphs (window, row, start, area, len);
+}
+
+static void
+proto_clear_end_of_line (struct window *window, struct glyph_row *row,
+                         enum glyph_row_area area, int x)
+{
+  (void) area;
+  (void) x;
+  proto_record_row_damage (window, row);
+}
+
+static void
+proto_scroll_run (struct window *window, struct run *run)
+{
+  proto_record_scroll_damage (window, run);
+}
+
+static void
+proto_clear_window_mouse_face (struct window *window)
+{
+  (void) window;
+}
+
+static void
+proto_get_glyph_overhangs (struct glyph *glyph, struct frame *frame,
+                           int *left, int *right)
+{
+  gui_get_glyph_overhangs (glyph, frame, left, right);
+}
+
+static void
+proto_fix_overlapping_area (struct window *window, struct glyph_row *row,
+                            enum glyph_row_area area, int overlaps)
+{
+  (void) area;
+  (void) overlaps;
+  proto_record_row_damage (window, row);
+}
+
+static void
+proto_draw_fringe_bitmap (struct window *window, struct glyph_row *row,
+                          struct draw_fringe_bitmap_params *p)
+{
+  (void) row;
+  int height = p->h;
+  if (p->dh > 0 && height <= INT_MAX - p->dh)
+    height += p->dh;
+  proto_record_frame_damage (XFRAME (WINDOW_FRAME (window)),
+                             p->x, p->y, p->wd, height);
+}
+
+static void
+proto_define_fringe_bitmap (int which, unsigned short *bits, int h, int wd)
+{
+  (void) which;
+  (void) bits;
+  (void) h;
+  (void) wd;
+}
+
+static void
+proto_destroy_fringe_bitmap (int which)
+{
+  (void) which;
+}
+
+static void
+proto_draw_glyph_string (struct glyph_string *s)
+{
+  proto_record_frame_damage (s->f, s->x, s->y, s->width, s->height);
+}
+
+static void
+proto_define_frame_cursor (struct frame *frame, Emacs_Cursor cursor)
+{
+  (void) frame;
+  (void) cursor;
+}
+
+static void
+proto_clear_frame_area (struct frame *frame, int x, int y,
+                        int width, int height)
+{
+  proto_record_frame_damage (frame, x, y, width, height);
+}
+
+static void
+proto_clear_under_internal_border (struct frame *frame)
+{
+  proto_record_frame_damage (frame, 0, 0, FRAME_PIXEL_WIDTH (frame),
+                             FRAME_PIXEL_HEIGHT (frame));
+}
+
+static void
+proto_draw_vertical_window_border (struct window *window, int x,
+                                   int y0, int y1)
+{
+  proto_record_frame_damage (XFRAME (WINDOW_FRAME (window)), x,
+                             min (y0, y1), 1, max (y0, y1) - min (y0, y1));
+}
+
+static void
+proto_draw_window_divider (struct window *window, int x0, int x1,
+                           int y0, int y1)
+{
+  proto_record_frame_damage (XFRAME (WINDOW_FRAME (window)),
+                             min (x0, x1), min (y0, y1),
+                             max (x1, x0) - min (x1, x0),
+                             max (y1, y0) - min (y1, y0));
+}
+
+static void
+proto_shift_glyphs_for_insert (struct frame *frame, int x, int y,
+                               int width, int height, int shift_by)
+{
+  if (width > 0 && shift_by > 0 && width <= INT_MAX - shift_by)
+    proto_record_frame_damage (frame, x, y, width + shift_by, height);
+  else
+    proto_record_frame_damage (frame, x, y, width, height);
+}
+
+static void
+proto_show_hourglass (struct frame *frame)
+{
+  (void) frame;
+}
+
+static void
+proto_hide_hourglass (struct frame *frame)
+{
+  (void) frame;
+}
 
 static void
 proto_draw_window_cursor (struct window *window,
@@ -885,6 +1091,13 @@ proto_flush_display (struct frame *frame)
   struct proto_output *output = FRAME_PROTO_OUTPUT (frame);
   if (!output || !output->update_active)
     return;
+  if (!output->window_update_seen)
+    {
+      proto_ui_frame_update_cancel (output->session_id, output->frame_id);
+      output->update_active = false;
+      output->capture_failed = true;
+      return;
+    }
   int rc = proto_ui_frame_flush (output->session_id, output->frame_id,
                                  FRAME_PIXEL_WIDTH (frame),
                                  FRAME_PIXEL_HEIGHT (frame));
@@ -899,10 +1112,36 @@ proto_flush_display (struct frame *frame)
 static struct redisplay_interface proto_redisplay_interface = {
   .update_window_begin_hook = proto_update_window_begin,
   .after_update_window_line_hook = proto_after_update_window_line,
-  .update_window_end_hook = NULL,
+#ifdef HAVE_WINDOW_SYSTEM
+  .frame_parm_handlers = NULL,
+  .produce_glyphs = gui_produce_glyphs,
+  .write_glyphs = proto_write_glyphs,
+  .insert_glyphs = proto_insert_glyphs,
+  .clear_end_of_line = proto_clear_end_of_line,
+  .scroll_run_hook = proto_scroll_run,
+#endif
+  .update_window_end_hook = proto_update_window_end,
   .flush_display = proto_flush_display,
 #ifdef HAVE_WINDOW_SYSTEM
+  .clear_window_mouse_face = proto_clear_window_mouse_face,
+  .get_glyph_overhangs = proto_get_glyph_overhangs,
+  .fix_overlapping_area = proto_fix_overlapping_area,
+  .draw_fringe_bitmap = proto_draw_fringe_bitmap,
+  .define_fringe_bitmap = proto_define_fringe_bitmap,
+  .destroy_fringe_bitmap = proto_destroy_fringe_bitmap,
+  /* Overhangs are renderer-specific; W4c metadata capture does not render.  */
+  .compute_glyph_string_overhangs = NULL,
+  .draw_glyph_string = proto_draw_glyph_string,
+  .define_frame_cursor = proto_define_frame_cursor,
+  .clear_frame_area = proto_clear_frame_area,
+  .clear_under_internal_border = proto_clear_under_internal_border,
   .draw_window_cursor = proto_draw_window_cursor,
+  .draw_vertical_window_border = proto_draw_vertical_window_border,
+  .draw_window_divider = proto_draw_window_divider,
+  .shift_glyphs_for_insert = proto_shift_glyphs_for_insert,
+  .show_hourglass = proto_show_hourglass,
+  .hide_hourglass = proto_hide_hourglass,
+  .default_font_parameter = NULL,
 #endif
 };
 
@@ -918,6 +1157,7 @@ proto_capture_frame_update (struct frame *frame)
     error ("proto-ui frame update begin failed");
   output->update_active = true;
   output->capture_failed = false;
+  output->window_update_seen = true;
   struct window *window = XWINDOW (f->root_window);
   uint64_t window_id = proto_window_id (f, window);
   if (window_id != 0
@@ -950,8 +1190,8 @@ proto_capture_frame_update (struct frame *frame)
 DEFUN ("proto-ui-capture-frame-update", Fproto_ui_capture_frame_update,
        Sproto_ui_capture_frame_update, 1, 1, 0,
        doc: /* Capture one synthetic FRAME_UPDATE for a headless proto FRAME.
-The update carries W4b window/row metadata and proves the redisplay-to-EUP
-encoder path without rendering.  */)
+The update carries W4b/W4c-a metadata with fallback damage and proves the
+redisplay-to-EUP encoder path without rendering.  */)
   (Lisp_Object frame)
 {
   struct frame *f = decode_live_frame (frame);

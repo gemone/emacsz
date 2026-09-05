@@ -2,7 +2,7 @@
 
 Status: normative design baseline
 Protocol: EUP v1
-Implementation status: specification complete. W1-W3c approved: protocol/transport, registration, terminal lifecycle, and lifecycle-only frame objects. W4a approved: synthetic `FRAME_UPDATE` capture. W4b approved: real after-update window geometry and row metadata, capped at 256 rows. Glyphs/faces/fonts/images, rendering, and graphic predicates remain W4c+.
+Implementation status: specification complete. W1-W3c approved: protocol/transport, registration, terminal lifecycle, and lifecycle-only frame objects. W4a approved: synthetic `FRAME_UPDATE` capture. W4b approved: real after-update window geometry and row metadata, capped at 256 rows. W4c-a approved: bounded redisplay damage capture and safe hook coverage. Glyphs/faces/fonts/images, rendering, and graphic predicates remain W4c-b+.
 
 ## 1. Purpose
 
@@ -106,6 +106,9 @@ Current lifecycle/redisplay contract by implementation slice:
   cap marks capture failed and rejects/cancels the flush.  Windows and rows are
   upserts for the current update, not a complete historical UI table.  Glyph,
   face, font, and image sections remain absent.
+* **W4c-a** captures bounded redisplay damage from write/clear/scroll/draw
+  seams, tracks window-update completion, and keeps no-damage updates on the
+  conservative full-frame fallback.  It is metadata-only and does not render.
 
 Rendering, generic graphic `make-frame`, and `display-graphic-p` remain
 disabled until later W4 slices.  Cursor emission is conditional on the

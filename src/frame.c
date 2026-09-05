@@ -5088,13 +5088,13 @@ handle_frame_param (struct frame *f, Lisp_Object prop, Lisp_Object val,
   Lisp_Object param_index = Fget (prop, Qx_frame_parameter);
   if (FIXNATP (param_index) && XFIXNAT (param_index) < countof (frame_parms))
     {
-      if (FRAME_RIF (f))
-	{
-	  frame_parm_handler handler
-	    = FRAME_RIF (f)->frame_parm_handlers[XFIXNAT (param_index)];
-	  if (handler)
-	    handler (f, val, old_value);
-	}
+      if (FRAME_RIF (f) && FRAME_RIF (f)->frame_parm_handlers)
+        {
+          frame_parm_handler handler
+            = FRAME_RIF (f)->frame_parm_handlers[XFIXNAT (param_index)];
+          if (handler)
+            handler (f, val, old_value);
+        }
     }
 }
 

@@ -390,9 +390,9 @@ pub fn build(b: *std.Build) void {
     const enable_modules_zig = b.option(bool, "modules-zig", "Enable the Zig dynamic-module subsystem (HAVE_MODULES_ZIG)") orelse false;
     // Proto-UI: the EUP module is independent of Emacs UI internals.
     // The option enables HAVE_PROTO_UI registration, real terminal lifecycle,
-    // frame identity, protocol/transport conformance tests, and W4b window/row
-    // metadata capture.  GPU rendering and graphic-frame predicates arrive
-    // later.
+    // frame identity, protocol/transport conformance tests, W4b window/row
+    // metadata, and W4c-a damage capture.  GPU rendering and graphic-frame
+    // predicates arrive later.
     const enable_proto_ui = b.option(bool, "proto-ui", "Enable EUP proto-ui registration, lifecycle identity, and transport tests") orelse false;
 
     // Target-derived flags.  `target` is resolved at line 64, so target.result
@@ -1719,7 +1719,7 @@ pub fn build(b: *std.Build) void {
     });
     const zeln_jit_lib =
         b.addLibrary(.{ .name = "zeln-jit", .root_module = zeln_jit_mod });
-    // proto-ui W4a/W4b: the opt-in lifecycle/registration and redisplay
+    // proto-ui W4a/W4b/W4c-a: the opt-in lifecycle/registration and redisplay
     // capture ABI linked into temacs when HAVE_PROTO_UI is enabled.  Built
     // ReleaseFast like other leaf Zig ABI libraries.
     if (enable_proto_ui) {
@@ -4075,8 +4075,8 @@ pub fn build(b: *std.Build) void {
     smoke_step.dependOn(&run_smoke.step);
 
     // proto-ui-smoke: verify a real EUP terminal/frame and one synthetic
-    // FRAME_UPDATE carrying W4b window/row metadata.  Rendering and graphic
-    // predicates are W4+.
+    // FRAME_UPDATE carrying W4b/W4c-a metadata and fallback damage.  Rendering
+    // and graphic predicates are W4+.
     if (enable_proto_ui) {
         const run_proto_ui_smoke = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/emacs", "--batch",

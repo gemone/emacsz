@@ -19,6 +19,7 @@ pub const LifecycleError = error{
     InvalidTerminal,
     InvalidFrame,
     RowLimit,
+    DamageLimit,
     SessionLimit,
     OutOfMemory,
 };
@@ -39,6 +40,8 @@ pub const Frame = struct {
     cursor: ?CursorState = null,
     update_rows: [max_update_rows]RowState = undefined,
     update_row_count: usize = 0,
+    update_damage: [max_update_damage]DamageState = undefined,
+    update_damage_count: usize = 0,
 };
 
 pub const Window = struct {
@@ -53,6 +56,8 @@ pub const Window = struct {
 
 pub const max_update_rows: usize = 256;
 pub const row_record_size: usize = 56;
+pub const max_update_damage: usize = 256;
+pub const damage_record_size: usize = 16;
 
 pub const RowState = struct {
     window_id: u64,
@@ -77,6 +82,13 @@ pub const CursorState = struct {
     kind: u8,
     visible: bool,
     active: bool,
+};
+
+pub const DamageState = struct {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
 };
 
 pub const Session = struct {
@@ -245,6 +257,7 @@ pub const Session = struct {
         frame.capture_failed = false;
         frame.cursor = null;
         frame.update_row_count = 0;
+        frame.update_damage_count = 0;
     }
 
     pub fn recordRow(
@@ -314,11 +327,49 @@ pub const Session = struct {
         };
     }
 
+    pub fn recordDamage(
+        self: *Session,
+        frame_id: u64,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) !void {
+        const frame = self.frames.getPtr(frame_id) orelse
+            return LifecycleError.InvalidFrame;
+        if (!frame.update_active) return LifecycleError.InvalidFrame;
+        if (width < 0 or height < 0) {
+            frame.capture_failed = true;
+            return LifecycleError.InvalidFrame;
+        }
+        if (width > 0 and x > std.math.maxInt(i32) - width) {
+            frame.capture_failed = true;
+            return LifecycleError.InvalidFrame;
+        }
+        if (height > 0 and y > std.math.maxInt(i32) - height) {
+            frame.capture_failed = true;
+            return LifecycleError.InvalidFrame;
+        }
+        if (frame.update_damage_count >= frame.update_damage.len) {
+            frame.capture_failed = true;
+            return LifecycleError.DamageLimit;
+        }
+
+        frame.update_damage[frame.update_damage_count] = .{
+            .x = x,
+            .y = y,
+            .width = width,
+            .height = height,
+        };
+        frame.update_damage_count += 1;
+    }
+
     pub fn cancelFrame(self: *Session, frame_id: u64) void {
         if (self.frames.getPtr(frame_id)) |frame| {
             frame.update_active = false;
             frame.cursor = null;
             frame.update_row_count = 0;
+            frame.update_damage_count = 0;
         }
     }
 
@@ -332,6 +383,8 @@ pub const Session = struct {
             return LifecycleError.InvalidFrame;
         if (!frame.live or !frame.update_active)
             return LifecycleError.InvalidFrame;
+        if (frame.update_damage_count >= frame.update_damage.len)
+            return LifecycleError.DamageLimit;
         if (frame.capture_failed) return LifecycleError.RowLimit;
         if (logical_width < 0 or logical_height < 0)
             return LifecycleError.InvalidFrame;
@@ -341,8 +394,9 @@ pub const Session = struct {
         const sequence = self.sink.next_sequence;
         const frame_id32: u32 = @intCast(frame.id);
 
-        // W4b emits conservative full-frame damage plus captured row/window
-        // metadata.  Concrete glyph/face/font/image tables remain W5+.
+        // W4b/W4c-a emits captured damage (or the full-frame fallback) plus
+        // row/window metadata.  Concrete glyph/face/font/image tables remain
+        // W5+.
         var cursor_record: [56]u8 = undefined;
         var has_cursor = false;
         if (frame.cursor) |cursor| {
@@ -358,11 +412,26 @@ pub const Session = struct {
             has_cursor = true;
         }
 
-        var damage: [16]u8 = undefined;
-        std.mem.writeInt(i32, damage[0..4], 0, .little);
-        std.mem.writeInt(i32, damage[4..8], 0, .little);
-        std.mem.writeInt(i32, damage[8..12], logical_width, .little);
-        std.mem.writeInt(i32, damage[12..16], logical_height, .little);
+        // With no captured rectangles the conservative fallback stays
+        // full-frame.  Real redisplay hooks emit the actual damaged set.
+        var damage_records: [max_update_damage + 1][damage_record_size]u8 = undefined;
+        const damage_count = if (frame.update_damage_count == 0)
+            1
+        else
+            frame.update_damage_count;
+        if (frame.update_damage_count == 0) {
+            std.mem.writeInt(i32, damage_records[0][0..4], 0, .little);
+            std.mem.writeInt(i32, damage_records[0][4..8], 0, .little);
+            std.mem.writeInt(i32, damage_records[0][8..12], logical_width, .little);
+            std.mem.writeInt(i32, damage_records[0][12..16], logical_height, .little);
+        } else {
+            for (frame.update_damage[0..frame.update_damage_count], 0..) |damage, index| {
+                std.mem.writeInt(i32, damage_records[index][0..4], damage.x, .little);
+                std.mem.writeInt(i32, damage_records[index][4..8], damage.y, .little);
+                std.mem.writeInt(i32, damage_records[index][8..12], damage.width, .little);
+                std.mem.writeInt(i32, damage_records[index][12..16], damage.height, .little);
+            }
+        }
 
         var present: [16]u8 = undefined;
         std.mem.writeInt(u32, present[0..4], 0, .little); // vsync
@@ -433,7 +502,7 @@ pub const Session = struct {
         }
         sections[section_count] = .{
             .kind = protocol.SectionKind.damage,
-            .records = &damage,
+            .records = @as([]const u8, @ptrCast(&damage_records))[0 .. damage_count * damage_record_size],
         };
         section_count += 1;
         sections[section_count] = .{
@@ -461,7 +530,7 @@ pub const Session = struct {
                 .scale = 1.0,
                 .dpi_x = 96.0,
                 .dpi_y = 96.0,
-                .damage_mode = 2, // full
+                .damage_mode = if (frame.update_damage_count == 0) 2 else 1,
                 .update_cause = 1, // redisplay
                 .coalesced_count = 0,
                 .timestamp_ns = 0,
@@ -486,7 +555,7 @@ pub const Session = struct {
     }
 
     pub fn frameMessageCount(self: *Session, frame_id: u64) usize {
-        // W4a/W4b emits one FRAME_UPDATE per successful flush.
+        // W4a/W4b/W4c-a emits one FRAME_UPDATE per successful flush.
         _ = frame_id;
         return self.frame_update_count;
     }
@@ -697,6 +766,26 @@ export fn proto_ui_frame_cursor(
     return 0;
 }
 
+export fn proto_ui_frame_damage(
+    session_id: u64,
+    frame_id: u64,
+    x: c_int,
+    y: c_int,
+    width: c_int,
+    height: c_int,
+) c_int {
+    const session = lifecycle_session orelse return -1;
+    if (session.id != session_id) return -1;
+    session.recordDamage(
+        frame_id,
+        @intCast(x),
+        @intCast(y),
+        @intCast(width),
+        @intCast(height),
+    ) catch return -1;
+    return 0;
+}
+
 export fn proto_ui_frame_flush(
     session_id: u64,
     frame_id: u64,
@@ -806,7 +895,7 @@ test "lifecycle state rolls back when emission fails" {
     try std.testing.expectEqual(@as(usize, 1), session.messageCount());
 }
 
-test "frame update captures full damage and cursor" {
+test "frame update preserves full-damage fallback and cursor" {
     const a = std.testing.allocator;
     const session = try Session.create(a, 88);
     defer session.destroy();
@@ -830,6 +919,7 @@ test "frame update captures full damage and cursor" {
     try std.testing.expectEqual(@as(u64, 1), update.header.redisplay_generation);
     try std.testing.expectEqual(@as(i32, 320), update.header.logical_width);
     try std.testing.expectEqual(@as(usize, 5), update.sections.len);
+    try std.testing.expectEqual(@as(u8, 2), update.header.damage_mode);
     try std.testing.expectEqual(protocol.SectionKind.windows, update.sections[0].kind);
     try std.testing.expectEqual(@as(usize, 40), update.sections[0].records.len);
     try std.testing.expectEqual(window_id, std.mem.readInt(u64, update.sections[0].records[0..8], .little));
@@ -882,4 +972,58 @@ test "row capture enforces fixed update capacity" {
     try std.testing.expectError(LifecycleError.RowLimit, session.flushFrame(frame_id, 100, 100));
     try std.testing.expect(session.frames.get(frame_id).?.capture_failed);
     try std.testing.expectEqual(@as(usize, max_update_rows), session.frames.get(frame_id).?.update_row_count);
+}
+
+test "real damage capture replaces full-frame fallback" {
+    const a = std.testing.allocator;
+    const session = try Session.create(a, 9);
+    defer session.destroy();
+    const terminal_id = try session.createTerminal();
+    const frame_id = try session.createFrame(terminal_id);
+    const window_id = try session.createWindow(frame_id);
+    _ = window_id;
+
+    try session.beginFrame(frame_id);
+    try session.recordDamage(frame_id, 2, 3, 40, 10);
+    try session.recordDamage(frame_id, 5, 30, 60, 12);
+    try session.flushFrame(frame_id, 320, 200);
+
+    const encoded = session.sink.messages.items[session.sink.messages.items.len - 1];
+    const payload = try protocol.decodeEnvelope(encoded);
+    const update = try protocol.decodeFrameUpdate(a, payload.bytes);
+    defer a.free(update.sections);
+    try std.testing.expectEqual(@as(u8, 1), update.header.damage_mode);
+    var damage = update.sections[0];
+    for (update.sections) |section| {
+        if (section.kind == protocol.SectionKind.damage) damage = section;
+    }
+    try std.testing.expectEqual(protocol.SectionKind.damage, damage.kind);
+    try std.testing.expectEqual(@as(usize, 2 * damage_record_size), damage.records.len);
+    try std.testing.expectEqual(@as(i32, 2), std.mem.readInt(i32, damage.records[0..4], .little));
+    try std.testing.expectEqual(@as(i32, 40), std.mem.readInt(i32, damage.records[8..12], .little));
+    try std.testing.expectEqual(@as(i32, 5), std.mem.readInt(i32, damage.records[16..20], .little));
+    try std.testing.expectEqual(@as(i32, 60), std.mem.readInt(i32, damage.records[24..28], .little));
+}
+
+test "damage capture enforces capacity and invalid rectangles" {
+    const a = std.testing.allocator;
+    const session = try Session.create(a, 10);
+    defer session.destroy();
+    const terminal_id = try session.createTerminal();
+    const frame_id = try session.createFrame(terminal_id);
+    try session.beginFrame(frame_id);
+    try std.testing.expectError(
+        LifecycleError.InvalidFrame,
+        session.recordDamage(frame_id, 0, 0, -1, 1),
+    );
+
+    for (0..max_update_damage) |index| {
+        try session.recordDamage(frame_id, 0, @intCast(index), 8, 4);
+    }
+    try std.testing.expectError(
+        LifecycleError.DamageLimit,
+        session.recordDamage(frame_id, 0, max_update_damage, 8, 4),
+    );
+    try std.testing.expectError(LifecycleError.DamageLimit, session.flushFrame(frame_id, 100, 100));
+    try std.testing.expect(session.frames.get(frame_id).?.capture_failed);
 }
