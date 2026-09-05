@@ -60,7 +60,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | `output_proto` terminal | Rolled back with runtime integration |
 | Redisplay capture | Rolled back; adapter ABI v1 contract only |
 | Resource model | Not implemented |
-| SDL3 frontend | Partial: EUP replay/local live scene and window/renderer lifecycle; public Emacs frame facts available, but no streaming bridge, input, faces, or complete live recovery |
+| SDL3 frontend | Partial: real public Emacs frame-fact snapshot can be encoded as EUP and rendered; no continuous streaming, input, faces, or complete live recovery |
 | Real SDL3 Emacs smoke test | Not achieved |
 | Adapter-first C boundary | Required; no new inherited-C Proto-UI edits |
 | W9a independent SDL3 lifecycle smoke | Approved |
@@ -69,6 +69,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W9c-b live ACK backpressure | Approved |
 | W9c-c1 Emacs dynamic-module seam | Approved: identity/string + public frame facts |
 | W9c-c2 public frame-fact observation | Approved (display-capable host) |
+| W9d real Emacs facts to EUP/SDL3 snapshot | Approved |
 | Build option `-Dsdl3-frontend` | Independent EUP-replay/local live SDL3 renderer; no Emacs seam yet |
 
 The workstream sections below retain their historical review records and
@@ -828,6 +829,34 @@ observes public frame/window dimensions, validates the JSON fields, and exits:
 ```sh
 zig build -Dproto-ui=true -Dmodules=true proto-ui-frame-fact-smoke --summary all
 ```
+
+### W9d — Real Emacs facts to EUP/SDL3 snapshot (approved)
+
+Goal: prove the dynamic-module seam can feed actual, public Emacs frame facts
+through the existing EUP codec into the SDL3 scene.
+
+Implemented:
+
+1. The display-capable frame-fact smoke writes the observed JSON facts to a
+   build artifact.
+2. The ERP1 fixture parses those facts and derives a full-frame window, fifteen
+   rows, cursor geometry, full damage, and a present hint from the observed
+   frame/window dimensions.
+3. SDL3 consumes the resulting EUP replay through the same scene validator used
+   by the live path.
+
+This is a one-shot snapshot, not continuous redisplay streaming.  Text, faces,
+resources, input, recovery, and a real interactive Proto-UI frame remain future
+work.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-ui-smoke --summary all
+```
+
+The build log proves that Emacs facts (for example, `1276x1323`) were encoded
+into two EUP messages and rendered by SDL3 as one update.
 
 ### W10 — GPU renderer path
 

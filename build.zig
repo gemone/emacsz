@@ -504,6 +504,8 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&run_conformance.step);
         boundary_step.dependOn(&run_boundary_audit.step);
     }
+    var proto_frame_smoke_dep: ?*std.Build.Step = null;
+    var proto_sdl_fixture_dep: ?*std.Build.Step = null;
     if (enable_sdl3_frontend) {
         const proto_ui_module = b.createModule(.{
             .target = b.graph.host,
@@ -534,6 +536,7 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(sdl3_frontend);
 
         const run_sdl3_fixture = b.addRunArtifact(sdl3_replay_fixture);
+        run_sdl3_fixture.addArg("zig-out/proto-ui/frame-facts.json");
         const replay_file = run_sdl3_fixture.addOutputFileArg("emacs-frame.erp1");
         const run_sdl3_smoke = b.addRunArtifact(sdl3_frontend);
         run_sdl3_smoke.addArg("--replay");
@@ -555,6 +558,7 @@ pub fn build(b: *std.Build) void {
             "Run a token-authenticated local publisher and render its live EUP stream",
         );
         sdl3_live_step.dependOn(&run_sdl3_live.step);
+        proto_sdl_fixture_dep = &run_sdl3_fixture.step;
     }
     // modules_runtime: the SHARED module runtime turns on once when EITHER
     // module switch is on AND the target can actually dlopen.  Gates the
@@ -598,6 +602,7 @@ pub fn build(b: *std.Build) void {
         proto_module_step.dependOn(&proto_module_install.step);
         b.getInstallStep().dependOn(&proto_module_install.step);
 
+        const facts_path = "zig-out/proto-ui/frame-facts.json";
         const proto_module_smoke = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/emacs",
             "--batch",
@@ -624,17 +629,22 @@ pub fn build(b: *std.Build) void {
             "--eval",
             std.fmt.allocPrint(
                 b.allocator,
-                "(progn (module-load (expand-file-name \"proto-ui-module{s}\" \"zig-out/proto-ui\")) (let ((success nil) (facts nil)) (unwind-protect (progn (setq facts (proto-ui-frame-facts (selected-frame))) (setq success (and (string-match \"\\\"frame_width\\\":[0-9]+\" facts) (string-match \"\\\"window_height\\\":[0-9]+\" facts))) (princ facts))) (kill-emacs (if success 0 1)))) (unless success (error \"Proto-UI frame-fact smoke failed\")))",
+                "(progn (module-load (expand-file-name \"proto-ui-module{s}\" \"zig-out/proto-ui\")) (let ((success nil) (facts nil) (path (getenv \"PROTO_UI_FACTS_FILE\"))) (unwind-protect (progn (setq facts (proto-ui-frame-facts (selected-frame))) (with-temp-file path (insert facts)) (setq success (and (string-match \"\\\"frame_width\\\":[0-9]+\" facts) (string-match \"\\\"window_height\\\":[0-9]+\" facts))) (princ facts))) (kill-emacs (if success 0 1)))) (unless success (error \"Proto-UI frame-fact smoke failed\")))",
                 .{proto_suffix},
             ) catch @panic("OOM"),
         });
         proto_frame_smoke.setCwd(b.path("."));
+        proto_frame_smoke.setEnvironmentVariable("PROTO_UI_FACTS_FILE", facts_path);
         proto_frame_smoke.step.dependOn(&proto_module_smoke.step);
+        proto_frame_smoke_dep = &proto_frame_smoke.step;
         const proto_frame_smoke_step = b.step(
             "proto-ui-frame-fact-smoke",
             "Open Emacs on a display, observe public frame facts, and exit",
         );
         proto_frame_smoke_step.dependOn(&proto_frame_smoke.step);
+    }
+    if (proto_frame_smoke_dep) |frame_step| {
+        if (proto_sdl_fixture_dep) |fixture_step| fixture_step.dependOn(frame_step);
     }
 
     // modules_zig_provider: when on, src/dynlib.c is dropped from the compile
@@ -5001,7 +5011,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-frame-fact-smoke - public frame facts on a display
         \\
         \\SDL3 frontend path (opt-in: -Dsdl3-frontend=true):
-        \\  zig build -Dsdl3-frontend=true sdl3-ui-smoke - independent EUP replay renderer
+        \\  zig build -Dsdl3-frontend=true sdl3-ui-smoke - real Emacs facts/EUP replay renderer
         \\  zig build -Dsdl3-frontend=true sdl3-live-smoke - local authenticated live publisher + renderer
         \\
         \\Native-comp gccjit path (opt-in: -Dnative-comp=true, native glibc-Linux;
