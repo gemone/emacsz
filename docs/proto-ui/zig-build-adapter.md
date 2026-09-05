@@ -68,6 +68,8 @@ inherited Emacs C files in place.
 ```text
 src/proto-ui/
   adapter.zig           authoritative ABI/ownership manifest and runtime
+  frontend.zig          EUP scene validation for the SDL frontend
+  facts.zig             public Emacs facts to EUP snapshot conversion
   protocol.zig          EUP codec and assigned message tables
   transport.zig         bounded memory sink and ERP1 replay codec
   live.zig              EPXL local handshake and bounded stream frames
@@ -77,8 +79,8 @@ src/proto-ui/
   root.zig              module/test aggregator
 
 tools/proto-ui-sdl3/
-  main.zig              independent window/renderer lifecycle smoke
-  fixture.zig           deterministic FRAME_CREATE/FRAME_UPDATE ERP1 writer
+  main.zig              EUP replay/live renderer and continuous Emacs facts
+  fixture.zig           facts-derived FRAME_CREATE/FRAME_UPDATE ERP1 writer
 ```
 
 Generated content is written only to:

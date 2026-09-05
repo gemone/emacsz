@@ -8,6 +8,7 @@ const std = @import("std");
 const native_os = @import("builtin").os.tag;
 const proto_ui = @import("proto_ui");
 const frontend = proto_ui.frontend;
+const facts = proto_ui.facts;
 const protocol = proto_ui.protocol;
 const transport = proto_ui.transport;
 const live = proto_ui.live;
@@ -63,12 +64,7 @@ const Config = struct {
     auto_quit_ms: u32 = 250,
 };
 
-const FrameFacts = struct {
-    frame_width: i32,
-    frame_height: i32,
-    window_width: i32,
-    window_height: i32,
-};
+const FrameFacts = facts.FrameFacts;
 
 const SharedFacts = struct {
     mutex: std.Io.Mutex = .init,
@@ -274,35 +270,35 @@ fn findSceneWindow(scene: *frontend.Scene, id: u64) ?frontend.Window {
     return null;
 }
 
-fn renderFacts(facts: FrameFacts, renderer: *SDL_Renderer, window: *SDL_Window) !void {
+fn renderFacts(snapshot: FrameFacts, renderer: *SDL_Renderer, window: *SDL_Window) !void {
     var output_w: c_int = 0;
     var output_h: c_int = 0;
     SDL_GetWindowSize(window, &output_w, &output_h);
     if (output_w <= 0 or output_h <= 0) return error.InvalidOutputGeometry;
     const scale: f32 = @min(
-        @as(f32, @floatFromInt(output_w)) / @as(f32, @floatFromInt(facts.frame_width)),
-        @as(f32, @floatFromInt(output_h)) / @as(f32, @floatFromInt(facts.frame_height)),
+        @as(f32, @floatFromInt(output_w)) / @as(f32, @floatFromInt(snapshot.frame_width)),
+        @as(f32, @floatFromInt(output_h)) / @as(f32, @floatFromInt(snapshot.frame_height)),
     );
 
     if (!SDL_SetRenderDrawColor(renderer, 0x18, 0x20, 0x2a, 255)) return sdlFail("SDL_SetRenderDrawColor");
     if (!SDL_RenderClear(renderer)) return sdlFail("SDL_RenderClear");
 
     const row_count: i32 = 15;
-    const row_height = @max(1, @divTrunc(facts.window_height, row_count));
+    const row_height = @max(1, @divTrunc(snapshot.window_height, row_count));
     var index: i32 = 0;
     while (index < row_count) : (index += 1) {
         const stripe: u8 = if (@mod(index, 2) == 0) 0x33 else 0x2b;
         try drawRect(renderer, .{
             .x = @intFromFloat(0),
             .y = @intFromFloat(@as(f32, @floatFromInt(index * row_height)) * scale),
-            .w = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(facts.window_width)) * scale))),
+            .w = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(snapshot.window_width)) * scale))),
             .h = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(row_height)) * scale))),
         }, stripe, stripe + 0x0d, 0x3a);
     }
 
     if (!SDL_SetRenderDrawColor(renderer, 0x71, 0xa6, 0xf2, 255)) return sdlFail("SDL_SetRenderDrawColor");
-    const border_w = @as(c_int, @intFromFloat(@as(f32, @floatFromInt(facts.window_width)) * scale));
-    const border_h = @as(c_int, @intFromFloat(@as(f32, @floatFromInt(facts.window_height)) * scale));
+    const border_w = @as(c_int, @intFromFloat(@as(f32, @floatFromInt(snapshot.window_width)) * scale));
+    const border_h = @as(c_int, @intFromFloat(@as(f32, @floatFromInt(snapshot.window_height)) * scale));
     if (!SDL_RenderFillRect(renderer, &.{ .x = 0, .y = 0, .w = border_w, .h = 1 })) return sdlFail("SDL_RenderFillRect");
     if (!SDL_RenderFillRect(renderer, &.{ .x = 0, .y = border_h - 1, .w = border_w, .h = 1 })) return sdlFail("SDL_RenderFillRect");
     if (!SDL_RenderFillRect(renderer, &.{ .x = 0, .y = 0, .w = 1, .h = border_h })) return sdlFail("SDL_RenderFillRect");
@@ -319,14 +315,7 @@ fn renderFacts(facts: FrameFacts, renderer: *SDL_Renderer, window: *SDL_Window) 
 }
 
 fn parseFacts(gpa: std.mem.Allocator, bytes: []const u8) !FrameFacts {
-    const parsed = try std.json.parseFromSlice(FrameFacts, gpa, bytes, .{});
-    defer parsed.deinit();
-    const facts = parsed.value;
-    if (facts.frame_width <= 0 or facts.frame_height <= 0 or
-        facts.window_width <= 0 or facts.window_height <= 0 or
-        facts.window_width > facts.frame_width or
-        facts.window_height > facts.frame_height) return error.InvalidFrameFacts;
-    return facts;
+    return facts.parse(gpa, bytes);
 }
 
 fn readFactsFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !?FrameFacts {
@@ -339,10 +328,10 @@ fn readFactsFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !?FrameFa
 }
 
 fn pollEmacsFacts(shared: *SharedFacts, gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
-    if (try readFactsFile(gpa, io, path)) |facts| {
+    if (try readFactsFile(gpa, io, path)) |snapshot| {
         shared.mutex.lockUncancelable(io);
         defer shared.mutex.unlock(io);
-        shared.facts = facts;
+        shared.facts = snapshot;
         shared.version += 1;
     }
 }
@@ -434,6 +423,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         var shared = SharedFacts{};
         var last_version: u64 = 0;
         var latest: FrameFacts = .{ .frame_width = 800, .frame_height = 600, .window_width = 780, .window_height = 560 };
+        var snapshot_scene: ?frontend.Scene = null;
+        defer if (snapshot_scene) |*scene| scene.deinit();
         var waited_ms: u32 = 0;
         while (waited_ms < config.auto_quit_ms) {
             try pollEmacsFacts(&shared, gpa, io, facts_path);
@@ -444,7 +435,16 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                 latest = shared.facts.?;
             }
             shared.mutex.unlock(io);
-            try renderFacts(latest, renderer, window);
+            if (changed) {
+                const updated = try facts.buildScene(gpa, latest, last_version);
+                if (snapshot_scene) |*previous| previous.deinit();
+                snapshot_scene = updated;
+            }
+            if (snapshot_scene) |*scene| {
+                try renderScene(scene, renderer, window);
+            } else {
+                try renderFacts(latest, renderer, window);
+            }
 
             var quit = false;
             var event: SDL_Event = .{};

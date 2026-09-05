@@ -60,7 +60,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | `output_proto` terminal | Rolled back with runtime integration |
 | Redisplay capture | Rolled back; adapter ABI v1 contract only |
 | Resource model | Not implemented |
-| SDL3 frontend | Partial: continuous real Emacs public-fact stream rendered as adapter-owned scene; no EUP streaming, input, faces, or complete live recovery |
+| SDL3 frontend | Partial: continuous real Emacs public-fact stream validated as EUP snapshots and rendered; no EPXL streaming, input, faces, or complete live recovery |
 | Real SDL3 Emacs smoke test | Not achieved |
 | Adapter-first C boundary | Required; no new inherited-C Proto-UI edits |
 | W9a independent SDL3 lifecycle smoke | Approved |
@@ -71,6 +71,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W9c-c2 public frame-fact observation | Approved (display-capable host) |
 | W9d real Emacs facts to EUP/SDL3 snapshot | Approved |
 | W9e continuous real Emacs public-fact stream | Approved |
+| W9f continuous facts validated as EUP snapshots | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in continuous Emacs public-fact modes; the Emacs mode is process/public-API observation, not EUP transport or redisplay-hook streaming |
 
 The workstream sections below retain their historical review records and
@@ -885,6 +886,35 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-smoke -
 
 The smoke must report multiple observed public-fact snapshots and render them in
 a real SDL3 window.
+
+### W9f — Continuous facts validated as EUP snapshots (approved)
+
+Goal: ensure every changed public Emacs fact snapshot crosses the same EUP
+`FRAME_UPDATE` validation boundary before SDL rendering.
+
+Implemented:
+
+1. Added `src/proto-ui/facts.zig` as the adapter-owned facts-to-EUP converter.
+2. Parsing rejects nonpositive dimensions and window dimensions larger than the
+   frame.
+3. Each changed snapshot builds a fresh validated scene containing
+   `FRAME_CREATE`, one full-frame `WINDOW`, fifteen ordered rows, cursor,
+   full-frame damage, and a present hint.
+4. SDL3 renders only the latest EUP-validated snapshot and keeps replacement
+   bounded to one retained scene.
+
+This is still a public-API observation stream through a snapshot artifact, not
+EPXL transport or redisplay-hook streaming.  Text, faces, resources, input, and
+recovery remain future work.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-smoke --summary all
+```
+
+The smoke must observe multiple snapshots and each changed snapshot must pass
+through `Scene.apply`.
 
 ### W10 — GPU renderer path
 
