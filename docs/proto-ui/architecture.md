@@ -2,7 +2,7 @@
 
 Status: normative design baseline
 Protocol: EUP v1
-Implementation status: specification complete. W1-W3c approved: protocol/transport, registration, terminal lifecycle, and lifecycle-only frame objects. W4a approved: synthetic `FRAME_UPDATE` capture. W4b approved: real after-update window geometry and row metadata, capped at 256 rows. W4c-a approved: bounded redisplay damage capture and safe hook coverage. W4c-b0 approved: headless frame visibility and update-count observability. W4c-b1-a approved: batch-safe real-frame desired-row capture with placeholder font/face metrics. Glyph, face, font, and image resources, rendering, and generic graphic predicates remain W5+.
+Implementation status: specification complete. W1-W3c approved: protocol/transport, registration, terminal lifecycle, and lifecycle-only frame objects. W4a approved: synthetic `FRAME_UPDATE` capture. W4b approved: real after-update window geometry and row metadata, capped at 256 rows. W4c-a approved: bounded redisplay damage capture and safe hook coverage. W4c-b0 approved: headless frame visibility and update-count observability. W4c-b1-a's direct-core real-row fixture was reverted and quarantined under the adapter-first rule. Glyph, face, font, and image resources, rendering, and generic graphic predicates remain pending adapter-first work.
 
 ## 1. Purpose
 
@@ -16,6 +16,11 @@ Its responsibilities are deliberately narrow:
 4. Publish resources needed to render the display.
 5. Translate frontend input intent into Emacs input.
 6. Maintain protocol sessions, resources, damage, and replay state.
+
+The implementation is adapter-first.  New Proto-UI policy and state belong in
+the Zig adapter, protocol tooling, SDL3 frontend, Lisp integration, or build
+glue—not in inherited Emacs C source.  See
+[`adapter-boundary.md`](adapter-boundary.md).
 
 ## 2. Component map
 
@@ -86,6 +91,14 @@ The backend must not reinterpret Elisp, perform independent layout, own visible 
 
 The frontend may cache rendered state but never owns semantic UI state.
 
+### 3.4 Adapter boundary
+
+Inherited Emacs C code is a frozen upstream implementation boundary, not the
+extension surface for Proto-UI.  New state and policy belong in the Zig
+adapter or another Proto-UI-owned component.  Existing direct-core Proto-UI
+edits are transition debt: freeze them, do not extend them, and replace them
+with adapter-owned seams.
+
 ## 4. Emacs integration contract
 
 ### 4.1 Terminal identity
@@ -112,10 +125,8 @@ Current lifecycle/redisplay contract by implementation slice:
 * **W4c-b0** lets the headless terminal control the real frame visibility flag
   and exposes committed-update counts for observation.  It does not change
   matrix allocation, `FRAME_WINDOW_P`, or rendering.
-* **W4c-b1-a** runs a batch-safe redisplay of a visible proto frame and
-  captures its desired rows and damage as one atomic `FRAME_UPDATE`.  Font,
-  face, glyph, and image resources are not encoded; the temporary fixture uses
-  terminal-style glyph metrics and does not render.
+* **W4c-b1-a** was reverted and quarantined.  Its direct-core real-row fixture
+  violated the adapter-first boundary.
 
 Rendering, generic graphic `make-frame`, and `display-graphic-p` remain
 disabled until later W4 slices.  Cursor emission is conditional on the

@@ -4,6 +4,11 @@ Status: normative design baseline
 Reference backend: PGTK
 Protocol: EUP v1
 
+Adapter-first is normative: new Proto-UI capability implementation belongs in
+the adapter, frontend, tooling, Lisp integration, or build glue—not in
+inherited GNU Emacs C source.  See
+[`adapter-boundary.md`](adapter-boundary.md).
+
 ## 1. Capability model
 
 Each capability has:

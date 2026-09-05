@@ -8,6 +8,8 @@ Branch: `zig-build-step-4`
 
 Proto-UI adds an optional headless Emacs terminal backend, called `output_proto`, that exports Emacs display semantics through a stable protocol. A separate SDL3 frontend consumes the protocol, opens real operating-system windows, renders Emacs frames, and sends user input back to Emacs.
 
+Adapter-first is a hard constraint.  New Proto-UI behavior is implemented in the Zig adapter, SDL3 frontend, protocol tooling, Lisp integration, or build glue—not by intrusively modifying inherited GNU Emacs C source.  See [`adapter-boundary.md`](adapter-boundary.md).
+
 The completed system must:
 
 1. Open a real Emacs frame with a real SDL3 frontend.
@@ -20,7 +22,7 @@ The completed system must:
 
 ## 2. Current status
 
-The repository contains the complete English design baseline. W1-W3c add the approved EUP protocol/transport skeleton, opt-in Emacs registration, real terminal lifecycle, and lifecycle-only invisible frame objects. W4a adds a reviewed synthetic `FRAME_UPDATE` capture path. W4b adds reviewed real after-update window geometry and row metadata capture bounded to 256 rows. W4c-a adds reviewed bounded damage capture and safe redisplay-interface coverage. W4c-b0 adds reviewed headless frame visibility transitions and update-count observability. W4c-b1-a adds a reviewed batch-safe real proto-frame redisplay fixture that captures desired rows and damage; it still uses placeholder font/face metrics and does not render. Glyph, face, font, and image resource capture, generic graphic frame creation, SDL3 windows, and the final objective remain W5+ work.
+The repository contains the complete English design baseline. W1-W3c add the approved EUP protocol/transport skeleton, opt-in Emacs registration, real terminal lifecycle, and lifecycle-only invisible frame objects. W4a adds a reviewed synthetic `FRAME_UPDATE` capture path. W4b adds reviewed real after-update window geometry and row metadata capture bounded to 256 rows. W4c-a adds reviewed bounded damage capture and safe redisplay-interface coverage. W4c-b0 adds reviewed headless frame visibility transitions and update-count observability. W4c-b1-a's direct-core real-row fixture was reverted and quarantined under the adapter-first rule. Glyph, face, font, and image resource capture, generic graphic frame creation, SDL3 windows, and the final objective remain pending adapter-first work.
 
 The documentation in this directory is the source of truth for the implementation workstreams.
 
@@ -31,6 +33,7 @@ Available:
 | Document | Contents |
 |---|---|
 | [`architecture.md`](architecture.md) | System components, ownership model, backend integration, state model, failure rules, and compatibility contract |
+| [`adapter-boundary.md`](adapter-boundary.md) | Normative adapter-first boundary, C-file restrictions, review gates, and rollback requirements |
 | [`protocol.md`](protocol.md) | Complete EUP v1 wire protocol, envelope, message IDs, payload semantics, and state machines |
 | [`capabilities.md`](capabilities.md) | Backend, frontend, renderer, widget, and PGTK parity capability matrices |
 | `sdl3-frontend.md` | SDL3 process model, window handling, input bridge, rendering pipeline, and platform integration |
@@ -46,6 +49,8 @@ SDL3 frontend decides how to render it.
 ```
 
 The frontend never reads buffers, reruns redisplay, rewraps lines, or owns authoritative UI state.
+
+Likewise, the adapter never embeds Proto-UI policy in inherited Emacs C code.  Emacs exposes or delegates through a stable boundary; the adapter translates and transports it.
 
 ## 5. Final runtime shape
 
@@ -145,6 +150,7 @@ EUP does not:
 * Make SDL3 a dependency of Emacs core.
 * Replace emacsclient or PGTK.
 * Allow the frontend to evaluate Elisp.
+* Intrusively modify inherited GNU Emacs C source.
 
 ## 10. Completion definition
 
@@ -160,3 +166,4 @@ The project is complete only when all of the following are demonstrated from the
 8. The PGTK parity matrix has an implementation status for every row.
 9. Performance meets the documented baseline on the reference host.
 10. Existing Emacs capabilities and CI remain intact.
+11. The adapter-first boundary is satisfied: new subsystem behavior is adapter-owned, inherited C files carry no new Proto-UI modifications, and the adapter can be disabled or removed without changing core behavior.

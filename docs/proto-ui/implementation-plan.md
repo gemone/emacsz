@@ -3,6 +3,11 @@
 Status: active planning baseline
 Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existing Emacs behavior
 
+Hard constraint: adapter-first.  New behavior is implemented in the Zig
+adapter, SDL3 frontend, Lisp integration, replay/protocol tooling, or build
+glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
+[`adapter-boundary.md`](adapter-boundary.md).
+
 ## 1. Execution rules
 
 1. Each implementation workstream is broken into independently reviewable tasks.
@@ -14,6 +19,9 @@ Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existin
 4. Concrete fixes are made between review passes.
 5. A task is not complete until review findings are resolved and its acceptance command or evidence exists.
 6. Documentation changes still require consistency review, but the mandatory three-pass gate applies to code.
+7. Every code or documentation change includes an adapter-boundary audit:
+   identify the owner of each behavior, prove default isolation, and show a
+   rollback path.
 
 ## 2. Current status
 
@@ -26,7 +34,7 @@ Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existin
 | Memory sink and replay-file transport | Partial |
 | SDL3 frontend design | Documented |
 | Performance baseline | Documented |
-| Build option `-Dproto-ui` | W2 registration, W3a lifecycle identity, W3b terminal lifecycle, W4b window/row metadata, W4c-a damage capture, W4c-b0 visibility/count observability, W4c-b1-a real-row fixture |
+| Build option `-Dproto-ui` | W2 registration, W3a lifecycle identity, W3b terminal lifecycle, W4b window/row metadata, W4c-a damage capture, W4c-b0 visibility/count observability; W4c-b1-a direct-core fixture reverted |
 | W2 registration seam | Approved |
 | W3a lifecycle identity | Approved |
 | W3b terminal lifecycle | Approved |
@@ -37,10 +45,11 @@ Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existin
 | W4c-b0 headless frame visibility/count observability | Approved |
 | Automated W3c frame smoke | Implemented |
 | `output_proto` terminal | Approved |
-| Redisplay capture | Partial: W4a synthetic + W4b window/row metadata + W4c-a damage; W4c-b0 observability + W4c-b1-a real-row fixture |
+| Redisplay capture | Partial: W4a synthetic + W4b window/row metadata + W4c-a damage; W4c-b0 observability; W4c-b1-a direct-core fixture reverted |
 | Resource model | Not implemented |
 | SDL3 frontend | Not implemented |
 | Real SDL3 Emacs smoke test | Not achieved |
+| Adapter-first C boundary | Required; no new inherited-C Proto-UI edits |
 
 ## 3. Workstreams
 
@@ -353,10 +362,14 @@ Tasks:
 Acceptance: the smoke proves all three.  This is not a redisplay fixture and
 does not make `FRAME_WINDOW_P` true.
 
-#### W4c-b1-a — Batch-safe real-row redisplay fixture (approved)
+#### W4c-b1-a — Batch-safe real-row redisplay fixture (reverted and quarantined)
 
 Goal: prove that a visible proto frame can run core redisplay and publish real
 desired rows without rendering.
+
+Status: reverted and quarantined.  This slice modified `terminal.c`,
+`xdisp.c`, and `xfaces.c` directly, violating the adapter-first boundary.  Do
+not restore it without an adapter-owned redesign.
 
 Tasks:
 
@@ -376,22 +389,31 @@ fixture, observes exactly one committed update, then runs the synthetic capture
 as a second update.  It does not encode glyphs, faces, fonts, images, cursors,
 scroll optimization, or rendering.
 
-#### W4c-b1-b — Complete real-frame redisplay fixtures (pending)
+#### W4c-b1-b — Adapter-first normal-RIF streaming redesign (blocked pending design)
+
+The first direct-core prototype was rejected and quarantined because it
+required intrusive changes to inherited Emacs C code.  Do not resume that
+patch.  Redesign the workstream so a Proto-UI-owned adapter observes the
+normal RIF path through a stable, separately owned seam.
 
 Tasks:
 
-1. Stream through the normal RIF hooks instead of the explicit matrix fixture.
-2. Capture row creation/update/deletion and complete clear-area semantics.
-3. Capture coalescing and ensure damage/row/window snapshots agree.
-4. Preserve cursor, scrolling, truncation, continuation, and BiDi visual-order
+1. Define adapter-owned streaming state and lifecycle.
+2. Define a stable registration contract to existing Emacs extension points,
+   with no new inherited-C edits.
+3. Capture row creation/update/deletion and complete clear-area semantics in
+   the adapter.
+4. Capture coalescing and ensure damage/row/window snapshots agree.
+5. Preserve cursor, scrolling, truncation, continuation, and BiDi visual-order
    semantics for later encoding.
-5. Add replay captures and compare synthetic versus real-frame output.
-6. Keep failure atomic: reject incomplete updates.
+6. Add replay captures and compare synthetic versus real-frame output.
+7. Keep failure atomic: reject incomplete updates.
 
 Acceptance:
 
 Real frame redisplay emits coherent `FRAME_UPDATE` metadata and damage without
-rendering.  Glyph, face, font, and image resource capture remain W5.
+rendering, and the adapter-boundary audit shows no new inherited-C Proto-UI
+edits.  Glyph, face, font, and image resource capture remain W5.
 
 ### W5 — Glyph, face, and font capture
 
@@ -771,6 +793,10 @@ zig build check
 ```
 
 All commands must pass with artifacts retained.
+
+The final evidence must also include the adapter-boundary audit from
+[`adapter-boundary.md`](adapter-boundary.md): no new inherited-C Proto-UI
+edits, default-build isolation, and a documented rollback path.
 
 ## 4. Build/test surface to implement
 

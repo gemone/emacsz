@@ -272,11 +272,34 @@ Zig-built Emacs creates `EmacsZ.app` instead of `Emacs.app` to distinguish the b
 
 ## Migration Guidelines
 
+### Adapter-First C Boundary
+1. **Default answer is no.**  Do not edit inherited GNU Emacs C source or
+   headers to add new subsystem behavior.  Implement new subsystems in an
+   adapter layer, preferably Zig, a separate frontend/process, Lisp, or
+   `build.zig` glue.
+2. **Adapter-only delegation.**  If a new C adapter seam is unavoidable, keep
+   it in a subsystem-owned adapter file, not inherited Emacs source, and make
+   it delegate immediately to Zig or another subsystem-owned implementation.
+3. **Freeze approved transitional seams.**  Existing direct-core Proto-UI
+   modifications are transition debt.  Do not extend them; replace them with
+   adapter-owned state and function-pointer seams.
+4. **No implicit coupling.**  Existing TTY, PGTK, Windows, macOS, Haiku, and
+   Android behavior must not depend on adapter state or conditionals.
+5. **Prove isolation.**  Every patch touching a subsystem must state which
+   side owns each behavior, show default-build isolation, and include a
+   rollback path.
+6. **Build-owned embedding.**  Use `zig build` to generate adapter shims,
+   select adapter sources, emit feature defines, and link Zig objects.  Build
+   glue must not rewrite tracked inherited C source at configure/build time.
+
 ### When Touching C Code
-1. **Check Gnulib Dependencies**: Look for `#include` from `lib/` directory
-2. **Evaluate Zig stdlib Replacements**: Can this be replaced with `std.mem`, `std.fs`, `std.os`?
-3. **Maintain C ABI Compatibility**: Use `extern struct` when Zig must interface with C
-4. **Preserve Lisp Object Tagging**: Emacs uses pointer tagging; alignment is critical
+1. **Start with the Adapter-First C Boundary above**; an inherited-C edit is
+   prohibited unless no adapter route exists and an explicit exception is
+   documented.
+2. **Check Gnulib Dependencies**: Look for `#include` from `lib/` directory
+3. **Evaluate Zig stdlib Replacements**: Can this be replaced with `std.mem`, `std.fs`, `std.os`?
+4. **Maintain C ABI Compatibility**: Use `extern struct` when Zig must interface with C
+5. **Preserve Lisp Object Tagging**: Emacs uses pointer tagging; alignment is critical
 
 ### Zig Version Constraints
 - **Required**: Zig 0.16.0 (strict)
@@ -306,6 +329,16 @@ High-value targets for Zig stdlib migration:
    not by editing generated files.
 
 ## Critical Constraints
+
+### Adapter-First Boundary
+- New subsystem behavior belongs in an adapter layer, preferably Zig or a
+  separate process, not inherited Emacs C code.
+- Inherited Emacs C source and headers are frozen for new subsystem feature
+  work unless a documented, explicitly approved adapter exception is present.
+- Prefer existing stable extension points, a separately owned C shim, Lisp,
+  build glue, or protocol messages before any C edit.
+- Any direct-core exception must include a rollback plan and compatibility
+  evidence for all existing backends.
 
 ### Memory Management
 - Emacs has its own garbage collector for Lisp objects
