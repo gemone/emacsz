@@ -391,9 +391,9 @@ pub fn build(b: *std.Build) void {
     // Proto-UI: the EUP module is independent of Emacs UI internals.
     // The option enables HAVE_PROTO_UI registration, real terminal lifecycle,
     // frame identity, protocol/transport conformance tests, W4b window/row
-    // metadata, W4c-a damage capture, and W4c-b0 visibility/count
-    // observability.  GPU rendering and graphic-frame predicates arrive
-    // W4c-b1+.
+    // metadata, W4c-a damage capture, W4c-b0 visibility/count observability,
+    // and W4c-b1-a real-row fixture capture.  GPU rendering and graphic-frame
+    // predicates remain W5+.
     const enable_proto_ui = b.option(bool, "proto-ui", "Enable EUP proto-ui registration, lifecycle identity, and transport tests") orelse false;
 
     // Target-derived flags.  `target` is resolved at line 64, so target.result
@@ -4076,12 +4076,12 @@ pub fn build(b: *std.Build) void {
     smoke_step.dependOn(&run_smoke.step);
 
     // proto-ui-smoke: verify a real EUP terminal/frame, W4b/W4c-a metadata and
-    // fallback damage, plus W4c-b0 visibility/count observability.  Rendering
-    // and graphic predicates are W4c-b1+.
+    // fallback damage, W4c-b0 visibility/count observability, and W4c-b1-a
+    // real-row capture.  Rendering and graphic predicates are W4c-b1+.
     if (enable_proto_ui) {
         const run_proto_ui_smoke = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/emacs", "--batch",
-            "--eval",              "(let* ((terminal (proto-ui-create-terminal)) (frame (proto-ui-create-frame)) (before (proto-ui-frame-update-count frame)) (updates (proto-ui-capture-frame-update frame)) (after (proto-ui-frame-update-count frame))) (unless (and (eq before 0) (eq updates 1) (eq after 1) (eq (framep frame) 'proto) (eq (frame-live-p frame) 'proto) (equal (frame-parameter frame 'name) \"proto-1\") (null (frame-visible-p frame)) (null (display-graphic-p frame))) (error \"proto-ui frame update failed\")) (make-frame-visible frame) (unless (eq (frame-visible-p frame) t) (error \"proto-ui frame visibility failed\")) (make-frame-invisible frame t) (unless (null (frame-visible-p frame)) (error \"proto-ui frame invisibility failed\")) (delete-frame frame) (unless (and (null (frame-live-p frame)) (null (display-graphic-p frame)) (null (terminal-live-p terminal))) (error \"proto-ui frame cleanup failed\")))",
+            "--eval",              "(let* ((terminal (proto-ui-create-terminal)) (frame (proto-ui-create-frame)) (before (proto-ui-frame-update-count frame)) (real (progn (make-frame-visible frame) (set-frame-size frame 40 8) (with-current-buffer (get-buffer-create \"*proto-real*\") (set-buffer-major-mode (current-buffer)) (set-window-buffer (frame-root-window frame) (current-buffer)) (insert \"hello\")) (proto-ui-redisplay-frame frame))) (synthetic (proto-ui-capture-frame-update frame)) (after (proto-ui-frame-update-count frame))) (unless (and (eq before 0) (eq real 1) (eq synthetic 2) (eq after 2) (eq (framep frame) 'proto) (eq (frame-live-p frame) 'proto) (equal (frame-parameter frame 'name) \"proto-1\") (eq (frame-visible-p frame) t) (null (display-graphic-p frame))) (error \"proto-ui frame update failed\")) (make-frame-invisible frame t) (unless (null (frame-visible-p frame)) (error \"proto-ui frame invisibility failed\")) (delete-frame frame) (unless (and (null (frame-live-p frame)) (null (display-graphic-p frame)) (null (terminal-live-p terminal))) (error \"proto-ui frame cleanup failed\")))",
         });
         run_proto_ui_smoke.setCwd(b.path("."));
         run_proto_ui_smoke.step.dependOn(&run_dump_compiled.step);
@@ -4089,7 +4089,7 @@ pub fn build(b: *std.Build) void {
         run_proto_ui_smoke.step.dependOn(emacs_wrapper_step);
         const proto_ui_smoke_step = b.step(
             "proto-ui-smoke",
-            "Exercise headless proto frame visibility, update counting, and cleanup",
+            "Exercise real redisplay capture, visibility, update counting, and cleanup",
         );
         proto_ui_smoke_step.dependOn(&run_proto_ui_smoke.step);
     }

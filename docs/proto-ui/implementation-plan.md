@@ -26,7 +26,7 @@ Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existin
 | Memory sink and replay-file transport | Partial |
 | SDL3 frontend design | Documented |
 | Performance baseline | Documented |
-| Build option `-Dproto-ui` | W2 registration, W3a lifecycle identity, W3b terminal lifecycle, W4b window/row metadata, W4c-a damage capture, W4c-b0 visibility/count observability |
+| Build option `-Dproto-ui` | W2 registration, W3a lifecycle identity, W3b terminal lifecycle, W4b window/row metadata, W4c-a damage capture, W4c-b0 visibility/count observability, W4c-b1-a real-row fixture |
 | W2 registration seam | Approved |
 | W3a lifecycle identity | Approved |
 | W3b terminal lifecycle | Approved |
@@ -37,7 +37,7 @@ Goal: implement a real SDL3-backed Emacs UI through EUP without breaking existin
 | W4c-b0 headless frame visibility/count observability | Approved |
 | Automated W3c frame smoke | Implemented |
 | `output_proto` terminal | Approved |
-| Redisplay capture | Partial: W4a synthetic + W4b window/row metadata + W4c-a damage; W4c-b0 observability |
+| Redisplay capture | Partial: W4a synthetic + W4b window/row metadata + W4c-a damage; W4c-b0 observability + W4c-b1-a real-row fixture |
 | Resource model | Not implemented |
 | SDL3 frontend | Not implemented |
 | Real SDL3 Emacs smoke test | Not achieved |
@@ -334,7 +334,7 @@ Acceptance:
 Backend tests prove payload ordering, multiple damage rectangles, fallback
 damage mode, invalid rectangle rejection, and atomic overflow behavior.  The
 Emacs smoke still uses its deterministic synthetic gate and proves the C
-integration/link remains clean.  Real-frame fixtures remain W4c-b1.
+integration/link remains clean.  Real-frame fixtures remain W4c-b1-b.
 
 #### W4c-b0 — Headless frame display observability (approved)
 
@@ -353,11 +353,34 @@ Tasks:
 Acceptance: the smoke proves all three.  This is not a redisplay fixture and
 does not make `FRAME_WINDOW_P` true.
 
-#### W4c-b1 — Real-frame redisplay fixtures (pending)
+#### W4c-b1-a — Batch-safe real-row redisplay fixture (approved)
+
+Goal: prove that a visible proto frame can run core redisplay and publish real
+desired rows without rendering.
 
 Tasks:
 
-1. Drive real proto frame redisplay through batch-safe fixtures.
+1. Add a controlled `proto-ui-redisplay-frame` primitive.
+2. Temporarily detach the proto RIF while core redisplay builds desired rows,
+   restoring it through an unwind protector.
+3. Capture enabled desired rows, their geometry, and row damage as one atomic
+   `FRAME_UPDATE`.
+4. Use deterministic terminal-style placeholder metrics until W5 adds font and
+   face resources.
+5. Reject nested redisplay and fail/cancel atomically on row or damage limits.
+
+Acceptance:
+
+The smoke creates a visible proto frame, inserts text, runs the real-row
+fixture, observes exactly one committed update, then runs the synthetic capture
+as a second update.  It does not encode glyphs, faces, fonts, images, cursors,
+scroll optimization, or rendering.
+
+#### W4c-b1-b — Complete real-frame redisplay fixtures (pending)
+
+Tasks:
+
+1. Stream through the normal RIF hooks instead of the explicit matrix fixture.
 2. Capture row creation/update/deletion and complete clear-area semantics.
 3. Capture coalescing and ensure damage/row/window snapshots agree.
 4. Preserve cursor, scrolling, truncation, continuation, and BiDi visual-order

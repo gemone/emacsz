@@ -772,13 +772,13 @@ marks the frontend view dead.  Terminal-to-frame ownership is tracked by the
 backend state machine.  W3 memory-sink messages deterministically emit
 `timestamp_ns = 0`; a real transport replaces this with a monotonic timestamp.
 
-### 28.5 W4a/W4b/W4c-a FRAME_UPDATE wire subset
+### 28.5 W4a/W4b/W4c-a/W4c-b1-a FRAME_UPDATE wire subset
 
 `FRAME_UPDATE` payload begins with ASCII magic `"FUP1"` followed by the
 concrete 88-byte header described conceptually in section 12.  After the
 header is a u32 section count followed by length-prefixed sections.
 
-The W4a/W4b/W4c-a encoder emits these known sections in ascending order:
+The W4a/W4b/W4c-a/W4c-b1-a encoder emits these known sections in ascending order:
 
 1. `WINDOWS` (kind 2), for captured window geometry.
 2. `ROWS` (kind 3), for captured row metadata.
@@ -842,17 +842,18 @@ height            i32
 The present-hint record is 16 bytes:
 
 ```text
-present_mode      u32 (0 = vsync in W4a/W4b/W4c-a)
+present_mode      u32 (0 = vsync in W4a/W4b/W4c-a/W4c-b1-a)
 flags             u32 (bit 0 = damage-only allowed)
 deadline_ns       u64 (0 = no deadline)
 ```
 
-In W4b/W4c-a, row `flags` is `0`.  All `reserved` bytes in the window, row,
+In W4b/W4c-a/W4c-b1-a, row `flags` is `0`.  All `reserved` bytes in the window, row,
 and cursor records are zero; the present-hint record has no reserved bytes.
-The row and damage caps are each 256 records per frame update.  W4c-a emits
-the captured damage rectangles and sets header `damage_mode = 1` (partial);
-when no rectangle was captured it emits one conservative full-frame rectangle
-and sets `damage_mode = 2` (full).  When either capture exceeds its cap, the
+The row and damage caps are each 256 records per frame update.  W4c-a and
+W4c-b1-a emit captured damage rectangles and set header `damage_mode = 1`
+(partial); when no rectangle was captured the encoder emits one conservative
+full-frame rectangle and sets `damage_mode = 2` (full).  When either capture
+exceeds its cap, the
 backend marks the update capture failed and rejects/cancels the flush; it
 never commits an incomplete update.
 
@@ -863,8 +864,10 @@ damage coordinates are logical frame-relative pixels because damage records
 have no owning-window field.  A row ID is currently its zero-based window row
 index.  The cursor section is optional and present only when the backend
 captured a cursor; W4a capture always emits one, while non-GUI proto paths may
-emit none.  Concrete glyph, face, font, and image tables remain later W4/W5
-work and must not be assumed present from this subset.
+emit none.  W4c-b1-a captures enabled rows from a real core redisplay pass, but
+its row metrics are deterministic placeholders and glyph/face/font content is
+not encoded.  Concrete glyph, face, font, and image tables remain W5 work and
+must not be assumed present from this subset.
 
 ### 28.6 Replay-file container
 

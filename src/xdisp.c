@@ -18287,6 +18287,67 @@ unwind_redisplay (void)
   unblock_buffer_flips ();
 }
 
+#ifdef HAVE_PROTO_UI
+static struct frame *proto_fixture_frame;
+static bool proto_fixture_active;
+static bool proto_fixture_saved_inhibit_clear_image_cache;
+
+static void
+proto_unwind_redisplay_fixture (void)
+{
+  if (proto_fixture_frame)
+    {
+      proto_fixture_frame->inhibit_clear_image_cache
+        = proto_fixture_saved_inhibit_clear_image_cache;
+      if (max_redisplay_ticks > 0)
+        update_redisplay_ticks (0, NULL);
+    }
+  proto_fixture_frame = NULL;
+  proto_fixture_active = false;
+}
+
+/* Run one controlled leaf-window redisplay for the opt-in proto fixture.
+   Unlike normal redisplay_internal, this targets one proto frame and never
+   updates a real output device.  It does establish the core invariants that
+   redisplay_window expects: the redisplay lock, buffer-flip blocking, outer
+   restriction state, face-freeing inhibition, and per-frame hscroll state.  */
+bool
+proto_redisplay_window_fixture (struct frame *f)
+{
+  Lisp_Object window;
+  Lisp_Object tail, frame;
+  specpdl_ref count;
+
+  if (proto_fixture_active || !FRAME_LIVE_P (f) || !f->glyphs_initialized_p
+      || !NILP (Vinhibit_redisplay) || redisplaying_p)
+    return false;
+
+  window = f->root_window;
+  count = SPECPDL_INDEX ();
+  record_unwind_protect_void (unwind_redisplay);
+  proto_fixture_frame = f;
+  proto_fixture_saved_inhibit_clear_image_cache
+    = f->inhibit_clear_image_cache;
+  proto_fixture_active = true;
+  record_unwind_protect_void (proto_unwind_redisplay_fixture);
+  redisplaying_p = true;
+  block_buffer_flips ();
+  specbind (Qinhibit_free_realized_faces, Qnil);
+
+  FOR_EACH_FRAME (tail, frame)
+    XFRAME (frame)->already_hscrolled_p = false;
+  reset_outermost_restrictions ();
+  forget_escape_and_glyphless_faces ();
+  inhibit_free_realized_faces = false;
+  f->inhibit_clear_image_cache = true;
+
+  redisplay_window (window, false);
+  bool complete = !f->fonts_changed;
+  unbind_to (count, Qnil);
+  return complete;
+}
+#endif
+
 /* Function registered with record_unwind_protect before calling
    start_display outside of redisplay_internal.  */
 void

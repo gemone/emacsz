@@ -20,7 +20,7 @@ The completed system must:
 
 ## 2. Current status
 
-The repository contains the complete English design baseline. W1-W3c add the approved EUP protocol/transport skeleton, opt-in Emacs registration, real terminal lifecycle, and lifecycle-only invisible frame objects. W4a adds a reviewed synthetic `FRAME_UPDATE` capture path. W4b adds reviewed real after-update window geometry and row metadata capture bounded to 256 rows. W4c-a adds reviewed bounded damage capture and safe redisplay-interface coverage. W4c-b0 adds reviewed headless frame visibility transitions and update-count observability. It does not yet capture glyphs, faces, fonts, or images, and it does not render. Generic graphic frame creation, real-frame redisplay, SDL3 windows, and the final objective remain W4c-b1+ work.
+The repository contains the complete English design baseline. W1-W3c add the approved EUP protocol/transport skeleton, opt-in Emacs registration, real terminal lifecycle, and lifecycle-only invisible frame objects. W4a adds a reviewed synthetic `FRAME_UPDATE` capture path. W4b adds reviewed real after-update window geometry and row metadata capture bounded to 256 rows. W4c-a adds reviewed bounded damage capture and safe redisplay-interface coverage. W4c-b0 adds reviewed headless frame visibility transitions and update-count observability. W4c-b1-a adds a reviewed batch-safe real proto-frame redisplay fixture that captures desired rows and damage; it still uses placeholder font/face metrics and does not render. Glyph, face, font, and image resource capture, generic graphic frame creation, SDL3 windows, and the final objective remain W5+ work.
 
 The documentation in this directory is the source of truth for the implementation workstreams.
 

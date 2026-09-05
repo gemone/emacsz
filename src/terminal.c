@@ -717,9 +717,21 @@ extern int proto_ui_frame_damage (uint64_t, uint64_t,
                                   int, int, int, int);
 extern int proto_ui_frame_flush (uint64_t, uint64_t, int, int);
 extern int proto_ui_frame_update_count (uint64_t);
+extern bool proto_redisplay_window_fixture (struct frame *);
 
 static struct terminal *proto_terminal;
 static intmax_t proto_frame_count;
+static struct terminal *proto_rif_disabled_terminal;
+static struct redisplay_interface *proto_saved_rif;
+
+static void
+proto_restore_redisplay_rif (Lisp_Object ignored)
+{
+  if (proto_rif_disabled_terminal)
+    proto_rif_disabled_terminal->rif = proto_saved_rif;
+  proto_rif_disabled_terminal = NULL;
+  proto_saved_rif = NULL;
+}
 
 static void
 proto_delete_frame (struct frame *frame)
@@ -1220,6 +1232,117 @@ DEFUN ("proto-ui-frame-update-count", Fproto_ui_frame_update_count,
                     (FRAME_PROTO_OUTPUT (f)->session_id));
 }
 
+static void
+proto_capture_matrix_frame_update (struct frame *f)
+{
+  struct proto_output *output = FRAME_PROTO_OUTPUT (f);
+  struct window *window = XWINDOW (f->root_window);
+  struct glyph_matrix *matrix = window->desired_matrix;
+  int line_height = FRAME_LINE_HEIGHT (f);
+  int column_width = FRAME_COLUMN_WIDTH (f);
+  uint64_t window_id;
+
+  if (!output || output->frame_id == 0)
+    error ("proto-ui frame is not initialized");
+  if (matrix == NULL || matrix->rows == NULL)
+    error ("proto-ui frame has no desired matrix");
+  window_id = proto_window_id (f, window);
+  if (output->update_active)
+    error ("proto-ui frame update is already active");
+  if (window_id == 0)
+    error ("proto-ui window identity creation failed");
+  if (proto_ui_window_geometry (output->session_id, window_id,
+                                output->frame_id,
+                                WINDOW_LEFT_PIXEL_EDGE (window),
+                                WINDOW_TOP_PIXEL_EDGE (window),
+                                WINDOW_PIXEL_WIDTH (window),
+                                WINDOW_PIXEL_HEIGHT (window)) != 0)
+    error ("proto-ui window geometry capture failed");
+  if (proto_ui_frame_update_begin (output->session_id,
+                                   output->frame_id) != 0)
+    error ("proto-ui frame update begin failed");
+  output->update_active = true;
+  output->capture_failed = false;
+
+  for (ptrdiff_t vpos = 0; vpos < matrix->nrows; ++vpos)
+    {
+      struct glyph_row *row = MATRIX_ROW (matrix, vpos);
+      int x = 0;
+      int y = vpos * line_height;
+      int width = row->used[TEXT_AREA] * column_width;
+      int height = line_height;
+
+      if (!row->enabled_p)
+        continue;
+
+      if (proto_ui_frame_row (output->session_id, output->frame_id,
+                              window_id, (uint32_t) vpos, 0,
+                              x, y, width, height,
+                              height - height / 4, height / 4,
+                              y + height - height / 4, height) != 0
+          || proto_ui_frame_damage (output->session_id, output->frame_id,
+                                    WINDOW_LEFT_PIXEL_EDGE (window) + x,
+                                    WINDOW_TOP_PIXEL_EDGE (window) + y,
+                                    width, height) != 0)
+        {
+          proto_ui_frame_update_cancel (output->session_id,
+                                        output->frame_id);
+          output->update_active = false;
+          error ("proto-ui frame row capture failed");
+        }
+    }
+
+  if (proto_ui_frame_flush (output->session_id, output->frame_id,
+                            FRAME_PIXEL_WIDTH (f),
+                            FRAME_PIXEL_HEIGHT (f)) != 0)
+    {
+      proto_ui_frame_update_cancel (output->session_id, output->frame_id);
+      output->update_active = false;
+      output->capture_failed = true;
+      error ("proto-ui frame update flush failed");
+    }
+  output->update_active = false;
+  if (output->capture_failed)
+    {
+      proto_ui_frame_update_cancel (output->session_id, output->frame_id);
+      error ("proto-ui frame matrix capture exceeded limit");
+    }
+}
+
+DEFUN ("proto-ui-redisplay-frame", Fproto_ui_redisplay_frame,
+       Sproto_ui_redisplay_frame, 1, 1, 0,
+       doc: /* Run a batch-safe real redisplay of proto FRAME and capture its desired rows.
+Font and face resources remain placeholders; this fixture does not render.  */)
+  (Lisp_Object frame)
+{
+  struct frame *f = decode_live_frame (frame);
+  struct proto_output *output;
+  specpdl_ref count;
+
+  if (!FRAME_PROTO_P (f) || !FRAME_PROTO_OUTPUT (f))
+    error ("FRAME is not a proto-ui frame");
+  output = FRAME_PROTO_OUTPUT (f);
+  if (!f->visible)
+    error ("proto-ui FRAME must be visible for redisplay capture");
+  if (redisplaying_p)
+    error ("redisplay is already active");
+  if (output->update_active)
+    error ("proto-ui frame update is already active");
+
+  count = SPECPDL_INDEX ();
+  proto_rif_disabled_terminal = f->terminal;
+  proto_saved_rif = f->terminal->rif;
+  record_unwind_protect (proto_restore_redisplay_rif, Qnil);
+  f->terminal->rif = NULL;
+  if (!proto_redisplay_window_fixture (f))
+    error ("proto-ui frame redisplay was incomplete");
+  unbind_to (count, Qnil);
+
+  proto_capture_matrix_frame_update (f);
+  return make_uint (proto_ui_frame_update_count
+                    (FRAME_PROTO_OUTPUT (f)->session_id));
+}
+
 DEFUN ("proto-ui-create-terminal", Fproto_ui_create_terminal,
        Sproto_ui_create_terminal, 0, 0, 0,
        doc: /* Create the headless EUP terminal used by proto-ui.
@@ -1356,6 +1479,8 @@ or some time later.  */);
   defsubr (&Sproto_ui_capture_frame_update);
   DEFSYM (Qproto_ui_frame_update_count, "proto-ui-frame-update-count");
   defsubr (&Sproto_ui_frame_update_count);
+  DEFSYM (Qproto_ui_redisplay_frame, "proto-ui-redisplay-frame");
+  defsubr (&Sproto_ui_redisplay_frame);
   defsubr (&Sproto_ui_create_frame);
 #endif
 

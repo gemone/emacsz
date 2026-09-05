@@ -2,7 +2,7 @@
 
 Status: normative design baseline
 Protocol: EUP v1
-Implementation status: specification complete. W1-W3c approved: protocol/transport, registration, terminal lifecycle, and lifecycle-only frame objects. W4a approved: synthetic `FRAME_UPDATE` capture. W4b approved: real after-update window geometry and row metadata, capped at 256 rows. W4c-a approved: bounded redisplay damage capture and safe hook coverage. W4c-b0 approved: headless frame visibility and update-count observability. Glyphs/faces/fonts/images, rendering, and graphic predicates remain W4c-b1+.
+Implementation status: specification complete. W1-W3c approved: protocol/transport, registration, terminal lifecycle, and lifecycle-only frame objects. W4a approved: synthetic `FRAME_UPDATE` capture. W4b approved: real after-update window geometry and row metadata, capped at 256 rows. W4c-a approved: bounded redisplay damage capture and safe hook coverage. W4c-b0 approved: headless frame visibility and update-count observability. W4c-b1-a approved: batch-safe real-frame desired-row capture with placeholder font/face metrics. Glyph, face, font, and image resources, rendering, and generic graphic predicates remain W5+.
 
 ## 1. Purpose
 
@@ -112,6 +112,10 @@ Current lifecycle/redisplay contract by implementation slice:
 * **W4c-b0** lets the headless terminal control the real frame visibility flag
   and exposes committed-update counts for observation.  It does not change
   matrix allocation, `FRAME_WINDOW_P`, or rendering.
+* **W4c-b1-a** runs a batch-safe redisplay of a visible proto frame and
+  captures its desired rows and damage as one atomic `FRAME_UPDATE`.  Font,
+  face, glyph, and image resources are not encoded; the temporary fixture uses
+  terminal-style glyph metrics and does not render.
 
 Rendering, generic graphic `make-frame`, and `display-graphic-p` remain
 disabled until later W4 slices.  Cursor emission is conditional on the
