@@ -393,7 +393,7 @@ pub fn build(b: *std.Build) void {
     // it does not alter inherited Emacs C/Lisp source or enable runtime
     // integration.
     const enable_proto_ui = b.option(bool, "proto-ui", "Build adapter-only EUP codec/ABI and run conformance plus boundary tests") orelse false;
-    const enable_sdl3_frontend = b.option(bool, "sdl3-frontend", "Build and smoke the independent SDL3 frontend executable") orelse false;
+    const enable_sdl3_frontend = b.option(bool, "sdl3-frontend", "Build the independent SDL3 EUP-replay renderer and smoke it") orelse false;
 
     // Target-derived flags.  `target` is resolved at line 64, so target.result
     // is in scope here; computing these early lets the make-docfile / doc-scan
@@ -505,6 +505,21 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&run_boundary_audit.step);
     }
     if (enable_sdl3_frontend) {
+        const proto_ui_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = optimize,
+            .root_source_file = b.path("src/proto-ui/root.zig"),
+        });
+        const sdl3_replay_fixture = b.addExecutable(.{
+            .name = "proto-ui-sdl3-replay-fixture",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("tools/proto-ui-sdl3/fixture.zig"),
+            }),
+        });
+        sdl3_replay_fixture.root_module.addImport("proto_ui", proto_ui_module);
+
         const sdl3_frontend = b.addExecutable(.{
             .name = "proto-ui-sdl3",
             .root_module = b.createModule(.{
@@ -515,12 +530,18 @@ pub fn build(b: *std.Build) void {
             }),
         });
         sdl3_frontend.root_module.linkSystemLibrary("sdl3", .{});
+        sdl3_frontend.root_module.addImport("proto_ui", proto_ui_module);
         b.installArtifact(sdl3_frontend);
+
+        const run_sdl3_fixture = b.addRunArtifact(sdl3_replay_fixture);
+        const replay_file = run_sdl3_fixture.addOutputFileArg("emacs-frame.erp1");
         const run_sdl3_smoke = b.addRunArtifact(sdl3_frontend);
-        run_sdl3_smoke.addArg("--auto-quit-ms=80");
+        run_sdl3_smoke.addArg("--replay");
+        run_sdl3_smoke.addFileArg(replay_file);
+        run_sdl3_smoke.addArg("--auto-quit-ms=180");
         const sdl3_smoke_step = b.step(
             "sdl3-ui-smoke",
-            "Open an independent SDL3 window, render one frame, and exit",
+            "Generate an EUP replay, open SDL3, and render its scene",
         );
         sdl3_smoke_step.dependOn(&run_sdl3_smoke.step);
     }
@@ -4894,7 +4915,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true proto-ui-unit - adapter, EUP protocol, and transport tests
         \\
         \\SDL3 frontend path (opt-in: -Dsdl3-frontend=true):
-        \\  zig build -Dsdl3-frontend=true sdl3-ui-smoke - independent window/renderer lifecycle
+        \\  zig build -Dsdl3-frontend=true sdl3-ui-smoke - independent EUP replay renderer
         \\
         \\Native-comp gccjit path (opt-in: -Dnative-comp=true, native glibc-Linux;
         \\  requires libgccjit). Coexists with -Dnative-comp-zig: when both are on,

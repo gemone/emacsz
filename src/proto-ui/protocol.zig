@@ -3,6 +3,8 @@ const std = @import("std");
 pub const major_version: u16 = 1;
 pub const minor_version: u16 = 0;
 pub const header_size: u16 = 62;
+pub const max_rows: usize = 256;
+pub const max_damage: usize = 256;
 
 pub const Error = error{
     InvalidEnvelope,
@@ -528,6 +530,13 @@ pub fn decodeFrameUpdate(a: std.mem.Allocator, data: []const u8) !FrameUpdate {
     }
     if (reader.offset != data.len) return Error.TrailingBytes;
     return .{ .header = header, .sections = sections };
+}
+
+/// Frees storage allocated by `decodeFrameUpdate`.  Record bytes continue to
+/// borrow the caller's encoded payload and have no independent allocation.
+pub fn freeFrameUpdate(a: std.mem.Allocator, update: *FrameUpdate) void {
+    a.free(update.sections);
+    update.sections = &.{};
 }
 
 test "envelope round trip and hash validation" {

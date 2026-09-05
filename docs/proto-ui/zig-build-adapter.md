@@ -77,6 +77,7 @@ src/proto-ui/
 
 tools/proto-ui-sdl3/
   main.zig              independent window/renderer lifecycle smoke
+  fixture.zig           deterministic FRAME_CREATE/FRAME_UPDATE ERP1 writer
 ```
 
 Generated content is written only to:

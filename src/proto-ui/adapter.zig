@@ -115,7 +115,7 @@ pub const integration_points = [_]IntegrationPoint{
     .{ .id = "adapter_abi", .owner = .adapter, .status = .partial, .summary = "versioned host and adapter tables" },
     .{ .id = "normal_rif_streaming", .owner = .adapter, .status = .blocked, .summary = "normal-RIF streaming pending thin-shim embedding" },
     .{ .id = "build_embedding", .owner = .build, .status = .designed, .summary = "zig-build generated manifest and adapter linkage" },
-    .{ .id = "sdl3_frontend", .owner = .frontend, .status = .partial, .summary = "independent window/renderer lifecycle smoke; EUP, scene, input, and Emacs frame pending" },
+    .{ .id = "sdl3_frontend", .owner = .frontend, .status = .partial, .summary = "SDL3 EUP replay scene with window/row/cursor geometry; live session, text, input, and Emacs frame pending" },
 };
 
 pub const ManifestIssue = struct {

@@ -40,6 +40,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | Memory sink and replay-file transport | Implemented (adapter-only) |
 | SDL3 frontend design | Documented |
 | SDL3 window/renderer lifecycle | Implemented (independent frontend smoke) |
+| EUP replay scene client | Implemented (window/row/cursor geometry only) |
 | Performance baseline | Documented |
 | Build option `-Dproto-ui` | Adapter-only EUP codec/transport, ABI/summary generation, unit tests, fake-host conformance, and boundary audit; no Emacs runtime integration |
 | W2 registration seam | Approved historically; runtime integration rolled back |
@@ -57,11 +58,12 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | `output_proto` terminal | Rolled back with runtime integration |
 | Redisplay capture | Rolled back; adapter ABI v1 contract only |
 | Resource model | Not implemented |
-| SDL3 frontend | Partial: window/renderer lifecycle only; no EUP session, scene, input, or Emacs frame yet |
+| SDL3 frontend | Partial: EUP replay scene and window/renderer lifecycle; no live transport, input, faces, or Emacs frame |
 | Real SDL3 Emacs smoke test | Not achieved |
 | Adapter-first C boundary | Required; no new inherited-C Proto-UI edits |
 | W9a independent SDL3 lifecycle smoke | Approved |
-| Build option `-Dsdl3-frontend` | Independent window/renderer lifecycle smoke; no EUP client yet |
+| W9b SDL3 EUP replay scene renderer | Approved |
+| Build option `-Dsdl3-frontend` | Independent EUP-replay SDL3 renderer; no live transport or Emacs frame yet |
 
 The workstream sections below retain their historical review records and
 implementation details.  The Current status table is authoritative when an
@@ -652,35 +654,55 @@ zig build -Dsdl3-frontend=true sdl3-ui-smoke --summary all
 The command opens a real SDL3 window on a display-capable host.  It does not
 connect to Emacs, decode EUP, render text, or imply final SDL3 acceptance.
 
-### W9b — EUP-connected SDL3 frontend skeleton (planned)
+### W9b — SDL3 EUP replay scene renderer (approved)
 
-Goal: open a real window from a live proto frame.
+Goal: decode a deterministic EUP session and render frame/window/row/cursor
+geometry before introducing a live transport.
 
-Tasks:
+Implemented:
 
-1. Add SDL3 frontend build option.
-2. Add frontend process entry point.
-3. Implement EUP client negotiation.
-4. Implement SDL window lifecycle.
-5. Implement software renderer fallback.
-6. Apply frame/window/row updates.
-7. Render cursor and basic faces.
-8. Present initial frame.
+1. `src/proto-ui/frontend.zig` owns frontend scene state and decodes concrete
+   WINDOW, ROWS, CURSORS, DAMAGE, and PRESENT_HINT records from validated
+   `FRAME_UPDATE` payloads.
+2. The scene enforces session identity, ordered sequences, frame generation,
+   record geometry, window ownership, damage bounds/mode, zero row flags, row
+   ordering, and protocol row/damage caps before atomically replacing displayed
+   state.
+3. `tools/proto-ui-sdl3/fixture.zig` writes a deterministic ERP1 replay
+   containing `FRAME_CREATE` and one `FRAME_UPDATE`.
+4. `tools/proto-ui-sdl3/main.zig` reads that replay, applies every message,
+   and renders the resulting SDL3 window, rows, window border, and cursor.
+
+Not yet implemented: live transport negotiation, text glyphs, faces, input,
+resources, and an Emacs frame.
 
 Acceptance:
 
 ```sh
-zig build -Dproto-ui=true -Dsdl3-frontend=true
-zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke --summary all
 ```
 
-The smoke test must show a real SDL3 window with visible Emacs text and cursor.
+The smoke opens a real SDL3 window and reports one applied update with one
+window and 15 rows.  It does not connect to Emacs or imply final acceptance.
+
+### W9c — SDL3 live EUP transport session (planned)
+
+Goal: replace deterministic ERP1 replay input with an authenticated local live
+EUP transport owned outside inherited Emacs C source.
+
+Tasks:
+
+1. Freeze local transport handshake and session token handling.
+2. Implement frontend reconnect/resync behavior.
+3. Add a separately owned adapter-side transport publisher.
+4. Preserve frame-update coalescing and backpressure.
+5. Keep Emacs redisplay nonblocking when the frontend is slow or absent.
 
 Review gates:
 
-1. SDL lifecycle correctness.
-2. Protocol client safety.
-3. Process isolation from Emacs.
+1. Transport security and local IPC boundary.
+2. Sequence/resource recovery.
+3. No inherited-C runtime coupling.
 
 ### W10 — GPU renderer path
 
@@ -928,6 +950,7 @@ zig build -Dproto-ui=true proto-ui-conformance
 zig build -Dproto-ui=true proto-ui-boundary
 zig build -Dproto-ui=true proto-ui-boundary-audit
 zig build -Dsdl3-frontend=true sdl3-ui-smoke
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke
 ```
 
 Planned steps:
@@ -938,7 +961,7 @@ zig build -Dproto-ui=true proto-ui-replay-test
 zig build -Dproto-ui=true proto-ui-fuzz
 zig build -Dproto-ui=true proto-ui-bench
 zig build -Dproto-ui=true proto-ui-diff
-zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke
+zig build -Dproto-ui=true proto-ui-live-session-test
 ```
 
 Step names may be adjusted during W1/W2, but each listed verification must have a final equivalent.
