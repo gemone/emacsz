@@ -118,7 +118,7 @@ pub const integration_points = [_]IntegrationPoint{
     .{ .id = "emacs_module_seam", .owner = .adapter, .status = .partial, .summary = "opt-in public frame/window fact observation and EUP/SDL3 snapshot bridge; full display capture and live publishing pending" },
     .{ .id = "normal_rif_streaming", .owner = .adapter, .status = .blocked, .summary = "normal-RIF streaming pending thin-shim embedding" },
     .{ .id = "build_embedding", .owner = .build, .status = .designed, .summary = "zig-build generated manifest and adapter linkage" },
-    .{ .id = "sdl3_frontend", .owner = .frontend, .status = .partial, .summary = "SDL3 validates continuous public Emacs facts and bounded ASCII text as EUP snapshots; EPXL streaming and text are implemented, while shaped text, keyboard/keymap/IME input, and Emacs frames pending" },
+    .{ .id = "sdl3_frontend", .owner = .frontend, .status = .partial, .summary = "SDL3 validates continuous public Emacs facts and bounded ASCII text and public point/cursor facts as EUP snapshots; EPXL streaming and facts text/cursor are implemented, while shaped text, keyboard/keymap/IME input, and Emacs frames pending" },
 };
 
 pub const ManifestIssue = struct {

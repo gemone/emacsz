@@ -77,7 +77,8 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W9i authenticated EPXL resync reconnect | Approved |
 | W9j public ASCII text observation | Approved |
 | W9k bounded ASCII text input bridge | Approved |
-| Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
+| W9l public point and dynamic cursor | Approved |
+| Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
 
 The workstream sections below retain their historical review records and
 implementation details.  The Current status table is authoritative when an
@@ -1017,8 +1018,9 @@ Acceptance:
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-smoke --summary all
 ```
 
-Both sessions must complete `RESYNC_*` successfully and the final SDL3 scene
-must render two validated updates.
+Both sessions must complete `RESYNC_*` successfully.  The final SDL3 scene must
+be coherent and render at least two validated updates; additional cursor-only or
+mixed snapshots are allowed under the same contiguous-sequence rules.
 
 ### W9j — Public ASCII text observation (approved)
 
@@ -1089,6 +1091,41 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-input-sm
 ```
 
 The final scene must contain the applied input marker.
+
+### W9l — Public point and dynamic cursor (approved)
+
+Goal: replace the fixed facts-profile cursor with public Emacs point observation
+so an applied input changes both text and the rendered cursor.
+
+Implemented:
+
+1. The smoke bridge observes the selected window's point through public
+   `window-point`, `line-number-at-pos`, and `current-column` APIs, then writes
+   it as the `cursor` field of one atomically written combined snapshot JSON
+   that also carries frame facts and text lines.
+2. `CursorFacts` accepts a 1-based line and zero-based column, bounded to the
+   facts-profile text viewport and column width.
+3. `Snapshot` equality includes cursor movement, so cursor-only changes are not
+   coalesced away.
+4. `appendWireSnapshot` maps the observed point onto an existing row and emits a
+   normal EUP cursor record using the profile's 8-pixel debug-text advance.  The
+   full cursor rectangle, including its 2-pixel width, must fit the window.
+5. The input smoke now requires `XEmacs Proto-UI`, cursor column 1, and cursor
+   row 0 after the bounded input intent is applied.
+
+This observes public point state for the simple facts viewport.  It is not
+redisplay-owned cursor semantics and does not model region, mark, overlays,
+multi-frame cursors, blinking, cursor faces, vertical motion limits, variable
+pitch text, or bidirectional movement.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-input-smoke --summary all
+```
+
+The gate must apply the bounded input and verify that both text and cursor reflect
+the new public point.
 
 ### W10 — GPU renderer path
 

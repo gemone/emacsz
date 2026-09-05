@@ -210,19 +210,17 @@ fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
 
 fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
     _ = std.Io.Dir.cwd().deleteFile(io, config.facts_path) catch {};
-    const text_path = try std.fmt.allocPrint(gpa, "{s}.txt", .{config.facts_path});
-    defer gpa.free(text_path);
-    _ = std.Io.Dir.cwd().deleteFile(io, text_path) catch {};
     const input_path = try std.fmt.allocPrint(gpa, "{s}.keys", .{config.facts_path});
     defer gpa.free(input_path);
     _ = std.Io.Dir.cwd().deleteFile(io, input_path) catch {};
     _ = std.Io.Dir.cwd().deleteFile(io, config.endpoint) catch {};
     const eval = try std.fmt.allocPrint(
         gpa,
-        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (text-path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\"))))) (with-current-buffer (window-buffer window) (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII text\\n\")) (with-temp-file text-path (insert (with-current-buffer (window-buffer window) (buffer-substring-no-properties (window-start window) (window-end window))))) (with-temp-file path (insert (proto-ui-frame-facts frame))) (sit-for 0.2) (set-frame-size frame 90 30) (while t (when (file-readable-p input-path) (let ((text (with-temp-buffer (insert-file-contents input-path) (buffer-string)))) (when (> (length text) 0) (with-current-buffer (window-buffer window) (goto-char (point-min)) (insert text)))) (delete-file input-path)) (with-temp-file text-path (insert (with-current-buffer (window-buffer window) (buffer-substring-no-properties (window-start window) (window-end window))))) (with-temp-file path (insert (proto-ui-frame-facts frame))) (sit-for 0.1))))",
-        .{ config.module_path, config.facts_path, text_path, input_path },
+        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let* ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\")))) (buffer (window-buffer window)) (facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (lines (split-string text \"\\n\")) (point (with-current-buffer buffer (window-point window))) (cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column)))))) (with-current-buffer buffer (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII text\\n\") (redisplay)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.2) (set-frame-size frame 90 30) (while t (when (file-readable-p input-path) (let ((input (with-temp-buffer (insert-file-contents input-path) (buffer-string)))) (when (> (length input) 0) (with-current-buffer buffer (goto-char (point-min)) (insert input) (redisplay))))) (setq text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (setq lines (split-string text \"\\n\")) (setq point (with-current-buffer buffer (window-point window))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column))))) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.1))))",
+        .{ config.module_path, config.facts_path, input_path },
     );
     defer gpa.free(eval);
+
     var child_environment = try buildDisplayEnvironment(gpa);
     defer child_environment.deinit();
     var emacs_child = try std.process.spawn(io, .{
@@ -235,7 +233,6 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     var server = try address.listen(io, .{ .kernel_backlog = 1 });
     defer server.deinit(io);
 
-    var shared = SharedFacts{};
     var scene = frontend.Scene.init(gpa);
     defer scene.deinit();
     var published: ?facts.Snapshot = null;
@@ -268,19 +265,25 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
         try live.writeControl(&writer.interface, .{ .kind = .resync_begin, .sequence = 1 });
         try writer.interface.flush();
 
+        var initial_snapshot: ?facts.Snapshot = null;
         var facts_wait_ms: u32 = 0;
-        while (shared.version == 0 and facts_wait_ms < 1000) : (facts_wait_ms += 20) {
-            try pollEmacsFacts(&shared, gpa, io, config.facts_path);
-            if (shared.version != 0) break;
-            try io.sleep(.fromMilliseconds(20), .awake);
+        while (initial_snapshot == null and facts_wait_ms < 1000) : (facts_wait_ms += 20) {
+            const snapshot_bytes = std.Io.Dir.cwd().readFileAlloc(io, config.facts_path, gpa, .limited(64 * 1024)) catch |err| switch (err) {
+                error.FileNotFound => null,
+                else => return err,
+            };
+            if (snapshot_bytes) |bytes| {
+                defer gpa.free(bytes);
+                initial_snapshot = facts.parseSnapshot(gpa, bytes) catch null;
+            }
+            if (initial_snapshot == null)
+                try io.sleep(.fromMilliseconds(20), .awake);
         }
-        if (shared.facts == null) return error.NoEmacsFacts;
-        const text_bytes = try std.Io.Dir.cwd().readFileAlloc(io, text_path, gpa, .limited(64 * 1024));
-        defer gpa.free(text_bytes);
-        const initial_text = try facts.parseText(gpa, text_bytes);
-        published = .{ .facts = shared.facts.?, .text = initial_text };
+        if (initial_snapshot == null) return error.NoEmacsFacts;
+        if (published) |*previous| previous.deinit(gpa);
+        published = initial_snapshot;
         var acks = live.AckTracker.init(1);
-        try sendSnapshotMessages(gpa, published.?.facts, published.?.text.lines, &scene, &acks, io, &reader, &writer, input_path, &input_sequence);
+        try sendSnapshotMessages(gpa, published.?.facts, published.?.text.lines, published.?.cursor, &scene, &acks, io, &reader, &writer, input_path, &input_sequence);
         const complete_sequence = scene.next_sequence.? - 1;
         try live.writeControl(&writer.interface, .{ .kind = .resync_complete, .sequence = complete_sequence });
         try writer.interface.flush();
@@ -297,19 +300,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
                 else => return err,
             };
             defer gpa.free(facts_bytes);
-            const next_facts = try facts.parse(gpa, facts_bytes);
-            const next_text_bytes = std.Io.Dir.cwd().readFileAlloc(io, text_path, gpa, .limited(64 * 1024)) catch |err| switch (err) {
-                error.FileNotFound => {
-                    try io.sleep(.fromMilliseconds(20), .awake);
-                    waited_ms += 20;
-                    continue;
-                },
-                else => return err,
-            };
-            defer gpa.free(next_text_bytes);
-            var next_text = try facts.parseText(gpa, next_text_bytes);
-            errdefer next_text.deinit(gpa);
-            var next = facts.Snapshot{ .facts = next_facts, .text = next_text };
+            var next = try facts.parseSnapshot(gpa, facts_bytes);
             if (published) |previous| {
                 if (previous.eql(next)) {
                     next.deinit(gpa);
@@ -321,7 +312,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
             if (published) |*previous| previous.deinit(gpa);
             published = next;
             var change_acks = live.AckTracker.init(1);
-            try sendSnapshotMessages(gpa, next.facts, next.text.lines, &scene, &change_acks, io, &reader, &writer, input_path, &input_sequence);
+            try sendSnapshotMessages(gpa, next.facts, next.text.lines, next.cursor, &scene, &change_acks, io, &reader, &writer, input_path, &input_sequence);
             try io.sleep(.fromMilliseconds(100), .awake);
             waited_ms += 100;
         }
@@ -436,6 +427,7 @@ fn sendSnapshotMessages(
     gpa: std.mem.Allocator,
     snapshot: facts.FrameFacts,
     text: []const []const u8,
+    cursor: facts.CursorFacts,
     scene: *frontend.Scene,
     acks: *live.AckTracker,
     io: std.Io,
@@ -449,7 +441,7 @@ fn sendSnapshotMessages(
         for (messages.items) |message| gpa.free(message);
         messages.deinit(gpa);
     }
-    try facts.appendWireSnapshot(gpa, snapshot, text, scene, &messages);
+    try facts.appendWireSnapshot(gpa, snapshot, text, cursor, scene, &messages);
     for (messages.items) |message| {
         const envelope = (try protocol.decodeEnvelope(message)).envelope;
         try acks.markSent(envelope.sequence);
@@ -899,7 +891,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .facts_publisher => unreachable,
     };
     defer scene.deinit();
-    if ((config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect) and scene.stats.frame_updates != 2)
+    if (config.mode == .emacs_epxl and scene.stats.frame_updates != 2)
+        return error.UnexpectedFactUpdateCount;
+    if (config.mode == .emacs_epxl_reconnect and scene.stats.frame_updates < 2)
         return error.UnexpectedFactUpdateCount;
     if ((config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect) and
         !sceneHasText(&scene, "Emacs Proto-UI")) return error.NoEmacsText;
@@ -907,6 +901,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         return error.UnexpectedFactUpdateCount;
     if (config.mode == .emacs_epxl_input and
         !sceneHasText(&scene, "XEmacs Proto-UI")) return error.InputNotApplied;
+    if (config.mode == .emacs_epxl_input and
+        (scene.cursor == null or scene.cursor.?.x != 8 or scene.cursor.?.y != 0))
+        return error.CursorNotApplied;
     if (scene.stats.frame_updates == 0) return error.NoFrameUpdate;
     if (scene.frame_header == null) return error.NoFrameHeader;
 

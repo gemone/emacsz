@@ -725,7 +725,7 @@ pub fn build(b: *std.Build) void {
                 "zig-out/proto-ui/proto-ui-module{s}",
                 .{proto_suffix},
             ) catch @panic("OOM"),
-            "--auto-quit-ms=1000",
+            "--auto-quit-ms=2000",
         });
         run_sdl3_epxl_input.setCwd(b.path("."));
         run_sdl3_epxl_input.step.dependOn(&proto_module_smoke.step);
@@ -733,7 +733,7 @@ pub fn build(b: *std.Build) void {
         if (sdl3_frontend_dep) |step| run_sdl3_epxl_input.step.dependOn(step);
         const sdl3_epxl_input_step = b.step(
             "sdl3-epxl-input-smoke",
-            "Send SDL3 input through EPXL and render the updated Emacs text",
+            "Send SDL3 input through EPXL and render updated Emacs text and cursor",
         );
         sdl3_epxl_input_step.dependOn(&run_sdl3_epxl_input.step);
     }
