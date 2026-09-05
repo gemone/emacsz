@@ -2457,7 +2457,7 @@ Heiko Muenkel: changed b2m.c
 
 Helmut Eller: wrote peg.el
 and changed lisp.h data.c pdumper.c buffer.c charset.c charset.h
-  emacs-lisp/debug.el fns-tests.el lisp-mode.el lread.c xref.el 
+  emacs-lisp/debug.el fns-tests.el lisp-mode.el lread.c xref.el
   CTAGS.good ETAGS.good_1 ETAGS.good_2 ETAGS.good_3 ETAGS.good_4
   ETAGS.good_5 ETAGS.good_6 alloc.c bytecomp-tests.el and 19 other files
 

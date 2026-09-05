@@ -389,7 +389,6 @@ exec/*.s.s
 zig-out/
 # Zig build system
 /.zig-cache/
-/zig-out/
 /build-config/
 *.pdmp
 
@@ -401,3 +400,6 @@ zig-out/
 
 # Zig local package extraction cache
 /zig-pkg/
+
+# for github
+!.github
