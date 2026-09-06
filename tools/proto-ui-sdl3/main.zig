@@ -138,7 +138,7 @@ const SDL_Rect = extern struct {
     h: c_int,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_input, emacs_epxl_edit, emacs_epxl_sequence, input_translation, emacs_interactive, clipboard };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_edit, emacs_epxl_sequence, input_translation, emacs_interactive, clipboard };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -159,6 +159,7 @@ const Config = struct {
     synthetic_interactive: bool = false,
     synthetic_copy: bool = false,
     drop_first_input_ack: bool = false,
+    interactive_publisher: bool = false,
 };
 
 const FrameFacts = facts.FrameFacts;
@@ -605,7 +606,10 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     var published: ?facts.Snapshot = null;
     defer if (published != null) published.?.deinit(gpa);
     var input_sequence: u64 = 1;
-    const publish_duration = @max(100, config.auto_quit_ms / 2);
+    const publish_duration = if (config.interactive_publisher)
+        config.auto_quit_ms
+    else
+        @max(100, config.auto_quit_ms / 2);
 
     for (0..@max(1, config.resync_sessions)) |session_index| {
         var stream = try server.accept(io);
@@ -657,6 +661,8 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
 
         if (session_index + 1 < @max(1, config.resync_sessions)) continue;
         var waited_ms: u32 = 0;
+        var heartbeat_ms: u32 = 0;
+        var heartbeat_due = false;
         while (waited_ms < publish_duration) {
             const facts_bytes = std.Io.Dir.cwd().readFileAlloc(io, config.facts_path, gpa, .limited(64 * 1024)) catch |err| switch (err) {
                 error.FileNotFound => {
@@ -670,22 +676,34 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
             var next = facts.parseSnapshot(gpa, facts_bytes) catch {
                 try io.sleep(.fromMilliseconds(20), .awake);
                 waited_ms += 20;
+                heartbeat_ms += 20;
                 continue;
             };
             if (published) |previous| {
                 if (previous.eql(next)) {
                     next.deinit(gpa);
-                    try io.sleep(.fromMilliseconds(20), .awake);
-                    waited_ms += 20;
-                    continue;
+                    if (config.interactive_publisher) heartbeat_due = true;
+                } else {
+                    if (published) |*old| old.deinit(gpa);
+                    published = next;
+                    heartbeat_due = true;
                 }
             }
-            if (published) |*previous| previous.deinit(gpa);
-            published = next;
-            var change_acks = live.AckTracker.init(1);
-            try sendSnapshotMessages(gpa, next.facts, next.text.lines, next.cursor, &scene, &change_acks, io, &reader, &writer, input_path, &input_sequence);
-            try io.sleep(.fromMilliseconds(100), .awake);
-            waited_ms += 100;
+            if (heartbeat_due and (!config.interactive_publisher or heartbeat_ms >= 100)) {
+                var change_acks = live.AckTracker.init(1);
+                sendSnapshotMessages(gpa, published.?.facts, published.?.text.lines, published.?.cursor, &scene, &change_acks, io, &reader, &writer, input_path, &input_sequence) catch |err| {
+                    // The interactive client intentionally closes at its smoke
+                    // deadline; stop the healthy publisher instead of failing.
+                    if (config.interactive_publisher and
+                        (err == error.WriteFailed or err == error.SocketUnconnected)) break;
+                    return err;
+                };
+                heartbeat_due = false;
+                heartbeat_ms = 0;
+            }
+            try io.sleep(.fromMilliseconds(20), .awake);
+            waited_ms += 20;
+            heartbeat_ms += 20;
         }
     }
     if (scene.stats.frame_updates == 0) return error.NoEmacsFacts;
@@ -1009,6 +1027,159 @@ fn runLiveFrontend(
     return scene;
 }
 
+fn pollEpxlInteractiveInput(
+    delivery: *input_policy.DeliveryJournal,
+    dirty: *bool,
+) !void {
+    var event: SDL_Event = undefined;
+    while (SDL_PollEvent(&event)) {
+        switch (event.type) {
+            SDL_EVENT_QUIT => return error.InteractiveQuit,
+            SDL_EVENT_KEY_DOWN => {
+                if (input_policy.isPasteShortcut(
+                    event.key.scancode,
+                    event.key.down,
+                    event.key.repeat,
+                    event.key.modifiers,
+                )) {
+                    if (try queueClipboardText(&delivery.queue)) dirty.* = true;
+                } else if (input_policy.translateKey(
+                    event.key.scancode,
+                    event.key.down,
+                    event.key.repeat,
+                    event.key.modifiers,
+                )) |key| {
+                    try delivery.pushKey(key);
+                    dirty.* = true;
+                }
+            },
+            SDL_EVENT_TEXT_INPUT => {
+                if (input_policy.translateText(event.text.text)) |text| {
+                    try delivery.pushText(text.bytes());
+                    dirty.* = true;
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+fn runEpxlInteractiveFrontend(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    config: *const Config,
+    delivery: *input_policy.DeliveryJournal,
+) !frontend.Scene {
+    const address = try std.Io.net.UnixAddress.init(config.endpoint);
+    var stream: std.Io.net.Stream = undefined;
+    var connected = false;
+    for (0..200) |_| {
+        stream = address.connect(io) catch {
+            try io.sleep(.fromMilliseconds(10), .awake);
+            continue;
+        };
+        connected = true;
+        break;
+    }
+    if (!connected) return error.LiveEndpointUnavailable;
+    defer stream.close(io);
+    delivery.beginRetry();
+
+    var write_buffer: [16 * 1024]u8 = undefined;
+    var read_buffer: [16 * 1024]u8 = undefined;
+    var writer = stream.writer(io, &write_buffer);
+    var reader = stream.reader(io, &read_buffer);
+
+    var hello: [live.handshake_size]u8 = undefined;
+    live.encodeHandshake(.{ .kind = .client_hello, .token = config.token }, &hello);
+    try writer.interface.writeAll(&hello);
+    try writer.interface.flush();
+    var ready_bytes: [live.handshake_size]u8 = undefined;
+    try reader.interface.readSliceAll(&ready_bytes);
+    const ready = try live.decodeHandshake(&ready_bytes);
+    var zero_token: live.Token = [_]u8{0} ** live.token_len;
+    if (ready.kind != .server_ready or !live.tokenEql(&zero_token, &ready.token))
+        return error.InvalidHandshake;
+
+    if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
+    defer SDL_Quit();
+    const window = SDL_CreateWindow("Emacs Proto-UI EPXL", 960, 600, SDL_WINDOW_RESIZABLE) orelse
+        return sdlFail("SDL_CreateWindow");
+    defer SDL_DestroyWindow(window);
+    const selected_renderer = try createRenderer(gpa, window, config.renderer_request, config.present_mode);
+    defer destroyRenderer(selected_renderer);
+    if (!SDL_StartTextInput(window)) return sdlFail("SDL_StartTextInput");
+
+    var frame_gate: renderer_policy.FrameGate = .{};
+    var frame_counters: renderer_policy.FrameCounters = .{};
+    var draw_list: renderer_policy.DrawList = .{ .allocator = gpa };
+    defer draw_list.deinit();
+
+    var scene = frontend.Scene.init(gpa);
+    errdefer scene.deinit();
+    try live.writeControl(&writer.interface, .{ .kind = .resync_request, .sequence = 1 });
+    try writer.interface.flush();
+    const begin = try readControlExact(&reader);
+    if (begin.kind != .resync_begin or begin.sequence != 1) return error.InvalidResyncRequest;
+    scene.resetForResync();
+
+    for (0..2) |_| {
+        const message = (try live.readFrame(&reader.interface, gpa)) orelse return error.IncompleteResync;
+        defer gpa.free(message);
+        const envelope = (try protocol.decodeEnvelope(message)).envelope;
+        try scene.apply(message);
+        if (envelope.message_type == protocol.Message.frame_update)
+            _ = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
+        try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
+        try writer.interface.flush();
+    }
+    const complete = try readControlExact(&reader);
+    if (complete.kind != .resync_complete or
+        complete.sequence != scene.next_sequence.? - 1) return error.IncompleteResync;
+
+    // Seed the real SDL event queue so headless CI validates the same input
+    // translation path as an operator typing in the window.
+    var synthetic = textEvent("XY");
+    if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
+    var input_dirty = false;
+    try pollEpxlInteractiveInput(delivery, &input_dirty);
+
+    var quit = false;
+    const started_ticks = SDL_GetTicks();
+    while (!quit and SDL_GetTicks() - started_ticks < config.auto_quit_ms) {
+        const message = (live.readFrame(&reader.interface, gpa) catch |err| {
+            if (SDL_GetTicks() - started_ticks >= config.auto_quit_ms) break;
+            return err;
+        }) orelse break;
+        defer gpa.free(message);
+        const envelope = (try protocol.decodeEnvelope(message)).envelope;
+        try scene.apply(message);
+        if (envelope.message_type == protocol.Message.frame_update) {
+            const before = delivery.pending == null;
+            const outcome = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
+            if (before and outcome == .delivered) input_dirty = true;
+        }
+        try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
+        try writer.interface.flush();
+        pollEpxlInteractiveInput(delivery, &input_dirty) catch |err| switch (err) {
+            error.InteractiveQuit => quit = true,
+            else => return err,
+        };
+        try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+    }
+
+    if (scene.stats.frame_updates < 2) return error.UnexpectedFactUpdateCount;
+    const applied = scene.text.items.len > 0 and
+        std.mem.eql(u8, scene.text.items[0].bytes, "XYEmacs Proto-UI") and
+        scene.cursor != null and scene.cursor.?.x == 16 and scene.cursor.?.y == 0;
+    if (!applied) return error.InteractiveInputNotApplied;
+    std.debug.print(
+        "sdl3-epxl-interactive-smoke: delivered SDL input over EPXL; frames={d} present={d} skipped={d}; lifecycle OK\n",
+        .{ scene.stats.frame_updates, frame_counters.presented_frames, frame_counters.skipped_frames },
+    );
+    return scene;
+}
+
 fn readTokenFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !live.Token {
     const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64));
     defer gpa.free(bytes);
@@ -1078,6 +1249,7 @@ fn buildSceneDrawList(
     for (scene.text.items) |line| {
         const owner = findSceneWindow(scene, scene.rows.items[line.row_index].window_id) orelse continue;
         const row = scene.rows.items[line.row_index];
+        if (line.bytes.len == 0) continue;
         try list.drawText(
             @floatFromInt(owner.x + row.x + 2),
             @floatFromInt(owner.y + row.y + @max(1, row.baseline - 8)),
@@ -1293,6 +1465,12 @@ fn runEmacsEpxlSession(
     defer gpa.free(absolute_module_path);
     const resync_sessions_arg = try std.fmt.allocPrint(gpa, "--resync-sessions={d}", .{sessions});
     defer gpa.free(resync_sessions_arg);
+    const auto_quit_arg = try std.fmt.allocPrint(
+        gpa,
+        "--auto-quit-ms={d}",
+        .{if (config.mode == .emacs_epxl_interactive) config.auto_quit_ms + 1000 else 500},
+    );
+    defer gpa.free(auto_quit_arg);
     config.facts_path = try std.fmt.allocPrint(gpa, "{s}/.zig-cache/proto-ui-epxl-{s}/facts.json", .{ current_dir, suffix });
     try writeTokenFile(io, config.token_path, &config.token);
     config.resync_sessions = sessions;
@@ -1300,8 +1478,8 @@ fn runEmacsEpxlSession(
     if (config.auto_input) |text| try delivery.pushText(text);
     if (config.auto_key) |action| try delivery.pushKey(.{ .action = action });
 
-    var child = try std.process.spawn(io, .{
-        .argv = &.{
+    const child_argv = if (config.interactive_publisher)
+        &[_][]const u8{
             config.self_exe,
             "--facts-publisher",
             "--emacs",
@@ -1315,24 +1493,48 @@ fn runEmacsEpxlSession(
             "--token-file",
             config.token_path,
             resync_sessions_arg,
-            "--auto-quit-ms=500",
-        },
+            auto_quit_arg,
+            "--interactive-publisher",
+        }
+    else
+        &[_][]const u8{
+            config.self_exe,
+            "--facts-publisher",
+            "--emacs",
+            config.emacs_path,
+            "--module",
+            absolute_module_path,
+            "--facts",
+            config.facts_path,
+            "--endpoint",
+            config.endpoint,
+            "--token-file",
+            config.token_path,
+            resync_sessions_arg,
+            auto_quit_arg,
+        };
+    var child = try std.process.spawn(io, .{
+        .argv = child_argv,
     });
     errdefer child.kill(io);
     var loaded: ?frontend.Scene = null;
     errdefer if (loaded != null) loaded.?.deinit();
-    for (0..sessions) |session_index| {
-        var session = try runLiveFrontend(gpa, io, config, &delivery);
-        if (config.drop_first_input_ack and session_index == 0 and delivery.pending != null) {
-            // The first session deliberately discarded the ACK event. Discard
-            // this scene too so the second authenticated session proves that
-            // the original sequence is retried exactly once.
-            session.deinit();
-            continue;
+    if (config.mode == .emacs_epxl_interactive) {
+        loaded = try runEpxlInteractiveFrontend(gpa, io, config, &delivery);
+    } else {
+        for (0..sessions) |session_index| {
+            var session = try runLiveFrontend(gpa, io, config, &delivery);
+            if (config.drop_first_input_ack and session_index == 0 and delivery.pending != null) {
+                // The first session deliberately discarded the ACK event. Discard
+                // this scene too so the second authenticated session proves that
+                // the original sequence is retried exactly once.
+                session.deinit();
+                continue;
+            }
+            if (loaded != null) loaded.?.deinit();
+            loaded = session;
+            try io.sleep(.fromMilliseconds(100), .awake);
         }
-        if (loaded != null) loaded.?.deinit();
-        loaded = session;
-        try io.sleep(.fromMilliseconds(100), .awake);
     }
     const term = try child.wait(io);
     if (term != .exited or term.exited != 0) return error.PublisherFailed;
@@ -1429,6 +1631,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_epxl_recovery;
             config.auto_input = "X";
             config.drop_first_input_ack = true;
+        } else if (std.mem.eql(u8, arg, "--emacs-epxl-interactive-smoke")) {
+            config.mode = .emacs_epxl_interactive;
+            config.interactive_publisher = true;
+        } else if (std.mem.eql(u8, arg, "--interactive-publisher")) {
+            config.interactive_publisher = true;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-input-smoke")) {
             config.mode = .emacs_epxl_input;
             config.auto_input = "X";
@@ -1635,6 +1842,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .emacs_epxl => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_reconnect => try runEmacsEpxlSession(gpa, io, &config, 2),
         .emacs_epxl_recovery => try runEmacsEpxlSession(gpa, io, &config, 2),
+        .emacs_epxl_interactive => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_input => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_edit => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_sequence => try runEmacsEpxlSession(gpa, io, &config, 1),

@@ -416,6 +416,11 @@ Required policies:
 | Out of texture memory | Evict cache; downgrade to software if needed |
 | Renderer panic | Exit frontend without affecting Emacs |
 
+The `sdl3-epxl-interactive-smoke` connects the real SDL event queue to
+authenticated EPXL. It translates printable ASCII text, sends it through the
+delivery journal, waits for Emacs apply and EPXL ACKs, receives refreshed fact
+frames, and presents the scene with the same draw list as replay.
+
 The `sdl3-epxl-recovery-smoke` exercises the reverse-input row against a real
 Emacs publisher: the frontend discards the first ACK event, reconnects with a
 new authenticated resync, retries sequence one, and the publisher ACKs it

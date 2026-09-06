@@ -87,6 +87,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8c-b Emacs apply-ACK | Approved |
 | W8c-c-a persistent EPXL delivery journal | Approved |
 | W8c-c-b EPXL ACK-loss recovery smoke | Approved |
+| W8d-a real SDL3 EPXL interactive input | Approved |
 | W10b-b2a bounded glyph-atlas policy | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
@@ -886,6 +887,42 @@ Status: approved. The dedicated reviewer completed correctness, integration/buil
 and boundary/docs/status passes. Final checks verified same-sequence retry,
 publisher idempotence, exact recovered text/cursor state, all EPXL regressions,
 changed-path and inherited-C audits, and the default-build isolation gate.
+
+#### W8d-a — Real SDL3 EPXL interactive input (approved)
+
+Goal: connect the real SDL3 event path to authenticated EPXL reverse input so
+the frontend no longer depends on local action artifacts for its interactive
+smoke.
+
+1. Add `--emacs-epxl-interactive-smoke` and `sdl3-epxl-interactive-smoke`.
+2. Open a real SDL3 window, initialize text input, translate SDL text/key
+   events, and queue them in the frontend delivery journal.
+3. Publish bounded fact heartbeats from the Emacs publisher so reverse input
+   has a deterministic transport window without polling local artifacts.
+4. Deliver queued intents as EPXL `TEXT_INPUT` or `KEY_EVENT`, require Emacs
+   apply-ACK followed by the EPXL ACK, and apply subsequent fact snapshots.
+5. Present every coherent live scene through the existing renderer-agnostic
+   SDL draw list and record present/skip counters.
+6. Assert the real Emacs result `XYEmacs Proto-UI` and cursor column 2.
+
+Implemented limits: this is the bounded facts profile and printable-ASCII
+subset. Heartbeats are a smoke-session transport window, not final redisplay
+coalescing or production push scheduling. Modifiers, Unicode, IME, pointer,
+frames, resources, redisplay-owned glyph state, and full Emacs commands remain
+pending.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-interactive-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-input-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-edit-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-sequence-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-smoke
+```
+
+Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes. Final checks verified SDL event translation, EPXL ACK ordering, Emacs text/cursor application, heartbeat lifecycle, all EPXL regressions, changed-path and inherited-C audits, and the full built-in check run.
 
 ### W9a — Independent SDL3 window lifecycle (approved)
 
