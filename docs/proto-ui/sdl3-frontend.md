@@ -428,6 +428,13 @@ same EPXL sequence and ACK rules. Emacs maps accepted press/release endpoints
 through public `posn-at-x-y` / `posn-point` and republishes the resulting
 point; intermediate drag motion is not text-selection semantics.
 
+The frontend classifies scene changes as initial, cursor-only, viewport, or
+unchanged, including a SHA-256 text signature and complete rendered cursor
+state. Unchanged states are skipped. Cursor, text-only, and viewport changes
+remain conservative full-frame work. Smoke diagnostics report
+`initial/cursor/viewport/unchanged` damage counts; clipped redraw, partial
+present, GPU submit counters, and rectangle-area damage remain pending.
+
 A bounded viewport section accompanies each facts `FRAME_UPDATE`. It carries
 the absolute Emacs `window-start` line, visible line count, and viewport-relative
 cursor text so SDL can verify that scrolling changes displayed state.
@@ -467,7 +474,11 @@ memory usage
 
 W10b-a implements the first subset in smoke diagnostics: actual renderer
 name/tier and present mode, `presented_frames`, `skipped_frames`, full-frame path
-nanoseconds, and the last monotonic present timestamp. Rectangle damage, GPU
+nanoseconds, and the last monotonic present timestamp.
+
+W10c adds damage classification counters to EPXL smoke diagnostics:
+`initial_damage_frames`, `cursor_damage_frames`, `viewport_damage_frames`, and
+`unchanged_frames`. Rectangle-area damage, clipped redraw, partial present, GPU
 submit, atlas, texture-upload, and memory counters remain pending.
 
 ## 17. CLI contract

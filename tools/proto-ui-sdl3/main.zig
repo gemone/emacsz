@@ -1308,6 +1308,42 @@ fn pollEpxlInteractiveInput(
     }
 }
 
+fn observeSceneDamage(
+    scene: *frontend.Scene,
+    gate: *renderer_policy.FrameGate,
+    counters: *renderer_policy.FrameCounters,
+) renderer_policy.DamageDecision {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    for (scene.text.items) |line| {
+        var row_bytes: [4]u8 = undefined;
+        std.mem.writeInt(u32, &row_bytes, line.row_index, .little);
+        hasher.update(&row_bytes);
+        hasher.update(line.bytes);
+        hasher.update(&.{0});
+    }
+    var text_hash: [32]u8 = undefined;
+    hasher.final(&text_hash);
+    const decision = gate.observeScene(.{
+        .viewport_start_line = if (scene.viewport) |viewport| viewport.start_line else 0,
+        .viewport_line_count = if (scene.viewport) |viewport| viewport.line_count else 0,
+        .cursor = if (scene.cursor) |cursor| .{
+            .window_id = cursor.window_id,
+            .x = cursor.x,
+            .y = cursor.y,
+            .width = cursor.width,
+            .height = cursor.height,
+            .kind = cursor.kind,
+            .visible = cursor.visible,
+            .active = cursor.active,
+        } else null,
+        .text_hash = text_hash,
+        .text_line_count = scene.text.items.len,
+    });
+    counters.recordDamage(decision.kind);
+    if (decision.kind != .none) gate.dirty = true;
+    return decision;
+}
+
 fn runEpxlInteractiveFrontend(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -1384,6 +1420,7 @@ fn runEpxlInteractiveFrontend(
     if (complete.kind != .resync_complete or
         complete.sequence != scene.next_sequence.? - 1) return error.IncompleteResync;
 
+    _ = observeSceneDamage(&scene, &frame_gate, &frame_counters);
     const initial_cursor = scene.cursor;
     const initial_viewport = scene.viewport;
     var input_dirty = false;
@@ -1430,7 +1467,9 @@ fn runEpxlInteractiveFrontend(
         defer gpa.free(message);
         const envelope = (try protocol.decodeEnvelope(message)).envelope;
         try scene.apply(message);
-        if (envelope.message_type == protocol.Message.frame_update) {
+        const is_frame_update = envelope.message_type == protocol.Message.frame_update;
+        if (is_frame_update) _ = observeSceneDamage(&scene, &frame_gate, &frame_counters);
+        if (is_frame_update) {
             const before = delivery.pending == null;
             const outcome = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
             if (before and outcome == .delivered) {
@@ -1495,8 +1534,16 @@ fn runEpxlInteractiveFrontend(
         );
     }
     std.debug.print(
-        "sdl3-epxl-interactive-smoke: delivered SDL input over EPXL; frames={d} present={d} skipped={d}; lifecycle OK\n",
-        .{ scene.stats.frame_updates, frame_counters.presented_frames, frame_counters.skipped_frames },
+        "sdl3-epxl-interactive-smoke: delivered SDL input over EPXL; frames={d} present={d} skipped={d} damage=initial:{d}/cursor:{d}/viewport:{d}/unchanged:{d}; lifecycle OK\n",
+        .{
+            scene.stats.frame_updates,
+            frame_counters.presented_frames,
+            frame_counters.skipped_frames,
+            frame_counters.initial_damage_frames,
+            frame_counters.cursor_damage_frames,
+            frame_counters.viewport_damage_frames,
+            frame_counters.unchanged_frames,
+        },
     );
     return scene;
 }

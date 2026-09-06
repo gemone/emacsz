@@ -24,10 +24,46 @@ pub const PresentMode = enum {
 /// Decides whether the framebuffer needs work. Resize always invalidates the
 /// previous frame; an explicit dirty flag covers scene changes and expose
 /// events. This is frontend pacing policy, not protocol state.
+pub const DamageKind = enum {
+    none,
+    cursor,
+    viewport,
+    initial,
+};
+
+pub const DamageDecision = struct {
+    kind: DamageKind,
+    old_cursor_y: ?i32 = null,
+    new_cursor_y: ?i32 = null,
+};
+
+pub const SceneDamageObservation = struct {
+    viewport_start_line: i32,
+    viewport_line_count: i32,
+    cursor: ?CursorObservation,
+    text_hash: [32]u8,
+    text_line_count: usize,
+};
+
+pub const CursorObservation = struct {
+    window_id: u64,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    kind: u8,
+    visible: bool,
+    active: bool,
+};
+
+/// Conservative W10c damage classification. The first observation and any
+/// viewport change fall back to full-frame work; only unchanged states are
+/// omitted and cursor-only changes are tagged for a future clipped path.
 pub const FrameGate = struct {
     dirty: bool = true,
     width: i32 = 0,
     height: i32 = 0,
+    previous: ?SceneDamageObservation = null,
 
     pub fn shouldPresent(self: *FrameGate, width: i32, height: i32) bool {
         const needed = self.dirty or width != self.width or height != self.height;
@@ -35,6 +71,37 @@ pub const FrameGate = struct {
         self.width = width;
         self.height = height;
         return needed;
+    }
+
+    pub fn observeScene(self: *FrameGate, observation: SceneDamageObservation) DamageDecision {
+        const previous = self.previous;
+        self.previous = observation;
+        if (previous) |old| {
+            if (old.viewport_start_line != observation.viewport_start_line or
+                old.viewport_line_count != observation.viewport_line_count or
+                !std.mem.eql(u8, &old.text_hash, &observation.text_hash) or
+                old.text_line_count != observation.text_line_count)
+                return .{
+                    .kind = .viewport,
+                    .old_cursor_y = if (old.cursor) |cursor| cursor.y else null,
+                    .new_cursor_y = if (observation.cursor) |cursor| cursor.y else null,
+                };
+            if (!std.meta.eql(old.cursor, observation.cursor))
+                return .{
+                    .kind = .cursor,
+                    .old_cursor_y = if (old.cursor) |cursor| cursor.y else null,
+                    .new_cursor_y = if (observation.cursor) |cursor| cursor.y else null,
+                };
+            return .{
+                .kind = .none,
+                .old_cursor_y = if (old.cursor) |cursor| cursor.y else null,
+                .new_cursor_y = if (observation.cursor) |cursor| cursor.y else null,
+            };
+        }
+        return .{
+            .kind = .initial,
+            .new_cursor_y = if (observation.cursor) |cursor| cursor.y else null,
+        };
     }
 };
 
@@ -52,6 +119,19 @@ pub const FrameCounters = struct {
     frame_path_total_ns: u64 = 0,
     frame_path_last_ns: u64 = 0,
     present_last_ns: u64 = 0,
+    initial_damage_frames: u64 = 0,
+    cursor_damage_frames: u64 = 0,
+    viewport_damage_frames: u64 = 0,
+    unchanged_frames: u64 = 0,
+
+    pub fn recordDamage(self: *FrameCounters, kind: DamageKind) void {
+        switch (kind) {
+            .initial => self.initial_damage_frames += 1,
+            .cursor => self.cursor_damage_frames += 1,
+            .viewport => self.viewport_damage_frames += 1,
+            .none => self.unchanged_frames += 1,
+        }
+    }
 
     pub fn recordSkipped(self: *FrameCounters) void {
         self.skipped_frames += 1;
@@ -476,4 +556,70 @@ test "draw list rejects absent oversized and non-ASCII text" {
     try std.testing.expectError(error.InvalidDrawText, list.drawText(0, 0, "CJK 字"));
     const oversized = "a" ** 121;
     try std.testing.expectError(error.InvalidDrawText, list.drawText(0, 0, oversized[0..]));
+}
+
+test "frame gate classifies text-only changes as viewport damage" {
+    var gate: FrameGate = .{};
+    const cursor: CursorObservation = .{ .window_id = 1, .x = 8, .y = 0, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true };
+    const first: SceneDamageObservation = .{
+        .viewport_start_line = 1,
+        .viewport_line_count = 2,
+        .cursor = cursor,
+        .text_hash = [_]u8{1} ** 32,
+        .text_line_count = 2,
+    };
+    const second: SceneDamageObservation = .{
+        .viewport_start_line = 1,
+        .viewport_line_count = 2,
+        .cursor = cursor,
+        .text_hash = [_]u8{2} ** 32,
+        .text_line_count = 2,
+    };
+    _ = gate.observeScene(first);
+    try std.testing.expectEqual(DamageKind.viewport, gate.observeScene(second).kind);
+}
+
+test "frame gate classifies initial cursor and viewport damage" {
+    var gate: FrameGate = .{};
+    var counters: FrameCounters = .{};
+
+    const base: SceneDamageObservation = .{
+        .viewport_start_line = 1,
+        .viewport_line_count = 15,
+        .cursor = .{ .window_id = 1, .x = 8, .y = 0, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true },
+        .text_hash = [_]u8{0} ** 32,
+        .text_line_count = 15,
+    };
+    const first = gate.observeScene(base);
+    try std.testing.expectEqual(DamageKind.initial, first.kind);
+    counters.recordDamage(first.kind);
+
+    const unchanged = gate.observeScene(base);
+    try std.testing.expectEqual(DamageKind.none, unchanged.kind);
+    counters.recordDamage(unchanged.kind);
+
+    const moved = gate.observeScene(.{
+        .viewport_start_line = 1,
+        .viewport_line_count = 15,
+        .cursor = .{ .window_id = 1, .x = 16, .y = 8, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true },
+        .text_hash = [_]u8{0} ** 32,
+        .text_line_count = 15,
+    });
+    try std.testing.expectEqual(DamageKind.cursor, moved.kind);
+    counters.recordDamage(moved.kind);
+
+    const scrolled = gate.observeScene(.{
+        .viewport_start_line = 2,
+        .viewport_line_count = 15,
+        .cursor = .{ .window_id = 1, .x = 16, .y = 8, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true },
+        .text_hash = [_]u8{1} ** 32,
+        .text_line_count = 15,
+    });
+    try std.testing.expectEqual(DamageKind.viewport, scrolled.kind);
+    counters.recordDamage(scrolled.kind);
+
+    try std.testing.expectEqual(@as(u64, 1), counters.initial_damage_frames);
+    try std.testing.expectEqual(@as(u64, 1), counters.cursor_damage_frames);
+    try std.testing.expectEqual(@as(u64, 1), counters.viewport_damage_frames);
+    try std.testing.expectEqual(@as(u64, 1), counters.unchanged_frames);
 }

@@ -95,6 +95,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8f-a bounded wheel scroll intent | Approved |
 | W9g2 bounded viewport facts | Approved |
 | W10b-b2a bounded glyph-atlas policy | Approved |
+| W10c-a damage classification baseline | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
@@ -1800,6 +1801,39 @@ fresh insertion, LRU eviction coverage, in-place update testing, and a duplicate
 W11 heading. Final checks verified exact key identity, bounded capacity and rect
 validation, counters, default isolation, changed-path audits, negative
 inherited-C rejection, and conservative non-texture scope.
+
+#### W10c-a — Damage classification baseline (approved)
+
+Goal: add a conservative frontend damage classifier so unchanged scene states
+are never re-presented and cursor/viewport changes are measured separately
+before introducing clipped rendering.
+
+1. Add `DamageKind`, `DamageDecision`, and `SceneDamageObservation`.
+2. Extend `FrameGate` with the previous viewport start/count, complete
+   rendered cursor presence/state, and a SHA-256 text signature plus line
+   count.
+3. Classify each scene observation as initial, unchanged, cursor-only, or
+   conservative viewport damage; text-only changes are conservatively treated
+   as viewport damage, and only non-none observations mark the frame dirty.
+4. Record initial, cursor, viewport, and unchanged counts in `FrameCounters`.
+5. Integrate classification with the real SDL EPXL interactive loop so
+   repeated unchanged heartbeats do not rebuild or present the draw list.
+
+Implemented limits: this is a conservative classification and gating baseline,
+not clipped rendering. Cursor changes still use full-frame work, viewport
+changes use conservative full-frame work, and no SDL clip rectangle, dirty
+texture upload, GPU timestamps, or partial present is implemented.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-interactive-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-wheel-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-smoke
+```
+
+Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes; approved fixes added a conservative SHA-256 text signature, complete optional cursor observation, frame-update-only observation, damage counters, and diagnostics documentation. Final checks verified unchanged-frame skipping, cursor/viewport classification, interactive and EPXL regressions, boundary and inherited-C audits, and the full built-in check run.
 
 ### W11 — Desktop integration
 
