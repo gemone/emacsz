@@ -968,6 +968,12 @@ or Unicode-key surface is accepted.  Like text input, it
 uses a separate frontend-to-core sequence and requires an EPXL `ACK` before the
 intent is applied.
 
+If the transport ACK is lost before disconnect, a frontend may retry the same
+bounded intent with its original reverse-input sequence after authenticated
+resync.  The publisher must remain idempotent at the sequence boundary: a
+duplicate `KEY_EVENT` or `TEXT_INPUT` sequence must not be applied twice, and a
+new sequence may not advance until the prior sequence has been acknowledged.
+
 #### Security and limits
 
 EPXL v1 is local trusted IPC, not a wide-area protocol.  The endpoint directory

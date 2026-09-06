@@ -85,6 +85,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8b-a persistent public-fact interactive bridge | Approved |
 | W8c-a EPXL reverse-input sequencing | Approved |
 | W8c-b Emacs apply-ACK | Approved |
+| W8c-c-a persistent EPXL delivery journal | Approved |
 | W10b-b2a bounded glyph-atlas policy | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
@@ -808,6 +809,45 @@ boundary/docs/status passes, then approved fixes for the ACK/action cleanup race
 ACK deletion failure propagation, and the edit regression assertion. Final checks
 verified exact sequence ACKs, bounded cleanup, ordered final state, changed-path
 audits, negative inherited-C rejection, and explicit non-redisplay scope.
+
+#### W8c-c-a — Persistent EPXL delivery journal (approved)
+
+Goal: retain a bounded reverse-input intent and its wire sequence across an
+EPXL reconnect instead of restarting sequence state or duplicating the intent.
+
+1. Add a frontend-owned `DeliveryJournal` with a bounded FIFO, one pending
+   intent, monotonic sender state, and a maximum of three send attempts.
+2. On reconnect, arm retry for an unacknowledged intent and resend the original
+   sequence; reject a second `take` while the original send remains in flight.
+3. Clear the pending intent only after the exact transport ACK; retain it and
+   the attempt count on malformed, stale, duplicate, or missing ACKs.
+4. Unify the EPXL text/key sender on the journal so the resync frontend owns
+   delivery state across sequential authenticated sessions.
+5. Preserve the existing one-in-flight protocol and Emacs apply-ACK semantics.
+6. Make the facts publisher recognize the immediately previous applied
+   sequence after reconnect and ACK it without applying it again.
+
+Implemented limits: the unit tests model loss of the transport ACK and bounded
+retry after `beginRetry`; the live smoke still reconnects only after the prior
+intent has been acknowledged. Publisher crash recovery, arbitrary transport-gap
+detection, interactive SDL input over EPXL, and resources/redisplay recovery
+remain pending.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-input-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-edit-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-sequence-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-smoke
+```
+
+Status: approved. The dedicated reviewer completed correctness, integration/build,
+and boundary/docs/status passes. Final checks verified same-sequence retry and
+exhaustion behavior, publisher duplicate-sequence ACK idempotence, EPXL
+input/edit/sequence/resync regressions, inherited-C rejection, and the full
+built-in check run.
 
 ### W9a — Independent SDL3 window lifecycle (approved)
 

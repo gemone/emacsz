@@ -696,23 +696,32 @@ fn readControlExact(reader: anytype) !live.Control {
     return live.decodeControl(&bytes);
 }
 
-fn sendAutoTextInput(
+fn sendDeliveryEvent(
     gpa: std.mem.Allocator,
-    sender: *input_policy.SenderState,
+    journal: *input_policy.DeliveryJournal,
     writer: anytype,
     reader: anytype,
-    text: []const u8,
     envelope: protocol.Envelope,
 ) !void {
+    const sent = (try journal.take()) orelse return;
     var payload: std.ArrayList(u8) = .empty;
     defer payload.deinit(gpa);
-    try frontend.encodeTextInput(gpa, .{ .text = text }, &payload);
+    const message_type: u16 = switch (sent.event) {
+        .text => |text| blk: {
+            try frontend.encodeTextInput(gpa, .{ .text = text.bytes() }, &payload);
+            break :blk protocol.Message.text_input;
+        },
+        .key => |key| blk: {
+            try frontend.encodeKeyEvent(gpa, key, &payload);
+            break :blk protocol.Message.key_event;
+        },
+    };
     var input_message: std.ArrayList(u8) = .empty;
     defer input_message.deinit(gpa);
     try protocol.encodeEnvelope(gpa, .{
         .flags = protocol.Flags.requires_ack,
-        .message_type = protocol.Message.text_input,
-        .sequence = try sender.takeSequence(),
+        .message_type = message_type,
+        .sequence = sent.sequence,
         .ack_sequence = 0,
         .session_id = envelope.session_id,
         .frame_id = envelope.frame_id,
@@ -721,35 +730,7 @@ fn sendAutoTextInput(
     try live.writeFrame(&writer.interface, input_message.items);
     try writer.interface.flush();
     const input_ack = try readControlExact(reader);
-    if (input_ack.kind != .ack or !sender.acknowledge(input_ack.sequence)) return error.ExpectedInputAck;
-}
-
-fn sendAutoKeyEvent(
-    gpa: std.mem.Allocator,
-    sender: *input_policy.SenderState,
-    writer: anytype,
-    reader: anytype,
-    action: frontend.KeyAction,
-    envelope: protocol.Envelope,
-) !void {
-    var payload: std.ArrayList(u8) = .empty;
-    defer payload.deinit(gpa);
-    try frontend.encodeKeyEvent(gpa, .{ .action = action }, &payload);
-    var input_message: std.ArrayList(u8) = .empty;
-    defer input_message.deinit(gpa);
-    try protocol.encodeEnvelope(gpa, .{
-        .flags = protocol.Flags.requires_ack,
-        .message_type = protocol.Message.key_event,
-        .sequence = try sender.takeSequence(),
-        .ack_sequence = 0,
-        .session_id = envelope.session_id,
-        .frame_id = envelope.frame_id,
-        .timestamp_ns = 1,
-    }, payload.items, &input_message);
-    try live.writeFrame(&writer.interface, input_message.items);
-    try writer.interface.flush();
-    const input_ack = try readControlExact(reader);
-    if (input_ack.kind != .ack or !sender.acknowledge(input_ack.sequence)) return error.ExpectedInputAck;
+    if (input_ack.kind != .ack or !journal.acknowledge(input_ack.sequence)) return error.ExpectedInputAck;
 }
 
 fn writeActionArtifact(gpa: std.mem.Allocator, io: std.Io, path: []const u8, kind: []const u8, value: []const u8) !void {
@@ -866,6 +847,11 @@ fn awaitFrameAck(
                     payload.envelope.session_id != expected_session_id or
                     payload.envelope.frame_id != expected_frame_id)
                     return error.ExpectedAck;
+                if (payload.envelope.sequence + 1 == input_sequence.*) {
+                    try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = payload.envelope.sequence });
+                    try writer.interface.flush();
+                    return;
+                }
                 if (payload.envelope.sequence != input_sequence.*)
                     return error.InvalidSequence;
                 if (is_text) {
@@ -921,7 +907,12 @@ fn sendSnapshotMessages(
     }
 }
 
-fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !frontend.Scene {
+fn runLiveFrontend(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    config: *const Config,
+    delivery: *input_policy.DeliveryJournal,
+) !frontend.Scene {
     const address = try std.Io.net.UnixAddress.init(config.endpoint);
     var stream: std.Io.net.Stream = undefined;
     var connected = false;
@@ -936,6 +927,7 @@ fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !f
     }
     if (!connected) return error.LiveEndpointUnavailable;
     defer stream.close(io);
+    delivery.beginRetry();
 
     var write_buffer: [16 * 1024]u8 = undefined;
     var read_buffer: [16 * 1024]u8 = undefined;
@@ -960,9 +952,6 @@ fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !f
     var scene = frontend.Scene.init(gpa);
     errdefer scene.deinit();
     var resync_complete = false;
-    var sent_input = false;
-    var sent_key = false;
-    var input_sender: input_policy.SenderState = .{};
     if (use_resync) {
         try live.writeControl(&writer.interface, .{ .kind = .resync_request, .sequence = 1 });
         try writer.interface.flush();
@@ -974,14 +963,8 @@ fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !f
             defer gpa.free(message);
             const envelope = (try protocol.decodeEnvelope(message)).envelope;
             try scene.apply(message);
-            if (config.auto_input != null and !sent_input and envelope.message_type == protocol.Message.frame_update) {
-                try sendAutoTextInput(gpa, &input_sender, &writer, &reader, config.auto_input.?, envelope);
-                sent_input = true;
-            }
-            if (config.auto_key != null and !sent_key and envelope.message_type == protocol.Message.frame_update) {
-                try sendAutoKeyEvent(gpa, &input_sender, &writer, &reader, config.auto_key.?, envelope);
-                sent_key = true;
-            }
+            if (envelope.message_type == protocol.Message.frame_update)
+                try sendDeliveryEvent(gpa, delivery, &writer, &reader, envelope);
             try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
             try writer.interface.flush();
         }
@@ -995,14 +978,8 @@ fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !f
         defer gpa.free(message);
         const envelope = (try protocol.decodeEnvelope(message)).envelope;
         try scene.apply(message);
-        if (config.auto_input != null and !sent_input and envelope.message_type == protocol.Message.frame_update) {
-            try sendAutoTextInput(gpa, &input_sender, &writer, &reader, config.auto_input.?, envelope);
-            sent_input = true;
-        }
-        if (config.auto_key != null and !sent_key and envelope.message_type == protocol.Message.frame_update) {
-            try sendAutoKeyEvent(gpa, &input_sender, &writer, &reader, config.auto_key.?, envelope);
-            sent_key = true;
-        }
+        if (envelope.message_type == protocol.Message.frame_update)
+            try sendDeliveryEvent(gpa, delivery, &writer, &reader, envelope);
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
         if (use_resync and !resync_complete) return error.IncompleteResync;
@@ -1299,6 +1276,9 @@ fn runEmacsEpxlSession(
     config.facts_path = try std.fmt.allocPrint(gpa, "{s}/.zig-cache/proto-ui-epxl-{s}/facts.json", .{ current_dir, suffix });
     try writeTokenFile(io, config.token_path, &config.token);
     config.resync_sessions = sessions;
+    var delivery: input_policy.DeliveryJournal = .{};
+    if (config.auto_input) |text| try delivery.pushText(text);
+    if (config.auto_key) |action| try delivery.pushKey(.{ .action = action });
 
     var child = try std.process.spawn(io, .{
         .argv = &.{
@@ -1322,7 +1302,7 @@ fn runEmacsEpxlSession(
     var loaded: ?frontend.Scene = null;
     errdefer if (loaded != null) loaded.?.deinit();
     for (0..sessions) |_| {
-        const session = try runLiveFrontend(gpa, io, config);
+        const session = try runLiveFrontend(gpa, io, config, &delivery);
         if (loaded != null) loaded.?.deinit();
         loaded = session;
         try io.sleep(.fromMilliseconds(100), .awake);
@@ -1604,11 +1584,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.token_path = try std.fmt.allocPrint(gpa, "{s}/token", .{private_dir});
             config.endpoint = try std.fmt.allocPrint(gpa, "{s}/live.sock", .{private_dir});
             try writeTokenFile(io, config.token_path, &config.token);
+            var delivery: input_policy.DeliveryJournal = .{};
             var child = try std.process.spawn(io, .{
                 .argv = &.{ config.self_exe, "--publisher", "--replay", config.replay_path, "--endpoint", config.endpoint, "--token-file", config.token_path },
             });
             errdefer child.kill(io);
-            const loaded = try runLiveFrontend(gpa, io, &config);
+            const loaded = try runLiveFrontend(gpa, io, &config, &delivery);
             const term = try child.wait(io);
             if (term != .exited or term.exited != 0) return error.PublisherFailed;
             std.Io.Dir.cwd().deleteTree(io, private_dir) catch {};

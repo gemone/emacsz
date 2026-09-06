@@ -101,6 +101,58 @@ pub const Queue = struct {
     }
 };
 
+/// Bounded frontend-owned delivery state. The queue preserves intent order;
+/// `pending` retains the one EPXL intent whose transport ACK has not arrived,
+/// including across a reconnect. Retry attempts use the original wire sequence.
+pub const DeliveryJournal = struct {
+    queue: Queue = .{},
+    sender: SenderState = .{},
+    pending: ?TranslatedEvent = null,
+    attempts: u32 = 0,
+    max_attempts: u32 = 3,
+    retry_armed: bool = false,
+
+    pub const Sent = struct {
+        sequence: u64,
+        event: TranslatedEvent,
+    };
+
+    pub fn pushKey(self: *DeliveryJournal, event: frontend.KeyEvent) !void {
+        try self.queue.pushKey(event);
+    }
+
+    pub fn pushText(self: *DeliveryJournal, text: []const u8) !void {
+        try self.queue.pushText(text);
+    }
+
+    pub fn take(self: *DeliveryJournal) !?Sent {
+        if (self.pending == null) {
+            self.pending = self.queue.pop() orelse return null;
+            self.attempts = 0;
+        }
+        if (self.attempts >= self.max_attempts) return error.DeliveryRetriesExhausted;
+        const sequence = if (self.sender.in_flight) |sequence| blk: {
+            if (!self.retry_armed) return error.InputInFlight;
+            break :blk sequence;
+        } else try self.sender.takeSequence();
+        self.retry_armed = false;
+        self.attempts += 1;
+        return .{ .sequence = sequence, .event = self.pending.? };
+    }
+
+    pub fn beginRetry(self: *DeliveryJournal) void {
+        if (self.pending != null and self.sender.in_flight != null) self.retry_armed = true;
+    }
+
+    pub fn acknowledge(self: *DeliveryJournal, sequence: u64) bool {
+        if (!self.sender.acknowledge(sequence)) return false;
+        self.pending = null;
+        self.attempts = 0;
+        self.retry_armed = false;
+        return true;
+    }
+};
+
 pub fn isCopyShortcut(
     scancode: i32,
     down: bool,
@@ -200,6 +252,44 @@ test "sender permits one monotonic in-flight input and exact ACK" {
     try std.testing.expectEqual(@as(u64, 2), second);
     try std.testing.expect(sender.acknowledge(second));
     try std.testing.expectEqual(@as(u64, 2), sender.last_acknowledged);
+}
+
+test "delivery journal retries the same intent and sequence after reconnect" {
+    var journal: DeliveryJournal = .{};
+    try journal.pushText("X");
+
+    const first = (try journal.take()).?;
+    try std.testing.expectEqual(@as(u64, 1), first.sequence);
+    try std.testing.expectEqualStrings("X", first.event.text.bytes());
+    try std.testing.expectError(error.InputInFlight, journal.take());
+
+    journal.beginRetry();
+    const retry = (try journal.take()).?;
+    try std.testing.expectEqual(first.sequence, retry.sequence);
+    try std.testing.expectEqualStrings("X", retry.event.text.bytes());
+
+    try std.testing.expect(!journal.acknowledge(first.sequence - 1));
+    try std.testing.expect(journal.acknowledge(first.sequence));
+    try std.testing.expectEqual(@as(?TranslatedEvent, null), journal.pending);
+    try std.testing.expectEqual(@as(?DeliveryJournal.Sent, null), try journal.take());
+
+    try journal.pushKey(.{ .action = .cursor_left });
+    const second = (try journal.take()).?;
+    try std.testing.expectEqual(@as(u64, 2), second.sequence);
+}
+
+test "delivery journal bounds retries while preserving the pending intent" {
+    var journal: DeliveryJournal = .{ .max_attempts = 2 };
+    try journal.pushText("Y");
+
+    try std.testing.expect((try journal.take()) != null);
+    journal.beginRetry();
+    try std.testing.expect((try journal.take()) != null);
+    journal.beginRetry();
+    try std.testing.expectError(error.DeliveryRetriesExhausted, journal.take());
+    try std.testing.expect(journal.pending != null);
+    try std.testing.expect(journal.acknowledge(1));
+    try std.testing.expectEqual(@as(?TranslatedEvent, null), journal.pending);
 }
 
 test "paste shortcut requires V with only either Ctrl modifier" {

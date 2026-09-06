@@ -127,7 +127,7 @@ pub const integration_points = [_]IntegrationPoint{
     .{ .id = "clipboard_text", .owner = .frontend, .status = .partial, .summary = "Ctrl+V SDL clipboard capture bounded to printable ASCII input; Unicode, rich text, MIME offers, and selection ownership pending" },
     .{ .id = "clipboard_copy", .owner = .frontend, .status = .partial, .summary = "Ctrl+C bounded Emacs smoke-buffer copy through a validated local clipboard artifact; Unicode, rich text, MIME offers, and selection ownership pending" },
     .{ .id = "glyph_atlas_policy", .owner = .frontend, .status = .partial, .summary = "bounded glyph-key atlas placement policy with LRU replacement and counters; rasterization, textures, uploads, and glyph runs pending" },
-    .{ .id = "epxl_input_sequence", .owner = .frontend, .status = .partial, .summary = "monotonic reverse-input sequence state with one in-flight intent and exact ACK matching; persistent frontend delivery pending; Emacs apply-ACK implemented" },
+    .{ .id = "epxl_input_sequence", .owner = .frontend, .status = .partial, .summary = "bounded delivery journal with monotonic sequences, one in-flight intent, exact ACK matching, and same-sequence reconnect retry; live fault-injection recovery, persistent interactive input, and publisher recovery pending" },
 };
 
 pub const ManifestIssue = struct {

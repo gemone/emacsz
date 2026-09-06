@@ -407,6 +407,7 @@ Required policies:
 
 | Failure | Required behavior |
 |---|---|
+| Reverse-input ACK lost before disconnect | Keep the bounded intent pending; retry the same EPXL sequence up to the negotiated attempt bound |
 | Emacs disconnect | Keep window briefly, show disconnected state, or exit according to policy |
 | Sequence gap | Request resync |
 | Missing resource | Skip affected drawing and request resource |
