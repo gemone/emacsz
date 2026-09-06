@@ -85,6 +85,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8b-a persistent public-fact interactive bridge | Approved |
 | W8c-a EPXL reverse-input sequencing | Approved |
 | W8c-b Emacs apply-ACK | Approved |
+| W11a bounded clipboard paste | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
 | W8b-a persistent public-fact bridge | Approved: real SDL frame polls public Emacs facts and applies bounded local-file actions; persistent EPXL delivery remains pending |
 
@@ -1497,6 +1498,41 @@ Review gates:
 1. Semantic ownership remains in Emacs.
 2. Platform bridge safety.
 3. Capability fallback correctness.
+
+#### W11a — Bounded clipboard paste (approved)
+
+Goal: provide a first desktop clipboard path without exposing unbounded or
+non-ASCII payload data through the facts-profile bridge.
+
+Tasks:
+
+1. Add an adapter-owned Ctrl+V paste-shortcut policy that rejects release,
+   repeat, missing Ctrl, extra modifiers, and non-V keys.
+2. Capture SDL clipboard text through SDL3 and reuse the bounded printable-ASCII
+   `TEXT_INPUT` validation and queue.
+3. Free SDL-owned clipboard memory on every return path.
+4. Add `sdl3-clipboard-smoke` to set, read, translate, and queue a bounded
+   clipboard payload.
+5. Wire Ctrl+V in the persistent interactive bridge so accepted clipboard text
+   follows the existing ordered action/apply-ACK flow.
+
+Implemented limits: only printable ASCII up to 120 bytes is accepted. Unicode,
+rich text, multiple MIME offers, selection ownership, clipboard ownership
+events, and native Emacs clipboard objects remain pending.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-clipboard-smoke
+```
+
+Review: the dedicated reviewer completed correctness, integration/build, and
+boundary/docs/status passes, then approved fixes for explicit NULL clipboard
+handling, coherent local action parsing, and a duplicate status row. Final checks
+verified SDL memory ownership, text bounds and queue behavior, clipboard and
+input smokes, interactive regression, changed-path audits, negative inherited-C
+rejection, and explicit deferred clipboard scope.
 
 ### W12 — Complete EUP feature surface
 

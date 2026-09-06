@@ -11,9 +11,12 @@ pub const SDL_SCANCODE_RIGHT: i32 = 79;
 pub const SDL_SCANCODE_LEFT: i32 = 80;
 pub const SDL_SCANCODE_DOWN: i32 = 81;
 pub const SDL_SCANCODE_UP: i32 = 82;
+pub const SDL_SCANCODE_C: i32 = 6;
+pub const SDL_SCANCODE_V: i32 = 25;
 
 pub const max_text_bytes: usize = 120;
 pub const queue_capacity: usize = 32;
+pub const sdl_ctrl_modifiers: u16 = 0x00c0;
 
 /// Enforces the facts-profile reverse-input sequencing contract: exactly one
 /// input may be in flight, ACKs must match that sequence, and sequence zero is
@@ -126,6 +129,16 @@ pub fn translateText(source: ?[*:0]const u8) ?TextEvent {
     return translated;
 }
 
+pub fn isPasteShortcut(
+    scancode: i32,
+    down: bool,
+    repeat: bool,
+    modifiers: u16,
+) bool {
+    return down and !repeat and scancode == SDL_SCANCODE_V and
+        modifiers & sdl_ctrl_modifiers != 0 and modifiers & ~sdl_ctrl_modifiers == 0;
+}
+
 test "translates only pressed unmodified bounded editing keys" {
     try std.testing.expectEqual(frontend.KeyAction.backspace, translateKey(SDL_SCANCODE_BACKSPACE, true, false, 0).?.action);
     try std.testing.expectEqual(frontend.KeyAction.cursor_left, translateKey(SDL_SCANCODE_LEFT, true, false, 0).?.action);
@@ -152,6 +165,16 @@ test "sender permits one monotonic in-flight input and exact ACK" {
     try std.testing.expectEqual(@as(u64, 2), second);
     try std.testing.expect(sender.acknowledge(second));
     try std.testing.expectEqual(@as(u64, 2), sender.last_acknowledged);
+}
+
+test "paste shortcut requires V with only either Ctrl modifier" {
+    try std.testing.expect(isPasteShortcut(SDL_SCANCODE_V, true, false, 0x40));
+    try std.testing.expect(isPasteShortcut(SDL_SCANCODE_V, true, false, 0x80));
+    try std.testing.expect(!isPasteShortcut(SDL_SCANCODE_V, false, false, 0x40));
+    try std.testing.expect(!isPasteShortcut(SDL_SCANCODE_V, true, true, 0x40));
+    try std.testing.expect(!isPasteShortcut(SDL_SCANCODE_V, true, false, 0));
+    try std.testing.expect(!isPasteShortcut(SDL_SCANCODE_C, true, false, 0x40));
+    try std.testing.expect(!isPasteShortcut(SDL_SCANCODE_V, true, false, 0xc1));
 }
 
 test "apply ACK accepts only the exact bounded sequence payload" {

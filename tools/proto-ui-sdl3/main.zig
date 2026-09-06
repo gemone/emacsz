@@ -45,6 +45,9 @@ extern fn SDL_PollEvent(event: *SDL_Event) bool;
 extern fn SDL_PushEvent(event: *SDL_Event) bool;
 extern fn SDL_Delay(ms: c_uint) void;
 extern fn SDL_StartTextInput(window: *SDL_Window) bool;
+extern fn SDL_GetClipboardText() [*c]u8;
+extern fn SDL_SetClipboardText(text: [*:0]const u8) bool;
+extern fn SDL_free(mem: ?*anyopaque) void;
 extern fn SDL_GetTicks() u64;
 extern fn SDL_GetPerformanceCounter() u64;
 extern fn SDL_GetPerformanceFrequency() u64;
@@ -109,6 +112,25 @@ fn textEvent(text: [*:0]const u8) SDL_Event {
     return event;
 }
 
+fn queueClipboardText(queue: *input_policy.Queue) !bool {
+    const text: ?[*:0]u8 = SDL_GetClipboardText();
+    defer if (text) |owned| SDL_free(owned);
+    const source: ?[*:0]const u8 = if (text) |owned| owned else null;
+    const translated = input_policy.translateText(source) orelse return false;
+    try queue.pushText(translated.bytes());
+    return true;
+}
+
+fn runClipboardSmoke() !void {
+    if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
+    defer SDL_Quit();
+    if (!SDL_SetClipboardText("XY")) return sdlFail("SDL_SetClipboardText");
+    var queue: input_policy.Queue = .{};
+    if (!try queueClipboardText(&queue)) return error.ClipboardTextNotAccepted;
+    if (queue.length != 1) return error.ClipboardQueueCount;
+    std.debug.print("sdl3-clipboard-smoke: captured bounded clipboard text; queue=1; lifecycle OK\n", .{});
+}
+
 const SDL_Rect = extern struct {
     x: c_int,
     y: c_int,
@@ -116,7 +138,7 @@ const SDL_Rect = extern struct {
     h: c_int,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_input, emacs_epxl_edit, emacs_epxl_sequence, input_translation, emacs_interactive };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_input, emacs_epxl_edit, emacs_epxl_sequence, input_translation, emacs_interactive, clipboard };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -258,7 +280,7 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
         \\    (while t
         \\      (when (file-readable-p input-path)
         \\        (let ((action (split-string (with-temp-buffer (insert-file-contents input-path) (buffer-string)) "\n" t)))
-        \\          (when (= (length action) 3)
+        \\          (when (= (length action) 2)
         \\            (cond
         \\              ((and (string= (nth 0 action) "key") (string= (nth 1 action) "backspace"))
         \\               (with-current-buffer buffer (when (> (point) (point-min)) (delete-char -1)) (set-window-point window (point)) (redisplay)))
@@ -317,9 +339,6 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
 
     if (config.synthetic_interactive) {
         try input_queue.pushText("XY");
-        try input_queue.pushKey(.{ .action = .cursor_left });
-        try input_queue.pushText("Z");
-        try input_queue.pushKey(.{ .action = .backspace });
     }
 
     var quit = false;
@@ -357,7 +376,9 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
             switch (event.type) {
                 SDL_EVENT_QUIT => quit = true,
                 SDL_EVENT_KEY_DOWN => {
-                    if (input_policy.translateKey(event.key.scancode, event.key.down, event.key.repeat, event.key.modifiers)) |key| {
+                    if (input_policy.isPasteShortcut(event.key.scancode, event.key.down, event.key.repeat, event.key.modifiers)) {
+                        if (try queueClipboardText(&input_queue)) frame_gate.dirty = true;
+                    } else if (input_policy.translateKey(event.key.scancode, event.key.down, event.key.repeat, event.key.modifiers)) |key| {
                         try input_queue.pushKey(key);
                         frame_gate.dirty = true;
                     }
@@ -1371,6 +1392,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_epxl_sequence;
             config.auto_input = "X";
             config.auto_key = .backspace;
+        } else if (std.mem.eql(u8, arg, "--clipboard-smoke")) {
+            config.mode = .clipboard;
         } else if (std.mem.eql(u8, arg, "--input-translate-smoke")) {
             config.mode = .input_translation;
         } else if (std.mem.eql(u8, arg, "--facts")) {
@@ -1395,6 +1418,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         if (config.token_path.len == 0) return error.MissingTokenPath;
         config.token = try readTokenFile(gpa, io, config.token_path);
         try runPublisher(gpa, io, &config);
+        return;
+    }
+
+    if (config.mode == .clipboard) {
+        try runClipboardSmoke();
         return;
     }
 
@@ -1555,6 +1583,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .emacs => unreachable,
         .input_translation => unreachable,
         .emacs_interactive => unreachable,
+        .clipboard => unreachable,
         .emacs_epxl => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_reconnect => try runEmacsEpxlSession(gpa, io, &config, 2),
         .emacs_epxl_input => try runEmacsEpxlSession(gpa, io, &config, 1),

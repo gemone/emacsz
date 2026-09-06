@@ -578,6 +578,14 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_input_translate_step.dependOn(&run_sdl3_input_translate_smoke.step);
 
+        const run_sdl3_clipboard_smoke = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_clipboard_smoke.addArg("--clipboard-smoke");
+        const sdl3_clipboard_step = b.step(
+            "sdl3-clipboard-smoke",
+            "Capture bounded printable SDL clipboard text for input",
+        );
+        sdl3_clipboard_step.dependOn(&run_sdl3_clipboard_smoke.step);
+
         const run_sdl3_live = b.addRunArtifact(sdl3_frontend);
         run_sdl3_live.addArg("--live-smoke");
         run_sdl3_live.addArg("--replay");

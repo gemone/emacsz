@@ -282,6 +282,11 @@ ASCII `TEXT_INPUT` is copied into a fixed queue. Key release, repeat, modifiers,
 empty/non-printable/oversized text, and queue overflow are rejected. A synthetic
 SDL event smoke verifies this path.
 
+W11a implements the first clipboard capture path: Ctrl+V reads SDL clipboard
+text, accepts only bounded printable ASCII through the input queue, and frees
+SDL-owned text on every path. Unicode, rich text, MIME selection, ownership
+events, and external clipboard targets remain pending.
+
 W8b-a adds a persistent public-fact bridge: the SDL loop writes one translated
 action to an atomic local file, waits for consumption, polls the republished
 public facts, and rebuilds the scene. This is not persistent EPXL input and not
