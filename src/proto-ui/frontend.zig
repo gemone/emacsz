@@ -122,7 +122,8 @@ pub const PointerInput = struct {
         if (self.x < 0 or self.x > max_pointer_coordinate or
             self.y < 0 or self.y > max_pointer_coordinate or self.modifiers != 0) return false;
         return switch (self.phase) {
-            .motion => self.button == 0 and self.clicks == 0,
+            // button 1 on motion means an active left-drag; button 0 is idle motion.
+            .motion => (self.button == 0 or self.button == 1) and self.clicks == 0,
             .press, .release => self.button == 1 and self.clicks == 1,
         };
     }
@@ -1011,7 +1012,7 @@ test "pointer codec validates bounded facts-profile events" {
     bytes.items[0] = 4;
     try std.testing.expectError(Error.InvalidTable, decodePointerInput(bytes.items));
     try std.testing.expectError(Error.Unsupported, encodePointerInput(a, .{ .phase = .press, .x = -1, .y = 0, .button = 1, .clicks = 1 }, &bytes));
-    try std.testing.expectError(Error.Unsupported, encodePointerInput(a, .{ .phase = .motion, .x = 0, .y = 0, .button = 1 }, &bytes));
+    try std.testing.expectError(Error.Unsupported, encodePointerInput(a, .{ .phase = .motion, .x = 0, .y = 0, .button = 2 }, &bytes));
 }
 
 test "key event codec round trips bounded cursor actions" {

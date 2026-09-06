@@ -91,6 +91,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8d-b default SDL3 interactive transport selection | Approved |
 | W8d-c EPXL interactive clipboard copy | Approved |
 | W8e-a bounded SDL pointer motion/click | Approved |
+| W8e-b ordered left drag/release | Approved |
 | W10b-b2a bounded glyph-atlas policy | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
@@ -1028,6 +1029,41 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interac
 ```
 
 Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes; approved fixes added safe coordinate conversion, drag-state rejection, pressed-state validation, fail-closed pointer admission, and idempotent reverse-input docs. Final checks verified pointer smoke, interactive and EPXL regressions, boundary and inherited-C audits, and the full built-in check run.
+
+#### W8e-b — Ordered left drag/release (approved)
+
+Goal: extend W8e-a from isolated left clicks to an ordered press → drag motion →
+release session while preserving the bounded, fail-closed input profile.
+
+1. Accept drag motion only while a left press session is active and encode it as
+   `POINTER_EVENT.motion` with button one.
+2. Accept release only for the active left session; clear the session only after
+   the release is admitted to the journal.
+3. Reject duplicate press, release without press, idle drag motion while active,
+   and key/text insertion into an active pointer session.
+4. Preserve FIFO journal order and the existing EPXL one-in-flight, apply-ACK,
+   and transport-ACK rules across all pointer events.
+5. Apply both bounded press and release positions through public Emacs
+   `posn-at-x-y` / `posn-point`; intermediate drag motion is transported and
+   ACKed but has no text-selection semantics.
+6. Extend `sdl3-pointer-smoke` with real SDL press, pressed motion, and release
+   events; success requires a delivered release and a changed public cursor.
+
+Implemented limits: this is ordered transport and public-point mapping, not
+complete mouse-drag selection. Region/mark semantics, modifiers, multi-button,
+double-click, hit testing, variable-pitch geometry, overlays, and mouse face
+remain pending.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-interactive-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interactive-smoke
+```
+
+Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes; approved fixes made pointer session admission atomic under queue-full pressure, routed clipboard paste through journal admission, restricted drag transport to the exact left-button mask, and returned the actual delivered intent for release detection. Final checks verified ordered pointer smoke, interactive/EPXL regressions, boundary and inherited-C audits, and the full built-in check run.
 
 ### W9a — Independent SDL3 window lifecycle (approved)
 

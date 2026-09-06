@@ -972,10 +972,12 @@ The facts profile defines a deliberately bounded `POINTER_EVENT` subset for
 `0x0602`: `u8 phase` (`1=motion`, `2=press`, `3=release`), `u8 button`,
 `i32 x`, `i32 y`, `u8 clicks`, `u8 modifiers`, and two reserved zero bytes.
 Coordinates are non-negative and at most 16383. The implemented producer
-accepts only zero-modifier motion and single left-button press events. Motion
-is best-effort and must not displace pending clicks. A press uses the same
-EPXL sequence and ACK rules; Emacs maps the accepted press through public
-window position APIs and republishes the resulting point.
+accepts zero-modifier idle motion and ordered single-left-button
+press/drag/release sessions. Idle motion uses button zero; drag motion during
+an active left session uses button one. A press or release uses the same EPXL
+sequence and ACK rules; Emacs maps accepted endpoints through public window
+position APIs and republishes the resulting point. Intermediate drag motion is
+transported and ACKed but has no text-selection semantics.
 
 If the transport ACK is lost before disconnect, a frontend may retry the same
 bounded intent with its original reverse-input sequence after authenticated

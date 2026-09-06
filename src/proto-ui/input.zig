@@ -119,6 +119,7 @@ pub const DeliveryJournal = struct {
     attempts: u32 = 0,
     max_attempts: u32 = 3,
     retry_armed: bool = false,
+    pointer_active: bool = false,
 
     pub const Sent = struct {
         sequence: u64,
@@ -126,14 +127,36 @@ pub const DeliveryJournal = struct {
     };
 
     pub fn pushKey(self: *DeliveryJournal, event: frontend.KeyEvent) !void {
+        if (self.pointer_active) return error.PointerSessionActive;
         try self.queue.pushKey(event);
     }
 
     pub fn pushPointer(self: *DeliveryJournal, event: frontend.PointerInput) !void {
+        if (!event.valid()) return error.InvalidPointerIntent;
+        if (self.queue.length == queue_capacity) return error.InputQueueFull;
+        var next_active = self.pointer_active;
+        switch (event.phase) {
+            .press => {
+                if (self.pointer_active) return error.PointerSessionActive;
+                next_active = true;
+            },
+            .motion => {
+                const dragging = event.button == 1;
+                if (dragging != self.pointer_active) return error.PointerSessionActive;
+            },
+            .release => {
+                if (!self.pointer_active) return error.PointerSessionActive;
+                next_active = false;
+            },
+        }
+        // The capacity precheck makes the session transition and enqueue atomic
+        // for this fixed-capacity queue; queue.pushPointer cannot then fail.
         try self.queue.pushPointer(event);
+        self.pointer_active = next_active;
     }
 
     pub fn pushText(self: *DeliveryJournal, text: []const u8) !void {
+        if (self.pointer_active) return error.PointerSessionActive;
         try self.queue.pushText(text);
     }
 
@@ -271,9 +294,46 @@ test "pointer queue rejects bounded-profile violations before journaling" {
     try std.testing.expectError(error.InvalidPointerIntent, queue.pushPointer(.{ .phase = .motion, .x = -1, .y = 0 }));
     try std.testing.expectError(error.InvalidPointerIntent, queue.pushPointer(.{ .phase = .motion, .x = frontend.max_pointer_coordinate + 1, .y = 0 }));
     try std.testing.expectError(error.InvalidPointerIntent, queue.pushPointer(.{ .phase = .motion, .x = 0, .y = 0, .modifiers = 1 }));
-    try std.testing.expectError(error.InvalidPointerIntent, queue.pushPointer(.{ .phase = .motion, .x = 0, .y = 0, .button = 1 }));
+    try std.testing.expectError(error.InvalidPointerIntent, queue.pushPointer(.{ .phase = .motion, .x = 0, .y = 0, .button = 2 }));
     try std.testing.expectError(error.InvalidPointerIntent, queue.pushPointer(.{ .phase = .press, .x = 0, .y = 0, .button = 1, .clicks = 2 }));
     try std.testing.expectEqual(@as(usize, 0), queue.length);
+}
+
+test "pointer journal enforces ordered drag sessions" {
+    var journal: DeliveryJournal = .{};
+    try std.testing.expectError(error.PointerSessionActive, journal.pushPointer(.{ .phase = .release, .button = 1, .x = 1, .y = 1, .clicks = 1 }));
+    try std.testing.expectError(error.PointerSessionActive, journal.pushPointer(.{ .phase = .motion, .button = 1, .x = 1, .y = 1 }));
+
+    try journal.pushPointer(.{ .phase = .press, .button = 1, .x = 10, .y = 2, .clicks = 1 });
+    try std.testing.expect(journal.pointer_active);
+    try journal.pushPointer(.{ .phase = .motion, .button = 1, .x = 20, .y = 3 });
+    try std.testing.expectError(error.PointerSessionActive, journal.pushKey(.{ .action = .backspace }));
+    try journal.pushPointer(.{ .phase = .release, .button = 1, .x = 30, .y = 4, .clicks = 1 });
+    try std.testing.expect(!journal.pointer_active);
+    try journal.pushKey(.{ .action = .backspace });
+}
+
+test "pointer session state rolls back when the bounded queue is full" {
+    var journal: DeliveryJournal = .{};
+    while (journal.queue.length < queue_capacity) try journal.queue.pushText("x");
+    try std.testing.expectError(error.InputQueueFull, journal.pushPointer(.{ .phase = .press, .button = 1, .x = 1, .y = 1, .clicks = 1 }));
+    try std.testing.expect(!journal.pointer_active);
+    journal.queue.clear();
+
+    try journal.pushPointer(.{ .phase = .press, .button = 1, .x = 1, .y = 1, .clicks = 1 });
+    while (journal.queue.length < queue_capacity) try journal.pushPointer(.{ .phase = .motion, .button = 1, .x = 2, .y = 2 });
+    try std.testing.expectError(error.InputQueueFull, journal.pushPointer(.{ .phase = .motion, .button = 1, .x = 3, .y = 3 }));
+    try std.testing.expect(journal.pointer_active);
+    try std.testing.expectError(error.InputQueueFull, journal.pushPointer(.{ .phase = .release, .button = 1, .x = 4, .y = 4, .clicks = 1 }));
+    try std.testing.expect(journal.pointer_active);
+}
+
+test "pointer journal rejects duplicate press and idle drag motion" {
+    var journal: DeliveryJournal = .{};
+    try journal.pushPointer(.{ .phase = .press, .button = 1, .x = 1, .y = 1, .clicks = 1 });
+    try std.testing.expectError(error.PointerSessionActive, journal.pushPointer(.{ .phase = .press, .button = 1, .x = 2, .y = 2, .clicks = 1 }));
+    try std.testing.expectError(error.PointerSessionActive, journal.pushPointer(.{ .phase = .motion, .x = 3, .y = 3 }));
+    journal.queue.clear();
 }
 
 test "queue and journal accept bounded pointer intents" {
@@ -283,7 +343,11 @@ test "queue and journal accept bounded pointer intents" {
     try std.testing.expectEqual(frontend.PointerPhase.motion, queue.items[0].pointer.phase);
 
     var journal: DeliveryJournal = .{};
+    try journal.pushPointer(.{ .phase = .press, .button = 1, .x = 120, .y = 2, .clicks = 1 });
     try journal.pushPointer(.{ .phase = .release, .button = 1, .x = 120, .y = 2, .clicks = 1 });
+    const press_sent = (try journal.take()).?;
+    try std.testing.expectEqual(frontend.PointerPhase.press, press_sent.event.pointer.phase);
+    try std.testing.expect(journal.acknowledge(press_sent.sequence));
     const sent = (try journal.take()).?;
     try std.testing.expectEqual(frontend.PointerPhase.release, sent.event.pointer.phase);
     try std.testing.expect(journal.acknowledge(sent.sequence));
