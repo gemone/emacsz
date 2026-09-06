@@ -409,6 +409,11 @@ scene object counts
 memory usage
 ```
 
+W10b-a implements the first subset in smoke diagnostics: actual renderer
+name/tier and present mode, `presented_frames`, `skipped_frames`, full-frame path
+nanoseconds, and the last monotonic present timestamp. Rectangle damage, GPU
+submit, atlas, texture-upload, and memory counters remain pending.
+
 ## 17. CLI contract
 
 The final frontend supports at least:

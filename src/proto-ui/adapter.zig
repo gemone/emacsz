@@ -120,6 +120,7 @@ pub const integration_points = [_]IntegrationPoint{
     .{ .id = "build_embedding", .owner = .build, .status = .designed, .summary = "zig-build generated manifest and adapter linkage" },
     .{ .id = "sdl3_frontend", .owner = .frontend, .status = .partial, .summary = "SDL3 validates continuous public Emacs facts as EUP snapshots; EPXL streaming, facts text/cursor, bounded ASCII text, and pressed unmodified backspace are implemented, while shaped text, keyboard/keymap/IME input, and Emacs frames pending" },
     .{ .id = "renderer_selection", .owner = .frontend, .status = .partial, .summary = "adapter-owned auto/software/GPU/named selection policy, actual-tier classification, GPU-to-software fallback, and present-mode request; GPU draw graph and counters pending" },
+    .{ .id = "frame_pacing", .owner = .frontend, .status = .partial, .summary = "dirty/resize-aware full-frame presentation gate with present/skip and frontend frame-path counters; rectangle damage and GPU counters pending" },
 };
 
 pub const ManifestIssue = struct {

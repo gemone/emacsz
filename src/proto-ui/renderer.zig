@@ -21,6 +21,46 @@ pub const PresentMode = enum {
     adaptive,
 };
 
+/// Decides whether the framebuffer needs work. Resize always invalidates the
+/// previous frame; an explicit dirty flag covers scene changes and expose
+/// events. This is frontend pacing policy, not protocol state.
+pub const FrameGate = struct {
+    dirty: bool = true,
+    width: i32 = 0,
+    height: i32 = 0,
+
+    pub fn shouldPresent(self: *FrameGate, width: i32, height: i32) bool {
+        const needed = self.dirty or width != self.width or height != self.height;
+        self.dirty = false;
+        self.width = width;
+        self.height = height;
+        return needed;
+    }
+};
+
+/// The first W10b counter set. It measures change-aware full-frame
+/// presentation on the frontend, including raster/GPU submit inside
+/// `SDL_RenderPresent`. Separate GPU timestamps and atlas counters remain
+/// future W10 work.
+pub const FrameCounters = struct {
+    presented_frames: u64 = 0,
+    skipped_frames: u64 = 0,
+    frame_path_total_ns: u64 = 0,
+    frame_path_last_ns: u64 = 0,
+    present_last_ns: u64 = 0,
+
+    pub fn recordSkipped(self: *FrameCounters) void {
+        self.skipped_frames += 1;
+    }
+
+    pub fn recordPresent(self: *FrameCounters, frame_ns: u64, present_ns: u64) void {
+        self.presented_frames += 1;
+        self.frame_path_total_ns += frame_ns;
+        self.frame_path_last_ns = frame_ns;
+        self.present_last_ns = present_ns;
+    }
+};
+
 pub fn parseRequest(value: []const u8) ?Request {
     if (std.mem.eql(u8, value, "auto")) return .auto;
     if (std.mem.eql(u8, value, "software")) return .software;
@@ -111,4 +151,31 @@ test "classifies SDL renderer names into capability tiers" {
     try std.testing.expectEqual(Tier.basic, classify("opengl"));
     try std.testing.expectEqual(Tier.basic, classify("Direct3D12"));
     try std.testing.expectEqual(Tier.basic, classify("future-driver"));
+}
+
+test "frame gate presents dirty and resized frames only" {
+    var gate: FrameGate = .{};
+    try std.testing.expect(gate.shouldPresent(800, 600));
+    try std.testing.expect(!gate.shouldPresent(800, 600));
+    try std.testing.expect(!gate.shouldPresent(800, 600));
+
+    gate.dirty = true;
+    try std.testing.expect(gate.shouldPresent(800, 600));
+    try std.testing.expect(!gate.shouldPresent(800, 600));
+    try std.testing.expect(gate.shouldPresent(960, 600));
+    try std.testing.expect(!gate.shouldPresent(960, 600));
+}
+
+test "frame counters separate presents from skipped polls" {
+    var counters: FrameCounters = .{};
+    counters.recordPresent(1_250, 2_500);
+    counters.recordSkipped();
+    counters.recordSkipped();
+    counters.recordPresent(750, 4_000);
+
+    try std.testing.expectEqual(@as(u64, 2), counters.presented_frames);
+    try std.testing.expectEqual(@as(u64, 2), counters.skipped_frames);
+    try std.testing.expectEqual(@as(u64, 2_000), counters.frame_path_total_ns);
+    try std.testing.expectEqual(@as(u64, 750), counters.frame_path_last_ns);
+    try std.testing.expectEqual(@as(u64, 4_000), counters.present_last_ns);
 }

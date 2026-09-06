@@ -41,6 +41,8 @@ extern fn SDL_RenderDebugText(renderer: *SDL_Renderer, x: f32, y: f32, text: [*:
 extern fn SDL_PollEvent(event: *SDL_Event) bool;
 extern fn SDL_Delay(ms: c_uint) void;
 extern fn SDL_GetTicks() u64;
+extern fn SDL_GetPerformanceCounter() u64;
+extern fn SDL_GetPerformanceFrequency() u64;
 extern fn SDL_GetError() [*:0]const u8;
 
 const SDL_Event = extern struct {
@@ -97,6 +99,12 @@ fn sdlFail(what: []const u8) error{SdlFailed} {
 fn drawRect(renderer: *SDL_Renderer, rect: SDL_Rect, r: u8, g: u8, b: u8) !void {
     if (!SDL_SetRenderDrawColor(renderer, r, g, b, 255)) return sdlFail("SDL_SetRenderDrawColor");
     if (!SDL_RenderFillRect(renderer, &rect)) return sdlFail("SDL_RenderFillRect");
+}
+
+fn performanceTicksToNanos(ticks: u64) u64 {
+    const frequency = SDL_GetPerformanceFrequency();
+    if (frequency == 0) return 0;
+    return @intCast(@as(u128, ticks) * 1_000_000_000 / @as(u128, frequency));
 }
 
 fn createRenderer(
@@ -705,6 +713,52 @@ fn renderFacts(snapshot: FrameFacts, renderer: *SDL_Renderer, window: *SDL_Windo
     if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
 }
 
+fn presentScene(
+    scene: *frontend.Scene,
+    renderer: *SDL_Renderer,
+    window: *SDL_Window,
+    gate: *renderer_policy.FrameGate,
+    counters: *renderer_policy.FrameCounters,
+) !void {
+    var width: c_int = 0;
+    var height: c_int = 0;
+    SDL_GetWindowSize(window, &width, &height);
+    if (!gate.shouldPresent(@intCast(width), @intCast(height))) {
+        counters.recordSkipped();
+        return;
+    }
+    const started_ticks = SDL_GetPerformanceCounter();
+    try renderScene(scene, renderer, window);
+    const ended_ticks = SDL_GetPerformanceCounter();
+    counters.recordPresent(
+        performanceTicksToNanos(ended_ticks - started_ticks),
+        performanceTicksToNanos(ended_ticks),
+    );
+}
+
+fn presentFacts(
+    snapshot: FrameFacts,
+    renderer: *SDL_Renderer,
+    window: *SDL_Window,
+    gate: *renderer_policy.FrameGate,
+    counters: *renderer_policy.FrameCounters,
+) !void {
+    var width: c_int = 0;
+    var height: c_int = 0;
+    SDL_GetWindowSize(window, &width, &height);
+    if (!gate.shouldPresent(@intCast(width), @intCast(height))) {
+        counters.recordSkipped();
+        return;
+    }
+    const started_ticks = SDL_GetPerformanceCounter();
+    try renderFacts(snapshot, renderer, window);
+    const ended_ticks = SDL_GetPerformanceCounter();
+    counters.recordPresent(
+        performanceTicksToNanos(ended_ticks - started_ticks),
+        performanceTicksToNanos(ended_ticks),
+    );
+}
+
 fn runEmacsEpxlSession(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -919,6 +973,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.present_mode,
         });
 
+        var frame_gate: renderer_policy.FrameGate = .{};
+        var frame_counters: renderer_policy.FrameCounters = .{};
+
         var shared = SharedFacts{};
         var last_version: u64 = 0;
         var latest: FrameFacts = .{ .frame_width = 800, .frame_height = 600, .window_width = 780, .window_height = 560 };
@@ -938,23 +995,36 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                 const updated = try facts.buildScene(gpa, latest, last_version);
                 if (snapshot_scene) |*previous| previous.deinit();
                 snapshot_scene = updated;
+                frame_gate.dirty = true;
             }
-            if (snapshot_scene) |*scene| {
-                try renderScene(scene, renderer, window);
-            } else {
-                try renderFacts(latest, renderer, window);
-            }
-
             var quit = false;
             var event: SDL_Event = .{};
             while (SDL_PollEvent(&event)) {
-                if (event.type == SDL_EVENT_QUIT) quit = true;
+                if (event.type == SDL_EVENT_QUIT) {
+                    quit = true;
+                } else {
+                    frame_gate.dirty = true;
+                }
             }
             if (quit) break;
+            if (snapshot_scene) |*scene| {
+                try presentScene(scene, renderer, window, &frame_gate, &frame_counters);
+            } else {
+                try presentFacts(latest, renderer, window, &frame_gate, &frame_counters);
+            }
+
             SDL_Delay(50);
         }
         if (last_version == 0) return error.NoEmacsFacts;
-        std.debug.print("sdl3-emacs-smoke: observed {d} public fact snapshot(s); lifecycle OK\n", .{last_version});
+        std.debug.print(
+            "sdl3-emacs-smoke: observed {d} public fact snapshot(s); present={d} skipped={d} frame={d}ns; lifecycle OK\n",
+            .{
+                last_version,
+                frame_counters.presented_frames,
+                frame_counters.skipped_frames,
+                frame_counters.frame_path_total_ns,
+            },
+        );
         return;
     }
 
@@ -1040,7 +1110,6 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         config.present_mode,
     });
 
-    try renderScene(&scene, renderer, window);
     std.debug.print("sdl3-eup-smoke: applied {d} update(s), {d} window(s), {d} row(s); auto quit in {d}ms\n", .{
         scene.stats.frame_updates,
         scene.windows.items.len,
@@ -1048,18 +1117,36 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         config.auto_quit_ms,
     });
 
+    var frame_gate: renderer_policy.FrameGate = .{};
+    var frame_counters: renderer_policy.FrameCounters = .{};
+
+    try presentScene(&scene, renderer, window, &frame_gate, &frame_counters);
+
     var quit = false;
     const started_ticks = SDL_GetTicks();
     while (!quit and SDL_GetTicks() - started_ticks < config.auto_quit_ms) {
         var event: SDL_Event = .{};
         while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_EVENT_QUIT) quit = true;
+            if (event.type == SDL_EVENT_QUIT) {
+                quit = true;
+            } else {
+                frame_gate.dirty = true;
+            }
         }
-        try renderScene(&scene, renderer, window);
+        try presentScene(&scene, renderer, window, &frame_gate, &frame_counters);
         SDL_Delay(10);
     }
 
-    std.debug.print("sdl3-eup-smoke: lifecycle OK ({s})\n", .{if (quit) "closed by quit event" else "auto timeout"});
+    std.debug.print(
+        "sdl3-eup-smoke: present={d} skipped={d} frame={d}ns last_present={d}ns; lifecycle OK ({s})\n",
+        .{
+            frame_counters.presented_frames,
+            frame_counters.skipped_frames,
+            frame_counters.frame_path_total_ns,
+            frame_counters.present_last_ns,
+            if (quit) "closed by quit event" else "auto timeout",
+        },
+    );
 }
 
 fn buildDisplayEnvironment(gpa: std.mem.Allocator) !std.process.Environ.Map {

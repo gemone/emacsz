@@ -79,6 +79,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W9k bounded ASCII text input bridge | Approved |
 | W9l public point and dynamic cursor | Approved |
 | W10a SDL renderer negotiation | Approved |
+| W10b-a change-aware present and frontend counters | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
 
 The workstream sections below retain their historical review records and
@@ -1191,9 +1192,9 @@ Boundary: the policy is in the adapter-owned `src/proto-ui/renderer.zig`; only
 the SDL frontend binds it to SDL renderer APIs. No inherited Emacs C/Lisp file
 changes.
 
-Status: approved. A dedicated reviewer completed three passes before commit. The GPU draw abstraction, glyph atlas, image
-texture cache, blend/scissor draw graph, damage-only redraw, and performance
-counters remain future W10 tasks.
+Status: approved. A dedicated reviewer completed three passes before commit. The
+GPU draw abstraction, glyph atlas, image texture cache, blend/scissor draw graph,
+rectangle damage, and GPU counters remain future W10 work.
 
 Acceptance:
 
@@ -1207,7 +1208,41 @@ and boundary/docs/status passes. It verified renderer lifetime, explicit
 fallback, wall-clock smoke timeouts, default-build isolation, changed-path
 audits, negative inherited-C rejection, and conservative capability reporting.
 
-#### W10b — Software-to-GPU draw abstraction (planned)
+#### W10b-a — Change-aware present and frontend counters (approved)
+
+Goal: stop presenting unchanged frames, retain correctness on scene updates,
+events, and resize, and collect the first frontend performance evidence.
+
+Tasks:
+
+1. Add an adapter-owned `FrameGate` for dirty/resize-aware presentation.
+2. Add `FrameCounters` for presented frames, skipped polls, total/last
+   full-frame path nanoseconds, and the last monotonic presentation timestamp.
+3. Route replay and continuous-facts presentation through the gate.
+4. Mark the frame dirty for scene replacement and platform events; resize also
+   compares the SDL window geometry.
+5. Extend replay and continuous-facts smoke diagnostics with the counters.
+6. Add unit tests for unchanged, dirty, resized, skipped, and presented frames.
+
+Implemented limits: this is full-frame change-aware presentation, not partial
+rectangle damage; it does not yet expose GPU submit timestamps, atlas statistics,
+texture uploads, or a software/GPU draw graph.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-renderer-smoke
+```
+
+Review: the dedicated reviewer completed correctness, integration/build, and
+boundary/docs/status passes. It verified gate invalidation, resize and event
+handling, overflow-safe SDL timing, counter semantics, default-build isolation,
+changed-path audits, negative inherited-C rejection, and conservative
+capability reporting.
+
+#### W10b-b — Software-to-GPU draw abstraction (planned)
 
 Tasks:
 
@@ -1215,9 +1250,9 @@ Tasks:
 2. Implement glyph atlas.
 3. Implement image texture cache.
 4. Implement blend/scissor drawing.
-5. Implement damage-aware redraw.
+5. Implement rectangle-level damage-aware redraw.
 6. Implement atlas miss fallback.
-7. Add GPU performance counters.
+7. Add GPU submit and device-loss counters.
 
 Acceptance:
 
