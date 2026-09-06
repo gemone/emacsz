@@ -1127,7 +1127,7 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-input-sm
 The gate must apply the bounded input and verify that both text and cursor reflect
 the new public point.
 
-### W9m — Bounded editing intents (planned)
+### W9m — Bounded editing intents (approved)
 
 Goal: extend the facts-profile input bridge beyond text insertion with a small,
 explicit set of non-text editing intents while keeping keymap compatibility out
@@ -1143,8 +1143,16 @@ Tasks:
    `text` plus printable-ASCII payload, or `key` plus `backspace`.
 4. In the smoke bridge, apply text with public `insert` and backspace with public
    `delete-char`; synchronize public window point after each action.
-5. Add an edit smoke that inserts `XY`, applies backspace, and verifies the final
-   public text is `XEmacs Proto-UI` with cursor at line 1, column 1.
+5. Add an edit smoke that applies backspace and verifies the resulting public
+   text and cursor.
+
+Implemented profile: the action artifact is an explicit two-line record —
+`text` plus printable-ASCII payload, or `key` plus `backspace` — and the bridge
+deletes the artifact after consuming it. The smoke seeds a trailing `Z`, deletes
+it, and verifies the final public text is `Emacs Proto-UI` with cursor at line
+2, column 18. EUP cursor geometry remains logical pixels; the facts producer
+uses the established 8-pixel column advance. This profile is not full editing
+or keymap protocol support.
 
 Deliberate exclusions: modifiers, repeats, commands, keymaps, macros, region and
 mark, undo, kill/yank, CJK/IME, and redisplay-owned cursor semantics.
@@ -1407,6 +1415,7 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-live-smoke
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-facts-smoke
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-smoke
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-input-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-edit-smoke
 zig build -Dsdl3-frontend=true sdl3-ui-smoke
 zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke
 ```

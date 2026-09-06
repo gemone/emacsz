@@ -87,6 +87,16 @@ pub const TextInput = struct {
     text: []const u8,
 };
 
+pub const KeyAction = enum(u16) {
+    backspace = 1,
+};
+
+pub const KeyEvent = struct {
+    action: KeyAction,
+    state: u8 = 1,
+    modifiers: u8 = 0,
+};
+
 const window_record_size: usize = 40;
 const row_record_size: usize = 56;
 const cursor_record_size: usize = 56;
@@ -323,6 +333,21 @@ pub fn decodeTextInput(bytes: []const u8) Error!TextInput {
         if (byte < 0x20 or byte > 0x7e) return Error.InvalidTable;
     }
     return .{ .text = text };
+}
+
+pub fn encodeKeyEvent(a: std.mem.Allocator, event: KeyEvent, out: *std.ArrayList(u8)) !void {
+    if (event.state != 1 or event.modifiers != 0) return Error.Unsupported;
+    try putU16(out, a, @intFromEnum(event.action));
+    try out.append(a, event.state);
+    try out.append(a, event.modifiers);
+}
+
+pub fn decodeKeyEvent(bytes: []const u8) Error!KeyEvent {
+    if (bytes.len != 4) return Error.InvalidTable;
+    const action_value = std.mem.readInt(u16, bytes[0..2], .little);
+    if (action_value != @intFromEnum(KeyAction.backspace)) return Error.InvalidTable;
+    if (bytes[2] != 1 or bytes[3] != 0) return Error.Unsupported;
+    return .{ .action = .backspace, .state = bytes[2], .modifiers = bytes[3] };
 }
 
 pub fn decodePresentHint(bytes: []const u8) Error!PresentHint {
@@ -854,4 +879,32 @@ test "text input codec validates bounded printable ASCII" {
 
     const oversized = "a" ** 121;
     try std.testing.expectError(Error.InvalidTable, encodeTextInput(a, .{ .text = oversized[0..] }, &bytes));
+}
+
+test "key event codec accepts only pressed unmodified backspace" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeKeyEvent(a, .{ .action = .backspace }, &bytes);
+    const decoded = try decodeKeyEvent(bytes.items);
+    try std.testing.expectEqual(KeyAction.backspace, decoded.action);
+    try std.testing.expectEqual(@as(u8, 1), decoded.state);
+    try std.testing.expectEqual(@as(u8, 0), decoded.modifiers);
+
+    try std.testing.expectError(Error.InvalidTable, decodeKeyEvent(bytes.items[0..3]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeKeyEvent(bytes.items));
+    try std.testing.expectError(Error.Unsupported, encodeKeyEvent(a, .{ .action = .backspace, .state = 0 }, &bytes));
+    try std.testing.expectError(Error.Unsupported, encodeKeyEvent(a, .{ .action = .backspace, .modifiers = 1 }, &bytes));
+
+    var invalid: std.ArrayList(u8) = .empty;
+    defer invalid.deinit(a);
+    try invalid.appendSlice(a, &.{ 2, 0, 1, 0 });
+    try std.testing.expectError(Error.InvalidTable, decodeKeyEvent(invalid.items));
+    invalid.items[0] = 1;
+    invalid.items[2] = 0;
+    try std.testing.expectError(Error.Unsupported, decodeKeyEvent(invalid.items));
+    invalid.items[2] = 1;
+    invalid.items[3] = 1;
+    try std.testing.expectError(Error.Unsupported, decodeKeyEvent(invalid.items));
 }

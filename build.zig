@@ -736,6 +736,29 @@ pub fn build(b: *std.Build) void {
             "Send SDL3 input through EPXL and render updated Emacs text and cursor",
         );
         sdl3_epxl_input_step.dependOn(&run_sdl3_epxl_input.step);
+
+        const run_sdl3_epxl_edit = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-edit-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=2000",
+        });
+        run_sdl3_epxl_edit.setCwd(b.path("."));
+        run_sdl3_epxl_edit.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_epxl_edit.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_epxl_edit.step.dependOn(step);
+        const sdl3_epxl_edit_step = b.step(
+            "sdl3-epxl-edit-smoke",
+            "Apply a bounded backspace intent through EPXL",
+        );
+        sdl3_epxl_edit_step.dependOn(&run_sdl3_epxl_edit.step);
     }
     if (proto_frame_smoke_dep) |frame_step| {
         if (proto_sdl_fixture_dep) |fixture_step| fixture_step.dependOn(frame_step);

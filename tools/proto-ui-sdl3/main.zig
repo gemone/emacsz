@@ -51,7 +51,7 @@ const SDL_Rect = extern struct {
     h: c_int,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_input };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_input, emacs_epxl_edit };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -66,6 +66,7 @@ const Config = struct {
     auto_quit_ms: u32 = 250,
     resync_sessions: u32 = 1,
     auto_input: ?[]const u8 = null,
+    auto_key: ?frontend.KeyAction = null,
 };
 
 const FrameFacts = facts.FrameFacts;
@@ -216,7 +217,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     _ = std.Io.Dir.cwd().deleteFile(io, config.endpoint) catch {};
     const eval = try std.fmt.allocPrint(
         gpa,
-        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let* ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\")))) (buffer (window-buffer window)) (facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (lines (split-string text \"\\n\")) (point (with-current-buffer buffer (window-point window))) (cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column)))))) (with-current-buffer buffer (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII text\\n\") (redisplay)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.2) (set-frame-size frame 90 30) (while t (when (file-readable-p input-path) (let ((input (with-temp-buffer (insert-file-contents input-path) (buffer-string)))) (when (> (length input) 0) (with-current-buffer buffer (goto-char (point-min)) (insert input) (redisplay))))) (setq text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (setq lines (split-string text \"\\n\")) (setq point (with-current-buffer buffer (window-point window))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column))))) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.1))))",
+        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let* ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\")))) (buffer (window-buffer window)) (facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (lines (split-string text \"\\n\")) (point (with-current-buffer buffer (window-point window))) (cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column)))))) (with-current-buffer buffer (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII textZ\") (redisplay)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.2) (set-frame-size frame 240 30) (while t (when (file-readable-p input-path) (let ((action (split-string (with-temp-buffer (insert-file-contents input-path) (buffer-string)) \"\\n\" t))) (if (and (= (length action) 2) (string= (nth 0 action) \"key\") (string= (nth 1 action) \"backspace\")) (with-current-buffer buffer (goto-char (point-max)) (delete-char -1) (set-window-point window (point)) (redisplay)) (when (and (= (length action) 2) (string= (nth 0 action) \"text\") (> (length (nth 1 action)) 0)) (with-current-buffer buffer (goto-char (point-min)) (insert (nth 1 action)) (set-window-point window (point)) (redisplay)))) (delete-file input-path))) (setq text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (setq lines (split-string text \"\\n\")) (setq point (with-current-buffer buffer (window-point window))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column))))) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.1))))",
         .{ config.module_path, config.facts_path, input_path },
     );
     defer gpa.free(eval);
@@ -300,7 +301,11 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
                 else => return err,
             };
             defer gpa.free(facts_bytes);
-            var next = try facts.parseSnapshot(gpa, facts_bytes);
+            var next = facts.parseSnapshot(gpa, facts_bytes) catch {
+                try io.sleep(.fromMilliseconds(20), .awake);
+                waited_ms += 20;
+                continue;
+            };
             if (published) |previous| {
                 if (previous.eql(next)) {
                     next.deinit(gpa);
@@ -353,7 +358,34 @@ fn sendAutoTextInput(
     if (input_ack.kind != .ack or input_ack.sequence != 1) return error.ExpectedInputAck;
 }
 
-fn writeInputArtifact(gpa: std.mem.Allocator, io: std.Io, path: []const u8, text: []const u8) !void {
+fn sendAutoKeyEvent(
+    gpa: std.mem.Allocator,
+    writer: anytype,
+    reader: anytype,
+    action: frontend.KeyAction,
+    envelope: protocol.Envelope,
+) !void {
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(gpa);
+    try frontend.encodeKeyEvent(gpa, .{ .action = action }, &payload);
+    var input_message: std.ArrayList(u8) = .empty;
+    defer input_message.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = protocol.Flags.requires_ack,
+        .message_type = protocol.Message.key_event,
+        .sequence = 1,
+        .ack_sequence = 0,
+        .session_id = envelope.session_id,
+        .frame_id = envelope.frame_id,
+        .timestamp_ns = 1,
+    }, payload.items, &input_message);
+    try live.writeFrame(&writer.interface, input_message.items);
+    try writer.interface.flush();
+    const input_ack = try readControlExact(reader);
+    if (input_ack.kind != .ack or input_ack.sequence != 1) return error.ExpectedInputAck;
+}
+
+fn writeInputArtifact(gpa: std.mem.Allocator, io: std.Io, path: []const u8, kind: []const u8, value: []const u8) !void {
     const temporary_path = try std.fmt.allocPrint(gpa, "{s}.tmp", .{path});
     defer gpa.free(temporary_path);
     _ = std.Io.Dir.cwd().deleteFile(io, temporary_path) catch {};
@@ -362,7 +394,10 @@ fn writeInputArtifact(gpa: std.mem.Allocator, io: std.Io, path: []const u8, text
         defer file.close(io);
         var buffer: [256]u8 = undefined;
         var writer = file.writer(io, &buffer);
-        try writer.interface.writeAll(text);
+        try writer.interface.writeAll(kind);
+        try writer.interface.writeAll("\n");
+        try writer.interface.writeAll(value);
+        try writer.interface.writeAll("\n");
         try writer.interface.flush();
     }
     std.Io.Dir.renameAbsolute(temporary_path, path, io) catch |err| {
@@ -405,16 +440,24 @@ fn awaitFrameAck(
             .frame => |frame| {
                 defer gpa.free(frame);
                 const payload = try protocol.decodeEnvelope(frame);
-                if (payload.envelope.message_type != protocol.Message.text_input or
+                const is_text = payload.envelope.message_type == protocol.Message.text_input;
+                const is_key = payload.envelope.message_type == protocol.Message.key_event;
+                if ((!is_text and !is_key) or
                     payload.envelope.flags & protocol.Flags.requires_ack == 0 or
                     payload.envelope.ack_sequence != 0 or
                     payload.envelope.session_id != expected_session_id or
                     payload.envelope.frame_id != expected_frame_id)
                     return error.ExpectedAck;
-                const input = try frontend.decodeTextInput(payload.bytes);
                 if (payload.envelope.sequence != input_sequence.*)
                     return error.InvalidSequence;
-                try writeInputArtifact(gpa, io, input_path, input.text);
+                if (is_text) {
+                    const input = try frontend.decodeTextInput(payload.bytes);
+                    try writeInputArtifact(gpa, io, input_path, "text", input.text);
+                } else {
+                    const event = try frontend.decodeKeyEvent(payload.bytes);
+                    if (event.action != .backspace) return error.Unsupported;
+                    try writeInputArtifact(gpa, io, input_path, "key", "backspace");
+                }
                 try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = input_sequence.* });
                 try writer.interface.flush();
                 input_sequence.* += 1;
@@ -486,11 +529,12 @@ fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !f
     if (!live.tokenEql(&zero_token, &ready.token)) return error.InvalidHandshake;
 
     const use_resync = config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect or
-        config.mode == .emacs_epxl_input;
+        config.mode == .emacs_epxl_input or config.mode == .emacs_epxl_edit;
     var scene = frontend.Scene.init(gpa);
     errdefer scene.deinit();
     var resync_complete = false;
     var sent_input = false;
+    var sent_key = false;
     if (use_resync) {
         try live.writeControl(&writer.interface, .{ .kind = .resync_request, .sequence = 1 });
         try writer.interface.flush();
@@ -505,6 +549,10 @@ fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !f
             if (config.auto_input != null and !sent_input and envelope.message_type == protocol.Message.frame_update) {
                 try sendAutoTextInput(gpa, &writer, &reader, config.auto_input.?, envelope);
                 sent_input = true;
+            }
+            if (config.auto_key != null and !sent_key and envelope.message_type == protocol.Message.frame_update) {
+                try sendAutoKeyEvent(gpa, &writer, &reader, config.auto_key.?, envelope);
+                sent_key = true;
             }
             try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
             try writer.interface.flush();
@@ -522,6 +570,10 @@ fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !f
         if (config.auto_input != null and !sent_input and envelope.message_type == protocol.Message.frame_update) {
             try sendAutoTextInput(gpa, &writer, &reader, config.auto_input.?, envelope);
             sent_input = true;
+        }
+        if (config.auto_key != null and !sent_key and envelope.message_type == protocol.Message.frame_update) {
+            try sendAutoKeyEvent(gpa, &writer, &reader, config.auto_key.?, envelope);
+            sent_key = true;
         }
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
@@ -747,6 +799,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-input-smoke")) {
             config.mode = .emacs_epxl_input;
             config.auto_input = "X";
+        } else if (std.mem.eql(u8, arg, "--emacs-epxl-edit-smoke")) {
+            config.mode = .emacs_epxl_edit;
+            config.auto_key = .backspace;
         } else if (std.mem.eql(u8, arg, "--facts")) {
             try setString(gpa, &config.facts_path, args.next() orelse return error.MissingFactsPath);
         } else {
@@ -888,6 +943,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .emacs_epxl => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_reconnect => try runEmacsEpxlSession(gpa, io, &config, 2),
         .emacs_epxl_input => try runEmacsEpxlSession(gpa, io, &config, 1),
+        .emacs_epxl_edit => try runEmacsEpxlSession(gpa, io, &config, 1),
         .facts_publisher => unreachable,
     };
     defer scene.deinit();
@@ -904,6 +960,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     if (config.mode == .emacs_epxl_input and
         (scene.cursor == null or scene.cursor.?.x != 8 or scene.cursor.?.y != 0))
         return error.CursorNotApplied;
+    if (config.mode == .emacs_epxl_edit) {
+        const applied = scene.text.items.len > 0 and
+            std.mem.eql(u8, scene.text.items[0].bytes, "Emacs Proto-UI") and
+            scene.cursor != null and scene.cursor.?.x == 144 and scene.cursor.?.y == 1;
+        if (!applied) return error.EditNotApplied;
+    }
     if (scene.stats.frame_updates == 0) return error.NoFrameUpdate;
     if (scene.frame_header == null) return error.NoFrameHeader;
 

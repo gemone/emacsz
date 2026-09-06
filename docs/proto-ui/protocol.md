@@ -960,6 +960,13 @@ the text to 120 bytes.  The frontend sends this complete EUP message on its own
 frontend-to-core sequence; the core replies with the normal EPXL `ACK` control
 before applying the input intent.  This is not a full keyboard/keymap protocol.
 
+The facts profile also defines a deliberately bounded `KEY_EVENT` payload for
+`0x0600`: `u16 action` (`1=backspace`), `u8 state` (`1=pressed`), and
+`u8 modifiers` (`0=none`).  No other key, state, modifier, repeat, keymap,
+command, macro, IME, or Unicode-key surface is accepted.  Like text input, it
+uses a separate frontend-to-core sequence and requires an EPXL `ACK` before the
+intent is applied.
+
 #### Security and limits
 
 EPXL v1 is local trusted IPC, not a wide-area protocol.  The endpoint directory

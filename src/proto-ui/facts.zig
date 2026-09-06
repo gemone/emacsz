@@ -547,9 +547,10 @@ test "wire snapshot carries validated public text lines" {
     try std.testing.expectEqualStrings("visible ASCII", scene.text.items[1].bytes);
     try std.testing.expectEqual(@as(i32, 8), scene.cursor.?.x);
     try std.testing.expectEqual(@as(i32, 0), scene.cursor.?.y);
+    try std.testing.expectError(error.InvalidTextFacts, parseText(a, "bad\n\x00"));
+
     const narrow = FrameFacts{ .frame_width = 9, .frame_height = 90, .window_width = 9, .window_height = 75 };
     try std.testing.expectError(error.InvalidCursorFacts, appendWireSnapshot(a, narrow, text.lines, .{ .line = 1, .column = 1 }, &scene, &messages));
-    try std.testing.expectError(error.InvalidTextFacts, parseText(a, "bad\n\x00"));
 }
 
 test "parses and validates bounded cursor facts" {
