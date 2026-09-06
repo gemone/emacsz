@@ -428,6 +428,10 @@ same EPXL sequence and ACK rules. Emacs maps accepted press/release endpoints
 through public `posn-at-x-y` / `posn-point` and republishes the resulting
 point; intermediate drag motion is not text-selection semantics.
 
+Bounded vertical wheel ticks use line units and the same EPXL journal, apply-ACK,
+and transport-ACK rules. Horizontal ticks, pixel/page units, momentum phases,
+touchpad sources, and modifiers are explicitly rejected.
+
 The `sdl3-epxl-interactive-smoke` connects the real SDL event queue to
 authenticated EPXL. It translates printable ASCII text, sends it through the
 delivery journal, waits for Emacs apply and EPXL ACKs, receives refreshed fact

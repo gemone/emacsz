@@ -92,6 +92,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8d-c EPXL interactive clipboard copy | Approved |
 | W8e-a bounded SDL pointer motion/click | Approved |
 | W8e-b ordered left drag/release | Approved |
+| W8f-a bounded wheel scroll intent | Approved |
 | W10b-b2a bounded glyph-atlas policy | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
@@ -1064,6 +1065,38 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interac
 ```
 
 Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes; approved fixes made pointer session admission atomic under queue-full pressure, routed clipboard paste through journal admission, restricted drag transport to the exact left-button mask, and returned the actual delivered intent for release detection. Final checks verified ordered pointer smoke, interactive/EPXL regressions, boundary and inherited-C audits, and the full built-in check run.
+
+#### W8f-a — Bounded wheel scroll intent (approved)
+
+Goal: carry SDL wheel ticks through authenticated EPXL and apply them with
+public Emacs scrolling without opening pixel-level or touchpad gesture scope.
+
+1. Freeze the facts-profile `WHEEL_EVENT` payload as line unit, wheel source,
+   zero modifiers, bounded horizontal/vertical ticks, and reserved zero bytes.
+2. Accept only vertical whole-tick values from `-8..8`; horizontal ticks,
+   pixel/page units, touchpad/gesture sources, and modifiers are rejected.
+3. Queue wheel intents through the same bounded journal, EPXL sequencing,
+   Emacs apply-ACK, and EPXL ACK rules as text, key, pointer, and copy intents.
+4. Reject wheel admission while an ordered pointer drag session is active.
+5. Map downward ticks to public `scroll-up` and upward ticks to public
+   `scroll-down` in the real Emacs publisher.
+6. Add `sdl3-wheel-smoke` with real SDL down/up events and require both
+   delivered wheel intents to be acknowledged after Emacs application.
+
+Implemented limits: only vertical line ticks are supported; horizontal scroll,
+pixel/page units, momentum/touchpad phase, smooth deltas, precise scroll
+position, and full window-scroll state remain pending.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-wheel-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-interactive-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-smoke
+```
+
+Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes; approved fixes rejected zero/horizontal/diagonal, flipped-direction, and fractional/mismatched wheel deltas, and corrected reverse-input idempotence docs. Final checks verified wheel smoke, pointer/interactive regressions, boundary and inherited-C audits, and the full built-in check run.
 
 ### W9a — Independent SDL3 window lifecycle (approved)
 

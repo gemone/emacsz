@@ -968,6 +968,14 @@ or Unicode-key surface is accepted.  Like text input, it
 uses a separate frontend-to-core sequence and requires an EPXL `ACK` before the
 intent is applied.
 
+The facts profile defines a deliberately bounded `WHEEL_EVENT` subset for
+`0x0603`: `u8 unit` (`1=line`), `u8 source` (`1=wheel`), `u8 modifiers`
+(`0=none`), `i8 x` (`0` in this profile), `i8 y` (`-8..8`, excluding zero),
+and nine reserved zero bytes. Only vertical whole-line wheel ticks are
+accepted. Horizontal scroll, pixel/page units, touchpad/gesture sources, smooth
+deltas, and modifiers remain outside the bounded profile. Wheel intents use the
+same frontend-to-core sequence and EPXL `ACK` rules as other reverse input.
+
 The facts profile defines a deliberately bounded `POINTER_EVENT` subset for
 `0x0602`: `u8 phase` (`1=motion`, `2=press`, `3=release`), `u8 button`,
 `i32 x`, `i32 y`, `u8 clicks`, `u8 modifiers`, and two reserved zero bytes.
@@ -982,7 +990,7 @@ transported and ACKed but has no text-selection semantics.
 If the transport ACK is lost before disconnect, a frontend may retry the same
 bounded intent with its original reverse-input sequence after authenticated
 resync.  The publisher must remain idempotent at the sequence boundary: a
-duplicate `KEY_EVENT`, `TEXT_INPUT`, or `POINTER_EVENT` sequence must not be applied twice, and a
+duplicate `KEY_EVENT`, `TEXT_INPUT`, `POINTER_EVENT`, or `WHEEL_EVENT` sequence must not be applied twice, and a
 new sequence may not advance until the prior sequence has been acknowledged.
 
 #### Security and limits

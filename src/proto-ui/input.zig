@@ -65,6 +65,7 @@ pub const TranslatedEvent = union(enum) {
     key: frontend.KeyEvent,
     text: TextEvent,
     pointer: frontend.PointerInput,
+    wheel: frontend.WheelInput,
 };
 
 pub const Queue = struct {
@@ -81,6 +82,13 @@ pub const Queue = struct {
         if (!event.valid()) return error.InvalidPointerIntent;
         if (self.length == queue_capacity) return error.InputQueueFull;
         self.items[self.length] = .{ .pointer = event };
+        self.length += 1;
+    }
+
+    pub fn pushWheel(self: *Queue, event: frontend.WheelInput) !void {
+        if (!event.valid()) return error.InvalidWheelIntent;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .wheel = event };
         self.length += 1;
     }
 
@@ -153,6 +161,11 @@ pub const DeliveryJournal = struct {
         // for this fixed-capacity queue; queue.pushPointer cannot then fail.
         try self.queue.pushPointer(event);
         self.pointer_active = next_active;
+    }
+
+    pub fn pushWheel(self: *DeliveryJournal, event: frontend.WheelInput) !void {
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushWheel(event);
     }
 
     pub fn pushText(self: *DeliveryJournal, text: []const u8) !void {
@@ -326,6 +339,20 @@ test "pointer session state rolls back when the bounded queue is full" {
     try std.testing.expect(journal.pointer_active);
     try std.testing.expectError(error.InputQueueFull, journal.pushPointer(.{ .phase = .release, .button = 1, .x = 4, .y = 4, .clicks = 1 }));
     try std.testing.expect(journal.pointer_active);
+}
+
+test "wheel journal accepts bounded ticks and rejects active pointer sessions" {
+    var journal: DeliveryJournal = .{};
+    try journal.pushWheel(.{ .y = 1 });
+    const sent = (try journal.take()).?;
+    try std.testing.expectEqual(frontend.WheelInput{ .y = 1 }, sent.event.wheel);
+    try std.testing.expect(journal.acknowledge(sent.sequence));
+
+    try journal.pushPointer(.{ .phase = .press, .button = 1, .x = 1, .y = 1, .clicks = 1 });
+    try std.testing.expectError(error.PointerSessionActive, journal.pushWheel(.{ .y = -1 }));
+    journal.queue.clear();
+    journal.pointer_active = false;
+    try journal.pushWheel(.{ .y = -1 });
 }
 
 test "pointer journal rejects duplicate press and idle drag motion" {

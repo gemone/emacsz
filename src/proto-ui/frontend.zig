@@ -129,6 +129,30 @@ pub const PointerInput = struct {
     }
 };
 
+pub const max_wheel_ticks: i8 = 8;
+
+pub const WheelUnit = enum(u8) {
+    line = 1,
+};
+
+pub const WheelSource = enum(u8) {
+    wheel = 1,
+};
+
+pub const WheelInput = struct {
+    x: i8 = 0,
+    y: i8 = 0,
+    unit: WheelUnit = .line,
+    source: WheelSource = .wheel,
+    modifiers: u8 = 0,
+
+    pub fn valid(self: WheelInput) bool {
+        if (self.modifiers != 0 or self.unit != .line or self.source != .wheel) return false;
+        if (self.x != 0) return false;
+        return self.y != 0 and @abs(self.y) <= max_wheel_ticks;
+    }
+};
+
 const window_record_size: usize = 40;
 const row_record_size: usize = 56;
 const cursor_record_size: usize = 56;
@@ -399,6 +423,29 @@ pub fn encodePointerInput(a: std.mem.Allocator, input: PointerInput, out: *std.A
     try out.append(a, input.clicks);
     try out.append(a, input.modifiers);
     try putU16(out, a, 0);
+}
+
+pub fn encodeWheelInput(a: std.mem.Allocator, input: WheelInput, out: *std.ArrayList(u8)) !void {
+    if (!input.valid()) return Error.Unsupported;
+    try out.append(a, @intFromEnum(input.unit));
+    try out.append(a, @intFromEnum(input.source));
+    try out.append(a, input.modifiers);
+    try out.append(a, @bitCast(input.x));
+    try out.append(a, @bitCast(input.y));
+    try out.appendSlice(a, &[_]u8{0} ** 9);
+}
+
+pub fn decodeWheelInput(bytes: []const u8) Error!WheelInput {
+    if (bytes.len != 14) return Error.InvalidTable;
+    const input: WheelInput = .{
+        .unit = if (bytes[0] == 1) .line else return Error.InvalidTable,
+        .source = if (bytes[1] == 1) .wheel else return Error.InvalidTable,
+        .modifiers = bytes[2],
+        .x = @bitCast(bytes[3]),
+        .y = @bitCast(bytes[4]),
+    };
+    if (!input.valid() or bytes[5] != 0 or bytes[6] != 0 or bytes[7] != 0 or bytes[8] != 0 or bytes[9] != 0 or bytes[10] != 0 or bytes[11] != 0 or bytes[12] != 0 or bytes[13] != 0) return Error.Unsupported;
+    return input;
 }
 
 pub fn decodePointerInput(bytes: []const u8) Error!PointerInput {
@@ -1013,6 +1060,27 @@ test "pointer codec validates bounded facts-profile events" {
     try std.testing.expectError(Error.InvalidTable, decodePointerInput(bytes.items));
     try std.testing.expectError(Error.Unsupported, encodePointerInput(a, .{ .phase = .press, .x = -1, .y = 0, .button = 1, .clicks = 1 }, &bytes));
     try std.testing.expectError(Error.Unsupported, encodePointerInput(a, .{ .phase = .motion, .x = 0, .y = 0, .button = 2 }, &bytes));
+}
+
+test "wheel codec accepts only bounded line wheel ticks" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    try encodeWheelInput(a, .{ .y = -1 }, &bytes);
+    const decoded = try decodeWheelInput(bytes.items);
+    try std.testing.expectEqual(@as(i8, -1), decoded.y);
+    try std.testing.expectEqual(WheelUnit.line, decoded.unit);
+    try std.testing.expectEqual(WheelSource.wheel, decoded.source);
+
+    bytes.clearRetainingCapacity();
+    try encodeWheelInput(a, .{ .y = 1 }, &bytes);
+    try std.testing.expectEqual(@as(i8, 1), (try decodeWheelInput(bytes.items)).y);
+    try std.testing.expectError(Error.Unsupported, encodeWheelInput(a, .{ .y = 0 }, &bytes));
+    try std.testing.expectError(Error.Unsupported, encodeWheelInput(a, .{ .y = max_wheel_ticks + 1 }, &bytes));
+    try std.testing.expectError(Error.Unsupported, encodeWheelInput(a, .{ .x = 1, .y = 1 }, &bytes));
+    bytes.items[5] = 1;
+    try std.testing.expectError(Error.Unsupported, decodeWheelInput(bytes.items));
 }
 
 test "key event codec round trips bounded cursor actions" {

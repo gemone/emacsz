@@ -47,6 +47,7 @@ pub const Message = struct {
     pub const key_event: u16 = 0x0600;
     pub const text_input: u16 = 0x0601;
     pub const pointer_event: u16 = 0x0602;
+    pub const wheel_event: u16 = 0x0603;
     pub const extension: u16 = 0xf000;
     pub const invalid: u16 = 0xffff;
 };
