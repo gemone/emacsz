@@ -122,7 +122,8 @@ pub const integration_points = [_]IntegrationPoint{
     .{ .id = "renderer_selection", .owner = .frontend, .status = .partial, .summary = "adapter-owned auto/software/GPU/named selection policy, actual-tier classification, GPU-to-software fallback, and present-mode request; GPU draw graph and counters pending" },
     .{ .id = "frame_pacing", .owner = .frontend, .status = .partial, .summary = "dirty/resize-aware full-frame presentation gate with present/skip and frontend frame-path counters; rectangle damage and GPU counters pending" },
     .{ .id = "draw_list", .owner = .frontend, .status = .partial, .summary = "reusable backend-neutral clear/fill/debug-text command list executed by SDL software and GPU-backed renderers; glyph atlas, images, scissor/blend, rectangle damage, and native GPU counters pending" },
-    .{ .id = "input_translation", .owner = .frontend, .status = .partial, .summary = "bounded SDL key/text translation queue for backspace/cursor and printable ASCII; modifiers, Unicode, pointer, focus, and persistent session delivery pending" },
+    .{ .id = "input_translation", .owner = .frontend, .status = .partial, .summary = "bounded SDL key/text translation queue for backspace/cursor and printable ASCII; modifiers, Unicode, pointer, focus, persistent EPXL delivery, and full keyboard support pending" },
+    .{ .id = "emacs_interactive_bridge", .owner = .frontend, .status = .partial, .summary = "persistent real Emacs public-fact window with atomic bounded local-file actions; redisplay-owned glyphs and persistent EPXL input pending" },
 };
 
 pub const ManifestIssue = struct {

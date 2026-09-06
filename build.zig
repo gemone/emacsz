@@ -787,6 +787,31 @@ pub fn build(b: *std.Build) void {
             "Apply a bounded backspace intent through EPXL",
         );
         sdl3_epxl_edit_step.dependOn(&run_sdl3_epxl_edit.step);
+
+        const run_sdl3_emacs_interactive = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--facts",
+            ".zig-cache/proto-ui-emacs-interactive/facts.json",
+            "--emacs-interactive-smoke",
+            "--auto-quit-ms=2000",
+        });
+        run_sdl3_emacs_interactive.setCwd(b.path("."));
+        run_sdl3_emacs_interactive.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_emacs_interactive.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_emacs_interactive.step.dependOn(step);
+        const sdl3_emacs_interactive_step = b.step(
+            "sdl3-emacs-interactive-smoke",
+            "Drive real Emacs public facts with translated SDL3 editing events",
+        );
+        sdl3_emacs_interactive_step.dependOn(&run_sdl3_emacs_interactive.step);
     }
     if (proto_frame_smoke_dep) |frame_step| {
         if (proto_sdl_fixture_dep) |fixture_step| fixture_step.dependOn(frame_step);

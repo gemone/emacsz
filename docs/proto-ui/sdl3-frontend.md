@@ -280,8 +280,13 @@ W8a implements the first bounded translation policy: pressed, unmodified
 backspace and cursor-direction keys map to facts-profile `KEY_EVENT`; printable
 ASCII `TEXT_INPUT` is copied into a fixed queue. Key release, repeat, modifiers,
 empty/non-printable/oversized text, and queue overflow are rejected. A synthetic
-SDL event smoke verifies this path. Persistent session delivery and the remaining
-keyboard surface are pending.
+SDL event smoke verifies this path.
+
+W8b-a adds a persistent public-fact bridge: the SDL loop writes one translated
+action to an atomic local file, waits for consumption, polls the republished
+public facts, and rebuilds the scene. This is not persistent EPXL input and not
+a full keyboard surface; modifiers, Unicode, pointer, focus, keymaps, and
+redisplay-owned sessions remain pending.
 
 ### 10.2 Mouse and wheel
 

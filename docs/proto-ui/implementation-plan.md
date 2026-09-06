@@ -82,7 +82,9 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W10b-a change-aware present and frontend counters | Approved |
 | W10b-b1 renderer-agnostic SDL draw list | Approved |
 | W8a bounded SDL input translation | Approved |
+| W8b-a persistent public-fact interactive bridge | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
+| W8b-a persistent public-fact bridge | Approved: real SDL frame polls public Emacs facts and applies bounded local-file actions; persistent EPXL delivery remains pending |
 
 The workstream sections below retain their historical review records and
 implementation details.  The Current status table is authoritative when an
@@ -688,6 +690,46 @@ ACK sequencing, artifact action semantics, SDL event layout assumptions,
 default isolation, changed-path and negative inherited-C audits, and explicit
 deferred-scope reporting.
 
+#### W8b-a — Persistent public-fact interactive bridge (approved)
+
+Goal: keep a real Emacs bridge process alive while a real SDL window renders its
+public facts and delivers bounded translated input through an atomic local
+action file. This is an explicit bridge milestone, not persistent EPXL input.
+
+Tasks:
+
+1. Add a persistent Emacs public-fact/action evaluator that publishes frame,
+   bounded visible ASCII, and public cursor facts every poll.
+2. Add a bounded input queue with FIFO pop and atomically write one translated
+   key/text action at a time.
+3. Gate delivery on observed fact updates so a later intent cannot overwrite an
+   unconsumed action.
+4. Poll the public fact file in the SDL loop, rebuild the EUP scene on changes,
+   and retain change-aware rendering/counters.
+5. Add `--emacs-interactive` and an automated `--emacs-interactive-smoke`
+   synthetic text case.
+6. Verify that the real Emacs bridge applies the text and republishes the
+   updated public facts.
+
+Implemented limits: this bridge uses a local action file, not EPXL reverse
+input; it renders public facts rather than redisplay-owned glyphs; and its
+semantics are limited to printable ASCII plus backspace/cursor intent. Persistent
+EPXL delivery, full keyboard support, modifiers/IME/Unicode, pointer/focus, and
+complete frames remain pending.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interactive-smoke
+```
+
+Review: the dedicated reviewer completed correctness, integration/build, and
+boundary/docs/status passes. It verified FIFO queue ownership, atomic action
+publication and consumption, fact-snapshot lifetime and parse-failure handling,
+public Emacs action semantics, real SDL/Emacs process wiring, changed-path and
+negative inherited-C audits, and explicit non-EPXL/non-redisplay scope.
+
 ### W9a — Independent SDL3 window lifecycle (approved)
 
 Goal: validate the real OS window, renderer selection, event pump, and clean
@@ -1243,6 +1285,7 @@ Acceptance:
 zig build -Dproto-ui=true proto-ui-unit
 zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-renderer-smoke
 zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-input-translate-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interactive-smoke
 ```
 
 Review: the dedicated reviewer completed correctness, protocol/build/integration,

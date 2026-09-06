@@ -116,7 +116,7 @@ const SDL_Rect = extern struct {
     h: c_int,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_input, emacs_epxl_edit, input_translation };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_input, emacs_epxl_edit, input_translation, emacs_interactive };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -134,6 +134,7 @@ const Config = struct {
     auto_key: ?frontend.KeyAction = null,
     renderer_request: []const u8 = "auto",
     present_mode: []const u8 = "off",
+    synthetic_interactive: bool = false,
 };
 
 const FrameFacts = facts.FrameFacts;
@@ -203,6 +204,213 @@ fn runInputTranslationSmoke() !void {
         "sdl3-input-smoke: translated {d} keys and {d} text event; rejected {d} unsupported SDL event(s); lifecycle OK\n",
         .{ queue.length - 1, 1, synthetic.len - recognized },
     );
+}
+
+fn writeTranslatedEvent(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    event: input_policy.TranslatedEvent,
+) !void {
+    switch (event) {
+        .key => |key| {
+            const action_name: []const u8 = switch (key.action) {
+                .backspace => "backspace",
+                .cursor_left => "cursor-left",
+                .cursor_right => "cursor-right",
+                .cursor_up => "cursor-up",
+                .cursor_down => "cursor-down",
+            };
+            try writeInputArtifact(gpa, io, path, "key", action_name);
+        },
+        .text => |text| try writeInputArtifact(gpa, io, path, "text", text.bytes()),
+    }
+}
+
+fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !void {
+    const current_dir = try std.process.currentPathAlloc(io, gpa);
+    defer gpa.free(current_dir);
+    const facts_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ current_dir, config.facts_path });
+    defer gpa.free(facts_path);
+    const input_path = try std.fmt.allocPrint(gpa, "{s}.keys", .{facts_path});
+    defer gpa.free(input_path);
+    if (std.fs.path.dirname(facts_path)) |directory| {
+        try std.Io.Dir.cwd().createDirPath(io, directory);
+    }
+    _ = std.Io.Dir.cwd().deleteFile(io, facts_path) catch {};
+    _ = std.Io.Dir.cwd().deleteFile(io, input_path) catch {};
+
+    const eval = try std.fmt.allocPrint(gpa,
+        \\(progn
+        \\  (module-load (expand-file-name "{s}"))
+        \\  (let* ((frame (selected-frame))
+        \\         (window (selected-window))
+        \\         (path (expand-file-name "{s}"))
+        \\         (input-path (expand-file-name "{s}"))
+        \\         (buffer (window-buffer window))
+        \\         (text "")
+        \\         (lines [])
+        \\         (point (point-min))
+        \\         (cursor (list :line 1 :column 0))
+        \\         (facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))))
+        \\    (set-frame-size frame 240 30)
+        \\    (with-current-buffer buffer (erase-buffer) (insert "Emacs Proto-UI\nvisible ASCII") (set-window-point window (point)) (redisplay))
+        \\    (while t
+        \\      (when (file-readable-p input-path)
+        \\        (let ((action (split-string (with-temp-buffer (insert-file-contents input-path) (buffer-string)) "\n" t)))
+        \\          (when (= (length action) 2)
+        \\            (cond
+        \\              ((and (string= (nth 0 action) "key") (string= (nth 1 action) "backspace"))
+        \\               (with-current-buffer buffer (when (> (point) (point-min)) (delete-char -1)) (set-window-point window (point)) (redisplay)))
+        \\              ((and (string= (nth 0 action) "key") (string= (nth 1 action) "cursor-left"))
+        \\               (with-current-buffer buffer (forward-char -1) (set-window-point window (point)) (redisplay)))
+        \\              ((and (string= (nth 0 action) "key") (string= (nth 1 action) "cursor-right"))
+        \\               (with-current-buffer buffer (forward-char 1) (set-window-point window (point)) (redisplay)))
+        \\              ((and (string= (nth 0 action) "key") (string= (nth 1 action) "cursor-up"))
+        \\               (with-current-buffer buffer (forward-line -1) (set-window-point window (point)) (redisplay)))
+        \\              ((and (string= (nth 0 action) "key") (string= (nth 1 action) "cursor-down"))
+        \\               (with-current-buffer buffer (forward-line 1) (set-window-point window (point)) (redisplay)))
+        \\              ((and (string= (nth 0 action) "text") (> (length (nth 1 action)) 0))
+        \\               (with-current-buffer buffer (insert (nth 1 action)) (set-window-point window (point)) (redisplay))))))
+        \\        (delete-file input-path))
+        \\      (setq text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max))))
+        \\      (setq lines (split-string text "\n"))
+        \\      (setq point (with-current-buffer buffer (point)))
+        \\      (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column)))))
+        \\      (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist)))
+        \\      (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor))))
+        \\      (sit-for 0.05)))))))
+    , .{ config.module_path, facts_path, input_path });
+    defer gpa.free(eval);
+    var child_environment = try buildDisplayEnvironment(gpa);
+    defer child_environment.deinit();
+    var child = try std.process.spawn(io, .{
+        .argv = &.{ config.emacs_path, "--batch", "--eval", eval },
+        .environ_map = &child_environment,
+    });
+    defer child.kill(io);
+
+    if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
+    defer SDL_Quit();
+    const window = SDL_CreateWindow("Emacs Proto-UI Interactive", 960, 600, SDL_WINDOW_RESIZABLE) orelse return sdlFail("SDL_CreateWindow");
+    defer SDL_DestroyWindow(window);
+    const selected_renderer = try createRenderer(gpa, window, config.renderer_request, config.present_mode);
+    defer destroyRenderer(selected_renderer);
+    const renderer = selected_renderer.handle;
+    if (!SDL_StartTextInput(window)) return sdlFail("SDL_StartTextInput");
+
+    var frame_gate: renderer_policy.FrameGate = .{};
+    var frame_counters: renderer_policy.FrameCounters = .{};
+    var draw_list: renderer_policy.DrawList = .{ .allocator = gpa };
+    defer draw_list.deinit();
+    var input_queue: input_policy.Queue = .{};
+    var latest: FrameFacts = .{ .frame_width = 240, .frame_height = 31, .window_width = 240, .window_height = 29 };
+    var snapshot_scene: ?frontend.Scene = null;
+    defer if (snapshot_scene) |*scene| scene.deinit();
+    var previous_snapshot: ?facts.Snapshot = null;
+    defer if (previous_snapshot) |*snapshot| snapshot.deinit(gpa);
+    var last_version: u64 = 0;
+    var observed_versions: u64 = 0;
+    var delivered_events: usize = 0;
+    var input_applied = false;
+    var last_delivery_version: ?u64 = null;
+
+    if (config.synthetic_interactive) {
+        try input_queue.pushText("XY");
+    }
+
+    var quit = false;
+    const started_ticks = SDL_GetTicks();
+    while (!quit and (!config.synthetic_interactive or SDL_GetTicks() - started_ticks < config.auto_quit_ms)) {
+        const snapshot_bytes = std.Io.Dir.cwd().readFileAlloc(io, facts_path, gpa, .limited(64 * 1024)) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => return err,
+        };
+        if (snapshot_bytes) |bytes| {
+            defer gpa.free(bytes);
+            const next = facts.parseSnapshot(gpa, bytes) catch continue;
+            var changed = true;
+            if (previous_snapshot) |*previous| {
+                changed = !previous.eql(next);
+                previous.deinit(gpa);
+            }
+            previous_snapshot = next;
+            if (changed) {
+                if (next.text.lines.len >= 2 and std.mem.eql(u8, next.text.lines[1], "visible ASCIIXY")) input_applied = true;
+                latest = next.facts;
+                last_version += 1;
+                observed_versions += 1;
+                frame_gate.dirty = true;
+            }
+            if (changed) {
+                const updated = try facts.buildScene(gpa, latest, last_version);
+                if (snapshot_scene) |*previous| previous.deinit();
+                snapshot_scene = updated;
+            }
+        }
+
+        var event: SDL_Event = undefined;
+        while (SDL_PollEvent(&event)) {
+            switch (event.type) {
+                SDL_EVENT_QUIT => quit = true,
+                SDL_EVENT_KEY_DOWN => {
+                    if (input_policy.translateKey(event.key.scancode, event.key.down, event.key.repeat, event.key.modifiers)) |key| {
+                        try input_queue.pushKey(key);
+                        frame_gate.dirty = true;
+                    }
+                },
+                SDL_EVENT_TEXT_INPUT => {
+                    if (input_policy.translateText(event.text.text)) |text| {
+                        try input_queue.pushText(text.bytes());
+                        frame_gate.dirty = true;
+                    }
+                },
+                else => frame_gate.dirty = true,
+            }
+        }
+
+        while (input_queue.pop()) |translated_event| {
+            if (last_delivery_version) |version| {
+                if (observed_versions <= version) break;
+            }
+            try writeTranslatedEvent(gpa, io, input_path, translated_event);
+            delivered_events += 1;
+            last_delivery_version = observed_versions;
+            var ack_wait_ms: u32 = 0;
+            while (ack_wait_ms < 2000) : (ack_wait_ms += 10) {
+                if (std.Io.Dir.cwd().statFile(io, input_path, .{})) |_| {
+                    SDL_Delay(10);
+                } else |_| {
+                    break;
+                }
+            }
+        }
+
+        if (snapshot_scene) |*scene| {
+            try presentScene(scene, &draw_list, renderer, window, &frame_gate, &frame_counters);
+        } else {
+            try presentFacts(latest, &draw_list, renderer, window, &frame_gate, &frame_counters);
+        }
+        SDL_Delay(10);
+    }
+
+    if (observed_versions == 0) return error.NoEmacsFacts;
+    std.debug.print(
+        "sdl3-interactive-smoke: delivered {d} input event(s); observed {d} fact version(s); present={d} skipped={d} frame={d}ns draws={d} clears={d} fills={d} text={d}; lifecycle OK\n",
+        .{
+            delivered_events,
+            observed_versions,
+            frame_counters.presented_frames,
+            frame_counters.skipped_frames,
+            frame_counters.frame_path_total_ns,
+            frame_counters.draw_commands_total,
+            frame_counters.clear_commands_total,
+            frame_counters.fill_commands_total,
+            frame_counters.text_commands_total,
+        },
+    );
+
+    if (config.synthetic_interactive and !input_applied) return error.InteractiveInputNotApplied;
 }
 
 const SelectedRenderer = struct {
@@ -1081,6 +1289,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             try setString(gpa, &config.module_path, args.next() orelse return error.MissingModulePath);
         } else if (std.mem.eql(u8, arg, "--emacs-facts")) {
             config.mode = .emacs;
+        } else if (std.mem.eql(u8, arg, "--emacs-interactive")) {
+            config.mode = .emacs_interactive;
+        } else if (std.mem.eql(u8, arg, "--emacs-interactive-smoke")) {
+            config.mode = .emacs_interactive;
+            config.synthetic_interactive = true;
         } else if (std.mem.eql(u8, arg, "--facts-publisher")) {
             config.mode = .facts_publisher;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-smoke")) {
@@ -1133,6 +1346,14 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         if (config.token_path.len == 0) return error.MissingTokenPath;
         config.token = try readTokenFile(gpa, io, config.token_path);
         try runFactsPublisher(gpa, io, &config);
+        return;
+    }
+
+    if (config.mode == .emacs_interactive) {
+        if (config.emacs_path.len == 0) return error.MissingEmacsPath;
+        if (config.module_path.len == 0) return error.MissingModulePath;
+        if (config.facts_path.len == 0) return error.MissingFactsPath;
+        try runEmacsInteractive(gpa, io, &config);
         return;
     }
 
@@ -1268,6 +1489,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .publisher => unreachable,
         .emacs => unreachable,
         .input_translation => unreachable,
+        .emacs_interactive => unreachable,
         .emacs_epxl => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_reconnect => try runEmacsEpxlSession(gpa, io, &config, 2),
         .emacs_epxl_input => try runEmacsEpxlSession(gpa, io, &config, 1),

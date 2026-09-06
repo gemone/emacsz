@@ -51,6 +51,14 @@ pub const Queue = struct {
         self.length += 1;
     }
 
+    pub fn pop(self: *Queue) ?TranslatedEvent {
+        if (self.length == 0) return null;
+        const item = self.items[0];
+        std.mem.copyForwards(TranslatedEvent, self.items[0 .. self.length - 1], self.items[1..self.length]);
+        self.length -= 1;
+        return item;
+    }
+
     pub fn clear(self: *Queue) void {
         self.length = 0;
     }
@@ -114,4 +122,11 @@ test "queue copies and bounds printable text" {
     var many: Queue = .{};
     for (0..queue_capacity) |_| try many.pushText("x");
     try std.testing.expectError(error.InputQueueFull, many.pushText("x"));
+
+    const first = many.pop().?;
+    try std.testing.expectEqualStrings("x", first.text.bytes());
+    try std.testing.expectEqual(queue_capacity - 1, many.length);
+    try std.testing.expect(many.pop() != null);
+    many.clear();
+    try std.testing.expectEqual(@as(?TranslatedEvent, null), many.pop());
 }
