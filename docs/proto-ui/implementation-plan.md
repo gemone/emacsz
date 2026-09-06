@@ -90,11 +90,12 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8d-a real SDL3 EPXL interactive input | Approved |
 | W8d-b default SDL3 interactive transport selection | Approved |
 | W8d-c EPXL interactive clipboard copy | Approved |
+| W8e-a bounded SDL pointer motion/click | Approved |
 | W10b-b2a bounded glyph-atlas policy | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
-| W8b-a persistent public-fact bridge | Approved: real SDL frame polls public Emacs facts and applies bounded local-file actions; persistent EPXL delivery remains pending |
+| W8b-a persistent public-fact bridge | Approved historically: real SDL frame polls public Emacs facts and applies bounded local-file actions; persistent EPXL delivery subsequently arrived through W8c/W8d and W8e-a adds bounded pointer intents |
 
 The workstream sections below retain their historical review records and
 implementation details.  The Current status table is authoritative when an
@@ -993,6 +994,40 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interac
 ```
 
 Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes; approved fixes added Emacs-side bounds before substring/copy, removed stale fallback wording, and synchronized input ownership. Final checks verified copy smoke paths, interactive regressions, boundary and inherited-C audits, and the full built-in check run.
+
+#### W8e-a — Bounded SDL pointer motion/click (approved)
+
+Goal: extend authenticated EPXL reverse input from text/keys to a deliberately
+small pointer surface without claiming full mouse or geometry compatibility.
+
+1. Freeze the bounded `POINTER_EVENT` payload as phase, button, bounded x/y,
+   click count, modifiers, and reserved bytes.
+2. Accept only bounded coordinates, zero-modifier motion, and single-button
+   left press events from SDL.
+3. Coalesce motion to the idle journal boundary so a motion stream cannot fill
+   the bounded queue or displace clicks.
+4. Carry pointer intents through the same `DeliveryJournal`, EPXL sequencing,
+   Emacs apply-ACK, and EPXL ACK contract as text/keys.
+5. Map a bounded left press through public Emacs `posn-at-x-y` / `posn-point`
+   and republish the resulting public point.
+6. Add `sdl3-pointer-smoke` to validate motion transport, click application,
+   and SDL rendering of the refreshed cursor.
+
+Implemented limits: only left-button press and zero-modifier motion are
+supported. Release, drag, wheel, touch, multi-button, double-click,
+multi-window hit testing, pixel-exact variable-pitch geometry, overlays, and
+mouse face remain pending.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-interactive-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interactive-smoke
+```
+
+Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes; approved fixes added safe coordinate conversion, drag-state rejection, pressed-state validation, fail-closed pointer admission, and idempotent reverse-input docs. Final checks verified pointer smoke, interactive and EPXL regressions, boundary and inherited-C audits, and the full built-in check run.
 
 ### W9a — Independent SDL3 window lifecycle (approved)
 

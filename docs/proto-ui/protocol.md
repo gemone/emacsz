@@ -968,10 +968,19 @@ or Unicode-key surface is accepted.  Like text input, it
 uses a separate frontend-to-core sequence and requires an EPXL `ACK` before the
 intent is applied.
 
+The facts profile defines a deliberately bounded `POINTER_EVENT` subset for
+`0x0602`: `u8 phase` (`1=motion`, `2=press`, `3=release`), `u8 button`,
+`i32 x`, `i32 y`, `u8 clicks`, `u8 modifiers`, and two reserved zero bytes.
+Coordinates are non-negative and at most 16383. The implemented producer
+accepts only zero-modifier motion and single left-button press events. Motion
+is best-effort and must not displace pending clicks. A press uses the same
+EPXL sequence and ACK rules; Emacs maps the accepted press through public
+window position APIs and republishes the resulting point.
+
 If the transport ACK is lost before disconnect, a frontend may retry the same
 bounded intent with its original reverse-input sequence after authenticated
 resync.  The publisher must remain idempotent at the sequence boundary: a
-duplicate `KEY_EVENT` or `TEXT_INPUT` sequence must not be applied twice, and a
+duplicate `KEY_EVENT`, `TEXT_INPUT`, or `POINTER_EVENT` sequence must not be applied twice, and a
 new sequence may not advance until the prior sequence has been acknowledged.
 
 #### Security and limits

@@ -64,6 +64,7 @@ pub const TextEvent = struct {
 pub const TranslatedEvent = union(enum) {
     key: frontend.KeyEvent,
     text: TextEvent,
+    pointer: frontend.PointerInput,
 };
 
 pub const Queue = struct {
@@ -73,6 +74,13 @@ pub const Queue = struct {
     pub fn pushKey(self: *Queue, event: frontend.KeyEvent) !void {
         if (self.length == queue_capacity) return error.InputQueueFull;
         self.items[self.length] = .{ .key = event };
+        self.length += 1;
+    }
+
+    pub fn pushPointer(self: *Queue, event: frontend.PointerInput) !void {
+        if (!event.valid()) return error.InvalidPointerIntent;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .pointer = event };
         self.length += 1;
     }
 
@@ -119,6 +127,10 @@ pub const DeliveryJournal = struct {
 
     pub fn pushKey(self: *DeliveryJournal, event: frontend.KeyEvent) !void {
         try self.queue.pushKey(event);
+    }
+
+    pub fn pushPointer(self: *DeliveryJournal, event: frontend.PointerInput) !void {
+        try self.queue.pushPointer(event);
     }
 
     pub fn pushText(self: *DeliveryJournal, text: []const u8) !void {
@@ -252,6 +264,29 @@ test "sender permits one monotonic in-flight input and exact ACK" {
     try std.testing.expectEqual(@as(u64, 2), second);
     try std.testing.expect(sender.acknowledge(second));
     try std.testing.expectEqual(@as(u64, 2), sender.last_acknowledged);
+}
+
+test "pointer queue rejects bounded-profile violations before journaling" {
+    var queue: Queue = .{};
+    try std.testing.expectError(error.InvalidPointerIntent, queue.pushPointer(.{ .phase = .motion, .x = -1, .y = 0 }));
+    try std.testing.expectError(error.InvalidPointerIntent, queue.pushPointer(.{ .phase = .motion, .x = frontend.max_pointer_coordinate + 1, .y = 0 }));
+    try std.testing.expectError(error.InvalidPointerIntent, queue.pushPointer(.{ .phase = .motion, .x = 0, .y = 0, .modifiers = 1 }));
+    try std.testing.expectError(error.InvalidPointerIntent, queue.pushPointer(.{ .phase = .motion, .x = 0, .y = 0, .button = 1 }));
+    try std.testing.expectError(error.InvalidPointerIntent, queue.pushPointer(.{ .phase = .press, .x = 0, .y = 0, .button = 1, .clicks = 2 }));
+    try std.testing.expectEqual(@as(usize, 0), queue.length);
+}
+
+test "queue and journal accept bounded pointer intents" {
+    var queue: Queue = .{};
+    try queue.pushPointer(.{ .phase = .motion, .x = 12, .y = 4 });
+    try queue.pushPointer(.{ .phase = .press, .button = 1, .x = 120, .y = 2, .clicks = 1 });
+    try std.testing.expectEqual(frontend.PointerPhase.motion, queue.items[0].pointer.phase);
+
+    var journal: DeliveryJournal = .{};
+    try journal.pushPointer(.{ .phase = .release, .button = 1, .x = 120, .y = 2, .clicks = 1 });
+    const sent = (try journal.take()).?;
+    try std.testing.expectEqual(frontend.PointerPhase.release, sent.event.pointer.phase);
+    try std.testing.expect(journal.acknowledge(sent.sequence));
 }
 
 test "delivery journal retries the same intent and sequence after reconnect" {

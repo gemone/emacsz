@@ -102,6 +102,32 @@ pub const KeyEvent = struct {
     modifiers: u8 = 0,
 };
 
+pub const max_pointer_coordinate: i32 = 16383;
+
+pub const PointerPhase = enum(u8) {
+    motion = 1,
+    press = 2,
+    release = 3,
+};
+
+pub const PointerInput = struct {
+    phase: PointerPhase,
+    button: u8 = 0,
+    x: i32,
+    y: i32,
+    clicks: u8 = 0,
+    modifiers: u8 = 0,
+
+    pub fn valid(self: PointerInput) bool {
+        if (self.x < 0 or self.x > max_pointer_coordinate or
+            self.y < 0 or self.y > max_pointer_coordinate or self.modifiers != 0) return false;
+        return switch (self.phase) {
+            .motion => self.button == 0 and self.clicks == 0,
+            .press, .release => self.button == 1 and self.clicks == 1,
+        };
+    }
+};
+
 const window_record_size: usize = 40;
 const row_record_size: usize = 56;
 const cursor_record_size: usize = 56;
@@ -361,6 +387,38 @@ pub fn decodeKeyEvent(bytes: []const u8) Error!KeyEvent {
     };
     if (bytes[2] != 1 or bytes[3] != 0) return Error.Unsupported;
     return .{ .action = action, .state = bytes[2], .modifiers = bytes[3] };
+}
+
+pub fn encodePointerInput(a: std.mem.Allocator, input: PointerInput, out: *std.ArrayList(u8)) !void {
+    if (!input.valid()) return Error.Unsupported;
+    try out.append(a, @intFromEnum(input.phase));
+    try out.append(a, input.button);
+    try putI32(out, a, input.x);
+    try putI32(out, a, input.y);
+    try out.append(a, input.clicks);
+    try out.append(a, input.modifiers);
+    try putU16(out, a, 0);
+}
+
+pub fn decodePointerInput(bytes: []const u8) Error!PointerInput {
+    if (bytes.len != 14) return Error.InvalidTable;
+    const phase_value = bytes[0];
+    const phase: PointerPhase = switch (phase_value) {
+        1 => .motion,
+        2 => .press,
+        3 => .release,
+        else => return Error.InvalidTable,
+    };
+    const input: PointerInput = .{
+        .phase = phase,
+        .button = bytes[1],
+        .x = @bitCast(std.mem.readInt(i32, bytes[2..6], .little)),
+        .y = @bitCast(std.mem.readInt(i32, bytes[6..10], .little)),
+        .clicks = bytes[10],
+        .modifiers = bytes[11],
+    };
+    if (!input.valid() or std.mem.readInt(u16, bytes[12..14], .little) != 0) return Error.Unsupported;
+    return input;
 }
 
 pub fn decodePresentHint(bytes: []const u8) Error!PresentHint {
@@ -931,6 +989,29 @@ test "key event codec validates bounded editing actions" {
     invalid.items[2] = 1;
     invalid.items[3] = 1;
     try std.testing.expectError(Error.Unsupported, decodeKeyEvent(invalid.items));
+}
+
+test "pointer codec validates bounded facts-profile events" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    try encodePointerInput(a, .{ .phase = .motion, .x = 12, .y = 4 }, &bytes);
+    var decoded = try decodePointerInput(bytes.items);
+    try std.testing.expectEqual(PointerPhase.motion, decoded.phase);
+    try std.testing.expectEqual(@as(i32, 12), decoded.x);
+    try std.testing.expectEqual(@as(i32, 4), decoded.y);
+
+    bytes.clearRetainingCapacity();
+    try encodePointerInput(a, .{ .phase = .press, .button = 1, .x = 120, .y = 2, .clicks = 1 }, &bytes);
+    decoded = try decodePointerInput(bytes.items);
+    try std.testing.expectEqual(PointerPhase.press, decoded.phase);
+    try std.testing.expectEqual(@as(u8, 1), decoded.button);
+
+    bytes.items[0] = 4;
+    try std.testing.expectError(Error.InvalidTable, decodePointerInput(bytes.items));
+    try std.testing.expectError(Error.Unsupported, encodePointerInput(a, .{ .phase = .press, .x = -1, .y = 0, .button = 1, .clicks = 1 }, &bytes));
+    try std.testing.expectError(Error.Unsupported, encodePointerInput(a, .{ .phase = .motion, .x = 0, .y = 0, .button = 1 }, &bytes));
 }
 
 test "key event codec round trips bounded cursor actions" {

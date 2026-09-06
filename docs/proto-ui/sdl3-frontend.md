@@ -420,6 +420,11 @@ Required policies:
 
 The default EPXL interactive path also translates Ctrl+C to `KEY_EVENT.copy`. Emacs performs the bounded first-line kill-ring save, publishes a validated printable-ASCII result artifact, and SDL installs that result through its platform clipboard. `sdl3-emacs-copy-local-smoke` retains the explicit rollback path.
 
+The bounded pointer profile accepts zero-modifier motion and single left-button
+press events. Motion is best-effort and coalesced to the idle journal boundary;
+presses use the same EPXL sequence and ACK rules. Emacs maps an accepted press
+through public `posn-at-x-y` / `posn-point` and republishes the resulting point.
+
 The `sdl3-epxl-interactive-smoke` connects the real SDL event queue to
 authenticated EPXL. It translates printable ASCII text, sends it through the
 delivery journal, waits for Emacs apply and EPXL ACKs, receives refreshed fact
