@@ -93,6 +93,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8e-a bounded SDL pointer motion/click | Approved |
 | W8e-b ordered left drag/release | Approved |
 | W8f-a bounded wheel scroll intent | Approved |
+| W9g2 bounded viewport facts | Approved |
 | W10b-b2a bounded glyph-atlas policy | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
@@ -1097,6 +1098,40 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-smoke
 ```
 
 Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes; approved fixes rejected zero/horizontal/diagonal, flipped-direction, and fractional/mismatched wheel deltas, and corrected reverse-input idempotence docs. Final checks verified wheel smoke, pointer/interactive regressions, boundary and inherited-C audits, and the full built-in check run.
+
+#### W9g2 — Bounded viewport facts (approved)
+
+Goal: make wheel scrolling observable on the SDL side by publishing a bounded
+snapshot of the Emacs window viewport instead of only acknowledging a scroll
+intent.
+
+1. Extend the public-facts snapshot with `window_start_line` and
+   `window_visible_lines`, observed through public Emacs window APIs.
+2. Capture bounded visible buffer text from `window-start` through `window-end`
+   instead of the whole oversized smoke buffer.
+3. Map the absolute public point into a viewport-relative cursor row for the
+   15-row facts profile.
+4. Add an adapter-owned EUP extension section that carries viewport start and
+   bounded visible-line count with each `FRAME_UPDATE`.
+5. Extend `sdl3-viewport-smoke` to inject one wheel tick and require the
+   returned viewport start to advance while retaining the scrolled text.
+
+Implemented limits: viewport facts are bounded to 32 lines, 120 columns, and
+the 15-row facts renderer; they expose start/count, not full scroll state,
+pixel vscroll, horizontal scroll, overlays, variable-pitch lines, or
+redisplay-owned glyph runs.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-wheel-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-viewport-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-interactive-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interactive-local-smoke
+```
+
+Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes; approved fixes removed raw snapshot diagnostics, added overflow-safe viewport validation, required coherent viewport/text counts, protected baseline unwrapping, repaired the local evaluator, and documented EUP extension section `0x8001`. Final checks verified viewport, wheel, pointer, interactive, and EPXL regressions plus boundary and inherited-C audits.
 
 ### W9a — Independent SDL3 window lifecycle (approved)
 

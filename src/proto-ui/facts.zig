@@ -20,6 +20,18 @@ pub const CursorFacts = struct {
     column: i32,
 };
 
+pub const ViewportFacts = struct {
+    start_line: i32,
+    line_count: i32,
+
+    pub fn valid(self: ViewportFacts) bool {
+        if (self.start_line < 1 or self.line_count < 0) return false;
+        const sum = @addWithOverflow(self.start_line, self.line_count);
+        if (sum[1] != 0) return false;
+        return sum[0] <= max_text_lines + 1;
+    }
+};
+
 pub const max_text_lines: usize = 32;
 pub const max_text_columns: usize = 120;
 
@@ -46,17 +58,19 @@ pub const Snapshot = struct {
     facts: FrameFacts,
     text: TextLines = .{},
     cursor: CursorFacts = .{ .line = 0, .column = 0 },
+    viewport: ViewportFacts = .{ .start_line = 1, .line_count = 0 },
 
     pub fn eql(left: Snapshot, right: Snapshot) bool {
         return factsEql(left.facts, right.facts) and left.text.eql(right.text) and
-            std.meta.eql(left.cursor, right.cursor);
+            std.meta.eql(left.cursor, right.cursor) and
+            std.meta.eql(left.viewport, right.viewport);
     }
 
     pub fn deinit(self: *Snapshot, gpa: std.mem.Allocator) void {
         self.text.deinit(gpa);
     }
 };
-pub const Error = std.json.ParseError(std.json.Scanner) || error{InvalidFrameFacts};
+pub const Error = std.json.ParseError(std.json.Scanner) || error{ InvalidFrameFacts, InvalidViewportFacts };
 
 const SnapshotWire = struct {
     frame_width: i32,
@@ -65,6 +79,8 @@ const SnapshotWire = struct {
     window_height: i32,
     text: []const []const u8 = &.{},
     cursor: CursorFacts = .{ .line = 1, .column = 0 },
+    window_start_line: i32 = 1,
+    window_visible_lines: i32 = 0,
 };
 
 pub fn factsEql(left: FrameFacts, right: FrameFacts) bool {
@@ -139,6 +155,9 @@ pub fn parseSnapshot(gpa: std.mem.Allocator, bytes: []const u8) !Snapshot {
     if (wire.cursor.line < 1 or wire.cursor.line > max_text_lines or
         wire.cursor.column < 0 or wire.cursor.column > max_text_columns)
         return error.InvalidCursorFacts;
+    const viewport = ViewportFacts{ .start_line = wire.window_start_line, .line_count = wire.window_visible_lines };
+    if (!viewport.valid()) return error.InvalidViewportFacts;
+    if (viewport.line_count != wire.text.len) return error.InvalidViewportFacts;
 
     const slices = try gpa.alloc([]const u8, wire.text.len);
     errdefer gpa.free(slices);
@@ -161,6 +180,7 @@ pub fn parseSnapshot(gpa: std.mem.Allocator, bytes: []const u8) !Snapshot {
         },
         .text = .{ .lines = slices, .owner = owner },
         .cursor = wire.cursor,
+        .viewport = viewport,
     };
 }
 
@@ -319,6 +339,7 @@ pub fn appendWireSnapshot(
     facts: FrameFacts,
     text: []const []const u8,
     cursor: CursorFacts,
+    viewport: ViewportFacts,
     scene: *frontend.Scene,
     messages: *std.ArrayList([]const u8),
 ) !void {
@@ -370,6 +391,11 @@ pub fn appendWireSnapshot(
     defer row_bytes.deinit(gpa);
     const row_count: i32 = 15;
     const row_height = @max(1, @divTrunc(facts.window_height, row_count));
+    if (!viewport.valid()) return error.InvalidViewportFacts;
+    const wire_viewport: ViewportFacts = .{
+        .start_line = viewport.start_line,
+        .line_count = @min(viewport.line_count, row_count),
+    };
     if (cursor.line < 1 or cursor.line > row_count or
         cursor.column * 8 + 2 > facts.window_width)
         return error.InvalidCursorFacts;
@@ -420,10 +446,15 @@ pub fn appendWireSnapshot(
         .deadline_ns = 0,
     }, &present_bytes);
 
+    var wire_viewport_bytes: [8]u8 = undefined;
+    std.mem.writeInt(i32, wire_viewport_bytes[0..4], wire_viewport.start_line, .little);
+    std.mem.writeInt(i32, wire_viewport_bytes[4..8], wire_viewport.line_count, .little);
+
     var text_bytes: std.ArrayList(u8) = .empty;
     defer text_bytes.deinit(gpa);
     if (text.len > max_text_lines) return error.InvalidTextFacts;
-    for (text, 0..) |line, index| {
+    const wire_text_count = @min(text.len, @as(usize, @intCast(row_count)));
+    for (text[0..wire_text_count], 0..) |line, index| {
         if (line.len > max_text_columns) return error.InvalidTextFacts;
         try frontend.encodeTextLine(gpa, .{ .row_index = @intCast(index), .line = line }, &text_bytes);
     }
@@ -432,6 +463,7 @@ pub fn appendWireSnapshot(
         .{ .kind = protocol.SectionKind.windows, .records = window_bytes.items },
         .{ .kind = protocol.SectionKind.rows, .records = row_bytes.items },
         .{ .kind = protocol.SectionKind.cursors, .records = cursor_bytes.items },
+        .{ .kind = protocol.SectionKind.extension_min + 1, .records = &wire_viewport_bytes },
         .{ .kind = protocol.SectionKind.extension_min, .records = text_bytes.items },
         .{ .kind = protocol.SectionKind.damage, .records = damage_bytes.items },
         .{ .kind = protocol.SectionKind.present_hint, .records = present_bytes.items },
@@ -511,19 +543,41 @@ test "wire snapshots advance contiguous scene sequences" {
     }
     var empty_scene = frontend.Scene.init(a);
     defer empty_scene.deinit();
-    try std.testing.expectError(error.InvalidFrameFacts, appendWireSnapshot(a, invalid, &.{}, .{ .line = 1, .column = 0 }, &empty_scene, &messages));
+    try std.testing.expectError(error.InvalidFrameFacts, appendWireSnapshot(a, invalid, &.{}, .{ .line = 1, .column = 0 }, .{ .start_line = 1, .line_count = 0 }, &empty_scene, &messages));
 
     var scene = frontend.Scene.init(a);
     defer scene.deinit();
-    try appendWireSnapshot(a, parsed, &.{}, .{ .line = 1, .column = 0 }, &scene, &messages);
+    try appendWireSnapshot(a, parsed, &.{}, .{ .line = 1, .column = 0 }, .{ .start_line = 1, .line_count = 0 }, &scene, &messages);
     try std.testing.expectEqual(@as(usize, 2), messages.items.len);
     try std.testing.expectEqual(@as(u64, 1), scene.stats.frame_updates);
     try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
 
-    try appendWireSnapshot(a, parsed, &.{}, .{ .line = 1, .column = 0 }, &scene, &messages);
+    try appendWireSnapshot(a, parsed, &.{}, .{ .line = 1, .column = 0 }, .{ .start_line = 1, .line_count = 0 }, &scene, &messages);
     try std.testing.expectEqual(@as(usize, 3), messages.items.len);
     try std.testing.expectEqual(@as(u64, 2), scene.stats.frame_updates);
     try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+}
+
+test "viewport facts parse and wire into scene metadata" {
+    const a = std.testing.allocator;
+    const json = "{\"frame_width\":120,\"frame_height\":90,\"window_width\":110,\"window_height\":75,\"text\":[\"one\",\"two\"],\"cursor\":{\"line\":1,\"column\":0},\"window_start_line\":3,\"window_visible_lines\":2}";
+    var snapshot = try parseSnapshot(a, json);
+    defer snapshot.deinit(a);
+    try std.testing.expectEqual(ViewportFacts{ .start_line = 3, .line_count = 2 }, snapshot.viewport);
+    var invalid_viewport: ViewportFacts = .{ .start_line = 0, .line_count = 2 };
+    try std.testing.expect(!invalid_viewport.valid());
+
+    var messages: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (messages.items) |message| a.free(message);
+        messages.deinit(a);
+    }
+    const facts = try parse(a, "{\"frame_width\":120,\"frame_height\":90,\"window_width\":110,\"window_height\":75}");
+    var scene = frontend.Scene.init(a);
+    defer scene.deinit();
+    try appendWireSnapshot(a, facts, snapshot.text.lines, snapshot.cursor, snapshot.viewport, &scene, &messages);
+    try std.testing.expectEqual(frontend.Viewport{ .start_line = 3, .line_count = 2 }, scene.viewport.?);
+    try std.testing.expectError(error.InvalidViewportFacts, appendWireSnapshot(a, facts, snapshot.text.lines, snapshot.cursor, .{ .start_line = 0, .line_count = 2 }, &scene, &messages));
 }
 
 test "wire snapshot carries validated public text lines" {
@@ -541,7 +595,7 @@ test "wire snapshot carries validated public text lines" {
     }
     var scene = frontend.Scene.init(a);
     defer scene.deinit();
-    try appendWireSnapshot(a, parsed, text.lines, .{ .line = 1, .column = 1 }, &scene, &messages);
+    try appendWireSnapshot(a, parsed, text.lines, .{ .line = 1, .column = 1 }, .{ .start_line = 1, .line_count = 2 }, &scene, &messages);
     try std.testing.expectEqual(@as(usize, 2), scene.text.items.len);
     try std.testing.expectEqualStrings("Emacs Proto-UI", scene.text.items[0].bytes);
     try std.testing.expectEqualStrings("visible ASCII", scene.text.items[1].bytes);
@@ -550,7 +604,7 @@ test "wire snapshot carries validated public text lines" {
     try std.testing.expectError(error.InvalidTextFacts, parseText(a, "bad\n\x00"));
 
     const narrow = FrameFacts{ .frame_width = 9, .frame_height = 90, .window_width = 9, .window_height = 75 };
-    try std.testing.expectError(error.InvalidCursorFacts, appendWireSnapshot(a, narrow, text.lines, .{ .line = 1, .column = 1 }, &scene, &messages));
+    try std.testing.expectError(error.InvalidCursorFacts, appendWireSnapshot(a, narrow, text.lines, .{ .line = 1, .column = 1 }, .{ .start_line = 1, .line_count = 2 }, &scene, &messages));
 }
 
 test "parses and validates bounded cursor facts" {

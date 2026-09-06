@@ -968,6 +968,14 @@ or Unicode-key surface is accepted.  Like text input, it
 uses a separate frontend-to-core sequence and requires an EPXL `ACK` before the
 intent is applied.
 
+The facts profile reserves extension section `0x8001` for bounded viewport
+metadata. A `FRAME_UPDATE` may carry at most one such section; its payload is
+exactly `i32 window_start_line` followed by `i32 window_visible_lines`. The
+producer derives both from public Emacs window observation and caps the
+rendered line count to the facts-profile row limit. The viewport section is
+validated and committed atomically with the update. Extension section `0x8000`
+remains the separate bounded text-line records section.
+
 The facts profile defines a deliberately bounded `WHEEL_EVENT` subset for
 `0x0603`: `u8 unit` (`1=line`), `u8 source` (`1=wheel`), `u8 modifiers`
 (`0=none`), `i8 x` (`0` in this profile), `i8 y` (`-8..8`, excluding zero),

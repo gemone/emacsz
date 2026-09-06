@@ -484,6 +484,16 @@ pub const FrameIdentity = struct {
     generation: u32,
 };
 
+pub const Viewport = struct {
+    start_line: i32,
+    line_count: i32,
+
+    fn valid(self: Viewport) bool {
+        return self.start_line >= 1 and self.line_count >= 0 and
+            self.line_count <= protocol.max_rows;
+    }
+};
+
 pub const ApplyStats = struct {
     control_messages: u64 = 0,
     frame_updates: u64 = 0,
@@ -501,6 +511,7 @@ pub const Scene = struct {
     damage: std.ArrayList(Rect) = .empty,
     text: std.ArrayList(TextLine) = .empty,
     present: ?PresentHint = null,
+    viewport: ?Viewport = null,
     stats: ApplyStats = .{},
 
     pub fn init(allocator: std.mem.Allocator) Scene {
@@ -523,6 +534,7 @@ pub const Scene = struct {
         self.frame_header = null;
         self.cursor = null;
         self.present = null;
+        self.viewport = null;
         self.stats = .{};
     }
 
@@ -583,6 +595,7 @@ pub const Scene = struct {
         defer text.deinit(self.allocator);
         var cursor: ?Cursor = null;
         var present: ?PresentHint = null;
+        var viewport: ?Viewport = null;
 
         for (update.sections) |section| {
             switch (section.kind) {
@@ -645,6 +658,15 @@ pub const Scene = struct {
                     if (section.records.len != present_record_size or present != null) return Error.InvalidTable;
                     present = try decodePresentHint(section.records);
                 },
+                protocol.SectionKind.extension_min + 1 => {
+                    if (section.records.len != 8 or viewport != null) return Error.InvalidTable;
+                    const wire: Viewport = .{
+                        .start_line = std.mem.readInt(i32, section.records[0..4], .little),
+                        .line_count = std.mem.readInt(i32, section.records[4..8], .little),
+                    };
+                    if (!wire.valid()) return Error.InvalidTable;
+                    viewport = wire;
+                },
                 protocol.SectionKind.extension_min => {
                     var offset: usize = 0;
                     while (offset < section.records.len) {
@@ -695,6 +717,7 @@ pub const Scene = struct {
         self.frame_header = update.header;
         self.cursor = cursor;
         self.present = present;
+        self.viewport = viewport;
         self.stats.frame_updates += 1;
     }
 };

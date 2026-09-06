@@ -428,6 +428,10 @@ same EPXL sequence and ACK rules. Emacs maps accepted press/release endpoints
 through public `posn-at-x-y` / `posn-point` and republishes the resulting
 point; intermediate drag motion is not text-selection semantics.
 
+A bounded viewport section accompanies each facts `FRAME_UPDATE`. It carries
+the absolute Emacs `window-start` line, visible line count, and viewport-relative
+cursor text so SDL can verify that scrolling changes displayed state.
+
 Bounded vertical wheel ticks use line units and the same EPXL journal, apply-ACK,
 and transport-ACK rules. Horizontal ticks, pixel/page units, momentum phases,
 touchpad sources, and modifiers are explicitly rejected.
