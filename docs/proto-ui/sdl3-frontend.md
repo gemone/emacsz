@@ -416,6 +416,11 @@ Required policies:
 | Out of texture memory | Evict cache; downgrade to software if needed |
 | Renderer panic | Exit frontend without affecting Emacs |
 
+The `sdl3-epxl-recovery-smoke` exercises the reverse-input row against a real
+Emacs publisher: the frontend discards the first ACK event, reconnects with a
+new authenticated resync, retries sequence one, and the publisher ACKs it
+without applying the text a second time.
+
 ## 16. Diagnostics
 
 The frontend reports:

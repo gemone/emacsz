@@ -86,6 +86,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8c-a EPXL reverse-input sequencing | Approved |
 | W8c-b Emacs apply-ACK | Approved |
 | W8c-c-a persistent EPXL delivery journal | Approved |
+| W8c-c-b EPXL ACK-loss recovery smoke | Approved |
 | W10b-b2a bounded glyph-atlas policy | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
@@ -848,6 +849,43 @@ and boundary/docs/status passes. Final checks verified same-sequence retry and
 exhaustion behavior, publisher duplicate-sequence ACK idempotence, EPXL
 input/edit/sequence/resync regressions, inherited-C rejection, and the full
 built-in check run.
+
+#### W8c-c-b — EPXL ACK-loss recovery smoke (approved)
+
+Goal: prove the W8c-c-a journal on a real Emacs EPXL session when the frontend
+discards a successfully transported input ACK and reconnects.
+
+1. Add an opt-in `--emacs-epxl-recovery-smoke` path that discards only the
+   first `TEXT_INPUT` ACK after Emacs has applied it.
+2. Preserve the pending intent, original sequence one, and bounded attempt
+   count in the frontend journal across the authenticated session boundary.
+3. On reconnect, retry sequence one. The publisher recognizes the immediately
+   previous applied sequence and ACKs it without invoking Emacs again.
+4. Assert that the recovered SDL scene contains exactly the once-applied
+   `XEmacs Proto-UI` line and the cursor at column eight on row one.
+5. Treat a peer reset after an authenticated resync as the bounded session
+   boundary instead of discarding a coherent scene.
+
+Implemented limits: the fault is an opt-in frontend ACK-event discard, not
+kernel-level packet corruption; only the bounded facts profile is covered.
+Publisher process crash, arbitrary sequence-gap replay, resource recovery, and
+interactive SDL input over EPXL remain pending.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-recovery-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-input-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-edit-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-sequence-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-smoke
+```
+
+Status: approved. The dedicated reviewer completed correctness, integration/build,
+and boundary/docs/status passes. Final checks verified same-sequence retry,
+publisher idempotence, exact recovered text/cursor state, all EPXL regressions,
+changed-path and inherited-C audits, and the default-build isolation gate.
 
 ### W9a — Independent SDL3 window lifecycle (approved)
 

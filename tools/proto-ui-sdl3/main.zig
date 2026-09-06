@@ -138,7 +138,7 @@ const SDL_Rect = extern struct {
     h: c_int,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_input, emacs_epxl_edit, emacs_epxl_sequence, input_translation, emacs_interactive, clipboard };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_input, emacs_epxl_edit, emacs_epxl_sequence, input_translation, emacs_interactive, clipboard };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -158,6 +158,7 @@ const Config = struct {
     present_mode: []const u8 = "off",
     synthetic_interactive: bool = false,
     synthetic_copy: bool = false,
+    drop_first_input_ack: bool = false,
 };
 
 const FrameFacts = facts.FrameFacts;
@@ -699,11 +700,14 @@ fn readControlExact(reader: anytype) !live.Control {
 fn sendDeliveryEvent(
     gpa: std.mem.Allocator,
     journal: *input_policy.DeliveryJournal,
+    config: *const Config,
     writer: anytype,
     reader: anytype,
     envelope: protocol.Envelope,
-) !void {
-    const sent = (try journal.take()) orelse return;
+) !enum { delivered, ack_lost } {
+    const inject_ack_loss = config.drop_first_input_ack and
+        journal.pending == null and journal.attempts == 0 and journal.queue.length > 0;
+    const sent = (try journal.take()) orelse return .delivered;
     var payload: std.ArrayList(u8) = .empty;
     defer payload.deinit(gpa);
     const message_type: u16 = switch (sent.event) {
@@ -729,8 +733,16 @@ fn sendDeliveryEvent(
     }, payload.items, &input_message);
     try live.writeFrame(&writer.interface, input_message.items);
     try writer.interface.flush();
+    if (inject_ack_loss) {
+        // The wire ACK is deliberately discarded before it reaches the
+        // delivery journal, exercising reconnect retry without corrupting the
+        // remaining resync handshake.
+        _ = try readControlExact(reader);
+        return .ack_lost;
+    }
     const input_ack = try readControlExact(reader);
     if (input_ack.kind != .ack or !journal.acknowledge(input_ack.sequence)) return error.ExpectedInputAck;
+    return .delivered;
 }
 
 fn writeActionArtifact(gpa: std.mem.Allocator, io: std.Io, path: []const u8, kind: []const u8, value: []const u8) !void {
@@ -947,11 +959,12 @@ fn runLiveFrontend(
     if (!live.tokenEql(&zero_token, &ready.token)) return error.InvalidHandshake;
 
     const use_resync = config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect or
-        config.mode == .emacs_epxl_input or config.mode == .emacs_epxl_edit or
-        config.mode == .emacs_epxl_sequence;
+        config.mode == .emacs_epxl_recovery or config.mode == .emacs_epxl_input or
+        config.mode == .emacs_epxl_edit or config.mode == .emacs_epxl_sequence;
     var scene = frontend.Scene.init(gpa);
     errdefer scene.deinit();
     var resync_complete = false;
+    var input_ack_lost = false;
     if (use_resync) {
         try live.writeControl(&writer.interface, .{ .kind = .resync_request, .sequence = 1 });
         try writer.interface.flush();
@@ -963,8 +976,10 @@ fn runLiveFrontend(
             defer gpa.free(message);
             const envelope = (try protocol.decodeEnvelope(message)).envelope;
             try scene.apply(message);
-            if (envelope.message_type == protocol.Message.frame_update)
-                try sendDeliveryEvent(gpa, delivery, &writer, &reader, envelope);
+            if (envelope.message_type == protocol.Message.frame_update) {
+                const outcome = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
+                if (outcome == .ack_lost) input_ack_lost = true;
+            }
             try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
             try writer.interface.flush();
         }
@@ -974,12 +989,17 @@ fn runLiveFrontend(
         resync_complete = true;
     }
     while (true) {
-        const message = (try live.readFrame(&reader.interface, gpa)) orelse break;
+        const message = (live.readFrame(&reader.interface, gpa) catch |err| {
+            // A publisher closes cleanly after its final fact stream. A
+            // peer reset at this boundary is session completion, not scene loss.
+            if (resync_complete) break;
+            return err;
+        }) orelse break;
         defer gpa.free(message);
         const envelope = (try protocol.decodeEnvelope(message)).envelope;
         try scene.apply(message);
         if (envelope.message_type == protocol.Message.frame_update)
-            try sendDeliveryEvent(gpa, delivery, &writer, &reader, envelope);
+            _ = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
         if (use_resync and !resync_complete) return error.IncompleteResync;
@@ -1301,8 +1321,15 @@ fn runEmacsEpxlSession(
     errdefer child.kill(io);
     var loaded: ?frontend.Scene = null;
     errdefer if (loaded != null) loaded.?.deinit();
-    for (0..sessions) |_| {
-        const session = try runLiveFrontend(gpa, io, config, &delivery);
+    for (0..sessions) |session_index| {
+        var session = try runLiveFrontend(gpa, io, config, &delivery);
+        if (config.drop_first_input_ack and session_index == 0 and delivery.pending != null) {
+            // The first session deliberately discarded the ACK event. Discard
+            // this scene too so the second authenticated session proves that
+            // the original sequence is retried exactly once.
+            session.deinit();
+            continue;
+        }
         if (loaded != null) loaded.?.deinit();
         loaded = session;
         try io.sleep(.fromMilliseconds(100), .awake);
@@ -1398,6 +1425,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_epxl;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-reconnect-smoke")) {
             config.mode = .emacs_epxl_reconnect;
+        } else if (std.mem.eql(u8, arg, "--emacs-epxl-recovery-smoke")) {
+            config.mode = .emacs_epxl_recovery;
+            config.auto_input = "X";
+            config.drop_first_input_ack = true;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-input-smoke")) {
             config.mode = .emacs_epxl_input;
             config.auto_input = "X";
@@ -1603,6 +1634,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .clipboard => unreachable,
         .emacs_epxl => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_reconnect => try runEmacsEpxlSession(gpa, io, &config, 2),
+        .emacs_epxl_recovery => try runEmacsEpxlSession(gpa, io, &config, 2),
         .emacs_epxl_input => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_edit => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_sequence => try runEmacsEpxlSession(gpa, io, &config, 1),
@@ -1615,6 +1647,14 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         return error.UnexpectedFactUpdateCount;
     if ((config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect) and
         !sceneHasText(&scene, "Emacs Proto-UI")) return error.NoEmacsText;
+    if (config.mode == .emacs_epxl_recovery and scene.stats.frame_updates < 1)
+        return error.UnexpectedFactUpdateCount;
+    if (config.mode == .emacs_epxl_recovery) {
+        const applied = scene.text.items.len > 0 and
+            std.mem.eql(u8, scene.text.items[0].bytes, "XEmacs Proto-UI") and
+            scene.cursor != null and scene.cursor.?.x == 8 and scene.cursor.?.y == 0;
+        if (!applied) return error.RecoveryInputNotApplied;
+    }
     if (config.mode == .emacs_epxl_input and scene.stats.frame_updates < 2)
         return error.UnexpectedFactUpdateCount;
     if (config.mode == .emacs_epxl_input and
