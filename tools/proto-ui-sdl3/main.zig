@@ -116,7 +116,7 @@ const SDL_Rect = extern struct {
     h: c_int,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_input, emacs_epxl_edit, input_translation, emacs_interactive };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_input, emacs_epxl_edit, emacs_epxl_sequence, input_translation, emacs_interactive };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -317,6 +317,9 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
 
     if (config.synthetic_interactive) {
         try input_queue.pushText("XY");
+        try input_queue.pushKey(.{ .action = .cursor_left });
+        try input_queue.pushText("Z");
+        try input_queue.pushKey(.{ .action = .backspace });
     }
 
     var quit = false;
@@ -640,6 +643,7 @@ fn readControlExact(reader: anytype) !live.Control {
 
 fn sendAutoTextInput(
     gpa: std.mem.Allocator,
+    sender: *input_policy.SenderState,
     writer: anytype,
     reader: anytype,
     text: []const u8,
@@ -653,7 +657,7 @@ fn sendAutoTextInput(
     try protocol.encodeEnvelope(gpa, .{
         .flags = protocol.Flags.requires_ack,
         .message_type = protocol.Message.text_input,
-        .sequence = 1,
+        .sequence = try sender.takeSequence(),
         .ack_sequence = 0,
         .session_id = envelope.session_id,
         .frame_id = envelope.frame_id,
@@ -662,11 +666,12 @@ fn sendAutoTextInput(
     try live.writeFrame(&writer.interface, input_message.items);
     try writer.interface.flush();
     const input_ack = try readControlExact(reader);
-    if (input_ack.kind != .ack or input_ack.sequence != 1) return error.ExpectedInputAck;
+    if (input_ack.kind != .ack or !sender.acknowledge(input_ack.sequence)) return error.ExpectedInputAck;
 }
 
 fn sendAutoKeyEvent(
     gpa: std.mem.Allocator,
+    sender: *input_policy.SenderState,
     writer: anytype,
     reader: anytype,
     action: frontend.KeyAction,
@@ -680,7 +685,7 @@ fn sendAutoKeyEvent(
     try protocol.encodeEnvelope(gpa, .{
         .flags = protocol.Flags.requires_ack,
         .message_type = protocol.Message.key_event,
-        .sequence = 1,
+        .sequence = try sender.takeSequence(),
         .ack_sequence = 0,
         .session_id = envelope.session_id,
         .frame_id = envelope.frame_id,
@@ -689,7 +694,7 @@ fn sendAutoKeyEvent(
     try live.writeFrame(&writer.interface, input_message.items);
     try writer.interface.flush();
     const input_ack = try readControlExact(reader);
-    if (input_ack.kind != .ack or input_ack.sequence != 1) return error.ExpectedInputAck;
+    if (input_ack.kind != .ack or !sender.acknowledge(input_ack.sequence)) return error.ExpectedInputAck;
 }
 
 fn writeInputArtifact(gpa: std.mem.Allocator, io: std.Io, path: []const u8, kind: []const u8, value: []const u8) !void {
@@ -842,12 +847,14 @@ fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !f
     if (!live.tokenEql(&zero_token, &ready.token)) return error.InvalidHandshake;
 
     const use_resync = config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect or
-        config.mode == .emacs_epxl_input or config.mode == .emacs_epxl_edit;
+        config.mode == .emacs_epxl_input or config.mode == .emacs_epxl_edit or
+        config.mode == .emacs_epxl_sequence;
     var scene = frontend.Scene.init(gpa);
     errdefer scene.deinit();
     var resync_complete = false;
     var sent_input = false;
     var sent_key = false;
+    var input_sender: input_policy.SenderState = .{};
     if (use_resync) {
         try live.writeControl(&writer.interface, .{ .kind = .resync_request, .sequence = 1 });
         try writer.interface.flush();
@@ -860,11 +867,11 @@ fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !f
             const envelope = (try protocol.decodeEnvelope(message)).envelope;
             try scene.apply(message);
             if (config.auto_input != null and !sent_input and envelope.message_type == protocol.Message.frame_update) {
-                try sendAutoTextInput(gpa, &writer, &reader, config.auto_input.?, envelope);
+                try sendAutoTextInput(gpa, &input_sender, &writer, &reader, config.auto_input.?, envelope);
                 sent_input = true;
             }
             if (config.auto_key != null and !sent_key and envelope.message_type == protocol.Message.frame_update) {
-                try sendAutoKeyEvent(gpa, &writer, &reader, config.auto_key.?, envelope);
+                try sendAutoKeyEvent(gpa, &input_sender, &writer, &reader, config.auto_key.?, envelope);
                 sent_key = true;
             }
             try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
@@ -881,11 +888,11 @@ fn runLiveFrontend(gpa: std.mem.Allocator, io: std.Io, config: *const Config) !f
         const envelope = (try protocol.decodeEnvelope(message)).envelope;
         try scene.apply(message);
         if (config.auto_input != null and !sent_input and envelope.message_type == protocol.Message.frame_update) {
-            try sendAutoTextInput(gpa, &writer, &reader, config.auto_input.?, envelope);
+            try sendAutoTextInput(gpa, &input_sender, &writer, &reader, config.auto_input.?, envelope);
             sent_input = true;
         }
         if (config.auto_key != null and !sent_key and envelope.message_type == protocol.Message.frame_update) {
-            try sendAutoKeyEvent(gpa, &writer, &reader, config.auto_key.?, envelope);
+            try sendAutoKeyEvent(gpa, &input_sender, &writer, &reader, config.auto_key.?, envelope);
             sent_key = true;
         }
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
@@ -1306,6 +1313,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-edit-smoke")) {
             config.mode = .emacs_epxl_edit;
             config.auto_key = .backspace;
+        } else if (std.mem.eql(u8, arg, "--emacs-epxl-sequence-smoke")) {
+            config.mode = .emacs_epxl_sequence;
+            config.auto_input = "X";
+            config.auto_key = .backspace;
         } else if (std.mem.eql(u8, arg, "--input-translate-smoke")) {
             config.mode = .input_translation;
         } else if (std.mem.eql(u8, arg, "--facts")) {
@@ -1494,6 +1505,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .emacs_epxl_reconnect => try runEmacsEpxlSession(gpa, io, &config, 2),
         .emacs_epxl_input => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_edit => try runEmacsEpxlSession(gpa, io, &config, 1),
+        .emacs_epxl_sequence => try runEmacsEpxlSession(gpa, io, &config, 1),
         .facts_publisher => unreachable,
     };
     defer scene.deinit();
@@ -1515,6 +1527,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             std.mem.eql(u8, scene.text.items[0].bytes, "Emacs Proto-UI") and
             scene.cursor != null and scene.cursor.?.x == 144 and scene.cursor.?.y == 1;
         if (!applied) return error.EditNotApplied;
+    }
+    if (config.mode == .emacs_epxl_sequence) {
+        const applied = scene.text.items.len >= 2 and
+            std.mem.eql(u8, scene.text.items[0].bytes, "Emacs Proto-UI") and
+            std.mem.eql(u8, scene.text.items[1].bytes, "visible ASCII text") and
+            scene.cursor != null and scene.cursor.?.x == 144 and scene.cursor.?.y == 1;
+        if (!applied) return error.SequenceInputNotApplied;
     }
     if (scene.stats.frame_updates == 0) return error.NoFrameUpdate;
     if (scene.frame_header == null) return error.NoFrameHeader;

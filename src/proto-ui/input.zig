@@ -15,6 +15,30 @@ pub const SDL_SCANCODE_UP: i32 = 82;
 pub const max_text_bytes: usize = 120;
 pub const queue_capacity: usize = 32;
 
+/// Enforces the facts-profile reverse-input sequencing contract: exactly one
+/// input may be in flight, ACKs must match that sequence, and sequence zero is
+/// reserved. The EPXL framing layer remains responsible for wire encoding.
+pub const SenderState = struct {
+    next_sequence: u64 = 1,
+    in_flight: ?u64 = null,
+    last_acknowledged: u64 = 0,
+
+    pub fn takeSequence(self: *SenderState) !u64 {
+        if (self.in_flight != null) return error.InputInFlight;
+        const sequence = self.next_sequence;
+        self.next_sequence += 1;
+        self.in_flight = sequence;
+        return sequence;
+    }
+
+    pub fn acknowledge(self: *SenderState, sequence: u64) bool {
+        if (sequence == 0 or self.in_flight != sequence) return false;
+        self.last_acknowledged = sequence;
+        self.in_flight = null;
+        return true;
+    }
+};
+
 pub const TextEvent = struct {
     buffer: [max_text_bytes]u8 = undefined,
     length: usize = 0,
@@ -104,6 +128,22 @@ test "translates only pressed unmodified bounded editing keys" {
     try std.testing.expectEqual(@as(?frontend.KeyEvent, null), translateKey(SDL_SCANCODE_BACKSPACE, true, true, 0));
     try std.testing.expectEqual(@as(?frontend.KeyEvent, null), translateKey(SDL_SCANCODE_BACKSPACE, true, false, 1));
     try std.testing.expectEqual(@as(?frontend.KeyEvent, null), translateKey(999, true, false, 0));
+}
+
+test "sender permits one monotonic in-flight input and exact ACK" {
+    var sender: SenderState = .{};
+    const first = try sender.takeSequence();
+    try std.testing.expectEqual(@as(u64, 1), first);
+    try std.testing.expectError(error.InputInFlight, sender.takeSequence());
+    try std.testing.expect(!sender.acknowledge(0));
+    try std.testing.expect(!sender.acknowledge(2));
+    try std.testing.expect(sender.acknowledge(first));
+    try std.testing.expectEqual(@as(u64, 1), sender.last_acknowledged);
+
+    const second = try sender.takeSequence();
+    try std.testing.expectEqual(@as(u64, 2), second);
+    try std.testing.expect(sender.acknowledge(second));
+    try std.testing.expectEqual(@as(u64, 2), sender.last_acknowledged);
 }
 
 test "queue copies and bounds printable text" {

@@ -788,6 +788,29 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_epxl_edit_step.dependOn(&run_sdl3_epxl_edit.step);
 
+        const run_sdl3_epxl_sequence = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-sequence-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=3000",
+        });
+        run_sdl3_epxl_sequence.setCwd(b.path("."));
+        run_sdl3_epxl_sequence.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_epxl_sequence.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_epxl_sequence.step.dependOn(step);
+        const sdl3_epxl_sequence_step = b.step(
+            "sdl3-epxl-sequence-smoke",
+            "Send two sequenced input intents through EPXL with per-input ACKs",
+        );
+        sdl3_epxl_sequence_step.dependOn(&run_sdl3_epxl_sequence.step);
+
         const run_sdl3_emacs_interactive = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/proto-ui-sdl3",
             "--emacs",

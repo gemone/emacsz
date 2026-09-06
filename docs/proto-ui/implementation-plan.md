@@ -83,6 +83,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W10b-b1 renderer-agnostic SDL draw list | Approved |
 | W8a bounded SDL input translation | Approved |
 | W8b-a persistent public-fact interactive bridge | Approved |
+| W8c-a EPXL reverse-input sequencing | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
 | W8b-a persistent public-fact bridge | Approved: real SDL frame polls public Emacs facts and applies bounded local-file actions; persistent EPXL delivery remains pending |
 
@@ -722,6 +723,7 @@ Acceptance:
 ```sh
 zig build -Dproto-ui=true proto-ui-unit
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interactive-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-sequence-smoke
 ```
 
 Review: the dedicated reviewer completed correctness, integration/build, and
@@ -729,6 +731,44 @@ boundary/docs/status passes. It verified FIFO queue ownership, atomic action
 publication and consumption, fact-snapshot lifetime and parse-failure handling,
 public Emacs action semantics, real SDL/Emacs process wiring, changed-path and
 negative inherited-C audits, and explicit non-EPXL/non-redisplay scope.
+
+#### W8c-a — EPXL reverse-input sequencing (approved)
+
+Goal: make the facts-profile reverse-input sender state explicit so multiple
+key/text intents use monotonic sequences with exactly one message in flight and
+exact ACK matching.
+
+Tasks:
+
+1. Add an adapter-owned `SenderState` for reverse-input sequence allocation and
+   ACK ownership.
+2. Reject sequence zero, stale ACKs, duplicate ACKs, and a new send while an
+   input is in flight.
+3. Replace hard-coded sequence one in the EPXL frontend auto-input path with the
+   shared sender state.
+4. Add a two-intent EPXL smoke that sends printable text then backspace, each
+   with its own ACK.
+5. Verify that the bridge applies the final transported action and renders the
+   resulting public facts.
+
+Implemented limits: the current local action bridge ACKs when an action is
+published to Emacs, not when Emacs reports that Lisp has applied it. Therefore
+the smoke verifies monotonic transport sequencing and the final action's result,
+not ordered application of every historical action. Persistent frontend session
+delivery and an Emacs apply-ACK remain W8c-b.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-sequence-smoke
+```
+
+Review: the dedicated reviewer completed correctness, integration/build, and
+boundary/docs/status passes. It verified one-in-flight ownership, monotonic
+sequence allocation, exact ACK matching and stale/duplicate rejection, text/key
+sender integration, publisher compatibility, changed-path and negative
+inherited-C audits, and explicit deferral of an Emacs apply-ACK.
 
 ### W9a — Independent SDL3 window lifecycle (approved)
 
