@@ -51,11 +51,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     _ = try sink.send(.{
         .flags = 0,
         .message_type = protocol.Message.frame_create,
-        .sequence = 0,
+        .sequence = 5,
         .ack_sequence = 0,
         .session_id = 0x1001,
         .frame_id = 1,
-        .timestamp_ns = 1,
+        .timestamp_ns = 5,
     }, &create_payload);
 
     var window_bytes: std.ArrayList(u8) = .empty;
@@ -118,7 +118,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .header = .{
             .frame_id = 1,
             .frame_generation = 1,
-            .sequence = 2,
+            .sequence = 6,
             .redisplay_generation = 1,
             .logical_x = 0,
             .logical_y = 0,
@@ -142,11 +142,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     _ = try sink.send(.{
         .flags = protocol.Flags.delta | protocol.Flags.coalescable,
         .message_type = protocol.Message.frame_update,
-        .sequence = 0,
+        .sequence = 6,
         .ack_sequence = 0,
         .session_id = 0x1001,
         .frame_id = 1,
-        .timestamp_ns = 2,
+        .timestamp_ns = 6,
     }, update_payload.items);
 
     try transport.writeReplay(gpa, io, path, sink.messages.items);

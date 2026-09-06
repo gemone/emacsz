@@ -141,7 +141,7 @@ Priority and requirement columns define the specification target. The Status and
 | Pending | No adapter-first runtime implementation yet; the protocol/design may be specified |
 | Blocked | Requires a defined runtime seam or capability before it can proceed |
 
-The current snapshot records the state through `23da8d92855`: 18 PGTK rows are Degraded, 100 are Pending, and no row yet meets the full PGTK scope. Pending rows are not failures of the protocol design; they are requirements still separating the bounded facts bridge from W12 PGTK parity and the W16 real-frame acceptance test.
+The snapshot below records the W10c-c implementation through `23da8d92855`; the W12a capability/status work updates negotiation evidence in this revision. 18 PGTK rows are Degraded, 100 are Pending, and no row yet meets the full PGTK scope. Pending rows are not failures of the protocol design; they are requirements still separating the bounded facts bridge from W12 PGTK parity and the W16 real-frame acceptance test.
 
 Priorities:
 
@@ -418,7 +418,7 @@ Snapshot: `zig-build-step-4` through `23da8d92855`. This summary is scope-sensit
 
 | Layer | Working now | Still required for parity | Evidence |
 |---|---|---|---|
-| Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry | General capability negotiation, resources, widgets, arbitrary recovery, remote safety | `proto-ui-conformance`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
+| Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry, bounded EPXL capability negotiation/status manifest | General resource/widget capability coverage, arbitrary recovery, remote safety | `proto-ui-conformance`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
 | Emacs observation | Real Emacs process publishes public frame/window geometry, bounded printable-ASCII text, point/cursor, and viewport facts | Redisplay-owned rows/glyphs/faces/fonts, full window tree, frame lifecycle, `output_proto` terminal | `proto-ui-module-smoke`, `sdl3-emacs-smoke`, `sdl3-epxl-facts-smoke` |
 | SDL3 rendering | Real SDL window, frame/window/row/cursor scene, software/GPU selection, clear/fill/debug-text list, retained cursor/text clips | Glyph atlas/runs, faces, images, widgets, true partial present, GPU timestamps | `sdl3-ui-smoke`, `sdl3-renderer-smoke`, `sdl3-pointer-smoke`, `sdl3-epxl-interactive-smoke` |
 | Input | Bounded ASCII insert/delete, arrows, Ctrl+C/Ctrl+V, left pointer sessions, vertical wheel | Full keymaps, Unicode/IME, focus, selection drag, pixel/horizontal scroll | `sdl3-input-translate-smoke`, `sdl3-epxl-input-smoke`, `sdl3-epxl-edit-smoke`, `sdl3-pointer-smoke`, `sdl3-wheel-smoke` |
@@ -432,12 +432,12 @@ The status audit contains 118 PGTK capability rows: 18 Degraded, 100 Pending, 0 
 1. **Graphic frame ownership.** The dynamic-module bridge observes a real Emacs process, but there is no `output_proto` terminal or graphic frame predicate.
 2. **Redisplay-owned rendering.** EUP carries bounded facts rows, not authoritative glyph rows, runs, faces, fonts, or redisplay damage.
 3. **Frame lifecycle and focus.** No create/delete/visibility/focus round trip meets the P0 frame contract.
-4. **Capability negotiation.** Protocol tables exist, but EPXL does not yet negotiate the full effective capability set for every feature.
+4. **Capability coverage.** The bounded EPXL profile now negotiates, but resources, widgets, and the full EUP feature table are outside that set.
 5. **Resource model.** Faces, fonts, images, atlases, and generation eviction remain specified but unimplemented.
 
 ### 12.3 Minimum next milestone
 
-Implement adapter-first capability negotiation and an implementation-status manifest gate before expanding UI features. This is the smallest W12 increment that makes effective-session scope machine-checkable, exposes unsupported features explicitly, and creates the contract needed by later frame/resource work.
+With bounded negotiation and the status manifest landed, the next adapter-first milestone is a frame-lifecycle and resource-model contract. This must define generation semantics before redisplay-owned rows, faces, or images can be transported safely.
 
 ## 13. Initial explicit limitations
 

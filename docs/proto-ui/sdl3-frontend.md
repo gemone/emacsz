@@ -466,6 +466,13 @@ without applying the text a second time.
 
 ## 16. Diagnostics
 
+The EPXL transport performs bounded capability negotiation immediately after
+the authenticated transport handshake. Both sides reject missing required
+profile features, malformed known values, sequence/ACK mismatches, or an
+effective-set hash mismatch. The generated status manifest records the declared EPXL profile feature scope,
+implementation status, required/negotiable flags, and evidence gates; it is not
+a per-session effective-set snapshot.
+
 The frontend reports:
 
 ```text

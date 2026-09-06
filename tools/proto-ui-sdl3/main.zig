@@ -12,6 +12,7 @@ const facts = proto_ui.facts;
 const renderer_policy = proto_ui.renderer;
 const input_policy = proto_ui.input;
 const protocol = proto_ui.protocol;
+const capability = proto_ui.capability;
 const transport = proto_ui.transport;
 const live = proto_ui.live;
 
@@ -694,6 +695,119 @@ fn freeConfig(gpa: std.mem.Allocator, config: *const Config) void {
     if (config.facts_path.len != 0) gpa.free(config.facts_path);
 }
 
+fn capabilitySetMessage(
+    gpa: std.mem.Allocator,
+    set: capability.Set,
+    message_type: u16,
+    sequence: u64,
+    ack_sequence: u64,
+) ![]u8 {
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(gpa);
+    try capability.encodeMessage(gpa, set, message_type, sequence, ack_sequence, &message);
+    return message.toOwnedSlice(gpa);
+}
+
+fn sendCapabilitySet(
+    gpa: std.mem.Allocator,
+    writer: anytype,
+    set: capability.Set,
+    message_type: u16,
+    sequence: u64,
+    ack_sequence: u64,
+) !void {
+    const message = try capabilitySetMessage(gpa, set, message_type, sequence, ack_sequence);
+    defer gpa.free(message);
+    try live.writeFrame(writer, message);
+    try writer.flush();
+}
+
+fn readCapabilitySet(
+    gpa: std.mem.Allocator,
+    reader: anytype,
+    expected_message_type: u16,
+    expected_sequence: u64,
+    expected_ack_sequence: u64,
+) !capability.Set {
+    const message = (try live.readFrame(reader, gpa)) orelse return error.InvalidNegotiationMessage;
+    defer gpa.free(message);
+    const payload = try protocol.decodeEnvelope(message);
+    const envelope = payload.envelope;
+    if (envelope.message_type != expected_message_type or envelope.sequence != expected_sequence or
+        envelope.ack_sequence != expected_ack_sequence or envelope.session_id != capability.session_id or
+        envelope.flags != protocol.Flags.idempotent or envelope.frame_id != 0)
+        return error.InvalidNegotiationMessage;
+    return try capability.decodeSet(gpa, payload.bytes);
+}
+
+fn sendReadyAck(
+    gpa: std.mem.Allocator,
+    writer: anytype,
+    hash: *const [capability.hash_len]u8,
+    sequence: u64,
+    ack_sequence: u64,
+) !void {
+    var message: std.ArrayList(u8) = .empty;
+    defer message.deinit(gpa);
+    try capability.encodeReadyAck(gpa, hash, sequence, ack_sequence, &message);
+    try live.writeFrame(writer, message.items);
+    try writer.flush();
+}
+
+fn readReadyAck(
+    gpa: std.mem.Allocator,
+    reader: anytype,
+    expected_sequence: u64,
+    expected_ack_sequence: u64,
+    expected_hash: *const [capability.hash_len]u8,
+) !void {
+    const message = (try live.readFrame(reader, gpa)) orelse return error.InvalidNegotiationMessage;
+    defer gpa.free(message);
+    const payload = try protocol.decodeEnvelope(message);
+    const envelope = payload.envelope;
+    if (envelope.message_type != protocol.Message.ready_ack or envelope.sequence != expected_sequence or
+        envelope.ack_sequence != expected_ack_sequence or envelope.session_id != capability.session_id or
+        envelope.flags != protocol.Flags.idempotent or envelope.frame_id != 0 or
+        payload.bytes.len != capability.hash_len)
+        return error.InvalidNegotiationMessage;
+    var mismatch: u8 = 0;
+    for (expected_hash, payload.bytes) |expected, actual| mismatch |= expected ^ actual;
+    if (mismatch != 0) return error.CapabilityHashMismatch;
+}
+
+fn negotiatePublisherSide(
+    gpa: std.mem.Allocator,
+    reader: anytype,
+    writer: anytype,
+) !capability.Negotiated {
+    const backend = capability.backendSupported();
+    try sendCapabilitySet(gpa, writer, backend, protocol.Message.capabilities, 1, 0);
+    const frontend_set = try readCapabilitySet(gpa, reader, protocol.Message.capabilities_ack, 2, 1);
+    var negotiated = try capability.negotiate(backend, frontend_set);
+    try sendCapabilitySet(gpa, writer, negotiated.effective, protocol.Message.session_ready, 3, 2);
+    try readReadyAck(gpa, reader, 4, 3, &negotiated.hash);
+    return negotiated;
+}
+
+fn reserveFrontendInputSequence(delivery: *input_policy.DeliveryJournal) void {
+    delivery.sender.next_sequence = @max(delivery.sender.next_sequence, 5);
+}
+
+fn negotiateFrontendSide(
+    gpa: std.mem.Allocator,
+    reader: anytype,
+    writer: anytype,
+) !capability.Negotiated {
+    const backend = try readCapabilitySet(gpa, reader, protocol.Message.capabilities, 1, 0);
+    const frontend_set = capability.frontendSupported();
+    try sendCapabilitySet(gpa, writer, frontend_set, protocol.Message.capabilities_ack, 2, 1);
+    const effective = try readCapabilitySet(gpa, reader, protocol.Message.session_ready, 3, 2);
+    var negotiated = try capability.negotiate(backend, frontend_set);
+    if (!std.meta.eql(effective.bits, negotiated.effective.bits)) return error.CapabilityHashMismatch;
+    try sendReadyAck(gpa, writer, &negotiated.hash, 4, 3);
+    return negotiated;
+}
+
 fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
     config.token = try readTokenFile(gpa, io, config.token_path);
     _ = std.Io.Dir.cwd().deleteFile(io, config.endpoint) catch {};
@@ -720,6 +834,7 @@ fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
     live.encodeHandshake(.{ .kind = .server_ready }, &ready);
     try writer.interface.writeAll(&ready);
     try writer.interface.flush();
+    _ = try negotiatePublisherSide(gpa, &reader.interface, &writer.interface);
 
     const messages = try transport.readReplay(gpa, io, config.replay_path);
     defer transport.freeReplay(gpa, messages);
@@ -771,7 +886,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     defer scene.deinit();
     var published: ?facts.Snapshot = null;
     defer if (published != null) published.?.deinit(gpa);
-    var input_sequence: u64 = 1;
+    var input_sequence: u64 = 5;
     const publish_duration = if (config.interactive_publisher)
         config.auto_quit_ms
     else
@@ -794,11 +909,13 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
         live.encodeHandshake(.{ .kind = .server_ready }, &ready);
         try writer.interface.writeAll(&ready);
         try writer.interface.flush();
+        const negotiated = try negotiatePublisherSide(gpa, &reader.interface, &writer.interface);
 
         const request = try readControlExact(&reader);
         if (request.kind != .resync_request or request.sequence != 1)
             return error.InvalidResyncRequest;
         scene.resetForResync();
+        scene.next_sequence = 5; // capability exchange reserved session sequences 1..4
         try live.writeControl(&writer.interface, .{ .kind = .resync_begin, .sequence = 1 });
         try writer.interface.flush();
 
@@ -820,7 +937,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
         if (published) |*previous| previous.deinit(gpa);
         published = initial_snapshot;
         var acks = live.AckTracker.init(1);
-        try sendSnapshotMessages(gpa, published.?.facts, published.?.text.lines, published.?.cursor, published.?.viewport, &scene, &acks, io, &reader, &writer, input_path, &input_sequence);
+        try sendSnapshotMessages(gpa, published.?.facts, published.?.text.lines, published.?.cursor, published.?.viewport, &scene, &acks, io, &reader, &writer, input_path, &input_sequence, negotiated.effective);
         const complete_sequence = scene.next_sequence.? - 1;
         try live.writeControl(&writer.interface, .{ .kind = .resync_complete, .sequence = complete_sequence });
         try writer.interface.flush();
@@ -857,7 +974,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
             }
             if (heartbeat_due and (!config.interactive_publisher or heartbeat_ms >= 100)) {
                 var change_acks = live.AckTracker.init(1);
-                sendSnapshotMessages(gpa, published.?.facts, published.?.text.lines, published.?.cursor, published.?.viewport, &scene, &change_acks, io, &reader, &writer, input_path, &input_sequence) catch |err| {
+                sendSnapshotMessages(gpa, published.?.facts, published.?.text.lines, published.?.cursor, published.?.viewport, &scene, &change_acks, io, &reader, &writer, input_path, &input_sequence, negotiated.effective) catch |err| {
                     // The interactive client intentionally closes at its smoke
                     // deadline; stop the healthy publisher instead of failing.
                     if (config.interactive_publisher and
@@ -1044,12 +1161,15 @@ fn awaitFrameAck(
     input_sequence: *u64,
     expected_session_id: u64,
     expected_frame_id: u32,
+    capabilities: capability.Set,
 ) !void {
     while (true) {
         const inbound = try readInbound(reader, gpa);
         switch (inbound) {
             .control => |control| {
-                if (control.kind != .ack or control.sequence != expected_sequence) return error.ExpectedAck;
+                if (control.kind != .ack or control.sequence != expected_sequence) {
+                    return error.ExpectedAck;
+                }
                 return;
             },
             .frame => |frame| {
@@ -1059,7 +1179,17 @@ fn awaitFrameAck(
                 const is_key = payload.envelope.message_type == protocol.Message.key_event;
                 const is_pointer = payload.envelope.message_type == protocol.Message.pointer_event;
                 const is_wheel = payload.envelope.message_type == protocol.Message.wheel_event;
-                if ((!is_text and !is_key and !is_pointer and !is_wheel) or
+                var copy_action = false;
+                if (is_key) {
+                    const key = try frontend.decodeKeyEvent(payload.bytes);
+                    copy_action = key.action == .copy;
+                }
+                const input_allowed = (is_text and capabilities.contains(.input_text_ascii)) or
+                    (is_key and capabilities.contains(.input_key_bounded) and
+                        (!copy_action or capabilities.contains(.clipboard_ascii_bounded))) or
+                    (is_pointer and capabilities.contains(.input_pointer_bounded)) or
+                    (is_wheel and capabilities.contains(.input_wheel_line));
+                if (!input_allowed or
                     payload.envelope.flags & protocol.Flags.requires_ack == 0 or
                     payload.envelope.ack_sequence != 0 or
                     payload.envelope.session_id != expected_session_id or
@@ -1070,8 +1200,9 @@ fn awaitFrameAck(
                     try writer.interface.flush();
                     return;
                 }
-                if (payload.envelope.sequence != input_sequence.*)
+                if (payload.envelope.sequence != input_sequence.*) {
                     return error.InvalidSequence;
+                }
                 if (is_text) {
                     const input = try frontend.decodeTextInput(payload.bytes);
                     try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "text", input.text);
@@ -1102,6 +1233,9 @@ fn awaitFrameAck(
                 try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = input_sequence.* });
                 try writer.interface.flush();
                 input_sequence.* += 1;
+                // That control ACK acknowledged the reverse-input message.  The
+                // backend frame ACK is a separate control and may arrive next.
+                continue;
             },
         }
     }
@@ -1119,6 +1253,7 @@ fn sendSnapshotMessages(
     writer: anytype,
     input_path: []const u8,
     input_sequence: *u64,
+    capabilities: capability.Set,
 ) !void {
     var messages: std.ArrayList([]const u8) = .empty;
     defer {
@@ -1131,7 +1266,7 @@ fn sendSnapshotMessages(
         try acks.markSent(envelope.sequence);
         try live.writeFrame(&writer.interface, message);
         try writer.interface.flush();
-        try awaitFrameAck(gpa, io, reader, writer, envelope.sequence, input_path, input_sequence, envelope.session_id, envelope.frame_id);
+        try awaitFrameAck(gpa, io, reader, writer, envelope.sequence, input_path, input_sequence, envelope.session_id, envelope.frame_id, capabilities);
         try acks.ack(envelope.sequence);
     }
 }
@@ -1177,6 +1312,9 @@ fn runLiveFrontend(
     if (ready.kind != .server_ready) return error.InvalidHandshake;
     var zero_token: live.Token = [_]u8{0} ** live.token_len;
     if (!live.tokenEql(&zero_token, &ready.token)) return error.InvalidHandshake;
+    const negotiated = try negotiateFrontendSide(gpa, &reader.interface, &writer.interface);
+
+    reserveFrontendInputSequence(delivery);
 
     const use_resync = config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect or
         config.mode == .emacs_epxl_recovery or config.mode == .emacs_epxl_input or
@@ -1197,6 +1335,7 @@ fn runLiveFrontend(
             const envelope = (try protocol.decodeEnvelope(message)).envelope;
             try scene.apply(message);
             if (envelope.message_type == protocol.Message.frame_update) {
+                try deliveryAllowed(delivery, negotiated.effective);
                 const outcome = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
                 if (outcome == .ack_lost) input_ack_lost = true;
             }
@@ -1218,8 +1357,10 @@ fn runLiveFrontend(
         defer gpa.free(message);
         const envelope = (try protocol.decodeEnvelope(message)).envelope;
         try scene.apply(message);
-        if (envelope.message_type == protocol.Message.frame_update)
+        if (envelope.message_type == protocol.Message.frame_update) {
+            try deliveryAllowed(delivery, negotiated.effective);
             _ = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
+        }
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
         if (use_resync and !resync_complete) return error.IncompleteResync;
@@ -1235,11 +1376,30 @@ fn boundedPointerCoordinate(value: f32) ?i32 {
     return @intFromFloat(value);
 }
 
+fn inputEventAllowed(capabilities: capability.Set, event: input_policy.TranslatedEvent) bool {
+    return switch (event) {
+        .text => capabilities.contains(.input_text_ascii),
+        .key => capabilities.contains(.input_key_bounded),
+        .pointer => capabilities.contains(.input_pointer_bounded),
+        .wheel => capabilities.contains(.input_wheel_line),
+    };
+}
+
+fn deliveryAllowed(delivery: *input_policy.DeliveryJournal, capabilities: capability.Set) !void {
+    if (delivery.pending) |event| {
+        if (!inputEventAllowed(capabilities, event)) return error.CapabilityNotNegotiated;
+    }
+    for (delivery.queue.items[0..delivery.queue.length]) |event| {
+        if (!inputEventAllowed(capabilities, event)) return error.CapabilityNotNegotiated;
+    }
+}
+
 fn pollEpxlInteractiveInput(
     delivery: *input_policy.DeliveryJournal,
     config: *const Config,
     retained: *RetainedFrame,
     gate: *renderer_policy.FrameGate,
+    capabilities: capability.Set,
     dirty: *bool,
 ) !void {
     var event: SDL_Event = undefined;
@@ -1252,14 +1412,14 @@ fn pollEpxlInteractiveInput(
                     event.key.down,
                     event.key.repeat,
                     event.key.modifiers,
-                )) {
+                ) and capabilities.contains(.clipboard_ascii_bounded)) {
                     if (try queueClipboardText(delivery)) dirty.* = true;
                 } else if (input_policy.isCopyShortcut(
                     event.key.scancode,
                     event.key.down,
                     event.key.repeat,
                     event.key.modifiers,
-                )) {
+                ) and capabilities.contains(.clipboard_ascii_bounded)) {
                     try delivery.pushKey(.{ .action = .copy });
                     dirty.* = true;
                 } else if (input_policy.translateKey(
@@ -1581,6 +1741,9 @@ fn runEpxlInteractiveFrontend(
     var zero_token: live.Token = [_]u8{0} ** live.token_len;
     if (ready.kind != .server_ready or !live.tokenEql(&zero_token, &ready.token))
         return error.InvalidHandshake;
+    const negotiated = try negotiateFrontendSide(gpa, &reader.interface, &writer.interface);
+
+    reserveFrontendInputSequence(delivery);
 
     if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
     defer SDL_Quit();
@@ -1611,8 +1774,10 @@ fn runEpxlInteractiveFrontend(
         defer gpa.free(message);
         const envelope = (try protocol.decodeEnvelope(message)).envelope;
         try scene.apply(message);
-        if (envelope.message_type == protocol.Message.frame_update)
+        if (envelope.message_type == protocol.Message.frame_update) {
+            try deliveryAllowed(delivery, negotiated.effective);
             _ = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
+        }
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
     }
@@ -1655,7 +1820,8 @@ fn runEpxlInteractiveFrontend(
         var release = mouseButtonEvent(120, 2, SDL_EVENT_MOUSE_BUTTON_UP, false);
         if (!SDL_PushEvent(&release)) return sdlFail("SDL_PushEvent");
     }
-    try pollEpxlInteractiveInput(delivery, config, &retained_frame, &frame_gate, &input_dirty);
+    try pollEpxlInteractiveInput(delivery, config, &retained_frame, &frame_gate, negotiated.effective, &input_dirty);
+    try deliveryAllowed(delivery, negotiated.effective);
 
     var quit = false;
     const started_ticks = SDL_GetTicks();
@@ -1686,10 +1852,11 @@ fn runEpxlInteractiveFrontend(
         }
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
-        pollEpxlInteractiveInput(delivery, config, &retained_frame, &frame_gate, &input_dirty) catch |err| switch (err) {
+        pollEpxlInteractiveInput(delivery, config, &retained_frame, &frame_gate, negotiated.effective, &input_dirty) catch |err| switch (err) {
             error.InteractiveQuit => quit = true,
             else => return err,
         };
+        try deliveryAllowed(delivery, negotiated.effective);
         const clipboard_bytes = std.Io.Dir.cwd().readFileAlloc(io, clipboard_path, gpa, .limited(121)) catch |err| switch (err) {
             error.FileNotFound => null,
             else => return err,
@@ -1715,6 +1882,7 @@ fn runEpxlInteractiveFrontend(
                 &frame_gate,
                 &frame_counters,
                 decision,
+                negotiated.effective,
             );
         } else {
             try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
@@ -2119,6 +2287,7 @@ fn presentSceneDamage(
     gate: *renderer_policy.FrameGate,
     counters: *renderer_policy.FrameCounters,
     decision: renderer_policy.DamageDecision,
+    capabilities: capability.Set,
 ) !void {
     var width: c_int = 0;
     var height: c_int = 0;
@@ -2133,7 +2302,8 @@ fn presentSceneDamage(
     const renderable = frameDimensionsRenderable(header.logical_width, header.logical_height);
     const texture = if (renderable) retainedFrameTexture(renderer, window, retained) else null;
     const clip: ?renderer_policy.LogicalRect = if (renderable and texture != null and
-        retained.primed and (decision.kind == .cursor or decision.kind == .text or decision.kind == .region))
+        capabilities.contains(.damage_retained_clip) and retained.primed and
+        (decision.kind == .cursor or decision.kind == .text or decision.kind == .region))
         decision.clip
     else
         null;

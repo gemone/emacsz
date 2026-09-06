@@ -460,6 +460,30 @@ pub fn build(b: *std.Build) void {
         abi_gen_step.dependOn(&install_abi_header.step);
         abi_gen_step.dependOn(&install_abi_manifest.step);
 
+        // W12a: capability status is source-authoritative and emitted as
+        // machine-readable JSON beside the non-normative ABI summary.
+        const status_gen_tool = b.addExecutable(.{
+            .name = "proto-ui-status-gen",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/status_gen.zig"),
+            }),
+        });
+        status_gen_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_status_gen = b.addRunArtifact(status_gen_tool);
+        const status_manifest = run_status_gen.addOutputFileArg("status_manifest.json");
+        const install_status_manifest = b.addInstallFile(
+            status_manifest,
+            "proto-ui/status_manifest.json",
+        );
+        const status_step = b.step(
+            "proto-ui-status",
+            "Generate the authoritative Proto-UI capability status manifest",
+        );
+        status_step.dependOn(&run_status_gen.step);
+        status_step.dependOn(&install_status_manifest.step);
+
         const conformance_tool = b.addExecutable(.{
             .name = "proto-ui-conformance",
             .root_module = b.createModule(.{
@@ -501,6 +525,8 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&run_abi_gen.step);
         boundary_step.dependOn(&install_abi_header.step);
         boundary_step.dependOn(&install_abi_manifest.step);
+        boundary_step.dependOn(&run_status_gen.step);
+        boundary_step.dependOn(&install_status_manifest.step);
         boundary_step.dependOn(&run_conformance.step);
         boundary_step.dependOn(&run_boundary_audit.step);
     }

@@ -910,6 +910,30 @@ publisher compares the token with constant-time semantics, then replies with
 `server ready` and a zero token.  Any bad magic, version, kind, or token is a
 transport failure and closes the stream.
 
+#### Capability negotiation
+
+Immediately after the transport handshake, EPXL performs a bounded EUP
+capability exchange:
+
+| Order | Message | Direction | Sequence | Ack sequence | Payload |
+|---:|---|---|---:|---:|---|
+| 1 | `CAPABILITIES` | C→F | 1 | 0 | backend capability table |
+| 2 | `CAPABILITIES_ACK` | F→C | 2 | 1 | frontend capability table |
+| 3 | `SESSION_READY` | C→F | 3 | 2 | effective capability table |
+| 4 | `READY_ACK` | F→C | 4 | 3 | 32-byte SHA-256 effective-set hash |
+
+All four envelopes use session `0x1001`, `frame_id=0`, and exactly the idempotent flag. They reserve session-wide producer sequences 1..4; the facts publisher therefore starts backend frame sequences at 5 and a fresh frontend reverse-input journal starts at 5 and reconnect uses `max(existing, 5)` so pending retries and later intents remain monotonic. The effective
+set is the name intersection of both advertised sets. Required names in the
+EPXL profile are `protocol.v1`, `transport.epxl_local`, `session.resync`,
+`frame.facts_profile`, `text.ascii_bounded`, and `renderer.sdl3`; any missing required name is
+fatal. A known EPXL capability has value `"1"`; an unknown optional name is
+ignored, while a malformed known value is fatal. The hash is canonical over all
+negotiable EUP names in feature-declaration order (name, NUL, one presence
+byte). `zig-out/proto-ui/status_manifest.json` is generated from the
+authoritative adapter source and records each profile feature's status,
+required/negotiable flags, and evidence gate. General EUP-wide negotiation for
+resources, widgets, and the remaining feature table remains future work.
+
 #### Frame
 
 After the handshake, each EUP message is:

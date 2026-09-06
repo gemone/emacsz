@@ -98,6 +98,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W10c-a damage classification baseline | Approved |
 | W10c-b cursor-only clipped redraw | Approved |
 | W10c-c bounded text-region clipping | Approved |
+| W12a EPXL capability/status manifest | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
@@ -2026,6 +2027,39 @@ full built-in check run.
 ### W12 — Complete EUP feature surface
 
 Goal: close PGTK parity gaps.
+
+#### W12a — EPXL capability/status manifest (approved)
+
+Goal: make the local EPXL feature scope explicit and machine-checkable before
+expanding the EUP feature surface.
+
+1. Define adapter-owned bounded capability descriptors with stable EUP names,
+   required flags, negotiable flags, implementation status, and evidence gate.
+2. Encode and decode standard EUP name/value capability payloads.
+3. Exchange backend capabilities, frontend capabilities, effective capabilities,
+   and a SHA-256 effective-set hash using `CAPABILITIES`,
+   `CAPABILITIES_ACK`, `SESSION_READY`, and `READY_ACK`.
+4. Reject missing required profile features, malformed known values, sequence
+   or ACK mismatch, and effective-set hash mismatch. Ignore unknown optional
+   names as required by EUP.
+5. Generate `zig-out/proto-ui/status_manifest.json` from the same
+   source-authoritative descriptors used by negotiation.
+6. Wire replay, facts, and interactive EPXL sessions to the same exchange.
+
+Implemented limits: this negotiates only the bounded EPXL profile. Resources,
+widgets, frame lifecycle, redisplay glyph rows, arbitrary capability changes,
+and full EUP feature coverage remain pending.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-boundary
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-facts-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-interactive-smoke
+```
+
+Status: approved. The dedicated reviewer completed correctness, integration/runtime, and boundary/docs/status passes; approved fixes added exact envelope-context validation, reserved monotonic session sequences, capability-gated clipboard/input/damage/renderer behavior, source-authoritative JSON manifest generation, and precise docs for reconnect sequence handling.
+
 
 Tasks:
 
