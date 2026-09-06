@@ -550,6 +550,26 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_smoke_step.dependOn(&run_sdl3_smoke.step);
 
+        const run_sdl3_renderer_smoke = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_renderer_smoke.addArg("--replay");
+        run_sdl3_renderer_smoke.addFileArg(replay_file);
+        run_sdl3_renderer_smoke.addArg("--renderer=gpu");
+        run_sdl3_renderer_smoke.addArg("--present=off");
+        run_sdl3_renderer_smoke.addArg("--auto-quit-ms=100");
+        const sdl3_renderer_smoke_step = b.step(
+            "sdl3-renderer-smoke",
+            "Negotiate a GPU renderer and verify software fallback",
+        );
+        sdl3_renderer_smoke_step.dependOn(&run_sdl3_renderer_smoke.step);
+
+        const run_sdl3_software_renderer_smoke = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_software_renderer_smoke.addArg("--replay");
+        run_sdl3_software_renderer_smoke.addFileArg(replay_file);
+        run_sdl3_software_renderer_smoke.addArg("--renderer=software");
+        run_sdl3_software_renderer_smoke.addArg("--present=adaptive");
+        run_sdl3_software_renderer_smoke.addArg("--auto-quit-ms=100");
+        sdl3_renderer_smoke_step.dependOn(&run_sdl3_software_renderer_smoke.step);
+
         const run_sdl3_live = b.addRunArtifact(sdl3_frontend);
         run_sdl3_live.addArg("--live-smoke");
         run_sdl3_live.addArg("--replay");

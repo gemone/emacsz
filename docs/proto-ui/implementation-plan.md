@@ -78,6 +78,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W9j public ASCII text observation | Approved |
 | W9k bounded ASCII text input bridge | Approved |
 | W9l public point and dynamic cursor | Approved |
+| W10a SDL renderer negotiation | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
 
 The workstream sections below retain their historical review records and
@@ -1167,17 +1168,56 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-edit-smo
 
 Goal: add optional acceleration without making it required.
 
+#### W10a — Renderer negotiation and present selection (approved)
+
+Goal: make SDL renderer selection explicit, observable, and safe on hosts with
+no GPU while allowing an operator to request GPU or a named SDL driver.
+
 Tasks:
 
-1. Add renderer tier negotiation.
-2. Add software-to-GPU renderer abstraction.
-3. Implement glyph atlas.
-4. Implement image texture cache.
-5. Implement blend/scissor drawing.
-6. Implement damage-aware redraw.
-7. Implement vsync/adaptive present.
-8. Implement atlas miss fallback.
-9. Add GPU performance counters.
+1. Add a pure renderer selection policy (`auto`, `software`, `gpu`, or a named
+   SDL driver).
+2. Classify the actual SDL renderer into Tier 0 software, Tier 1 GPU basic, or
+   Tier 2 GPU advanced.
+3. Request explicit GPU fallback: if the `gpu` driver is unavailable, create the
+   software renderer instead of failing the frontend.
+4. Parse and apply `off`, `on`, and `adaptive` present-mode requests.
+5. Report the actual renderer name, negotiated tier, and requested present mode
+   in smoke diagnostics.
+6. Add a renderer smoke gate that requests GPU, accepts software fallback on a
+   GPU-less host, and renders the same EUP replay scene.
+
+Boundary: the policy is in the adapter-owned `src/proto-ui/renderer.zig`; only
+the SDL frontend binds it to SDL renderer APIs. No inherited Emacs C/Lisp file
+changes.
+
+Status: approved. A dedicated reviewer completed three passes before commit. The GPU draw abstraction, glyph atlas, image
+texture cache, blend/scissor draw graph, damage-only redraw, and performance
+counters remain future W10 tasks.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-renderer-smoke
+```
+
+Review: the dedicated reviewer completed correctness, protocol/build/integration,
+and boundary/docs/status passes. It verified renderer lifetime, explicit
+fallback, wall-clock smoke timeouts, default-build isolation, changed-path
+audits, negative inherited-C rejection, and conservative capability reporting.
+
+#### W10b — Software-to-GPU draw abstraction (planned)
+
+Tasks:
+
+1. Add software-to-GPU renderer abstraction.
+2. Implement glyph atlas.
+3. Implement image texture cache.
+4. Implement blend/scissor drawing.
+5. Implement damage-aware redraw.
+6. Implement atlas miss fallback.
+7. Add GPU performance counters.
 
 Acceptance:
 
@@ -1418,6 +1458,7 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-input-sm
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-edit-smoke
 zig build -Dsdl3-frontend=true sdl3-ui-smoke
 zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-renderer-smoke
 ```
 
 Planned steps:

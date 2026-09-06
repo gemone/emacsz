@@ -9,6 +9,7 @@ const native_os = @import("builtin").os.tag;
 const proto_ui = @import("proto_ui");
 const frontend = proto_ui.frontend;
 const facts = proto_ui.facts;
+const renderer_policy = proto_ui.renderer;
 const protocol = proto_ui.protocol;
 const transport = proto_ui.transport;
 const live = proto_ui.live;
@@ -29,6 +30,8 @@ extern fn SDL_CreateWindow(title: [*:0]const u8, w: c_int, h: c_int, flags: SDLW
 extern fn SDL_DestroyWindow(window: *SDL_Window) void;
 extern fn SDL_CreateRenderer(window: *SDL_Window, name: ?[*:0]const u8) ?*SDL_Renderer;
 extern fn SDL_DestroyRenderer(renderer: *SDL_Renderer) void;
+extern fn SDL_GetRendererName(renderer: *SDL_Renderer) [*:0]const u8;
+extern fn SDL_SetRenderVSync(renderer: *SDL_Renderer, vsync: c_int) bool;
 extern fn SDL_GetWindowSize(window: *SDL_Window, w: *c_int, h: *c_int) void;
 extern fn SDL_SetRenderDrawColor(renderer: *SDL_Renderer, r: u8, g: u8, b: u8, a: u8) bool;
 extern fn SDL_RenderClear(renderer: *SDL_Renderer) bool;
@@ -37,6 +40,7 @@ extern fn SDL_RenderPresent(renderer: *SDL_Renderer) bool;
 extern fn SDL_RenderDebugText(renderer: *SDL_Renderer, x: f32, y: f32, text: [*:0]const u8) bool;
 extern fn SDL_PollEvent(event: *SDL_Event) bool;
 extern fn SDL_Delay(ms: c_uint) void;
+extern fn SDL_GetTicks() u64;
 extern fn SDL_GetError() [*:0]const u8;
 
 const SDL_Event = extern struct {
@@ -67,6 +71,8 @@ const Config = struct {
     resync_sessions: u32 = 1,
     auto_input: ?[]const u8 = null,
     auto_key: ?frontend.KeyAction = null,
+    renderer_request: []const u8 = "auto",
+    present_mode: []const u8 = "off",
 };
 
 const FrameFacts = facts.FrameFacts;
@@ -77,6 +83,12 @@ const SharedFacts = struct {
     version: u64 = 0,
 };
 
+const SelectedRenderer = struct {
+    handle: *SDL_Renderer,
+    tier: renderer_policy.Tier,
+    name: []const u8,
+};
+
 fn sdlFail(what: []const u8) error{SdlFailed} {
     std.debug.print("sdl3-eup-smoke: {s} failed: {s}\n", .{ what, SDL_GetError() });
     return error.SdlFailed;
@@ -85,6 +97,35 @@ fn sdlFail(what: []const u8) error{SdlFailed} {
 fn drawRect(renderer: *SDL_Renderer, rect: SDL_Rect, r: u8, g: u8, b: u8) !void {
     if (!SDL_SetRenderDrawColor(renderer, r, g, b, 255)) return sdlFail("SDL_SetRenderDrawColor");
     if (!SDL_RenderFillRect(renderer, &rect)) return sdlFail("SDL_RenderFillRect");
+}
+
+fn createRenderer(
+    gpa: std.mem.Allocator,
+    window: *SDL_Window,
+    request_value: []const u8,
+    present_value: []const u8,
+) !SelectedRenderer {
+    const request = renderer_policy.parseRequest(request_value) orelse return error.UnknownRendererPolicy;
+    const present = renderer_policy.parsePresentMode(present_value) orelse return error.UnknownPresentMode;
+    for (renderer_policy.candidates(request)) |candidate| {
+        const name_z: ?[*:0]const u8 = if (candidate) |name|
+            try std.fmt.allocPrintSentinel(gpa, "{s}", .{name}, 0)
+        else
+            null;
+        defer if (name_z) |name| gpa.free(name[0..std.mem.len(name)]);
+        const handle = SDL_CreateRenderer(window, name_z) orelse continue;
+        const actual_name: []const u8 = std.mem.span(SDL_GetRendererName(handle));
+        if (present != .off and !SDL_SetRenderVSync(handle, renderer_policy.vsyncNumber(present))) {
+            SDL_DestroyRenderer(handle);
+            return sdlFail("SDL_SetRenderVSync");
+        }
+        return .{ .handle = handle, .tier = renderer_policy.classify(actual_name), .name = actual_name };
+    }
+    return error.NoRendererAvailable;
+}
+
+fn destroyRenderer(selected: SelectedRenderer) void {
+    SDL_DestroyRenderer(selected.handle);
 }
 
 fn renderScene(scene: *frontend.Scene, renderer: *SDL_Renderer, window: *SDL_Window) !void {
@@ -780,6 +821,14 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.auto_quit_ms = std.fmt.parseInt(u32, args.next() orelse return error.InvalidAutoQuitMs, 10) catch return error.InvalidAutoQuitMs;
         } else if (std.mem.startsWith(u8, arg, quit_prefix)) {
             config.auto_quit_ms = std.fmt.parseInt(u32, arg[quit_prefix.len..], 10) catch return error.InvalidAutoQuitMs;
+        } else if (std.mem.startsWith(u8, arg, "--renderer=")) {
+            config.renderer_request = arg["--renderer=".len..];
+        } else if (std.mem.eql(u8, arg, "--renderer")) {
+            config.renderer_request = args.next() orelse return error.MissingRendererPolicy;
+        } else if (std.mem.startsWith(u8, arg, "--present=")) {
+            config.present_mode = arg["--present=".len..];
+        } else if (std.mem.eql(u8, arg, "--present")) {
+            config.present_mode = args.next() orelse return error.MissingPresentMode;
         } else if (std.mem.eql(u8, arg, "--live-smoke")) {
             config.mode = .live;
         } else if (std.mem.eql(u8, arg, "--publisher")) {
@@ -812,6 +861,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     if ((config.mode == .replay or config.mode == .live) and config.replay_path.len == 0) return error.MissingReplayPath;
     if (config.auto_quit_ms > 10_000) return error.AutoQuitMsOutOfRange;
+    if (renderer_policy.parseRequest(config.renderer_request) == null) return error.UnknownRendererPolicy;
+    if (renderer_policy.parsePresentMode(config.present_mode) == null) return error.UnknownPresentMode;
 
     var io_threaded: std.Io.Threaded = .init(gpa, .{});
     defer io_threaded.deinit();
@@ -859,16 +910,22 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         defer SDL_Quit();
         const window = SDL_CreateWindow("Emacs Proto-UI Continuous Facts", 960, 600, SDL_WINDOW_RESIZABLE) orelse return sdlFail("SDL_CreateWindow");
         defer SDL_DestroyWindow(window);
-        const renderer = SDL_CreateRenderer(window, null) orelse return sdlFail("SDL_CreateRenderer");
-        defer SDL_DestroyRenderer(renderer);
+        const selected_renderer = try createRenderer(gpa, window, config.renderer_request, config.present_mode);
+        defer destroyRenderer(selected_renderer);
+        const renderer = selected_renderer.handle;
+        std.debug.print("sdl3-emacs-smoke: renderer {s} tier={s} present={s}\n", .{
+            selected_renderer.name,
+            @tagName(selected_renderer.tier),
+            config.present_mode,
+        });
 
         var shared = SharedFacts{};
         var last_version: u64 = 0;
         var latest: FrameFacts = .{ .frame_width = 800, .frame_height = 600, .window_width = 780, .window_height = 560 };
         var snapshot_scene: ?frontend.Scene = null;
         defer if (snapshot_scene) |*scene| scene.deinit();
-        var waited_ms: u32 = 0;
-        while (waited_ms < config.auto_quit_ms) {
+        const started_ticks = SDL_GetTicks();
+        while (SDL_GetTicks() - started_ticks < config.auto_quit_ms) {
             try pollEmacsFacts(&shared, gpa, io, facts_path);
             shared.mutex.lockUncancelable(io);
             const changed = shared.version != last_version;
@@ -895,7 +952,6 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             }
             if (quit) break;
             SDL_Delay(50);
-            waited_ms += 50;
         }
         if (last_version == 0) return error.NoEmacsFacts;
         std.debug.print("sdl3-emacs-smoke: observed {d} public fact snapshot(s); lifecycle OK\n", .{last_version});
@@ -975,8 +1031,14 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     const window = SDL_CreateWindow("Emacs Proto-UI EUP Replay", 960, 600, SDL_WINDOW_RESIZABLE) orelse return sdlFail("SDL_CreateWindow");
     defer SDL_DestroyWindow(window);
 
-    const renderer = SDL_CreateRenderer(window, null) orelse return sdlFail("SDL_CreateRenderer");
-    defer SDL_DestroyRenderer(renderer);
+    const selected_renderer = try createRenderer(gpa, window, config.renderer_request, config.present_mode);
+    defer destroyRenderer(selected_renderer);
+    const renderer = selected_renderer.handle;
+    std.debug.print("sdl3-eup-smoke: renderer {s} tier={s} present={s}\n", .{
+        selected_renderer.name,
+        @tagName(selected_renderer.tier),
+        config.present_mode,
+    });
 
     try renderScene(&scene, renderer, window);
     std.debug.print("sdl3-eup-smoke: applied {d} update(s), {d} window(s), {d} row(s); auto quit in {d}ms\n", .{
@@ -987,15 +1049,14 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     });
 
     var quit = false;
-    var waited_ms: u32 = 0;
-    while (!quit and waited_ms < config.auto_quit_ms) {
+    const started_ticks = SDL_GetTicks();
+    while (!quit and SDL_GetTicks() - started_ticks < config.auto_quit_ms) {
         var event: SDL_Event = .{};
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) quit = true;
         }
         try renderScene(&scene, renderer, window);
         SDL_Delay(10);
-        waited_ms += 10;
     }
 
     std.debug.print("sdl3-eup-smoke: lifecycle OK ({s})\n", .{if (quit) "closed by quit event" else "auto timeout"});

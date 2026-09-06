@@ -52,7 +52,8 @@ The frontend may be launched by the Emacs wrapper or independently. In both case
 
 ## 4. Startup sequence
 
-1. Parse transport endpoint, session token, log level, and renderer preference.
+1. Parse transport endpoint, session token, log level, renderer preference, and
+   present-mode preference.
 2. Initialize SDL subsystems.
 3. Connect EUP transport.
 4. Send `HELLO`.
@@ -249,6 +250,20 @@ Performance target. Persistent glyph atlas, image cache, async upload, damage-on
 
 Optional. VRR, mailbox/low-latency present, GPU timestamps, zero-copy shared texture, and 120Hz+ scheduling.
 
+Current selection policy:
+
+| Request | Behavior |
+|---|---|
+| `auto` | Ask SDL for its best renderer, then classify the actual name/tier. |
+| `software` | Create the SDL software renderer. |
+| `gpu` | Try the SDL GPU renderer first; if unavailable, fall back to software. |
+| named driver | Try the requested SDL driver only. |
+
+The frontend reports the actual renderer name and capability tier. It does not
+infer GPU acceleration from a request that failed. The W10 draw-graph, atlas,
+and counters must be implemented before a Tier 1/2 claim means full production
+performance.
+
 ## 10. Input bridge
 
 ### 10.1 Keyboard
@@ -401,7 +416,8 @@ The final frontend supports at least:
 ```text
 --endpoint <path-or-address>
 --token <session-token>
---renderer software|gpu|auto
+--renderer software|gpu|auto|<sdl-driver>
+--present off|on|adaptive
 --log-level error|warn|info|debug|trace
 --replay <file>
 --width <logical-width>
@@ -410,6 +426,8 @@ The final frontend supports at least:
 ```
 
 `--replay` runs without a live Emacs connection for deterministic frontend testing.
+`--renderer` may also name an SDL driver; an unavailable named driver is an error.
+`--renderer=gpu` is the only request with automatic software fallback.
 
 ## 18. Acceptance criteria
 

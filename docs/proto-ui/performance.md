@@ -189,6 +189,10 @@ Cache exhaustion triggers eviction or quality fallback, not failure.
 
 ## 9. Instrumentation
 
+The implemented W10a smoke reports the actual SDL renderer name, negotiated
+capability tier, and requested present mode. This is lifecycle evidence, not the
+renderer benchmark evidence required for a Tier 1/2 performance claim.
+
 ### 9.1 Backend counters
 
 ```text
