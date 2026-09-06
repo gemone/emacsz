@@ -10,6 +10,7 @@ const proto_ui = @import("proto_ui");
 const frontend = proto_ui.frontend;
 const facts = proto_ui.facts;
 const renderer_policy = proto_ui.renderer;
+const input_policy = proto_ui.input;
 const protocol = proto_ui.protocol;
 const transport = proto_ui.transport;
 const live = proto_ui.live;
@@ -17,6 +18,8 @@ const live = proto_ui.live;
 const SDL_INIT_VIDEO: c_uint = 0x0000_0020;
 const SDL_WINDOW_RESIZABLE: c_ulonglong = 0x0000_0020;
 const SDL_EVENT_QUIT: c_uint = 0x100;
+const SDL_EVENT_KEY_DOWN: c_uint = 0x300;
+const SDL_EVENT_TEXT_INPUT: c_uint = 0x303;
 
 const SDL_Window = opaque {};
 const SDL_Renderer = opaque {};
@@ -39,16 +42,72 @@ extern fn SDL_RenderFillRect(renderer: *SDL_Renderer, rect: ?*const SDL_Rect) bo
 extern fn SDL_RenderPresent(renderer: *SDL_Renderer) bool;
 extern fn SDL_RenderDebugText(renderer: *SDL_Renderer, x: f32, y: f32, text: [*:0]const u8) bool;
 extern fn SDL_PollEvent(event: *SDL_Event) bool;
+extern fn SDL_PushEvent(event: *SDL_Event) bool;
 extern fn SDL_Delay(ms: c_uint) void;
+extern fn SDL_StartTextInput(window: *SDL_Window) bool;
 extern fn SDL_GetTicks() u64;
 extern fn SDL_GetPerformanceCounter() u64;
 extern fn SDL_GetPerformanceFrequency() u64;
 extern fn SDL_GetError() [*:0]const u8;
 
-const SDL_Event = extern struct {
-    type: c_uint = 0,
-    padding: [124]u8 align(8) = [_]u8{0} ** 124,
+const SDL_KeyboardEvent = extern struct {
+    type: c_uint,
+    reserved: c_uint,
+    timestamp: u64,
+    window_id: c_uint,
+    which: c_uint,
+    scancode: i32,
+    key: c_uint,
+    modifiers: u16,
+    raw: u16,
+    down: bool,
+    repeat: bool,
 };
+
+const SDL_TextInputEvent = extern struct {
+    type: c_uint,
+    reserved: c_uint,
+    timestamp: u64,
+    window_id: c_uint,
+    text: ?[*:0]const u8,
+};
+
+const SDL_Event = extern union {
+    type: c_uint,
+    key: SDL_KeyboardEvent,
+    text: SDL_TextInputEvent,
+    padding: [128]u8,
+};
+
+fn keyboardEvent(scancode: i32, down: bool, modifiers: u16) SDL_Event {
+    var event: SDL_Event = undefined;
+    event.key = .{
+        .type = SDL_EVENT_KEY_DOWN,
+        .reserved = 0,
+        .timestamp = 0,
+        .window_id = 0,
+        .which = 0,
+        .scancode = scancode,
+        .key = 0,
+        .modifiers = modifiers,
+        .raw = 0,
+        .down = down,
+        .repeat = false,
+    };
+    return event;
+}
+
+fn textEvent(text: [*:0]const u8) SDL_Event {
+    var event: SDL_Event = undefined;
+    event.text = .{
+        .type = SDL_EVENT_TEXT_INPUT,
+        .reserved = 0,
+        .timestamp = 0,
+        .window_id = 0,
+        .text = text,
+    };
+    return event;
+}
 
 const SDL_Rect = extern struct {
     x: c_int,
@@ -57,7 +116,7 @@ const SDL_Rect = extern struct {
     h: c_int,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_input, emacs_epxl_edit };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_input, emacs_epxl_edit, input_translation };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -84,6 +143,67 @@ const SharedFacts = struct {
     facts: ?FrameFacts = null,
     version: u64 = 0,
 };
+
+fn runInputTranslationSmoke() !void {
+    if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
+    defer SDL_Quit();
+    const window = SDL_CreateWindow("Emacs Proto-UI Input Translation", 320, 200, SDL_WINDOW_RESIZABLE) orelse return sdlFail("SDL_CreateWindow");
+    defer SDL_DestroyWindow(window);
+    if (!SDL_StartTextInput(window)) return sdlFail("SDL_StartTextInput");
+
+    var queue: input_policy.Queue = .{};
+    var synthetic = [_]SDL_Event{
+        keyboardEvent(input_policy.SDL_SCANCODE_BACKSPACE, true, 0),
+        keyboardEvent(input_policy.SDL_SCANCODE_LEFT, true, 0),
+        keyboardEvent(input_policy.SDL_SCANCODE_RIGHT, true, 0),
+        keyboardEvent(input_policy.SDL_SCANCODE_UP, true, 0),
+        keyboardEvent(input_policy.SDL_SCANCODE_DOWN, true, 0),
+        keyboardEvent(input_policy.SDL_SCANCODE_BACKSPACE, true, 1),
+        textEvent("Emacs"),
+    };
+    for (&synthetic) |*event| {
+        if (!SDL_PushEvent(event)) return sdlFail("SDL_PushEvent");
+    }
+
+    var recognized: usize = 0;
+    var polls: usize = 0;
+    const expected_accepted: usize = 6;
+    while (recognized < expected_accepted and polls < 256) : (polls += 1) {
+        var event: SDL_Event = undefined;
+        if (!SDL_PollEvent(&event)) {
+            SDL_Delay(1);
+            continue;
+        }
+        switch (event.type) {
+            SDL_EVENT_QUIT => return error.UnexpectedQuit,
+            SDL_EVENT_KEY_DOWN => {
+                if (input_policy.translateKey(
+                    event.key.scancode,
+                    event.key.down,
+                    event.key.repeat,
+                    event.key.modifiers,
+                )) |key| {
+                    try queue.pushKey(key);
+                    recognized += 1;
+                }
+            },
+            SDL_EVENT_TEXT_INPUT => {
+                if (input_policy.translateText(event.text.text)) |text| {
+                    try queue.pushText(text.bytes());
+                    recognized += 1;
+                }
+            },
+            else => {},
+        }
+    }
+
+    if (recognized != expected_accepted) return error.InputTranslationIncomplete;
+    if (queue.length != expected_accepted) return error.InputQueueCount;
+    std.debug.print(
+        "sdl3-input-smoke: translated {d} keys and {d} text event; rejected {d} unsupported SDL event(s); lifecycle OK\n",
+        .{ queue.length - 1, 1, synthetic.len - recognized },
+    );
+}
 
 const SelectedRenderer = struct {
     handle: *SDL_Renderer,
@@ -196,7 +316,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     _ = std.Io.Dir.cwd().deleteFile(io, config.endpoint) catch {};
     const eval = try std.fmt.allocPrint(
         gpa,
-        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let* ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\")))) (buffer (window-buffer window)) (facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (lines (split-string text \"\\n\")) (point (with-current-buffer buffer (window-point window))) (cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column)))))) (with-current-buffer buffer (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII textZ\") (redisplay)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.2) (set-frame-size frame 240 30) (while t (when (file-readable-p input-path) (let ((action (split-string (with-temp-buffer (insert-file-contents input-path) (buffer-string)) \"\\n\" t))) (if (and (= (length action) 2) (string= (nth 0 action) \"key\") (string= (nth 1 action) \"backspace\")) (with-current-buffer buffer (goto-char (point-max)) (delete-char -1) (set-window-point window (point)) (redisplay)) (when (and (= (length action) 2) (string= (nth 0 action) \"text\") (> (length (nth 1 action)) 0)) (with-current-buffer buffer (goto-char (point-min)) (insert (nth 1 action)) (set-window-point window (point)) (redisplay)))) (delete-file input-path))) (setq text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (setq lines (split-string text \"\\n\")) (setq point (with-current-buffer buffer (window-point window))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column))))) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.1))))",
+        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let* ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\")))) (buffer (window-buffer window)) (facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (lines (split-string text \"\\n\")) (point (with-current-buffer buffer (window-point window))) (cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column)))))) (with-current-buffer buffer (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII textZ\") (redisplay)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.2) (set-frame-size frame 240 30) (while t (when (file-readable-p input-path) (let ((action (split-string (with-temp-buffer (insert-file-contents input-path) (buffer-string)) \"\\n\" t))) (cond ((and (= (length action) 2) (string= (nth 0 action) \"key\") (string= (nth 1 action) \"backspace\")) (with-current-buffer buffer (goto-char (point-max)) (delete-char -1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 2) (string= (nth 0 action) \"key\") (string= (nth 1 action) \"cursor-left\")) (with-current-buffer buffer (backward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 2) (string= (nth 0 action) \"key\") (string= (nth 1 action) \"cursor-right\")) (with-current-buffer buffer (forward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 2) (string= (nth 0 action) \"key\") (string= (nth 1 action) \"cursor-up\")) (with-current-buffer buffer (previous-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 2) (string= (nth 0 action) \"key\") (string= (nth 1 action) \"cursor-down\")) (with-current-buffer buffer (next-line 1) (set-window-point window (point)) (redisplay))) (when (and (= (length action) 2) (string= (nth 0 action) \"text\") (> (length (nth 1 action)) 0)) (with-current-buffer buffer (goto-char (point-min)) (insert (nth 1 action)) (set-window-point window (point)) (redisplay)))) (delete-file input-path))) (setq text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (setq lines (split-string text \"\\n\")) (setq point (with-current-buffer buffer (window-point window))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column))))) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.1))))",
         .{ config.module_path, config.facts_path, input_path },
     );
     defer gpa.free(eval);
@@ -434,8 +554,14 @@ fn awaitFrameAck(
                     try writeInputArtifact(gpa, io, input_path, "text", input.text);
                 } else {
                     const event = try frontend.decodeKeyEvent(payload.bytes);
-                    if (event.action != .backspace) return error.Unsupported;
-                    try writeInputArtifact(gpa, io, input_path, "key", "backspace");
+                    const action_name: []const u8 = switch (event.action) {
+                        .backspace => "backspace",
+                        .cursor_left => "cursor-left",
+                        .cursor_right => "cursor-right",
+                        .cursor_up => "cursor-up",
+                        .cursor_down => "cursor-down",
+                    };
+                    try writeInputArtifact(gpa, io, input_path, "key", action_name);
                 }
                 try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = input_sequence.* });
                 try writer.interface.flush();
@@ -967,6 +1093,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-edit-smoke")) {
             config.mode = .emacs_epxl_edit;
             config.auto_key = .backspace;
+        } else if (std.mem.eql(u8, arg, "--input-translate-smoke")) {
+            config.mode = .input_translation;
         } else if (std.mem.eql(u8, arg, "--facts")) {
             try setString(gpa, &config.facts_path, args.next() orelse return error.MissingFactsPath);
         } else {
@@ -989,6 +1117,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         if (config.token_path.len == 0) return error.MissingTokenPath;
         config.token = try readTokenFile(gpa, io, config.token_path);
         try runPublisher(gpa, io, &config);
+        return;
+    }
+
+    if (config.mode == .input_translation) {
+        try runInputTranslationSmoke();
         return;
     }
 
@@ -1062,7 +1195,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                 frame_gate.dirty = true;
             }
             var quit = false;
-            var event: SDL_Event = .{};
+            var event: SDL_Event = undefined;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) {
                     quit = true;
@@ -1134,6 +1267,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         },
         .publisher => unreachable,
         .emacs => unreachable,
+        .input_translation => unreachable,
         .emacs_epxl => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_reconnect => try runEmacsEpxlSession(gpa, io, &config, 2),
         .emacs_epxl_input => try runEmacsEpxlSession(gpa, io, &config, 1),
@@ -1195,7 +1329,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     var quit = false;
     const started_ticks = SDL_GetTicks();
     while (!quit and SDL_GetTicks() - started_ticks < config.auto_quit_ms) {
-        var event: SDL_Event = .{};
+        var event: SDL_Event = undefined;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) {
                 quit = true;

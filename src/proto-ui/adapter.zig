@@ -118,10 +118,11 @@ pub const integration_points = [_]IntegrationPoint{
     .{ .id = "emacs_module_seam", .owner = .adapter, .status = .partial, .summary = "opt-in public frame/window fact observation and EUP/SDL3 snapshot bridge; full display capture and live publishing pending" },
     .{ .id = "normal_rif_streaming", .owner = .adapter, .status = .blocked, .summary = "normal-RIF streaming pending thin-shim embedding" },
     .{ .id = "build_embedding", .owner = .build, .status = .designed, .summary = "zig-build generated manifest and adapter linkage" },
-    .{ .id = "sdl3_frontend", .owner = .frontend, .status = .partial, .summary = "SDL3 validates continuous public Emacs facts as EUP snapshots; EPXL streaming, facts text/cursor, bounded ASCII text, and pressed unmodified backspace are implemented, while shaped text, keyboard/keymap/IME input, and Emacs frames pending" },
+    .{ .id = "sdl3_frontend", .owner = .frontend, .status = .partial, .summary = "SDL3 validates continuous public Emacs facts as EUP snapshots; EPXL streaming, facts text/cursor, bounded ASCII text, and pressed unmodified backspace and cursor actions are implemented, while shaped text, keyboard/keymap/IME input, and Emacs frames pending" },
     .{ .id = "renderer_selection", .owner = .frontend, .status = .partial, .summary = "adapter-owned auto/software/GPU/named selection policy, actual-tier classification, GPU-to-software fallback, and present-mode request; GPU draw graph and counters pending" },
     .{ .id = "frame_pacing", .owner = .frontend, .status = .partial, .summary = "dirty/resize-aware full-frame presentation gate with present/skip and frontend frame-path counters; rectangle damage and GPU counters pending" },
     .{ .id = "draw_list", .owner = .frontend, .status = .partial, .summary = "reusable backend-neutral clear/fill/debug-text command list executed by SDL software and GPU-backed renderers; glyph atlas, images, scissor/blend, rectangle damage, and native GPU counters pending" },
+    .{ .id = "input_translation", .owner = .frontend, .status = .partial, .summary = "bounded SDL key/text translation queue for backspace/cursor and printable ASCII; modifiers, Unicode, pointer, focus, and persistent session delivery pending" },
 };
 
 pub const ManifestIssue = struct {

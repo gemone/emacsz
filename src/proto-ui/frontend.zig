@@ -89,6 +89,10 @@ pub const TextInput = struct {
 
 pub const KeyAction = enum(u16) {
     backspace = 1,
+    cursor_left = 2,
+    cursor_right = 3,
+    cursor_up = 4,
+    cursor_down = 5,
 };
 
 pub const KeyEvent = struct {
@@ -345,9 +349,16 @@ pub fn encodeKeyEvent(a: std.mem.Allocator, event: KeyEvent, out: *std.ArrayList
 pub fn decodeKeyEvent(bytes: []const u8) Error!KeyEvent {
     if (bytes.len != 4) return Error.InvalidTable;
     const action_value = std.mem.readInt(u16, bytes[0..2], .little);
-    if (action_value != @intFromEnum(KeyAction.backspace)) return Error.InvalidTable;
+    const action: KeyAction = switch (action_value) {
+        1 => .backspace,
+        2 => .cursor_left,
+        3 => .cursor_right,
+        4 => .cursor_up,
+        5 => .cursor_down,
+        else => return Error.InvalidTable,
+    };
     if (bytes[2] != 1 or bytes[3] != 0) return Error.Unsupported;
-    return .{ .action = .backspace, .state = bytes[2], .modifiers = bytes[3] };
+    return .{ .action = action, .state = bytes[2], .modifiers = bytes[3] };
 }
 
 pub fn decodePresentHint(bytes: []const u8) Error!PresentHint {
@@ -881,7 +892,7 @@ test "text input codec validates bounded printable ASCII" {
     try std.testing.expectError(Error.InvalidTable, encodeTextInput(a, .{ .text = oversized[0..] }, &bytes));
 }
 
-test "key event codec accepts only pressed unmodified backspace" {
+test "key event codec validates bounded editing actions" {
     const a = std.testing.allocator;
     var bytes: std.ArrayList(u8) = .empty;
     defer bytes.deinit(a);
@@ -899,7 +910,7 @@ test "key event codec accepts only pressed unmodified backspace" {
 
     var invalid: std.ArrayList(u8) = .empty;
     defer invalid.deinit(a);
-    try invalid.appendSlice(a, &.{ 2, 0, 1, 0 });
+    try invalid.appendSlice(a, &.{ 99, 0, 1, 0 });
     try std.testing.expectError(Error.InvalidTable, decodeKeyEvent(invalid.items));
     invalid.items[0] = 1;
     invalid.items[2] = 0;
@@ -907,4 +918,15 @@ test "key event codec accepts only pressed unmodified backspace" {
     invalid.items[2] = 1;
     invalid.items[3] = 1;
     try std.testing.expectError(Error.Unsupported, decodeKeyEvent(invalid.items));
+}
+
+test "key event codec round trips bounded cursor actions" {
+    const a = std.testing.allocator;
+    inline for ([_]KeyAction{ .cursor_left, .cursor_right, .cursor_up, .cursor_down }) |action| {
+        var bytes: std.ArrayList(u8) = .empty;
+        defer bytes.deinit(a);
+        try encodeKeyEvent(a, .{ .action = action }, &bytes);
+        const decoded = try decodeKeyEvent(bytes.items);
+        try std.testing.expectEqual(action, decoded.action);
+    }
 }

@@ -276,6 +276,13 @@ Required fields include physical key, logical key, platform key, Unicode text, m
 
 The frontend does not resolve Emacs key bindings.
 
+W8a implements the first bounded translation policy: pressed, unmodified
+backspace and cursor-direction keys map to facts-profile `KEY_EVENT`; printable
+ASCII `TEXT_INPUT` is copied into a fixed queue. Key release, repeat, modifiers,
+empty/non-printable/oversized text, and queue overflow are rejected. A synthetic
+SDL event smoke verifies this path. Persistent session delivery and the remaining
+keyboard surface are pending.
+
 ### 10.2 Mouse and wheel
 
 SDL mouse events map to `POINTER_EVENT`.

@@ -81,6 +81,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W10a SDL renderer negotiation | Approved |
 | W10b-a change-aware present and frontend counters | Approved |
 | W10b-b1 renderer-agnostic SDL draw list | Approved |
+| W8a bounded SDL input translation | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
 
 The workstream sections below retain their historical review records and
@@ -648,6 +649,45 @@ Review gates:
 2. Device ordering.
 3. No frontend-owned command policy.
 
+#### W8a — Bounded SDL input translation (approved)
+
+Goal: translate a deliberately narrow set of SDL keyboard and text events into
+the existing facts-profile EUP input messages before integrating a persistent
+interactive session.
+
+Tasks:
+
+1. Add adapter-owned SDL scancode translation for pressed, unmodified
+   `backspace` and the four cursor direction keys.
+2. Copy bounded printable `TEXT_INPUT` text into a fixed event queue.
+3. Reject key release, auto-repeat, any modifier, empty/non-printable/oversized
+   text, and queue overflow.
+4. Expand the facts-profile key action codes to `1` through `5`.
+5. Extend the EPXL artifact bridge from backspace-only to backspace and cursor
+   motion.
+6. Add an SDL synthetic-event smoke that pushes one modified key, five accepted
+   editing keys, and printable text, then verifies the translated queue.
+
+Implemented limits: this is translation and transport-policy preparation, not a
+persistent interactive Emacs frame. Pointer, wheel, focus, IME, Unicode text,
+keymaps, modifiers, repeats, commands, and full session integration remain
+pending.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-input-translate-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-edit-smoke
+```
+
+Review: the dedicated reviewer completed correctness, integration/build, and
+boundary/docs/status passes. It verified scancode/modifier/state mapping,
+bounded text copies and queue limits, key-codec action validation, EPXL reverse
+ACK sequencing, artifact action semantics, SDL event layout assumptions,
+default isolation, changed-path and negative inherited-C audits, and explicit
+deferred-scope reporting.
+
 ### W9a — Independent SDL3 window lifecycle (approved)
 
 Goal: validate the real OS window, renderer selection, event pump, and clean
@@ -1202,6 +1242,7 @@ Acceptance:
 ```sh
 zig build -Dproto-ui=true proto-ui-unit
 zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-renderer-smoke
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-input-translate-smoke
 ```
 
 Review: the dedicated reviewer completed correctness, protocol/build/integration,
