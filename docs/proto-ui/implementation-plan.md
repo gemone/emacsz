@@ -85,6 +85,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8b-a persistent public-fact interactive bridge | Approved |
 | W8c-a EPXL reverse-input sequencing | Approved |
 | W8c-b Emacs apply-ACK | Approved |
+| W10b-b2a bounded glyph-atlas policy | Approved |
 | W11a bounded clipboard paste | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
 | W8b-a persistent public-fact bridge | Approved: real SDL frame polls public Emacs facts and applies bounded local-file actions; persistent EPXL delivery remains pending |
@@ -1444,29 +1445,36 @@ draw-list ownership and reset capacity, borrowed-text safety, software/GPU
 execution, counter accumulation, default-build isolation, changed-path audits,
 negative inherited-C rejection, and conservative deferred-scope reporting.
 
-#### W10b-b2 — Glyph atlas and texture resources (planned)
+#### W10b-b2a — Bounded glyph-atlas policy (approved)
+
+Goal: establish deterministic atlas placement/replacement state and counters
+before allocating backend textures or rendering glyph runs.
 
 Tasks:
 
-1. Implement glyph atlas.
-2. Implement image texture cache.
-3. Implement blend/scissor drawing.
-4. Implement rectangle-level damage-aware redraw.
-5. Implement atlas miss fallback.
-6. Add GPU submit and device-loss counters.
+1. Add adapter-owned `GlyphKey`, `GlyphRect`, `GlyphAtlasEntry`, and
+   `GlyphAtlas`.
+2. Reject zero atlas capacity and zero-width/height glyph rectangles.
+3. Use generation-based LRU replacement and expose hit/miss/insert/update/evict
+   counters.
+4. Cover lookup, insertion, update, eviction, and counter behavior with tests.
+
+Implemented limits: this is atlas state policy only. It does not rasterize glyphs,
+allocate SDL/GPU textures, upload pixels, process glyph-run resources, or claim
+Tier 1/2 performance.
 
 Acceptance:
 
-1. GPU unavailable -> software fallback.
-2. GPU available -> renderer reports actual tier.
-3. Typing/scroll meet Tier 1 performance baseline.
-4. No stale pixels after damage.
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+```
 
-Review gates:
-
-1. Renderer fallback correctness.
-2. GPU lifecycle/device-loss safety.
-3. Performance evidence.
+Review: the dedicated reviewer completed correctness, integration/build, and
+boundary/docs/status passes, then approved fixes for monotonic generation on
+fresh insertion, LRU eviction coverage, in-place update testing, and a duplicated
+W11 heading. Final checks verified exact key identity, bounded capacity and rect
+validation, counters, default isolation, changed-path audits, negative
+inherited-C rejection, and conservative non-texture scope.
 
 ### W11 — Desktop integration
 

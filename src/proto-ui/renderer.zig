@@ -72,6 +72,134 @@ pub const FrameCounters = struct {
     }
 };
 
+/// Identity of a rasterized glyph in the future texture atlas. Font/glyph IDs
+/// are assigned by the adapter once glyph-run resources are implemented.
+pub const GlyphKey = struct {
+    font_id: u32,
+    glyph_id: u32,
+    size_px: u16,
+    variation_hash: u64,
+
+    pub fn eql(self: GlyphKey, other: GlyphKey) bool {
+        return self.font_id == other.font_id and self.glyph_id == other.glyph_id and
+            self.size_px == other.size_px and self.variation_hash == other.variation_hash;
+    }
+};
+
+pub const GlyphRect = struct {
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+
+    pub fn valid(self: GlyphRect) bool {
+        return self.width > 0 and self.height > 0;
+    }
+};
+
+pub const GlyphAtlasEntry = struct {
+    key: GlyphKey,
+    rect: GlyphRect,
+    last_use_generation: u64 = 0,
+};
+
+pub const AtlasCounters = struct {
+    lookups: u64 = 0,
+    hits: u64 = 0,
+    misses: u64 = 0,
+    inserts: u64 = 0,
+    updates: u64 = 0,
+    evictions: u64 = 0,
+};
+
+pub const GlyphAtlasError = error{
+    InvalidGlyphRect,
+    AtlasCapacityRequired,
+};
+
+/// A bounded, adapter-owned glyph-atlas placement policy. This slice owns only
+/// keys, rectangles, LRU generations, and counters; backend texture allocation
+/// and upload are future W10 work.
+pub const GlyphAtlas = struct {
+    allocator: std.mem.Allocator,
+    entries: []GlyphAtlasEntry,
+    length: usize = 0,
+    capacity: usize,
+    generation: u64 = 0,
+    counters: AtlasCounters = .{},
+
+    pub fn init(allocator: std.mem.Allocator, capacity: usize) !GlyphAtlas {
+        if (capacity == 0) return GlyphAtlasError.AtlasCapacityRequired;
+        const entries = try allocator.alloc(GlyphAtlasEntry, capacity);
+        for (entries) |*entry| entry.* = .{
+            .key = .{ .font_id = 0, .glyph_id = 0, .size_px = 0, .variation_hash = 0 },
+            .rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+            .last_use_generation = 0,
+        };
+        return .{ .allocator = allocator, .entries = entries, .capacity = capacity };
+    }
+
+    pub fn deinit(self: *GlyphAtlas) void {
+        self.allocator.free(self.entries);
+    }
+
+    pub fn beginFrame(self: *GlyphAtlas) void {
+        self.generation += 1;
+    }
+
+    pub fn lookup(self: *GlyphAtlas, key: GlyphKey) ?GlyphRect {
+        self.counters.lookups += 1;
+        for (self.entries[0..self.length]) |*entry| {
+            if (entry.key.eql(key)) {
+                self.generation += 1;
+                entry.last_use_generation = self.generation;
+                self.counters.hits += 1;
+                return entry.rect;
+            }
+        }
+        self.counters.misses += 1;
+        return null;
+    }
+
+    pub fn insert(self: *GlyphAtlas, key: GlyphKey, rect: GlyphRect) !void {
+        if (!rect.valid()) return GlyphAtlasError.InvalidGlyphRect;
+        for (self.entries[0..self.length]) |*entry| {
+            if (entry.key.eql(key)) {
+                self.generation += 1;
+                entry.rect = rect;
+                entry.last_use_generation = self.generation;
+                self.counters.updates += 1;
+                return;
+            }
+        }
+
+        self.generation += 1;
+        if (self.length < self.capacity) {
+            self.entries[self.length] = .{
+                .key = key,
+                .rect = rect,
+                .last_use_generation = self.generation,
+            };
+            self.length += 1;
+            self.counters.inserts += 1;
+            return;
+        }
+
+        var oldest_index: usize = 0;
+        for (self.entries[1..], 1..) |entry, index| {
+            if (entry.last_use_generation < self.entries[oldest_index].last_use_generation)
+                oldest_index = index;
+        }
+        self.entries[oldest_index] = .{
+            .key = key,
+            .rect = rect,
+            .last_use_generation = self.generation,
+        };
+        self.counters.evictions += 1;
+        self.counters.inserts += 1;
+    }
+};
+
 pub const Color = struct {
     r: u8,
     g: u8,
@@ -270,6 +398,54 @@ test "frame counters separate presents from skipped polls" {
     try std.testing.expectEqual(@as(u64, 1), counters.clear_commands_total);
     try std.testing.expectEqual(@as(u64, 1), counters.fill_commands_total);
     try std.testing.expectEqual(@as(u64, 1), counters.text_commands_total);
+}
+
+test "glyph atlas inserts looks up and evicts least recent use" {
+    var atlas = try GlyphAtlas.init(std.testing.allocator, 2);
+    defer atlas.deinit();
+    const first: GlyphKey = .{ .font_id = 1, .glyph_id = 10, .size_px = 14, .variation_hash = 1 };
+    const second: GlyphKey = .{ .font_id = 1, .glyph_id = 11, .size_px = 14, .variation_hash = 1 };
+    const third: GlyphKey = .{ .font_id = 1, .glyph_id = 12, .size_px = 14, .variation_hash = 1 };
+
+    atlas.beginFrame();
+    try std.testing.expect(atlas.lookup(first) == null);
+    try atlas.insert(first, .{ .x = 0, .y = 0, .width = 8, .height = 12 });
+    atlas.beginFrame();
+    try std.testing.expectEqual(GlyphRect{ .x = 0, .y = 0, .width = 8, .height = 12 }, atlas.lookup(first).?);
+
+    atlas.beginFrame();
+    try atlas.insert(second, .{ .x = 8, .y = 0, .width = 8, .height = 12 });
+    try atlas.insert(third, .{ .x = 16, .y = 0, .width = 8, .height = 12 });
+
+    try std.testing.expectEqual(@as(u64, 1), atlas.counters.evictions);
+    try std.testing.expect(atlas.lookup(first) == null);
+    try std.testing.expect(atlas.lookup(second) != null);
+    try std.testing.expect(atlas.lookup(third) != null);
+    try std.testing.expectEqual(@as(u64, 5), atlas.counters.lookups);
+    try std.testing.expectEqual(@as(u64, 3), atlas.counters.hits);
+    try std.testing.expectEqual(@as(u64, 2), atlas.counters.misses);
+}
+
+test "glyph atlas rejects zero capacity and invalid rectangles" {
+    try std.testing.expectError(GlyphAtlasError.AtlasCapacityRequired, GlyphAtlas.init(std.testing.allocator, 0));
+    var atlas = try GlyphAtlas.init(std.testing.allocator, 1);
+    defer atlas.deinit();
+    const key: GlyphKey = .{ .font_id = 1, .glyph_id = 1, .size_px = 10, .variation_hash = 0 };
+    try std.testing.expectError(GlyphAtlasError.InvalidGlyphRect, atlas.insert(key, .{ .x = 0, .y = 0, .width = 0, .height = 8 }));
+}
+
+test "glyph atlas updates existing key without eviction" {
+    var atlas = try GlyphAtlas.init(std.testing.allocator, 2);
+    defer atlas.deinit();
+    const key: GlyphKey = .{ .font_id = 3, .glyph_id = 30, .size_px = 16, .variation_hash = 9 };
+    try atlas.insert(key, .{ .x = 1, .y = 2, .width = 8, .height = 12 });
+    try atlas.insert(key, .{ .x = 3, .y = 4, .width = 9, .height = 13 });
+
+    try std.testing.expectEqual(@as(usize, 1), atlas.length);
+    try std.testing.expectEqual(GlyphRect{ .x = 3, .y = 4, .width = 9, .height = 13 }, atlas.lookup(key).?);
+    try std.testing.expectEqual(@as(u64, 1), atlas.counters.inserts);
+    try std.testing.expectEqual(@as(u64, 1), atlas.counters.updates);
+    try std.testing.expectEqual(@as(u64, 0), atlas.counters.evictions);
 }
 
 test "draw list records and resets backend-neutral commands" {

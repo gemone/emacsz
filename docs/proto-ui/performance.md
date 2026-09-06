@@ -189,7 +189,9 @@ Cache exhaustion triggers eviction or quality fallback, not failure.
 
 ## 9. Instrumentation
 
-The implemented W10a smoke reports the actual SDL renderer name, negotiated
+W10b-b2a defines bounded glyph-atlas hit/miss/insert/update/eviction counters and
+LRU replacement. These counters are not yet wired to SDL texture uploads or a
+glyph-run renderer. The implemented W10a smoke reports the actual SDL renderer name, negotiated
 capability tier, and requested present mode. W10b-a adds frontend
 `presented_frames`, `skipped_frames`, total/last full-frame path nanoseconds, and
 the last monotonic present timestamp. W10b-b1 adds accumulated clear, fill, and

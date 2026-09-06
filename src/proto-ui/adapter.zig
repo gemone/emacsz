@@ -125,6 +125,7 @@ pub const integration_points = [_]IntegrationPoint{
     .{ .id = "input_translation", .owner = .frontend, .status = .partial, .summary = "bounded SDL key/text translation queue for backspace/cursor and printable ASCII; modifiers, Unicode, pointer, focus, persistent EPXL delivery, and full keyboard support pending" },
     .{ .id = "emacs_interactive_bridge", .owner = .frontend, .status = .partial, .summary = "persistent real Emacs public-fact window with atomic bounded local-file actions; redisplay-owned glyphs and persistent EPXL input pending" },
     .{ .id = "clipboard_text", .owner = .frontend, .status = .partial, .summary = "Ctrl+V SDL clipboard capture bounded to printable ASCII input; Unicode, rich text, MIME offers, and selection ownership pending" },
+    .{ .id = "glyph_atlas_policy", .owner = .frontend, .status = .partial, .summary = "bounded glyph-key atlas placement policy with LRU replacement and counters; rasterization, textures, uploads, and glyph runs pending" },
     .{ .id = "epxl_input_sequence", .owner = .frontend, .status = .partial, .summary = "monotonic reverse-input sequence state with one in-flight intent and exact ACK matching; persistent frontend delivery pending; Emacs apply-ACK implemented" },
 };
 
