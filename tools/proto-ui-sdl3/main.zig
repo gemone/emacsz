@@ -160,6 +160,7 @@ const Config = struct {
     synthetic_copy: bool = false,
     drop_first_input_ack: bool = false,
     interactive_publisher: bool = false,
+    interactive_synthetic: bool = false,
 };
 
 const FrameFacts = facts.FrameFacts;
@@ -1137,11 +1138,13 @@ fn runEpxlInteractiveFrontend(
     if (complete.kind != .resync_complete or
         complete.sequence != scene.next_sequence.? - 1) return error.IncompleteResync;
 
-    // Seed the real SDL event queue so headless CI validates the same input
-    // translation path as an operator typing in the window.
-    var synthetic = textEvent("XY");
-    if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
     var input_dirty = false;
+    if (config.interactive_synthetic) {
+        // Seed the real SDL event queue so headless automation validates the
+        // same input translation path as an operator typing in the window.
+        var synthetic = textEvent("XY");
+        if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
+    }
     try pollEpxlInteractiveInput(delivery, &input_dirty);
 
     var quit = false;
@@ -1169,10 +1172,12 @@ fn runEpxlInteractiveFrontend(
     }
 
     if (scene.stats.frame_updates < 2) return error.UnexpectedFactUpdateCount;
-    const applied = scene.text.items.len > 0 and
-        std.mem.eql(u8, scene.text.items[0].bytes, "XYEmacs Proto-UI") and
-        scene.cursor != null and scene.cursor.?.x == 16 and scene.cursor.?.y == 0;
-    if (!applied) return error.InteractiveInputNotApplied;
+    if (config.interactive_synthetic) {
+        const applied = scene.text.items.len > 0 and
+            std.mem.eql(u8, scene.text.items[0].bytes, "XYEmacs Proto-UI") and
+            scene.cursor != null and scene.cursor.?.x == 16 and scene.cursor.?.y == 0;
+        if (!applied) return error.InteractiveInputNotApplied;
+    }
     std.debug.print(
         "sdl3-epxl-interactive-smoke: delivered SDL input over EPXL; frames={d} present={d} skipped={d}; lifecycle OK\n",
         .{ scene.stats.frame_updates, frame_counters.presented_frames, frame_counters.skipped_frames },
@@ -1614,11 +1619,20 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         } else if (std.mem.eql(u8, arg, "--emacs-facts")) {
             config.mode = .emacs;
         } else if (std.mem.eql(u8, arg, "--emacs-interactive")) {
-            config.mode = .emacs_interactive;
+            // Real SDL windows now use authenticated EPXL reverse input by
+            // default. The local action file is an explicit fallback path.
+            config.mode = .emacs_epxl_interactive;
+            config.interactive_publisher = true;
+        } else if (std.mem.eql(u8, arg, "--emacs-interactive-smoke")) {
+            config.mode = .emacs_epxl_interactive;
+            config.interactive_publisher = true;
+            config.interactive_synthetic = true;
         } else if (std.mem.eql(u8, arg, "--emacs-copy-smoke")) {
             config.mode = .emacs_interactive;
             config.synthetic_copy = true;
-        } else if (std.mem.eql(u8, arg, "--emacs-interactive-smoke")) {
+        } else if (std.mem.eql(u8, arg, "--emacs-interactive-local")) {
+            config.mode = .emacs_interactive;
+        } else if (std.mem.eql(u8, arg, "--emacs-interactive-local-smoke")) {
             config.mode = .emacs_interactive;
             config.synthetic_interactive = true;
         } else if (std.mem.eql(u8, arg, "--facts-publisher")) {
@@ -1634,6 +1648,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-interactive-smoke")) {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
+            config.interactive_synthetic = true;
         } else if (std.mem.eql(u8, arg, "--interactive-publisher")) {
             config.interactive_publisher = true;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-input-smoke")) {

@@ -416,6 +416,8 @@ Required policies:
 | Out of texture memory | Evict cache; downgrade to software if needed |
 | Renderer panic | Exit frontend without affecting Emacs |
 
+`--emacs-interactive` selects the authenticated EPXL interactive path by default. `--emacs-interactive-local` explicitly selects the older atomic local-action bridge for diagnostics and rollback; clipboard-copy smoke remains on that fallback until copy is promoted to EPXL.
+
 The `sdl3-epxl-interactive-smoke` connects the real SDL event queue to
 authenticated EPXL. It translates printable ASCII text, sends it through the
 delivery journal, waits for Emacs apply and EPXL ACKs, receives refreshed fact

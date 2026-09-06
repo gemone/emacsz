@@ -886,9 +886,33 @@ pub fn build(b: *std.Build) void {
         if (sdl3_frontend_dep) |step| run_sdl3_emacs_interactive.step.dependOn(step);
         const sdl3_emacs_interactive_step = b.step(
             "sdl3-emacs-interactive-smoke",
-            "Drive real Emacs public facts with translated SDL3 editing events",
+            "Drive real Emacs through the default SDL3 EPXL interactive path",
         );
         sdl3_emacs_interactive_step.dependOn(&run_sdl3_emacs_interactive.step);
+        const run_sdl3_emacs_interactive_local = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--facts",
+            ".zig-cache/proto-ui-emacs-interactive/facts.json",
+            "--emacs-interactive-local-smoke",
+            "--auto-quit-ms=2000",
+        });
+        run_sdl3_emacs_interactive_local.setCwd(b.path("."));
+        run_sdl3_emacs_interactive_local.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_emacs_interactive_local.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_emacs_interactive_local.step.dependOn(step);
+        const sdl3_emacs_interactive_local_step = b.step(
+            "sdl3-emacs-interactive-local-smoke",
+            "Exercise the explicit local-action interactive fallback",
+        );
+        sdl3_emacs_interactive_local_step.dependOn(&run_sdl3_emacs_interactive_local.step);
         const run_sdl3_emacs_copy = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/proto-ui-sdl3",
             "--emacs",

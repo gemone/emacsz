@@ -88,6 +88,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8c-c-a persistent EPXL delivery journal | Approved |
 | W8c-c-b EPXL ACK-loss recovery smoke | Approved |
 | W8d-a real SDL3 EPXL interactive input | Approved |
+| W8d-b default SDL3 interactive transport selection | Approved |
 | W10b-b2a bounded glyph-atlas policy | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
@@ -923,6 +924,40 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-s
 ```
 
 Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes. Final checks verified SDL event translation, EPXL ACK ordering, Emacs text/cursor application, heartbeat lifecycle, all EPXL regressions, changed-path and inherited-C audits, and the full built-in check run.
+
+#### W8d-b — Default SDL3 interactive transport selection (approved)
+
+Goal: make the authenticated EPXL path the default for `--emacs-interactive`
+while retaining the W8b-a local action file as an explicit diagnostic and
+fallback.
+
+1. Route `--emacs-interactive` and `--emacs-interactive-smoke` through the
+   real SDL EPXL interactive frontend.
+2. Keep local file actions available only through
+   `--emacs-interactive-local` and
+   `--emacs-interactive-local-smoke`; keep clipboard-copy smoke on the local
+   bridge until copy is promoted to EPXL.
+3. Separate synthetic-input automation from normal operation with
+   `interactive_synthetic`; normal `--emacs-interactive` does not inject a
+   keystroke.
+4. Rename the original local smoke build step to
+   `sdl3-emacs-interactive-local-smoke` and make
+   `sdl3-emacs-interactive-smoke` exercise the default EPXL path.
+
+Implemented limits: clipboard copy remains on the local fallback. This is
+bounded facts-profile input and does not imply redisplay-owned frames, full
+keymaps, Unicode/IME, pointer, resources, or production push scheduling.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interactive-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interactive-local-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-copy-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-interactive-smoke
+```
+
+Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes. Final checks verified default/synthetic separation, EPXL interactive operation, local fallback selection, clipboard-copy rollback coverage, changed-path and inherited-C audits, and the full built-in check run.
 
 ### W9a — Independent SDL3 window lifecycle (approved)
 
