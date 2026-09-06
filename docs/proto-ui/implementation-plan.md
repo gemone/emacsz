@@ -87,6 +87,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8c-b Emacs apply-ACK | Approved |
 | W10b-b2a bounded glyph-atlas policy | Approved |
 | W11a bounded clipboard paste | Approved |
+| W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
 | W8b-a persistent public-fact bridge | Approved: real SDL frame polls public Emacs facts and applies bounded local-file actions; persistent EPXL delivery remains pending |
 
@@ -1541,6 +1542,43 @@ handling, coherent local action parsing, and a duplicate status row. Final check
 verified SDL memory ownership, text bounds and queue behavior, clipboard and
 input smokes, interactive regression, changed-path audits, negative inherited-C
 rejection, and explicit deferred clipboard scope.
+
+#### W11b — Bounded clipboard copy (approved)
+
+Goal: add the first Emacs-to-SDL clipboard direction while retaining the same
+bounded desktop-integration scope as W11a.
+
+1. Recognize pressed, non-repeat Ctrl+C as a frontend copy shortcut without
+   claiming the full Emacs keymap.
+2. Assign copy action code 6 while preserving the existing backspace action
+   code 1 for backward compatibility.
+3. In the opt-in interactive smoke, copy the deterministic first line from the
+   public Emacs buffer through `kill-ring-save`.
+4. Publish that text through an atomic clipboard artifact and have SDL3 read it
+   into the platform clipboard only when it is non-empty, printable ASCII, and
+   at most 120 bytes.
+5. Require the copy smoke to observe the exact `Emacs Proto-UI` payload before
+   reporting success.
+
+The implementation remains in the SDL3 frontend, Proto-UI input codec, and
+build steps; no inherited GNU Emacs C/Lisp files change. Unicode, rich text,
+multiple MIME offers, selection ownership, clipboard ownership events, external
+clipboard targets, and full kill-ring semantics remain pending.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-clipboard-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-copy-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interactive-smoke
+```
+
+Status: approved. The dedicated reviewer completed correctness, integration/build,
+and boundary/docs/status passes; approved fixes added explicit copy action codec
+coverage and preserved the existing backspace action ID. Final checks verified
+copy/interactive smokes, changed-path and negative inherited-C audits, and the
+full built-in check run.
 
 ### W12 — Complete EUP feature surface
 

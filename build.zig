@@ -843,6 +843,30 @@ pub fn build(b: *std.Build) void {
             "Drive real Emacs public facts with translated SDL3 editing events",
         );
         sdl3_emacs_interactive_step.dependOn(&run_sdl3_emacs_interactive.step);
+        const run_sdl3_emacs_copy = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--facts",
+            ".zig-cache/proto-ui-emacs-interactive/facts.json",
+            "--emacs-copy-smoke",
+            "--auto-quit-ms=2000",
+        });
+        run_sdl3_emacs_copy.setCwd(b.path("."));
+        run_sdl3_emacs_copy.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_emacs_copy.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_emacs_copy.step.dependOn(step);
+        const sdl3_emacs_copy_step = b.step(
+            "sdl3-emacs-copy-smoke",
+            "Copy bounded Emacs buffer text into the SDL3 clipboard",
+        );
+        sdl3_emacs_copy_step.dependOn(&run_sdl3_emacs_copy.step);
     }
     if (proto_frame_smoke_dep) |frame_step| {
         if (proto_sdl_fixture_dep) |fixture_step| fixture_step.dependOn(frame_step);

@@ -157,6 +157,7 @@ const Config = struct {
     renderer_request: []const u8 = "auto",
     present_mode: []const u8 = "off",
     synthetic_interactive: bool = false,
+    synthetic_copy: bool = false,
 };
 
 const FrameFacts = facts.FrameFacts;
@@ -237,6 +238,7 @@ fn writeTranslatedEvent(
     switch (event) {
         .key => |key| {
             const action_name: []const u8 = switch (key.action) {
+                .copy => "copy",
                 .backspace => "backspace",
                 .cursor_left => "cursor-left",
                 .cursor_right => "cursor-right",
@@ -256,11 +258,14 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
     defer gpa.free(facts_path);
     const input_path = try std.fmt.allocPrint(gpa, "{s}.keys", .{facts_path});
     defer gpa.free(input_path);
+    const clipboard_path = try std.fmt.allocPrint(gpa, "{s}.clipboard", .{facts_path});
+    defer gpa.free(clipboard_path);
     if (std.fs.path.dirname(facts_path)) |directory| {
         try std.Io.Dir.cwd().createDirPath(io, directory);
     }
     _ = std.Io.Dir.cwd().deleteFile(io, facts_path) catch {};
     _ = std.Io.Dir.cwd().deleteFile(io, input_path) catch {};
+    _ = std.Io.Dir.cwd().deleteFile(io, clipboard_path) catch {};
 
     const eval = try std.fmt.allocPrint(gpa,
         \\(progn
@@ -269,6 +274,7 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
         \\         (window (selected-window))
         \\         (path (expand-file-name "{s}"))
         \\         (input-path (expand-file-name "{s}"))
+        \\         (clipboard-path (expand-file-name "{s}"))
         \\         (buffer (window-buffer window))
         \\         (text "")
         \\         (lines [])
@@ -292,6 +298,8 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
         \\               (with-current-buffer buffer (forward-line -1) (set-window-point window (point)) (redisplay)))
         \\              ((and (string= (nth 0 action) "key") (string= (nth 1 action) "cursor-down"))
         \\               (with-current-buffer buffer (forward-line 1) (set-window-point window (point)) (redisplay)))
+        \\              ((and (string= (nth 0 action) "key") (string= (nth 1 action) "copy"))
+        \\               (with-current-buffer buffer (let* ((copy-end (progn (goto-char (point-min)) (line-end-position))) (copy-text (buffer-substring-no-properties (point-min) copy-end))) (kill-ring-save (point-min) copy-end) (with-temp-file clipboard-path (insert copy-text)) (set-window-point window (point)) (redisplay))))
         \\              ((and (string= (nth 0 action) "text") (> (length (nth 1 action)) 0))
         \\               (with-current-buffer buffer (insert (nth 1 action)) (set-window-point window (point)) (redisplay))))))
         \\        (delete-file input-path))
@@ -302,7 +310,7 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
         \\      (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist)))
         \\      (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor))))
         \\      (sit-for 0.05)))))))
-    , .{ config.module_path, facts_path, input_path });
+    , .{ config.module_path, facts_path, input_path, clipboard_path });
     defer gpa.free(eval);
     var child_environment = try buildDisplayEnvironment(gpa);
     defer child_environment.deinit();
@@ -335,15 +343,21 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
     var observed_versions: u64 = 0;
     var delivered_events: usize = 0;
     var input_applied = false;
+    var copy_applied = false;
     var last_delivery_version: ?u64 = null;
+
+    if (config.synthetic_copy) {
+        try input_queue.pushKey(.{ .action = .copy });
+    }
 
     if (config.synthetic_interactive) {
         try input_queue.pushText("XY");
     }
 
     var quit = false;
+    const smoke_mode = config.synthetic_interactive or config.synthetic_copy;
     const started_ticks = SDL_GetTicks();
-    while (!quit and (!config.synthetic_interactive or SDL_GetTicks() - started_ticks < config.auto_quit_ms)) {
+    while (!quit and (!smoke_mode or SDL_GetTicks() - started_ticks < config.auto_quit_ms)) {
         const snapshot_bytes = std.Io.Dir.cwd().readFileAlloc(io, facts_path, gpa, .limited(64 * 1024)) catch |err| switch (err) {
             error.FileNotFound => null,
             else => return err,
@@ -368,6 +382,23 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
                 const updated = try facts.buildScene(gpa, latest, last_version);
                 if (snapshot_scene) |*previous| previous.deinit();
                 snapshot_scene = updated;
+            }
+        }
+
+        const clipboard_bytes = std.Io.Dir.cwd().readFileAlloc(io, clipboard_path, gpa, .limited(121)) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => return err,
+        };
+        if (clipboard_bytes) |bytes| {
+            defer gpa.free(bytes);
+            if (input_policy.validClipboardText(bytes) and std.mem.eql(u8, bytes, "Emacs Proto-UI")) {
+                var text: [121]u8 = undefined;
+                @memcpy(text[0..bytes.len], bytes);
+                text[bytes.len] = 0;
+                if (!SDL_SetClipboardText(@ptrCast(&text))) return sdlFail("SDL_SetClipboardText");
+                _ = std.Io.Dir.cwd().deleteFile(io, clipboard_path) catch {};
+                copy_applied = true;
+                frame_gate.dirty = true;
             }
         }
 
@@ -434,6 +465,7 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
         },
     );
 
+    if (config.synthetic_copy and !copy_applied) return error.ClipboardCopyNotApplied;
     if (config.synthetic_interactive and !input_applied) return error.InteractiveInputNotApplied;
 }
 
@@ -842,6 +874,7 @@ fn awaitFrameAck(
                 } else {
                     const event = try frontend.decodeKeyEvent(payload.bytes);
                     const action_name: []const u8 = switch (event.action) {
+                        .copy => "copy",
                         .backspace => "backspace",
                         .cursor_left => "cursor-left",
                         .cursor_right => "cursor-right",
@@ -1373,6 +1406,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs;
         } else if (std.mem.eql(u8, arg, "--emacs-interactive")) {
             config.mode = .emacs_interactive;
+        } else if (std.mem.eql(u8, arg, "--emacs-copy-smoke")) {
+            config.mode = .emacs_interactive;
+            config.synthetic_copy = true;
         } else if (std.mem.eql(u8, arg, "--emacs-interactive-smoke")) {
             config.mode = .emacs_interactive;
             config.synthetic_interactive = true;

@@ -100,6 +100,10 @@ adapter or another Proto-UI-owned component.  Existing direct-core Proto-UI
 edits are transition debt: freeze them, do not extend them, and replace them
 with adapter-owned seams.
 
+Current clipboard copy/paste implementation follows this boundary: shortcut
+policy, bounds, and transport live in the SDL3 frontend; Emacs remains the
+semantic owner of the copied buffer and kill ring.
+
 ## 4. Emacs integration contract
 
 ### 4.1 Terminal identity

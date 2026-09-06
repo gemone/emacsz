@@ -89,6 +89,7 @@ pub const TextInput = struct {
 
 pub const KeyAction = enum(u16) {
     backspace = 1,
+    copy = 6,
     cursor_left = 2,
     cursor_right = 3,
     cursor_up = 4,
@@ -351,6 +352,7 @@ pub fn decodeKeyEvent(bytes: []const u8) Error!KeyEvent {
     const action_value = std.mem.readInt(u16, bytes[0..2], .little);
     const action: KeyAction = switch (action_value) {
         1 => .backspace,
+        6 => .copy,
         2 => .cursor_left,
         3 => .cursor_right,
         4 => .cursor_up,
@@ -899,6 +901,7 @@ test "key event codec validates bounded editing actions" {
     try encodeKeyEvent(a, .{ .action = .backspace }, &bytes);
     const decoded = try decodeKeyEvent(bytes.items);
     try std.testing.expectEqual(KeyAction.backspace, decoded.action);
+    try std.testing.expectEqual(@as(u8, 1), bytes.items[0]);
     try std.testing.expectEqual(@as(u8, 1), decoded.state);
     try std.testing.expectEqual(@as(u8, 0), decoded.modifiers);
 
@@ -907,6 +910,16 @@ test "key event codec validates bounded editing actions" {
     try std.testing.expectError(Error.InvalidTable, decodeKeyEvent(bytes.items));
     try std.testing.expectError(Error.Unsupported, encodeKeyEvent(a, .{ .action = .backspace, .state = 0 }, &bytes));
     try std.testing.expectError(Error.Unsupported, encodeKeyEvent(a, .{ .action = .backspace, .modifiers = 1 }, &bytes));
+
+    bytes.clearRetainingCapacity();
+    try encodeKeyEvent(a, .{ .action = .copy }, &bytes);
+    try std.testing.expectEqual(KeyAction.copy, (try decodeKeyEvent(bytes.items)).action);
+    try std.testing.expectEqual(@as(u8, 6), bytes.items[0]);
+    bytes.items[2] = 0;
+    try std.testing.expectError(Error.Unsupported, decodeKeyEvent(bytes.items));
+    bytes.items[2] = 1;
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.Unsupported, decodeKeyEvent(bytes.items));
 
     var invalid: std.ArrayList(u8) = .empty;
     defer invalid.deinit(a);

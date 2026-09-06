@@ -962,8 +962,8 @@ before applying the input intent.  This is not a full keyboard/keymap protocol.
 
 The facts profile also defines a deliberately bounded `KEY_EVENT` payload for
 `0x0600`: `u16 action` (`1=backspace`, `2=cursor-left`, `3=cursor-right`,
-`4=cursor-up`, `5=cursor-down`), `u8 state` (`1=pressed`), and `u8 modifiers`
-(`0=none`).  No other key, state, modifier, repeat, keymap, command, macro, IME,
+`4=cursor-up`, `5=cursor-down`, `6=copy`), `u8 state` (`1=pressed`), and
+`u8 modifiers` (`0=none`).  No other key, state, modifier, repeat, keymap, command, macro, IME,
 or Unicode-key surface is accepted.  Like text input, it
 uses a separate frontend-to-core sequence and requires an EPXL `ACK` before the
 intent is applied.

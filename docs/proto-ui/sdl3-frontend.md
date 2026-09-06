@@ -287,6 +287,12 @@ text, accepts only bounded printable ASCII through the input queue, and frees
 SDL-owned text on every path. Unicode, rich text, MIME selection, ownership
 events, and external clipboard targets remain pending.
 
+W11b implements the opposite bounded smoke path: Ctrl+C publishes a first-line
+Emacs buffer artifact after `kill-ring-save`; SDL3 accepts only non-empty,
+printable ASCII of at most 120 bytes before installing it through
+`SDL_SetClipboardText`. The same Unicode, MIME, selection-ownership, external
+target, and rich-text limits remain.
+
 W8b-a adds a persistent public-fact bridge: the SDL loop writes one translated
 action to an atomic local file, waits for consumption, polls the republished
 public facts, and rebuilds the scene. This is not persistent EPXL input and not

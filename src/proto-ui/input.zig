@@ -6,6 +6,7 @@ const frontend = @import("frontend.zig");
 pub const SDL_EVENT_KEY_DOWN: c_uint = 0x300;
 pub const SDL_EVENT_TEXT_INPUT: c_uint = 0x303;
 
+pub const SDL_SCANCODE_COPY: i32 = 6;
 pub const SDL_SCANCODE_BACKSPACE: i32 = 42;
 pub const SDL_SCANCODE_RIGHT: i32 = 79;
 pub const SDL_SCANCODE_LEFT: i32 = 80;
@@ -17,6 +18,7 @@ pub const SDL_SCANCODE_V: i32 = 25;
 pub const max_text_bytes: usize = 120;
 pub const queue_capacity: usize = 32;
 pub const sdl_ctrl_modifiers: u16 = 0x00c0;
+pub const max_clipboard_bytes: usize = 120;
 
 /// Enforces the facts-profile reverse-input sequencing contract: exactly one
 /// input may be in flight, ACKs must match that sequence, and sequence zero is
@@ -99,6 +101,23 @@ pub const Queue = struct {
     }
 };
 
+pub fn isCopyShortcut(
+    scancode: i32,
+    down: bool,
+    repeat: bool,
+    modifiers: u16,
+) bool {
+    return down and !repeat and scancode == SDL_SCANCODE_COPY and
+        modifiers & sdl_ctrl_modifiers != 0 and modifiers & ~sdl_ctrl_modifiers == 0;
+}
+
+pub fn validClipboardText(text: []const u8) bool {
+    for (text) |byte| {
+        if (!std.ascii.isPrint(byte)) return false;
+    }
+    return text.len > 0 and text.len <= max_clipboard_bytes;
+}
+
 pub fn translateKey(
     scancode: i32,
     down: bool,
@@ -149,6 +168,22 @@ test "translates only pressed unmodified bounded editing keys" {
     try std.testing.expectEqual(@as(?frontend.KeyEvent, null), translateKey(SDL_SCANCODE_BACKSPACE, true, true, 0));
     try std.testing.expectEqual(@as(?frontend.KeyEvent, null), translateKey(SDL_SCANCODE_BACKSPACE, true, false, 1));
     try std.testing.expectEqual(@as(?frontend.KeyEvent, null), translateKey(999, true, false, 0));
+}
+
+test "copy shortcut requires pressed non-repeat Ctrl+C" {
+    try std.testing.expect(isCopyShortcut(6, true, false, 0x40));
+    try std.testing.expect(isCopyShortcut(6, true, false, 0x80));
+    try std.testing.expect(!isCopyShortcut(6, false, false, 0x40));
+    try std.testing.expect(!isCopyShortcut(6, true, true, 0x40));
+    try std.testing.expect(!isCopyShortcut(6, true, false, 0));
+    try std.testing.expect(!isCopyShortcut(6, true, false, 0xc1));
+}
+
+test "validates bounded clipboard copy payload" {
+    try std.testing.expect(validClipboardText("Emacs Proto-UI"));
+    try std.testing.expect(!validClipboardText(""));
+    try std.testing.expect(!validClipboardText("a" ** 121));
+    try std.testing.expect(!validClipboardText("bad\npayload"));
 }
 
 test "sender permits one monotonic in-flight input and exact ACK" {
