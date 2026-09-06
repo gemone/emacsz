@@ -97,6 +97,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W10b-b2a bounded glyph-atlas policy | Approved |
 | W10c-a damage classification baseline | Approved |
 | W10c-b cursor-only clipped redraw | Approved |
+| W10c-c bounded text-region clipping | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
@@ -1836,7 +1837,7 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-smoke
 
 Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes; approved fixes added a conservative SHA-256 text signature, complete optional cursor observation, frame-update-only observation, damage counters, and diagnostics documentation. Final checks verified unchanged-frame skipping, cursor/viewport classification, interactive and EPXL regressions, boundary and inherited-C audits, and the full built-in check run.
 
-#### W10c-b — Cursor-only clipped redraw (in review)
+#### W10c-b — Cursor-only clipped redraw (approved)
 
 Goal: use the W10c-a cursor-only classification to avoid a full-frame clear and
 redraw when only the rendered cursor changes.
@@ -1879,6 +1880,45 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interac
 ```
 
 Status: approved. The dedicated reviewer completed correctness, integration/runtime, and boundary/docs/status passes; approved fixes added sized/primed retained-target lifecycle handling, render-reset invalidation, exact cursor geometry and clip bounds, explicit background restoration, and accurate submitted-command counters.
+
+#### W10c-c — Bounded text-region clipping (approved)
+
+Goal: extend retained-frame damage work from cursor-only changes to bounded
+ASCII text changes without turning every typed character into a full-frame
+redraw.
+
+1. Preserve up to 32 per-line observations: row index, bounded text hash, and
+   a conservative absolute rendered-line rectangle that unions the full row
+   rectangle with the actual 8x8 debug-text bounds.
+2. Classify unchanged, cursor-only, bounded text-only, mixed text/cursor
+   region, conservative viewport, and initial damage.
+3. Build a conservative logical clip from every changed old/new line rectangle
+   and both cursor endpoints. Add a one-logical-pixel margin.
+4. Fall back to full-frame rendering when lines exceed the bounded profile, a
+   row/owner mapping is missing, observations are incomplete, geometry is not
+   exactly representable by the current frontend path, or no nonempty clip
+   remains.
+5. Reuse the sized and primed offscreen target. Clipped execution still submits
+   the explicit opaque full-frame background fill; SDL restricts it to the clip
+   before redrawing rows, text, and the cursor.
+6. Report text and region damage, clipped/fallback frames, and submitted clip
+   command totals.
+
+Implemented limits: this is a frontend facts-profile optimization for bounded
+ASCII line observations. It does not implement EUP resource-level damage,
+partial present, dirty texture upload, general rectangle damage, or GPU
+timestamps.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-interactive-smoke
+zig build check
+```
+
+Status: approved. The dedicated reviewer completed correctness, integration/runtime, and boundary/docs/status passes; approved fixes added renderer-matching row indexing, conservative row plus 8x8 debug-text damage bounds, checked text geometry, actual executed draw-stat accounting, bounded retry of torn apply-ACK artifacts, and complete diagnostics.
 
 ### W11 — Desktop integration
 

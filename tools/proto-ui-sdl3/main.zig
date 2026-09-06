@@ -1000,7 +1000,13 @@ fn waitForApplyAck(
             else => return err,
         };
         defer gpa.free(bytes);
-        if (!input_policy.validApplyAck(bytes, sequence)) return error.InvalidApplyAck;
+        // Emacs replaces this non-atomic Lisp artifact in place. A torn or
+        // stale payload is retryable; a valid ACK for this sequence must still
+        // arrive before the bounded deadline.
+        if (!input_policy.validApplyAck(bytes, sequence)) {
+            try io.sleep(.fromMilliseconds(10), .awake);
+            continue;
+        }
         while (waited_ms < 2000) : (waited_ms += 10) {
             if (std.Io.Dir.cwd().statFile(io, input_path, .{})) |_| {
                 try io.sleep(.fromMilliseconds(10), .awake);
@@ -1349,6 +1355,46 @@ fn pollEpxlInteractiveInput(
     }
 }
 
+const debug_text_character_size: i64 = 8;
+
+fn checkedCoordinate(value: i64) ?i32 {
+    if (value < std.math.minInt(i32) or value > std.math.maxInt(i32)) return null;
+    return @intCast(value);
+}
+
+fn observedTextDamageRect(
+    owner: frontend.Window,
+    row: frontend.Row,
+    text_length: usize,
+) ?renderer_policy.TextLineRect {
+    const row_x: i64 = @as(i64, owner.x) + row.x;
+    const row_y: i64 = @as(i64, owner.y) + row.y;
+    const row_right: i64 = row_x + row.width;
+    const row_bottom: i64 = row_y + row.visible_height;
+    const baseline_offset: i64 = @max(1, @as(i64, row.baseline) - 8);
+    const text_x: i64 = row_x + 2;
+    const text_y: i64 = row_y + baseline_offset;
+    if (text_length > @as(usize, @intCast(std.math.maxInt(i32) / 8))) return null;
+    const text_length_i64: i64 = @intCast(text_length);
+    const text_width: i64 = text_length_i64 * debug_text_character_size;
+    const text_right: i64 = text_x + text_width;
+    const text_bottom: i64 = text_y + debug_text_character_size;
+
+    const min_x: i64 = @min(row_x, text_x);
+    const min_y: i64 = @min(row_y, text_y);
+    const max_right: i64 = @max(row_right, text_right);
+    const max_bottom: i64 = @max(row_bottom, text_bottom);
+    if (min_x > std.math.maxInt(i32) or max_right < std.math.minInt(i32) or
+        min_y > std.math.maxInt(i32) or max_bottom < std.math.minInt(i32)) return null;
+
+    const left = checkedCoordinate(min_x) orelse return null;
+    const top = checkedCoordinate(min_y) orelse return null;
+    const right = checkedCoordinate(max_right) orelse return null;
+    const bottom = checkedCoordinate(max_bottom) orelse return null;
+    if (right <= left or bottom <= top) return null;
+    return .{ .x = left, .y = top, .width = right - left, .height = bottom - top };
+}
+
 fn observeSceneDamage(
     scene: *frontend.Scene,
     gate: *renderer_policy.FrameGate,
@@ -1391,8 +1437,39 @@ fn observeSceneDamage(
     var structure_hash: [32]u8 = undefined;
     structure_hasher.final(&structure_hash);
 
+    var text_lines = [_]renderer_policy.TextLineObservation{.{}} ** renderer_policy.max_clipped_text_lines;
+    var bounded_text_line_count: usize = 0;
+    var text_lines_complete = scene.text.items.len <= renderer_policy.max_clipped_text_lines;
+    for (scene.text.items) |line| {
+        if (bounded_text_line_count == renderer_policy.max_clipped_text_lines) {
+            text_lines_complete = false;
+            break;
+        }
+        if (line.row_index >= scene.rows.items.len) {
+            text_lines_complete = false;
+            break;
+        }
+        const row = scene.rows.items[line.row_index];
+        const owner = findWindowById(scene.windows.items, row.window_id) orelse {
+            text_lines_complete = false;
+            break;
+        };
+        const damage_rect = observedTextDamageRect(owner, row, line.bytes.len) orelse {
+            text_lines_complete = false;
+            break;
+        };
+        text_lines[bounded_text_line_count] = .{
+            .row_index = line.row_index,
+            .hash = std.hash.Wyhash.hash(0, line.bytes),
+            .rect = damage_rect,
+        };
+        bounded_text_line_count += 1;
+    }
+
     const cursor_owner = if (scene.cursor) |cursor| findWindowById(scene.windows.items, cursor.window_id) else null;
     const decision = gate.observeScene(.{
+        .frame_width = if (scene.frame_header) |header| header.logical_width else 0,
+        .frame_height = if (scene.frame_header) |header| header.logical_height else 0,
         .viewport_start_line = if (scene.viewport) |viewport| viewport.start_line else 0,
         .viewport_line_count = if (scene.viewport) |viewport| viewport.line_count else 0,
         .cursor = if (scene.cursor) |cursor| .{
@@ -1411,6 +1488,9 @@ fn observeSceneDamage(
         .text_line_count = scene.text.items.len,
         .structure_hash = structure_hash,
         .structure_object_count = scene.windows.items.len + scene.rows.items.len,
+        .text_lines = text_lines,
+        .bounded_text_line_count = bounded_text_line_count,
+        .text_lines_complete = text_lines_complete,
     });
     counters.recordDamage(decision.kind);
     if (decision.kind != .none) gate.dirty = true;
@@ -1668,17 +1748,23 @@ fn runEpxlInteractiveFrontend(
         );
     }
     std.debug.print(
-        "sdl3-epxl-interactive-smoke: delivered SDL input over EPXL; frames={d} present={d} skipped={d} damage=initial:{d}/cursor:{d}/viewport:{d}/unchanged:{d} cursor_clipped={d}/fallback:{d} clipped_commands={d}; lifecycle OK\n",
+        "sdl3-epxl-interactive-smoke: delivered SDL input over EPXL; frames={d} present={d} skipped={d} damage=initial:{d}/cursor:{d}/text:{d}/region:{d}/viewport:{d}/unchanged:{d} clipped cursor={d}/text={d}/region={d} fallback cursor={d}/text={d}/region={d} clipped_commands={d}; lifecycle OK\n",
         .{
             scene.stats.frame_updates,
             frame_counters.presented_frames,
             frame_counters.skipped_frames,
             frame_counters.initial_damage_frames,
             frame_counters.cursor_damage_frames,
+            frame_counters.text_damage_frames,
+            frame_counters.region_damage_frames,
             frame_counters.viewport_damage_frames,
             frame_counters.unchanged_frames,
             frame_counters.cursor_clipped_frames,
+            frame_counters.text_clipped_frames,
+            frame_counters.region_clipped_frames,
             frame_counters.cursor_full_fallback_frames,
+            frame_counters.text_full_fallback_frames,
+            frame_counters.region_full_fallback_frames,
             frame_counters.clipped_draw_commands_total,
         },
     );
@@ -1756,12 +1842,18 @@ fn buildSceneDrawList(
     }
 
     for (scene.text.items) |line| {
-        const owner = findSceneWindow(scene, scene.rows.items[line.row_index].window_id) orelse continue;
+        if (line.row_index >= scene.rows.items.len) return error.InvalidTextRow;
         const row = scene.rows.items[line.row_index];
+        const owner = findSceneWindow(scene, row.window_id) orelse continue;
         if (line.bytes.len == 0) continue;
+        const text_x: i64 = @as(i64, owner.x) + row.x + 2;
+        const baseline_offset: i64 = @max(1, @as(i64, row.baseline) - 8);
+        const text_y: i64 = @as(i64, owner.y) + row.y + baseline_offset;
+        if (text_x < std.math.minInt(i32) or text_x > std.math.maxInt(i32) or
+            text_y < std.math.minInt(i32) or text_y > std.math.maxInt(i32)) return error.InvalidTextGeometry;
         try list.drawText(
-            @floatFromInt(owner.x + row.x + 2),
-            @floatFromInt(owner.y + row.y + @max(1, row.baseline - 8)),
+            @floatFromInt(text_x),
+            @floatFromInt(text_y),
             line.bytes,
         );
     }
@@ -1863,7 +1955,7 @@ fn executeDrawList(
     window: *SDL_Window,
     target: ?*SDL_Texture,
     clip: ?renderer_policy.LogicalRect,
-) !u64 {
+) !renderer_policy.DrawStats {
     var output_width: c_int = 0;
     var output_height: c_int = 0;
     SDL_GetWindowSize(window, &output_width, &output_height);
@@ -1871,7 +1963,7 @@ fn executeDrawList(
         list.logical_width <= 0 or list.logical_height <= 0) return error.InvalidOutputGeometry;
     if (target != null and !SDL_SetRenderTarget(renderer, target)) return sdlFail("SDL_SetRenderTarget");
 
-    var submitted: u64 = 0;
+    var executed: renderer_policy.DrawStats = .{};
     var device_clip: SDL_Rect = undefined;
     if (clip) |logical| {
         const x: c_int = @intFromFloat(@max(0, logical.x * @as(f32, @floatFromInt(output_width)) / list.logical_width));
@@ -1886,24 +1978,22 @@ fn executeDrawList(
         ));
         if (right <= x or bottom <= y) {
             if (target != null and !SDL_SetRenderTarget(renderer, null)) return sdlFail("SDL_SetRenderTarget");
-            return 0;
+            return executed;
         }
         device_clip = .{ .x = x, .y = y, .w = right - x, .h = bottom - y };
         if (!SDL_SetRenderClipRect(renderer, &device_clip)) return sdlFail("SDL_SetRenderClipRect");
     }
 
     for (list.commands.items) |command| {
-        submitted += 1;
         switch (command) {
             // The retained texture keeps the prior frame, so a cursor-only
             // pass redraws only the old/new cursor union and skips the clear.
             .clear => |color| {
-                if (clip != null) {
-                    submitted -= 1;
-                    continue;
-                }
+                if (clip != null) continue;
                 if (!SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a)) return sdlFail("SDL_SetRenderDrawColor");
                 if (!SDL_RenderClear(renderer)) return sdlFail("SDL_RenderClear");
+                executed.commands += 1;
+                executed.clears += 1;
             },
             .fill => |draw| {
                 const rect = SDL_Rect{
@@ -1914,6 +2004,8 @@ fn executeDrawList(
                 };
                 if (!SDL_SetRenderDrawColor(renderer, draw.color.r, draw.color.g, draw.color.b, draw.color.a)) return sdlFail("SDL_SetRenderDrawColor");
                 if (!SDL_RenderFillRect(renderer, &rect)) return sdlFail("SDL_RenderFillRect");
+                executed.commands += 1;
+                executed.fills += 1;
             },
             .text => |draw| {
                 var text: [121]u8 = undefined;
@@ -1925,12 +2017,14 @@ fn executeDrawList(
                     draw.y * @as(f32, @floatFromInt(output_height)) / list.logical_height,
                     text[0..draw.bytes.len :0],
                 )) return sdlFail("SDL_RenderDebugText");
+                executed.commands += 1;
+                executed.texts += 1;
             },
         }
     }
     if (clip != null and !SDL_SetRenderClipRect(renderer, null)) return sdlFail("SDL_SetRenderClipRect");
     if (target != null and !SDL_SetRenderTarget(renderer, null)) return sdlFail("SDL_SetRenderTarget");
-    return submitted;
+    return executed;
 }
 
 fn presentRetainedOutput(renderer: *SDL_Renderer, texture: *SDL_Texture) !void {
@@ -2006,9 +2100,9 @@ fn presentScene(
     }
     const started_ticks = SDL_GetPerformanceCounter();
     try buildSceneDrawList(scene, list, @intCast(width), @intCast(height));
-    _ = try executeDrawList(list, renderer, window, null, null);
+    const execution = try executeDrawList(list, renderer, window, null, null);
     if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
-    counters.recordDrawList(list.stats);
+    counters.recordDrawList(execution);
     const ended_ticks = SDL_GetPerformanceCounter();
     counters.recordPresent(
         performanceTicksToNanos(ended_ticks - started_ticks),
@@ -2038,32 +2132,35 @@ fn presentSceneDamage(
     const header = scene.frame_header orelse return error.NoFrameUpdate;
     const renderable = frameDimensionsRenderable(header.logical_width, header.logical_height);
     const texture = if (renderable) retainedFrameTexture(renderer, window, retained) else null;
-    var clip: ?renderer_policy.LogicalRect = null;
-    if (renderable and texture != null and retained.primed and decision.kind == .cursor)
-        clip = renderer_policy.cursorDamageClip(
-            decision.old_cursor,
-            decision.new_cursor,
-            header.logical_width,
-            header.logical_height,
-        );
+    const clip: ?renderer_policy.LogicalRect = if (renderable and texture != null and
+        retained.primed and (decision.kind == .cursor or decision.kind == .text or decision.kind == .region))
+        decision.clip
+    else
+        null;
 
     var clipped = false;
     var submitted: u64 = 0;
+    var execution: renderer_policy.DrawStats = .{};
     if (texture) |target| {
         if (clip) |rect| {
-            submitted = try executeDrawList(list, renderer, window, target, rect);
+            execution = try executeDrawList(list, renderer, window, target, rect);
+            submitted = execution.commands;
             clipped = submitted != 0;
         }
-        if (!clipped) submitted = try executeDrawList(list, renderer, window, target, null);
+        if (!clipped) {
+            execution = try executeDrawList(list, renderer, window, target, null);
+            submitted = execution.commands;
+        }
         retained.primed = true;
         try presentRetainedOutput(renderer, target);
     } else {
-        submitted = try executeDrawList(list, renderer, window, null, null);
+        execution = try executeDrawList(list, renderer, window, null, null);
+        submitted = execution.commands;
         if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
         retained.primed = false;
     }
-    if (decision.kind == .cursor) counters.recordCursorClip(clipped, submitted);
-    counters.recordDrawList(list.stats);
+    counters.recordClip(decision.kind, clipped, submitted);
+    counters.recordDrawList(execution);
     const ended_ticks = SDL_GetPerformanceCounter();
     counters.recordPresent(
         performanceTicksToNanos(ended_ticks - started_ticks),
@@ -2088,9 +2185,9 @@ fn presentFacts(
     }
     const started_ticks = SDL_GetPerformanceCounter();
     try buildFactsDrawList(snapshot, list, @intCast(width), @intCast(height));
-    _ = try executeDrawList(list, renderer, window, null, null);
+    const execution = try executeDrawList(list, renderer, window, null, null);
     if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
-    counters.recordDrawList(list.stats);
+    counters.recordDrawList(execution);
     const ended_ticks = SDL_GetPerformanceCounter();
     counters.recordPresent(
         performanceTicksToNanos(ended_ticks - started_ticks),

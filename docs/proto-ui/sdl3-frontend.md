@@ -428,17 +428,20 @@ same EPXL sequence and ACK rules. Emacs maps accepted press/release endpoints
 through public `posn-at-x-y` / `posn-point` and republishes the resulting
 point; intermediate drag motion is not text-selection semantics.
 
-The frontend classifies scene changes as initial, cursor-only, viewport, or
-unchanged, including SHA-256 text and structure signatures and complete
-rendered cursor state. Unchanged states are skipped. Cursor-only changes use a
-sized, primed offscreen retained target and a bounded old/new cursor clip; the
-clipped pass still submits the explicit opaque full-frame background fill, and
-the clip restricts it to the old/new cursor union before row/text/cursor
-commands. Text-only and viewport changes remain conservative full-frame work.
+The frontend classifies scene changes as initial, cursor-only, bounded
+text-only, mixed text/cursor region, viewport, or unchanged. It uses SHA-256
+text/structure signatures, per-line hashes and rectangles for up to 32 bounded
+ASCII lines, and complete rendered cursor state. Unchanged states are skipped.
+Cursor-only and bounded text/region changes use a sized, primed offscreen
+retained target and a conservative clip; the clipped pass still submits the
+explicit opaque full-frame background fill, and the clip restricts it to the
+changed union before row/text/cursor commands. Viewport, oversized, incomplete,
+and unmapped observations remain conservative full-frame work.
 Smoke diagnostics report
-`initial/cursor/viewport/unchanged` damage counts; general clipped rendering
-beyond bounded cursor-only changes, partial present, GPU submit counters, and
-rectangle-area damage remain pending.
+`initial/cursor/text/region/viewport/unchanged` damage counts and clipped or
+fallback frames for cursor/text/region changes; general EUP rectangle damage,
+partial present, GPU submit counters, and resource-level dirty uploads remain
+pending.
 
 A bounded viewport section accompanies each facts `FRAME_UPDATE`. It carries
 the absolute Emacs `window-start` line, visible line count, and viewport-relative
@@ -447,6 +450,9 @@ cursor text so SDL can verify that scrolling changes displayed state.
 Bounded vertical wheel ticks use line units and the same EPXL journal, apply-ACK,
 and transport-ACK rules. Horizontal ticks, pixel/page units, momentum phases,
 touchpad sources, and modifiers are explicitly rejected.
+Because the Emacs bridge replaces its non-atomic Lisp apply-ACK artifact in
+place, the frontend retries torn or stale payloads until the bounded apply-ACK
+deadline expires.
 
 The `sdl3-epxl-interactive-smoke` connects the real SDL event queue to
 authenticated EPXL. It translates printable ASCII text, sends it through the
@@ -482,14 +488,16 @@ name/tier and present mode, `presented_frames`, `skipped_frames`, full-frame pat
 nanoseconds, and the last monotonic present timestamp.
 
 W10c adds damage classification counters to EPXL smoke diagnostics:
-`initial_damage_frames`, `cursor_damage_frames`, `viewport_damage_frames`, and
-`unchanged_frames`. Cursor-only changes use a conservative old/new cursor clip
-and skip full-frame clear. The explicit opaque background fill is still
-submitted and restores every pixel in the clip before other draw commands.
-Text-only and viewport changes remain conservative full-frame work. Smoke
-diagnostics also report cursor clipped/fallback frames and submitted clipped
-commands; partial present, GPU submit counters, and general rectangle-area
-damage remain pending.
+`initial_damage_frames`, `cursor_damage_frames`, `text_damage_frames`,
+`region_damage_frames`, `viewport_damage_frames`, and `unchanged_frames`.
+Cursor-only and bounded text/region changes may use a conservative
+retained-frame clip and skip full-frame clear. The explicit opaque background
+fill is still submitted and restores every pixel in the clip before other draw
+commands. Viewport, oversized, and incomplete observations remain conservative
+full-frame work. Smoke diagnostics also report clipped/fallback frames for
+cursor, text, and region changes plus submitted clipped commands; partial
+present, GPU submit counters, general EUP rectangle damage, and resource-level
+dirty uploads remain pending.
 
 ## 17. CLI contract
 

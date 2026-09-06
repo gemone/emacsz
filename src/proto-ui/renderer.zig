@@ -27,6 +27,8 @@ pub const PresentMode = enum {
 pub const DamageKind = enum {
     none,
     cursor,
+    text,
+    region,
     viewport,
     initial,
 };
@@ -35,6 +37,7 @@ pub const DamageDecision = struct {
     kind: DamageKind,
     old_cursor: ?CursorObservation = null,
     new_cursor: ?CursorObservation = null,
+    clip: ?LogicalRect = null,
 };
 
 pub const DamageClip = union(enum) {
@@ -87,7 +90,137 @@ pub fn cursorDamageClip(
     };
 }
 
+pub const max_clipped_text_lines: usize = 32;
+
+pub const TextLineRect = struct {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+};
+
+pub const TextLineObservation = struct {
+    row_index: u32 = 0,
+    hash: u64 = 0,
+    rect: TextLineRect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+};
+
+fn clipFromLogicalBounds(
+    left: i64,
+    top: i64,
+    right: i64,
+    bottom: i64,
+    frame_width: i32,
+    frame_height: i32,
+) ?LogicalRect {
+    const left_i64: i64 = @max(0, left);
+    const top_i64: i64 = @max(0, top);
+    const right_i64: i64 = @min(@as(i64, frame_width), right);
+    const bottom_i64: i64 = @min(@as(i64, frame_height), bottom);
+    if (left_i64 >= right_i64 or top_i64 >= bottom_i64) return null;
+    if (left_i64 > std.math.maxInt(i32) or right_i64 > std.math.maxInt(i32) or
+        top_i64 > std.math.maxInt(i32) or bottom_i64 > std.math.maxInt(i32)) return null;
+    return .{
+        .x = @floatFromInt(left_i64),
+        .y = @floatFromInt(top_i64),
+        .width = @floatFromInt(right_i64 - left_i64),
+        .height = @floatFromInt(bottom_i64 - top_i64),
+    };
+}
+
+fn addTextLineRect(clip: *?LogicalRect, rect: TextLineRect) void {
+    if (rect.width <= 0 or rect.height <= 0) return;
+    const right: i64 = @as(i64, rect.x) + rect.width;
+    const bottom: i64 = @as(i64, rect.y) + rect.height;
+    if (clip.*) |current| {
+        const rect_x: f32 = @floatFromInt(rect.x);
+        const rect_y: f32 = @floatFromInt(rect.y);
+        const right_f: f32 = @floatFromInt(right);
+        const bottom_f: f32 = @floatFromInt(bottom);
+        clip.* = .{
+            .x = @min(current.x, rect_x),
+            .y = @min(current.y, rect_y),
+            .width = @max(current.x + current.width, right_f) - @min(current.x, rect_x),
+            .height = @max(current.y + current.height, bottom_f) - @min(current.y, rect_y),
+        };
+    } else {
+        clip.* = .{
+            .x = @floatFromInt(rect.x),
+            .y = @floatFromInt(rect.y),
+            .width = @floatFromInt(right),
+            .height = @floatFromInt(bottom),
+        };
+    }
+}
+
+fn textLineByRow(
+    observation: SceneDamageObservation,
+    row_index: u32,
+) ?TextLineObservation {
+    for (observation.text_lines[0..observation.bounded_text_line_count]) |line| {
+        if (line.row_index == row_index) return line;
+    }
+    return null;
+}
+
+/// Returns a conservative union of changed text-line rectangles and both cursor
+/// endpoints. Incomplete observations, exact-representation failures, or no
+/// bounded result return null so the caller takes a full-frame fallback.
+pub fn textDamageClip(
+    old: SceneDamageObservation,
+    new: SceneDamageObservation,
+    frame_width: i32,
+    frame_height: i32,
+) ?LogicalRect {
+    if (!old.text_lines_complete or !new.text_lines_complete or
+        old.bounded_text_line_count != old.text_line_count or
+        new.bounded_text_line_count != new.text_line_count or
+        frame_width <= 0 or frame_height <= 0) return null;
+
+    var union_rect: ?LogicalRect = null;
+    var changed = false;
+    for (old.text_lines[0..old.bounded_text_line_count]) |line| {
+        const replacement = textLineByRow(new, line.row_index);
+        if (replacement == null or replacement.?.hash != line.hash) {
+            changed = true;
+            addTextLineRect(&union_rect, line.rect);
+        }
+    }
+    for (new.text_lines[0..new.bounded_text_line_count]) |line| {
+        const previous = textLineByRow(old, line.row_index);
+        if (previous == null or previous.?.hash != line.hash) {
+            changed = true;
+            addTextLineRect(&union_rect, line.rect);
+        }
+    }
+    if (!changed) return null;
+    if (old.cursor != null or new.cursor != null) {
+        if (!std.meta.eql(old.cursor, new.cursor)) {
+            // The cursor helper owns its rendered-size expansion and one-pixel
+            // margin. Compose after the line union so both rectangles are kept.
+            const cursor_union = cursorDamageClip(old.cursor, new.cursor, frame_width, frame_height) orelse return null;
+            addTextLineRect(&union_rect, .{
+                .x = @intFromFloat(cursor_union.x),
+                .y = @intFromFloat(cursor_union.y),
+                .width = @intFromFloat(cursor_union.width),
+                .height = @intFromFloat(cursor_union.height),
+            });
+        }
+    }
+    const clip = union_rect orelse return null;
+    return clipFromLogicalBounds(
+        @intFromFloat(clip.x - 1),
+        @intFromFloat(clip.y - 1),
+        @intFromFloat(clip.x + clip.width + 1),
+        @intFromFloat(clip.y + clip.height + 1),
+        frame_width,
+        frame_height,
+    );
+}
+
 pub const SceneDamageObservation = struct {
+    frame_width: i32 = 0,
+    frame_height: i32 = 0,
     viewport_start_line: i32,
     viewport_line_count: i32,
     cursor: ?CursorObservation,
@@ -95,6 +228,9 @@ pub const SceneDamageObservation = struct {
     text_line_count: usize,
     structure_hash: [32]u8,
     structure_object_count: usize,
+    text_lines: [max_clipped_text_lines]TextLineObservation = [_]TextLineObservation{.{}} ** max_clipped_text_lines,
+    bounded_text_line_count: usize = 0,
+    text_lines_complete: bool = true,
 };
 
 pub const CursorObservation = struct {
@@ -131,22 +267,59 @@ pub const FrameGate = struct {
         const previous = self.previous;
         self.previous = observation;
         if (previous) |old| {
-            if (old.viewport_start_line != observation.viewport_start_line or
-                old.viewport_line_count != observation.viewport_line_count or
-                !std.mem.eql(u8, &old.text_hash, &observation.text_hash) or
-                old.text_line_count != observation.text_line_count or
-                !std.mem.eql(u8, &old.structure_hash, &observation.structure_hash) or
-                old.structure_object_count != observation.structure_object_count)
+            const viewport_changed = old.viewport_start_line != observation.viewport_start_line or
+                old.viewport_line_count != observation.viewport_line_count;
+            const structure_changed = !std.mem.eql(u8, &old.structure_hash, &observation.structure_hash) or
+                old.structure_object_count != observation.structure_object_count;
+            const aggregate_changed = !std.mem.eql(u8, &old.text_hash, &observation.text_hash) or
+                old.text_line_count != observation.text_line_count;
+            if (viewport_changed or structure_changed)
                 return .{
                     .kind = .viewport,
                     .old_cursor = old.cursor,
                     .new_cursor = observation.cursor,
                 };
-            if (!std.meta.eql(old.cursor, observation.cursor))
+            if (!std.meta.eql(old.cursor, observation.cursor)) {
+                const text_clip = textDamageClip(old, observation, observation.frame_width, observation.frame_height);
+                if (aggregate_changed and text_clip == null)
+                    return .{
+                        .kind = .viewport,
+                        .old_cursor = old.cursor,
+                        .new_cursor = observation.cursor,
+                    };
+                if (aggregate_changed)
+                    return .{
+                        .kind = .region,
+                        .old_cursor = old.cursor,
+                        .new_cursor = observation.cursor,
+                        .clip = text_clip,
+                    };
+                const clip = cursorDamageClip(
+                    old.cursor,
+                    observation.cursor,
+                    observation.frame_width,
+                    observation.frame_height,
+                );
                 return .{
                     .kind = .cursor,
                     .old_cursor = old.cursor,
                     .new_cursor = observation.cursor,
+                    .clip = clip,
+                };
+            }
+            const text_clip = textDamageClip(old, observation, observation.frame_width, observation.frame_height);
+            if (aggregate_changed and text_clip == null)
+                return .{
+                    .kind = .viewport,
+                    .old_cursor = old.cursor,
+                    .new_cursor = observation.cursor,
+                };
+            if (aggregate_changed)
+                return .{
+                    .kind = .text,
+                    .old_cursor = old.cursor,
+                    .new_cursor = observation.cursor,
+                    .clip = text_clip,
                 };
             return .{
                 .kind = .none,
@@ -177,11 +350,36 @@ pub const FrameCounters = struct {
     present_last_ns: u64 = 0,
     initial_damage_frames: u64 = 0,
     cursor_damage_frames: u64 = 0,
+    text_damage_frames: u64 = 0,
+    region_damage_frames: u64 = 0,
     viewport_damage_frames: u64 = 0,
     unchanged_frames: u64 = 0,
     cursor_clipped_frames: u64 = 0,
     cursor_full_fallback_frames: u64 = 0,
+    text_clipped_frames: u64 = 0,
+    text_full_fallback_frames: u64 = 0,
+    region_clipped_frames: u64 = 0,
+    region_full_fallback_frames: u64 = 0,
     clipped_draw_commands_total: u64 = 0,
+
+    pub fn recordClip(self: *FrameCounters, kind: DamageKind, clipped: bool, submitted_commands: u64) void {
+        switch (kind) {
+            .cursor => self.recordCursorClip(clipped, submitted_commands),
+            .text => {
+                if (clipped) {
+                    self.text_clipped_frames += 1;
+                    self.clipped_draw_commands_total += submitted_commands;
+                } else self.text_full_fallback_frames += 1;
+            },
+            .region => {
+                if (clipped) {
+                    self.region_clipped_frames += 1;
+                    self.clipped_draw_commands_total += submitted_commands;
+                } else self.region_full_fallback_frames += 1;
+            },
+            else => {},
+        }
+    }
 
     pub fn recordCursorClip(self: *FrameCounters, clipped: bool, submitted_commands: u64) void {
         if (clipped) {
@@ -196,6 +394,8 @@ pub const FrameCounters = struct {
         switch (kind) {
             .initial => self.initial_damage_frames += 1,
             .cursor => self.cursor_damage_frames += 1,
+            .text => self.text_damage_frames += 1,
+            .region => self.region_damage_frames += 1,
             .viewport => self.viewport_damage_frames += 1,
             .none => self.unchanged_frames += 1,
         }
@@ -669,6 +869,70 @@ test "frame gate classifies text-only changes as viewport damage" {
     };
     _ = gate.observeScene(first);
     try std.testing.expectEqual(DamageKind.viewport, gate.observeScene(second).kind);
+}
+
+test "text damage clips changed bounded line observations" {
+    const cursor: CursorObservation = .{ .window_id = 1, .owner_x = 0, .owner_y = 0, .x = 8, .y = 0, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true };
+    var old: SceneDamageObservation = .{
+        .frame_width = 120,
+        .frame_height = 80,
+        .viewport_start_line = 1,
+        .viewport_line_count = 2,
+        .cursor = cursor,
+        .text_hash = [_]u8{1} ** 32,
+        .text_line_count = 2,
+        .structure_hash = [_]u8{3} ** 32,
+        .structure_object_count = 2,
+    };
+    var new = old;
+    old.text_lines[0] = .{ .row_index = 0, .hash = 1, .rect = .{ .x = 0, .y = 0, .width = 100, .height = 20 } };
+    old.text_lines[1] = .{ .row_index = 1, .hash = 2, .rect = .{ .x = 0, .y = 20, .width = 100, .height = 20 } };
+    old.bounded_text_line_count = 2;
+    new = old;
+    new.text_hash = [_]u8{2} ** 32;
+    new.text_lines[0].hash = 3;
+
+    const clip = (textDamageClip(old, new, 120, 80) orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqual(@as(f32, 0), clip.x);
+    try std.testing.expectEqual(@as(f32, 0), clip.y);
+    try std.testing.expectEqual(@as(f32, 101), clip.width);
+    try std.testing.expectEqual(@as(f32, 21), clip.height);
+}
+
+test "frame gate classifies changed text and cursor as bounded region damage" {
+    var gate: FrameGate = .{};
+    _ = gate.shouldPresent(120, 80);
+    const old_cursor: CursorObservation = .{ .window_id = 1, .owner_x = 0, .owner_y = 0, .x = 8, .y = 0, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true };
+    const new_cursor: CursorObservation = .{ .window_id = 1, .owner_x = 0, .owner_y = 0, .x = 16, .y = 0, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true };
+    var old: SceneDamageObservation = .{
+        .frame_width = 120,
+        .frame_height = 80,
+        .viewport_start_line = 1,
+        .viewport_line_count = 2,
+        .cursor = old_cursor,
+        .text_hash = [_]u8{1} ** 32,
+        .text_line_count = 1,
+        .structure_hash = [_]u8{3} ** 32,
+        .structure_object_count = 2,
+    };
+    old.text_lines[0] = .{
+        .row_index = 0,
+        .hash = 1,
+        .rect = .{ .x = 0, .y = 0, .width = 80, .height = 20 },
+    };
+    old.bounded_text_line_count = 1;
+    var new = old;
+    new.cursor = new_cursor;
+    new.text_hash = [_]u8{2} ** 32;
+    new.text_lines[0] = .{
+        .row_index = 0,
+        .hash = 2,
+        .rect = .{ .x = 0, .y = 0, .width = 80, .height = 20 },
+    };
+    _ = gate.observeScene(old);
+    const decision = gate.observeScene(new);
+    try std.testing.expectEqual(DamageKind.region, decision.kind);
+    try std.testing.expect(decision.clip != null);
 }
 
 test "frame gate classifies structure-only changes as viewport damage" {
