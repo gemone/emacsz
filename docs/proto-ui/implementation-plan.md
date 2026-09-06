@@ -89,6 +89,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8c-c-b EPXL ACK-loss recovery smoke | Approved |
 | W8d-a real SDL3 EPXL interactive input | Approved |
 | W8d-b default SDL3 interactive transport selection | Approved |
+| W8d-c EPXL interactive clipboard copy | Approved |
 | W10b-b2a bounded glyph-atlas policy | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
@@ -958,6 +959,40 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-interact
 ```
 
 Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes. Final checks verified default/synthetic separation, EPXL interactive operation, local fallback selection, clipboard-copy rollback coverage, changed-path and inherited-C audits, and the full built-in check run.
+
+#### W8d-c — EPXL interactive clipboard copy (approved)
+
+Goal: move the default bounded copy shortcut from the local-action fallback to
+the authenticated EPXL interactive path while retaining an explicit rollback.
+
+1. Translate the real SDL Ctrl+C shortcut in both interactive frontends and
+   queue the existing `KEY_EVENT.copy` action.
+2. Carry copy intent through EPXL with the standard one-in-flight sequence,
+   Emacs apply-ACK, and EPXL ACK rules.
+3. Teach the Emacs facts publisher to perform the bounded first-line
+   `kill-ring-save` and publish the validated result artifact.
+4. Have SDL validate the printable-ASCII artifact and install it through
+   `SDL_SetClipboardText`; the synthetic smoke still requires the exact
+   `Emacs Proto-UI` payload.
+5. Make `sdl3-emacs-copy-smoke` exercise the default EPXL path and add
+   `sdl3-emacs-copy-local-smoke` for rollback.
+
+Implemented limits: EPXL carries the copy intent; the bounded printable-ASCII
+copy payload still uses a local artifact because EUP has no clipboard-data
+resource yet. Unicode, rich text, MIME negotiation, selection ownership,
+clipboard ownership events, external clipboard targets, and full kill-ring
+semantics remain pending.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-copy-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-copy-local-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-interactive-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interactive-local-smoke
+```
+
+Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes; approved fixes added Emacs-side bounds before substring/copy, removed stale fallback wording, and synchronized input ownership. Final checks verified copy smoke paths, interactive regressions, boundary and inherited-C audits, and the full built-in check run.
 
 ### W9a — Independent SDL3 window lifecycle (approved)
 

@@ -934,9 +934,33 @@ pub fn build(b: *std.Build) void {
         if (sdl3_frontend_dep) |step| run_sdl3_emacs_copy.step.dependOn(step);
         const sdl3_emacs_copy_step = b.step(
             "sdl3-emacs-copy-smoke",
-            "Copy bounded Emacs buffer text into the SDL3 clipboard",
+            "Copy bounded Emacs buffer text over the default EPXL interactive path",
         );
         sdl3_emacs_copy_step.dependOn(&run_sdl3_emacs_copy.step);
+        const run_sdl3_emacs_copy_local = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--facts",
+            ".zig-cache/proto-ui-emacs-interactive/facts.json",
+            "--emacs-copy-local-smoke",
+            "--auto-quit-ms=2000",
+        });
+        run_sdl3_emacs_copy_local.setCwd(b.path("."));
+        run_sdl3_emacs_copy_local.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_emacs_copy_local.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_emacs_copy_local.step.dependOn(step);
+        const sdl3_emacs_copy_local_step = b.step(
+            "sdl3-emacs-copy-local-smoke",
+            "Exercise bounded clipboard copy through the local fallback",
+        );
+        sdl3_emacs_copy_local_step.dependOn(&run_sdl3_emacs_copy_local.step);
     }
     if (proto_frame_smoke_dep) |frame_step| {
         if (proto_sdl_fixture_dep) |fixture_step| fixture_step.dependOn(frame_step);

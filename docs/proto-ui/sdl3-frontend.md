@@ -416,7 +416,9 @@ Required policies:
 | Out of texture memory | Evict cache; downgrade to software if needed |
 | Renderer panic | Exit frontend without affecting Emacs |
 
-`--emacs-interactive` selects the authenticated EPXL interactive path by default. `--emacs-interactive-local` explicitly selects the older atomic local-action bridge for diagnostics and rollback; clipboard-copy smoke remains on that fallback until copy is promoted to EPXL.
+`--emacs-interactive` selects the authenticated EPXL interactive path by default. `--emacs-interactive-local` explicitly selects the older atomic local-action bridge for diagnostics and rollback. `sdl3-emacs-copy-smoke` uses the default EPXL path; `sdl3-emacs-copy-local-smoke` explicitly exercises that fallback.
+
+The default EPXL interactive path also translates Ctrl+C to `KEY_EVENT.copy`. Emacs performs the bounded first-line kill-ring save, publishes a validated printable-ASCII result artifact, and SDL installs that result through its platform clipboard. `sdl3-emacs-copy-local-smoke` retains the explicit rollback path.
 
 The `sdl3-epxl-interactive-smoke` connects the real SDL event queue to
 authenticated EPXL. It translates printable ASCII text, sends it through the

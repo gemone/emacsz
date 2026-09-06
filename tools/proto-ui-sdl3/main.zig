@@ -121,6 +121,14 @@ fn queueClipboardText(queue: *input_policy.Queue) !bool {
     return true;
 }
 
+fn setPlatformClipboard(bytes: []const u8) !void {
+    if (!input_policy.validClipboardText(bytes)) return error.ClipboardTextNotAccepted;
+    var text: [121]u8 = undefined;
+    @memcpy(text[0..bytes.len], bytes);
+    text[bytes.len] = 0;
+    if (!SDL_SetClipboardText(@ptrCast(&text))) return sdlFail("SDL_SetClipboardText");
+}
+
 fn runClipboardSmoke() !void {
     if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
     defer SDL_Quit();
@@ -302,7 +310,7 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
         \\              ((and (string= (nth 0 action) "key") (string= (nth 1 action) "cursor-down"))
         \\               (with-current-buffer buffer (forward-line 1) (set-window-point window (point)) (redisplay)))
         \\              ((and (string= (nth 0 action) "key") (string= (nth 1 action) "copy"))
-        \\               (with-current-buffer buffer (let* ((copy-end (progn (goto-char (point-min)) (line-end-position))) (copy-text (buffer-substring-no-properties (point-min) copy-end))) (kill-ring-save (point-min) copy-end) (with-temp-file clipboard-path (insert copy-text)) (set-window-point window (point)) (redisplay))))
+        \\               (with-current-buffer buffer (let* ((copy-end (progn (goto-char (point-min)) (line-end-position))) (copy-length (<= (- copy-end (point-min)) 120)) (copy-ascii (save-excursion (let ((ascii t) (pos (point-min))) (while (< pos copy-end) (let ((ch (char-after pos))) (when (or (< ch 32) (> ch 126)) (setq ascii nil) (setq pos copy-end))) (setq pos (+ pos 1))) ascii))) (copy-text (and copy-length copy-ascii (buffer-substring-no-properties (point-min) copy-end)))) (when copy-text (kill-ring-save (point-min) copy-end) (with-temp-file clipboard-path (insert copy-text)) (set-window-point window (point)) (redisplay)))))
         \\              ((and (string= (nth 0 action) "text") (> (length (nth 1 action)) 0))
         \\               (with-current-buffer buffer (insert (nth 1 action)) (set-window-point window (point)) (redisplay))))))
         \\        (delete-file input-path))
@@ -412,6 +420,9 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
                 SDL_EVENT_KEY_DOWN => {
                     if (input_policy.isPasteShortcut(event.key.scancode, event.key.down, event.key.repeat, event.key.modifiers)) {
                         if (try queueClipboardText(&input_queue)) frame_gate.dirty = true;
+                    } else if (input_policy.isCopyShortcut(event.key.scancode, event.key.down, event.key.repeat, event.key.modifiers)) {
+                        try input_queue.pushKey(.{ .action = .copy });
+                        frame_gate.dirty = true;
                     } else if (input_policy.translateKey(event.key.scancode, event.key.down, event.key.repeat, event.key.modifiers)) |key| {
                         try input_queue.pushKey(key);
                         frame_gate.dirty = true;
@@ -581,12 +592,15 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     defer gpa.free(input_path);
     const ack_path = try std.fmt.allocPrint(gpa, "{s}.ack", .{input_path});
     defer gpa.free(ack_path);
+    const clipboard_path = try std.fmt.allocPrint(gpa, "{s}.clipboard", .{config.facts_path});
+    defer gpa.free(clipboard_path);
     _ = std.Io.Dir.cwd().deleteFile(io, ack_path) catch {};
+    _ = std.Io.Dir.cwd().deleteFile(io, clipboard_path) catch {};
     _ = std.Io.Dir.cwd().deleteFile(io, config.endpoint) catch {};
     const eval = try std.fmt.allocPrint(
         gpa,
-        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let* ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\")))) (buffer (window-buffer window)) (facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (lines (split-string text \"\\n\")) (point (with-current-buffer buffer (window-point window))) (cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column)))))) (with-current-buffer buffer (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII textZ\") (redisplay)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.2) (set-frame-size frame 240 30) (while t (when (file-readable-p input-path) (let ((action (split-string (with-temp-buffer (insert-file-contents input-path) (buffer-string)) \"\\n\" t))) (cond ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"backspace\")) (with-current-buffer buffer (goto-char (point-max)) (delete-char -1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-left\")) (with-current-buffer buffer (backward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-right\")) (with-current-buffer buffer (forward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-up\")) (with-current-buffer buffer (previous-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-down\")) (with-current-buffer buffer (next-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"text\") (> (length (nth 2 action)) 0)) (with-current-buffer buffer (goto-char (point-min)) (insert (nth 2 action)) (set-window-point window (point)) (redisplay)))) (with-temp-file (concat input-path \".ack\") (insert (nth 0 action))) (delete-file input-path))) (setq text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (setq lines (split-string text \"\\n\")) (setq point (with-current-buffer buffer (window-point window))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column))))) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.1))))",
-        .{ config.module_path, config.facts_path, input_path },
+        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let* ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\")))) (clipboard-path (expand-file-name (format \"%s\" (format \"{s}\")))) (buffer (window-buffer window)) (facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (lines (split-string text \"\\n\")) (point (with-current-buffer buffer (window-point window))) (cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column)))))) (with-current-buffer buffer (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII textZ\") (redisplay)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.2) (set-frame-size frame 240 30) (while t (when (file-readable-p input-path) (let ((action (split-string (with-temp-buffer (insert-file-contents input-path) (buffer-string)) \"\\n\" t))) (cond ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"backspace\")) (with-current-buffer buffer (goto-char (point-max)) (delete-char -1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-left\")) (with-current-buffer buffer (backward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-right\")) (with-current-buffer buffer (forward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-up\")) (with-current-buffer buffer (previous-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-down\")) (with-current-buffer buffer (next-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"copy\")) (with-current-buffer buffer (let* ((copy-end (progn (goto-char (point-min)) (line-end-position))) (copy-length (<= (- copy-end (point-min)) 120)) (copy-ascii (save-excursion (let ((ascii t) (pos (point-min))) (while (< pos copy-end) (let ((ch (char-after pos))) (when (or (< ch 32) (> ch 126)) (setq ascii nil) (setq pos copy-end))) (setq pos (+ pos 1))) ascii))) (copy-text (and copy-length copy-ascii (buffer-substring-no-properties (point-min) copy-end)))) (when copy-text (kill-ring-save (point-min) copy-end) (with-temp-file clipboard-path (insert copy-text)) (set-window-point window (point)) (redisplay))))) ((and (= (length action) 3) (string= (nth 1 action) \"text\") (> (length (nth 2 action)) 0)) (with-current-buffer buffer (goto-char (point-min)) (insert (nth 2 action)) (set-window-point window (point)) (redisplay)))) (with-temp-file (concat input-path \".ack\") (insert (nth 0 action))) (delete-file input-path))) (setq text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (setq lines (split-string text \"\\n\")) (setq point (with-current-buffer buffer (window-point window))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column))))) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.1))))",
+        .{ config.module_path, config.facts_path, input_path, clipboard_path },
     );
     defer gpa.free(eval);
 
@@ -945,6 +959,9 @@ fn runLiveFrontend(
     delivery: *input_policy.DeliveryJournal,
 ) !frontend.Scene {
     const address = try std.Io.net.UnixAddress.init(config.endpoint);
+    const clipboard_path = try std.fmt.allocPrint(gpa, "{s}.clipboard", .{config.facts_path});
+    defer gpa.free(clipboard_path);
+    _ = std.Io.Dir.cwd().deleteFile(io, clipboard_path) catch {};
     var stream: std.Io.net.Stream = undefined;
     var connected = false;
     try io.sleep(.fromMilliseconds(25), .awake);
@@ -1044,6 +1061,14 @@ fn pollEpxlInteractiveInput(
                     event.key.modifiers,
                 )) {
                     if (try queueClipboardText(&delivery.queue)) dirty.* = true;
+                } else if (input_policy.isCopyShortcut(
+                    event.key.scancode,
+                    event.key.down,
+                    event.key.repeat,
+                    event.key.modifiers,
+                )) {
+                    try delivery.pushKey(.{ .action = .copy });
+                    dirty.* = true;
                 } else if (input_policy.translateKey(
                     event.key.scancode,
                     event.key.down,
@@ -1072,6 +1097,9 @@ fn runEpxlInteractiveFrontend(
     delivery: *input_policy.DeliveryJournal,
 ) !frontend.Scene {
     const address = try std.Io.net.UnixAddress.init(config.endpoint);
+    const clipboard_path = try std.fmt.allocPrint(gpa, "{s}.clipboard", .{config.facts_path});
+    defer gpa.free(clipboard_path);
+    _ = std.Io.Dir.cwd().deleteFile(io, clipboard_path) catch {};
     var stream: std.Io.net.Stream = undefined;
     var connected = false;
     for (0..200) |_| {
@@ -1139,10 +1167,15 @@ fn runEpxlInteractiveFrontend(
         complete.sequence != scene.next_sequence.? - 1) return error.IncompleteResync;
 
     var input_dirty = false;
+    var copy_applied = false;
     if (config.interactive_synthetic) {
         // Seed the real SDL event queue so headless automation validates the
         // same input translation path as an operator typing in the window.
         var synthetic = textEvent("XY");
+        if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
+    }
+    if (config.synthetic_copy) {
+        var synthetic = keyboardEvent(input_policy.SDL_SCANCODE_C, true, input_policy.sdl_ctrl_modifiers);
         if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
     }
     try pollEpxlInteractiveInput(delivery, &input_dirty);
@@ -1168,6 +1201,21 @@ fn runEpxlInteractiveFrontend(
             error.InteractiveQuit => quit = true,
             else => return err,
         };
+        const clipboard_bytes = std.Io.Dir.cwd().readFileAlloc(io, clipboard_path, gpa, .limited(121)) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => return err,
+        };
+        if (clipboard_bytes) |bytes| {
+            defer gpa.free(bytes);
+            const accepted = input_policy.validClipboardText(bytes) and
+                (!config.synthetic_copy or std.mem.eql(u8, bytes, "Emacs Proto-UI"));
+            if (accepted) {
+                try setPlatformClipboard(bytes);
+                _ = std.Io.Dir.cwd().deleteFile(io, clipboard_path) catch {};
+                copy_applied = true;
+                frame_gate.dirty = true;
+            }
+        }
         try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
     }
 
@@ -1178,6 +1226,7 @@ fn runEpxlInteractiveFrontend(
             scene.cursor != null and scene.cursor.?.x == 16 and scene.cursor.?.y == 0;
         if (!applied) return error.InteractiveInputNotApplied;
     }
+    if (config.synthetic_copy and !copy_applied) return error.ClipboardCopyNotApplied;
     std.debug.print(
         "sdl3-epxl-interactive-smoke: delivered SDL input over EPXL; frames={d} present={d} skipped={d}; lifecycle OK\n",
         .{ scene.stats.frame_updates, frame_counters.presented_frames, frame_counters.skipped_frames },
@@ -1628,6 +1677,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.interactive_publisher = true;
             config.interactive_synthetic = true;
         } else if (std.mem.eql(u8, arg, "--emacs-copy-smoke")) {
+            config.mode = .emacs_epxl_interactive;
+            config.interactive_publisher = true;
+            config.synthetic_copy = true;
+        } else if (std.mem.eql(u8, arg, "--emacs-copy-local-smoke")) {
             config.mode = .emacs_interactive;
             config.synthetic_copy = true;
         } else if (std.mem.eql(u8, arg, "--emacs-interactive-local")) {
