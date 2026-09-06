@@ -45,6 +45,10 @@ pub const FrameGate = struct {
 pub const FrameCounters = struct {
     presented_frames: u64 = 0,
     skipped_frames: u64 = 0,
+    draw_commands_total: u64 = 0,
+    clear_commands_total: u64 = 0,
+    fill_commands_total: u64 = 0,
+    text_commands_total: u64 = 0,
     frame_path_total_ns: u64 = 0,
     frame_path_last_ns: u64 = 0,
     present_last_ns: u64 = 0,
@@ -58,6 +62,88 @@ pub const FrameCounters = struct {
         self.frame_path_total_ns += frame_ns;
         self.frame_path_last_ns = frame_ns;
         self.present_last_ns = present_ns;
+    }
+
+    pub fn recordDrawList(self: *FrameCounters, stats: DrawStats) void {
+        self.draw_commands_total += stats.commands;
+        self.clear_commands_total += stats.clears;
+        self.fill_commands_total += stats.fills;
+        self.text_commands_total += stats.texts;
+    }
+};
+
+pub const Color = struct {
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8 = 255,
+};
+
+pub const LogicalRect = struct {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+};
+
+pub const DrawCommand = union(enum) {
+    clear: Color,
+    fill: struct { rect: LogicalRect, color: Color },
+    text: struct { x: f32, y: f32, bytes: []const u8 },
+};
+
+pub const DrawStats = struct {
+    commands: u64 = 0,
+    clears: u64 = 0,
+    fills: u64 = 0,
+    texts: u64 = 0,
+};
+
+/// Backend-neutral immediate commands for the current smoke renderer. The
+/// command list owns command storage, while text slices are borrowed and must
+/// remain valid until execution completes. This avoids per-frame text copies;
+/// the future glyph atlas replaces this debug text path.
+pub const DrawList = struct {
+    allocator: std.mem.Allocator,
+    commands: std.ArrayList(DrawCommand) = .empty,
+    logical_width: f32 = 0,
+    logical_height: f32 = 0,
+    stats: DrawStats = .{},
+
+    pub fn deinit(self: *DrawList) void {
+        self.commands.deinit(self.allocator);
+    }
+
+    pub fn reset(self: *DrawList) void {
+        self.commands.clearRetainingCapacity();
+        self.stats = .{};
+    }
+
+    pub fn setLogicalSize(self: *DrawList, width: f32, height: f32) void {
+        self.logical_width = width;
+        self.logical_height = height;
+    }
+
+    pub fn clear(self: *DrawList, color: Color) !void {
+        try self.commands.append(self.allocator, .{ .clear = color });
+        self.stats.commands += 1;
+        self.stats.clears += 1;
+    }
+
+    pub fn fillRect(self: *DrawList, rect: LogicalRect, color: Color) !void {
+        try self.commands.append(self.allocator, .{ .fill = .{ .rect = rect, .color = color } });
+        self.stats.commands += 1;
+        self.stats.fills += 1;
+    }
+
+    pub fn drawText(self: *DrawList, x: f32, y: f32, bytes: []const u8) !void {
+        if (bytes.len == 0 or bytes.len > 120) return error.InvalidDrawText;
+        for (bytes) |byte| {
+            if (byte < 0x20 or byte > 0x7e) return error.InvalidDrawText;
+        }
+        try self.commands.append(self.allocator, .{ .text = .{ .x = x, .y = y, .bytes = bytes } });
+        self.stats.commands += 1;
+        self.stats.texts += 1;
     }
 };
 
@@ -178,4 +264,40 @@ test "frame counters separate presents from skipped polls" {
     try std.testing.expectEqual(@as(u64, 2_000), counters.frame_path_total_ns);
     try std.testing.expectEqual(@as(u64, 750), counters.frame_path_last_ns);
     try std.testing.expectEqual(@as(u64, 4_000), counters.present_last_ns);
+
+    counters.recordDrawList(.{ .commands = 3, .clears = 1, .fills = 1, .texts = 1 });
+    try std.testing.expectEqual(@as(u64, 3), counters.draw_commands_total);
+    try std.testing.expectEqual(@as(u64, 1), counters.clear_commands_total);
+    try std.testing.expectEqual(@as(u64, 1), counters.fill_commands_total);
+    try std.testing.expectEqual(@as(u64, 1), counters.text_commands_total);
+}
+
+test "draw list records and resets backend-neutral commands" {
+    var list: DrawList = .{ .allocator = std.testing.allocator };
+    defer list.deinit();
+    list.setLogicalSize(100, 80);
+    try list.clear(.{ .r = 0x18, .g = 0x20, .b = 0x2a });
+    try list.fillRect(.{ .x = 1, .y = 2, .width = 3, .height = 4 }, .{ .r = 1, .g = 2, .b = 3 });
+    try list.drawText(4, 5, "Emacs");
+
+    try std.testing.expectEqual(@as(usize, 3), list.commands.items.len);
+    try std.testing.expectEqual(@as(u64, 3), list.stats.commands);
+    try std.testing.expectEqual(@as(u64, 1), list.stats.clears);
+    try std.testing.expectEqual(@as(u64, 1), list.stats.fills);
+    try std.testing.expectEqual(@as(u64, 1), list.stats.texts);
+    try std.testing.expectEqualStrings("Emacs", list.commands.items[2].text.bytes);
+
+    list.reset();
+    try std.testing.expectEqual(@as(usize, 0), list.commands.items.len);
+    try std.testing.expectEqual(@as(u64, 0), list.stats.commands);
+    try std.testing.expectEqual(@as(f32, 100), list.logical_width);
+}
+
+test "draw list rejects absent oversized and non-ASCII text" {
+    var list: DrawList = .{ .allocator = std.testing.allocator };
+    defer list.deinit();
+    try std.testing.expectError(error.InvalidDrawText, list.drawText(0, 0, ""));
+    try std.testing.expectError(error.InvalidDrawText, list.drawText(0, 0, "CJK 字"));
+    const oversized = "a" ** 121;
+    try std.testing.expectError(error.InvalidDrawText, list.drawText(0, 0, oversized[0..]));
 }

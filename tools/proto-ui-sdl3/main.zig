@@ -96,11 +96,6 @@ fn sdlFail(what: []const u8) error{SdlFailed} {
     return error.SdlFailed;
 }
 
-fn drawRect(renderer: *SDL_Renderer, rect: SDL_Rect, r: u8, g: u8, b: u8) !void {
-    if (!SDL_SetRenderDrawColor(renderer, r, g, b, 255)) return sdlFail("SDL_SetRenderDrawColor");
-    if (!SDL_RenderFillRect(renderer, &rect)) return sdlFail("SDL_RenderFillRect");
-}
-
 fn performanceTicksToNanos(ticks: u64) u64 {
     const frequency = SDL_GetPerformanceFrequency();
     if (frequency == 0) return 0;
@@ -134,71 +129,6 @@ fn createRenderer(
 
 fn destroyRenderer(selected: SelectedRenderer) void {
     SDL_DestroyRenderer(selected.handle);
-}
-
-fn renderScene(scene: *frontend.Scene, renderer: *SDL_Renderer, window: *SDL_Window) !void {
-    const header = scene.frame_header orelse return error.NoFrameUpdate;
-    var output_w: c_int = 0;
-    var output_h: c_int = 0;
-    SDL_GetWindowSize(window, &output_w, &output_h);
-    if (output_w <= 0 or output_h <= 0 or header.logical_width <= 0 or header.logical_height <= 0)
-        return error.InvalidOutputGeometry;
-
-    const scale: f32 = @min(
-        @as(f32, @floatFromInt(output_w)) / @as(f32, @floatFromInt(header.logical_width)),
-        @as(f32, @floatFromInt(output_h)) / @as(f32, @floatFromInt(header.logical_height)),
-    );
-
-    if (!SDL_SetRenderDrawColor(renderer, 0x18, 0x20, 0x2a, 255)) return sdlFail("SDL_SetRenderDrawColor");
-    if (!SDL_RenderClear(renderer)) return sdlFail("SDL_RenderClear");
-
-    for (scene.rows.items) |row| {
-        const owner = findSceneWindow(scene, row.window_id) orelse continue;
-        const row_rect = SDL_Rect{
-            .x = @intFromFloat(@as(f32, @floatFromInt(owner.x + row.x)) * scale),
-            .y = @intFromFloat(@as(f32, @floatFromInt(owner.y + row.y)) * scale),
-            .w = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(row.width)) * scale))),
-            .h = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(row.visible_height)) * scale))),
-        };
-        const stripe: u8 = if (row.index % 2 == 0) 0x33 else 0x2b;
-        try drawRect(renderer, row_rect, stripe, stripe + 0x0d, 0x3a);
-    }
-
-    if (!SDL_SetRenderDrawColor(renderer, 0xe8, 0xee, 0xf6, 255)) return sdlFail("SDL_SetRenderDrawColor");
-    for (scene.text.items) |line| {
-        const owner = findSceneWindow(scene, scene.rows.items[line.row_index].window_id) orelse continue;
-        const row = scene.rows.items[line.row_index];
-        const text_x: f32 = @floatFromInt(owner.x + row.x + 2);
-        const text_y: f32 = @floatFromInt(owner.y + row.y + @max(1, row.baseline - 8));
-        if (!SDL_RenderDebugText(renderer, text_x, text_y, line.bytes)) return sdlFail("SDL_RenderDebugText");
-    }
-
-    for (scene.windows.items) |scene_window| {
-        const border = SDL_Rect{
-            .x = @intFromFloat(@as(f32, @floatFromInt(scene_window.x)) * scale),
-            .y = @intFromFloat(@as(f32, @floatFromInt(scene_window.y)) * scale),
-            .w = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(scene_window.width)) * scale))),
-            .h = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(scene_window.height)) * scale))),
-        };
-        if (!SDL_SetRenderDrawColor(renderer, 0x71, 0xa6, 0xf2, 255)) return sdlFail("SDL_SetRenderDrawColor");
-        if (!SDL_RenderFillRect(renderer, &.{ .x = border.x, .y = border.y, .w = border.w, .h = 1 })) return sdlFail("SDL_RenderFillRect");
-        if (!SDL_RenderFillRect(renderer, &.{ .x = border.x, .y = border.y + border.h - 1, .w = border.w, .h = 1 })) return sdlFail("SDL_RenderFillRect");
-        if (!SDL_RenderFillRect(renderer, &.{ .x = border.x, .y = border.y, .w = 1, .h = border.h })) return sdlFail("SDL_RenderFillRect");
-        if (!SDL_RenderFillRect(renderer, &.{ .x = border.x + border.w - 1, .y = border.y, .w = 1, .h = border.h })) return sdlFail("SDL_RenderFillRect");
-    }
-
-    if (scene.cursor) |cursor| {
-        const owner = findSceneWindow(scene, cursor.window_id) orelse return error.CursorWithoutWindow;
-        const cursor_rect = SDL_Rect{
-            .x = @intFromFloat(@as(f32, @floatFromInt(owner.x + cursor.x)) * scale),
-            .y = @intFromFloat(@as(f32, @floatFromInt(owner.y + cursor.y)) * scale),
-            .w = @max(2, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(cursor.width)) * scale))),
-            .h = @max(2, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(cursor.height)) * scale))),
-        };
-        try drawRect(renderer, cursor_rect, 0xff, 0xd5, 0x4d);
-    }
-
-    if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
 }
 
 fn setString(gpa: std.mem.Allocator, field: *[]const u8, value: []const u8) !void {
@@ -669,52 +599,179 @@ fn sceneHasText(scene: *const frontend.Scene, needle: []const u8) bool {
     return false;
 }
 
-fn renderFacts(snapshot: FrameFacts, renderer: *SDL_Renderer, window: *SDL_Window) !void {
-    var output_w: c_int = 0;
-    var output_h: c_int = 0;
-    SDL_GetWindowSize(window, &output_w, &output_h);
-    if (output_w <= 0 or output_h <= 0) return error.InvalidOutputGeometry;
+fn buildSceneDrawList(
+    scene: *frontend.Scene,
+    list: *renderer_policy.DrawList,
+    output_width: i32,
+    output_height: i32,
+) !void {
+    const header = scene.frame_header orelse return error.NoFrameUpdate;
+    if (output_width <= 0 or output_height <= 0 or header.logical_width <= 0 or header.logical_height <= 0)
+        return error.InvalidOutputGeometry;
     const scale: f32 = @min(
-        @as(f32, @floatFromInt(output_w)) / @as(f32, @floatFromInt(snapshot.frame_width)),
-        @as(f32, @floatFromInt(output_h)) / @as(f32, @floatFromInt(snapshot.frame_height)),
+        @as(f32, @floatFromInt(output_width)) / @as(f32, @floatFromInt(header.logical_width)),
+        @as(f32, @floatFromInt(output_height)) / @as(f32, @floatFromInt(header.logical_height)),
     );
+    const pixel: f32 = 1 / scale;
 
-    if (!SDL_SetRenderDrawColor(renderer, 0x18, 0x20, 0x2a, 255)) return sdlFail("SDL_SetRenderDrawColor");
-    if (!SDL_RenderClear(renderer)) return sdlFail("SDL_RenderClear");
+    list.reset();
+    list.setLogicalSize(@floatFromInt(header.logical_width), @floatFromInt(header.logical_height));
+    try list.clear(.{ .r = 0x18, .g = 0x20, .b = 0x2a });
 
+    for (scene.rows.items) |row| {
+        const owner = findSceneWindow(scene, row.window_id) orelse continue;
+        const stripe: u8 = if (row.index % 2 == 0) 0x33 else 0x2b;
+        try list.fillRect(.{
+            .x = @floatFromInt(owner.x + row.x),
+            .y = @floatFromInt(owner.y + row.y),
+            .width = @floatFromInt(row.width),
+            .height = @floatFromInt(row.visible_height),
+        }, .{ .r = stripe, .g = stripe + 0x0d, .b = 0x3a });
+    }
+
+    for (scene.text.items) |line| {
+        const owner = findSceneWindow(scene, scene.rows.items[line.row_index].window_id) orelse continue;
+        const row = scene.rows.items[line.row_index];
+        try list.drawText(
+            @floatFromInt(owner.x + row.x + 2),
+            @floatFromInt(owner.y + row.y + @max(1, row.baseline - 8)),
+            line.bytes,
+        );
+    }
+
+    for (scene.windows.items) |window| {
+        try list.fillRect(.{
+            .x = @floatFromInt(window.x),
+            .y = @floatFromInt(window.y),
+            .width = @floatFromInt(window.width),
+            .height = pixel,
+        }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2 });
+        try list.fillRect(.{
+            .x = @floatFromInt(window.x),
+            .y = @as(f32, @floatFromInt(window.y + window.height)) - pixel,
+            .width = @floatFromInt(window.width),
+            .height = pixel,
+        }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2 });
+        try list.fillRect(.{
+            .x = @floatFromInt(window.x),
+            .y = @floatFromInt(window.y),
+            .width = pixel,
+            .height = @floatFromInt(window.height),
+        }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2 });
+        try list.fillRect(.{
+            .x = @as(f32, @floatFromInt(window.x + window.width)) - pixel,
+            .y = @floatFromInt(window.y),
+            .width = pixel,
+            .height = @floatFromInt(window.height),
+        }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2 });
+    }
+
+    if (scene.cursor) |cursor| {
+        const owner = findSceneWindow(scene, cursor.window_id) orelse return error.CursorWithoutWindow;
+        try list.fillRect(.{
+            .x = @floatFromInt(owner.x + cursor.x),
+            .y = @floatFromInt(owner.y + cursor.y),
+            .width = @floatFromInt(@max(2, cursor.width)),
+            .height = @floatFromInt(@max(2, cursor.height)),
+        }, .{ .r = 0xff, .g = 0xd5, .b = 0x4d });
+    }
+}
+
+fn buildFactsDrawList(
+    snapshot: FrameFacts,
+    list: *renderer_policy.DrawList,
+    output_width: i32,
+    output_height: i32,
+) !void {
+    if (output_width <= 0 or output_height <= 0) return error.InvalidOutputGeometry;
+    const scale: f32 = @min(
+        @as(f32, @floatFromInt(output_width)) / @as(f32, @floatFromInt(snapshot.frame_width)),
+        @as(f32, @floatFromInt(output_height)) / @as(f32, @floatFromInt(snapshot.frame_height)),
+    );
+    const pixel: f32 = 1 / scale;
     const row_count: i32 = 15;
     const row_height = @max(1, @divTrunc(snapshot.window_height, row_count));
+
+    list.reset();
+    list.setLogicalSize(@floatFromInt(snapshot.frame_width), @floatFromInt(snapshot.frame_height));
+    try list.clear(.{ .r = 0x18, .g = 0x20, .b = 0x2a });
     var index: i32 = 0;
     while (index < row_count) : (index += 1) {
         const stripe: u8 = if (@mod(index, 2) == 0) 0x33 else 0x2b;
-        try drawRect(renderer, .{
-            .x = @intFromFloat(0),
-            .y = @intFromFloat(@as(f32, @floatFromInt(index * row_height)) * scale),
-            .w = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(snapshot.window_width)) * scale))),
-            .h = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(row_height)) * scale))),
-        }, stripe, stripe + 0x0d, 0x3a);
+        try list.fillRect(.{
+            .x = 0,
+            .y = @as(f32, @floatFromInt(index * row_height)),
+            .width = @floatFromInt(snapshot.window_width),
+            .height = @floatFromInt(row_height),
+        }, .{ .r = stripe, .g = stripe + 0x0d, .b = 0x3a });
     }
 
-    if (!SDL_SetRenderDrawColor(renderer, 0x71, 0xa6, 0xf2, 255)) return sdlFail("SDL_SetRenderDrawColor");
-    const border_w = @as(c_int, @intFromFloat(@as(f32, @floatFromInt(snapshot.window_width)) * scale));
-    const border_h = @as(c_int, @intFromFloat(@as(f32, @floatFromInt(snapshot.window_height)) * scale));
-    if (!SDL_RenderFillRect(renderer, &.{ .x = 0, .y = 0, .w = border_w, .h = 1 })) return sdlFail("SDL_RenderFillRect");
-    if (!SDL_RenderFillRect(renderer, &.{ .x = 0, .y = border_h - 1, .w = border_w, .h = 1 })) return sdlFail("SDL_RenderFillRect");
-    if (!SDL_RenderFillRect(renderer, &.{ .x = 0, .y = 0, .w = 1, .h = border_h })) return sdlFail("SDL_RenderFillRect");
-    if (!SDL_RenderFillRect(renderer, &.{ .x = border_w - 1, .y = 0, .w = 1, .h = border_h })) return sdlFail("SDL_RenderFillRect");
+    const border: renderer_policy.Color = .{ .r = 0x71, .g = 0xa6, .b = 0xf2 };
+    try list.fillRect(.{ .x = 0, .y = 0, .width = @floatFromInt(snapshot.window_width), .height = pixel }, border);
+    try list.fillRect(.{
+        .x = 0,
+        .y = @as(f32, @floatFromInt(snapshot.window_height)) - pixel,
+        .width = @floatFromInt(snapshot.window_width),
+        .height = pixel,
+    }, border);
+    try list.fillRect(.{ .x = 0, .y = 0, .width = pixel, .height = @floatFromInt(snapshot.window_height) }, border);
+    try list.fillRect(.{
+        .x = @as(f32, @floatFromInt(snapshot.window_width)) - pixel,
+        .y = 0,
+        .width = pixel,
+        .height = @floatFromInt(snapshot.window_height),
+    }, border);
+    try list.fillRect(.{
+        .x = 8,
+        .y = @floatFromInt(row_height),
+        .width = 2,
+        .height = 18,
+    }, .{ .r = 0xff, .g = 0xd5, .b = 0x4d });
+}
 
-    try drawRect(renderer, .{
-        .x = @intFromFloat(8 * scale),
-        .y = @intFromFloat(@as(f32, @floatFromInt(row_height)) * scale),
-        .w = 2,
-        .h = @intFromFloat(18 * scale),
-    }, 0xff, 0xd5, 0x4d);
+fn executeDrawList(
+    list: *renderer_policy.DrawList,
+    renderer: *SDL_Renderer,
+    window: *SDL_Window,
+) !void {
+    var output_width: c_int = 0;
+    var output_height: c_int = 0;
+    SDL_GetWindowSize(window, &output_width, &output_height);
+    if (output_width <= 0 or output_height <= 0 or
+        list.logical_width <= 0 or list.logical_height <= 0) return error.InvalidOutputGeometry;
+    const scale: f32 = @min(
+        @as(f32, @floatFromInt(output_width)) / list.logical_width,
+        @as(f32, @floatFromInt(output_height)) / list.logical_height,
+    );
 
+    for (list.commands.items) |command| switch (command) {
+        .clear => |color| {
+            if (!SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a)) return sdlFail("SDL_SetRenderDrawColor");
+            if (!SDL_RenderClear(renderer)) return sdlFail("SDL_RenderClear");
+        },
+        .fill => |draw| {
+            const rect = SDL_Rect{
+                .x = @intFromFloat(draw.rect.x * scale),
+                .y = @intFromFloat(draw.rect.y * scale),
+                .w = @max(1, @as(c_int, @intFromFloat(draw.rect.width * scale))),
+                .h = @max(1, @as(c_int, @intFromFloat(draw.rect.height * scale))),
+            };
+            if (!SDL_SetRenderDrawColor(renderer, draw.color.r, draw.color.g, draw.color.b, draw.color.a)) return sdlFail("SDL_SetRenderDrawColor");
+            if (!SDL_RenderFillRect(renderer, &rect)) return sdlFail("SDL_RenderFillRect");
+        },
+        .text => |draw| {
+            var text: [121]u8 = undefined;
+            @memcpy(text[0..draw.bytes.len], draw.bytes);
+            text[draw.bytes.len] = 0;
+            if (!SDL_RenderDebugText(renderer, draw.x * scale, draw.y * scale, text[0..draw.bytes.len :0])) return sdlFail("SDL_RenderDebugText");
+        },
+    };
     if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
 }
 
 fn presentScene(
     scene: *frontend.Scene,
+    list: *renderer_policy.DrawList,
     renderer: *SDL_Renderer,
     window: *SDL_Window,
     gate: *renderer_policy.FrameGate,
@@ -728,7 +785,9 @@ fn presentScene(
         return;
     }
     const started_ticks = SDL_GetPerformanceCounter();
-    try renderScene(scene, renderer, window);
+    try buildSceneDrawList(scene, list, @intCast(width), @intCast(height));
+    try executeDrawList(list, renderer, window);
+    counters.recordDrawList(list.stats);
     const ended_ticks = SDL_GetPerformanceCounter();
     counters.recordPresent(
         performanceTicksToNanos(ended_ticks - started_ticks),
@@ -738,6 +797,7 @@ fn presentScene(
 
 fn presentFacts(
     snapshot: FrameFacts,
+    list: *renderer_policy.DrawList,
     renderer: *SDL_Renderer,
     window: *SDL_Window,
     gate: *renderer_policy.FrameGate,
@@ -751,7 +811,9 @@ fn presentFacts(
         return;
     }
     const started_ticks = SDL_GetPerformanceCounter();
-    try renderFacts(snapshot, renderer, window);
+    try buildFactsDrawList(snapshot, list, @intCast(width), @intCast(height));
+    try executeDrawList(list, renderer, window);
+    counters.recordDrawList(list.stats);
     const ended_ticks = SDL_GetPerformanceCounter();
     counters.recordPresent(
         performanceTicksToNanos(ended_ticks - started_ticks),
@@ -975,6 +1037,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
         var frame_gate: renderer_policy.FrameGate = .{};
         var frame_counters: renderer_policy.FrameCounters = .{};
+        var draw_list: renderer_policy.DrawList = .{ .allocator = gpa };
+        defer draw_list.deinit();
 
         var shared = SharedFacts{};
         var last_version: u64 = 0;
@@ -1008,21 +1072,25 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             }
             if (quit) break;
             if (snapshot_scene) |*scene| {
-                try presentScene(scene, renderer, window, &frame_gate, &frame_counters);
+                try presentScene(scene, &draw_list, renderer, window, &frame_gate, &frame_counters);
             } else {
-                try presentFacts(latest, renderer, window, &frame_gate, &frame_counters);
+                try presentFacts(latest, &draw_list, renderer, window, &frame_gate, &frame_counters);
             }
 
             SDL_Delay(50);
         }
         if (last_version == 0) return error.NoEmacsFacts;
         std.debug.print(
-            "sdl3-emacs-smoke: observed {d} public fact snapshot(s); present={d} skipped={d} frame={d}ns; lifecycle OK\n",
+            "sdl3-emacs-smoke: observed {d} public fact snapshot(s); present={d} skipped={d} frame={d}ns draws={d} clears={d} fills={d} text={d}; lifecycle OK\n",
             .{
                 last_version,
                 frame_counters.presented_frames,
                 frame_counters.skipped_frames,
                 frame_counters.frame_path_total_ns,
+                frame_counters.draw_commands_total,
+                frame_counters.clear_commands_total,
+                frame_counters.fill_commands_total,
+                frame_counters.text_commands_total,
             },
         );
         return;
@@ -1119,8 +1187,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     var frame_gate: renderer_policy.FrameGate = .{};
     var frame_counters: renderer_policy.FrameCounters = .{};
+    var draw_list: renderer_policy.DrawList = .{ .allocator = gpa };
+    defer draw_list.deinit();
 
-    try presentScene(&scene, renderer, window, &frame_gate, &frame_counters);
+    try presentScene(&scene, &draw_list, renderer, window, &frame_gate, &frame_counters);
 
     var quit = false;
     const started_ticks = SDL_GetTicks();
@@ -1133,16 +1203,20 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                 frame_gate.dirty = true;
             }
         }
-        try presentScene(&scene, renderer, window, &frame_gate, &frame_counters);
+        try presentScene(&scene, &draw_list, renderer, window, &frame_gate, &frame_counters);
         SDL_Delay(10);
     }
 
     std.debug.print(
-        "sdl3-eup-smoke: present={d} skipped={d} frame={d}ns last_present={d}ns; lifecycle OK ({s})\n",
+        "sdl3-eup-smoke: present={d} skipped={d} frame={d}ns draws={d} clears={d} fills={d} text={d} last_present={d}ns; lifecycle OK ({s})\n",
         .{
             frame_counters.presented_frames,
             frame_counters.skipped_frames,
             frame_counters.frame_path_total_ns,
+            frame_counters.draw_commands_total,
+            frame_counters.clear_commands_total,
+            frame_counters.fill_commands_total,
+            frame_counters.text_commands_total,
             frame_counters.present_last_ns,
             if (quit) "closed by quit event" else "auto timeout",
         },

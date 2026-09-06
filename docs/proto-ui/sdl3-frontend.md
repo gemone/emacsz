@@ -260,9 +260,11 @@ Current selection policy:
 | named driver | Try the requested SDL driver only. |
 
 The frontend reports the actual renderer name and capability tier. It does not
-infer GPU acceleration from a request that failed. The W10 draw-graph, atlas,
-and counters must be implemented before a Tier 1/2 claim means full production
-performance.
+infer GPU acceleration from a request that failed. W10b-b1 builds an
+adapter-owned clear/fill/text draw list and executes the same list through SDL
+software and GPU-backed renderers. The production atlas, image resources,
+scissor/blend graph, and GPU counters are still required before a Tier 1/2 claim
+means full production performance.
 
 ## 10. Input bridge
 

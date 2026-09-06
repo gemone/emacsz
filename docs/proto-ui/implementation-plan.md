@@ -80,6 +80,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W9l public point and dynamic cursor | Approved |
 | W10a SDL renderer negotiation | Approved |
 | W10b-a change-aware present and frontend counters | Approved |
+| W10b-b1 renderer-agnostic SDL draw list | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
 
 The workstream sections below retain their historical review records and
@@ -1242,17 +1243,56 @@ handling, overflow-safe SDL timing, counter semantics, default-build isolation,
 changed-path audits, negative inherited-C rejection, and conservative
 capability reporting.
 
-#### W10b-b — Software-to-GPU draw abstraction (planned)
+#### W10b-b1 — Renderer-agnostic SDL draw list (approved)
+
+Goal: separate scene-to-draw translation from SDL execution so the same logical
+commands can be submitted by software or GPU-backed SDL renderers, and so later
+atlas/damage optimizations operate on an explicit command graph rather than
+direct frontend calls.
 
 Tasks:
 
-1. Add software-to-GPU renderer abstraction.
-2. Implement glyph atlas.
-3. Implement image texture cache.
-4. Implement blend/scissor drawing.
-5. Implement rectangle-level damage-aware redraw.
-6. Implement atlas miss fallback.
-7. Add GPU submit and device-loss counters.
+1. Add adapter-owned `DrawList`, `DrawCommand`, `LogicalRect`, `Color`, and
+   `DrawStats`.
+2. Model clear, filled rectangle, and bounded printable debug-text commands.
+3. Reuse command storage between presented frames and reset statistics without
+   freeing capacity.
+4. Keep text slices borrowed by the command list; scene text remains owned by
+   the scene and the list executes before scene mutation.
+5. Translate replay and continuous-facts scenes into draw lists.
+6. Execute the same list through SDL software and GPU-backed renderers.
+7. Record clear/fill/text command totals in `FrameCounters`.
+8. Add tests for command ordering, reset behavior, counters, and text bounds.
+
+Implemented limits: this is an explicit SDL Renderer command path, not a native
+Vulkan/Metal/D3D12 backend. Text remains `SDL_RenderDebugText`; the command list
+does not yet implement glyph runs, atlas eviction, image textures, scissor
+clipping, blend modes, or rectangle damage.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-renderer-smoke
+```
+
+Review: the dedicated reviewer completed correctness, integration/build, and
+boundary/docs/status passes, then approved the clear-counter fix. It verified
+draw-list ownership and reset capacity, borrowed-text safety, software/GPU
+execution, counter accumulation, default-build isolation, changed-path audits,
+negative inherited-C rejection, and conservative deferred-scope reporting.
+
+#### W10b-b2 — Glyph atlas and texture resources (planned)
+
+Tasks:
+
+1. Implement glyph atlas.
+2. Implement image texture cache.
+3. Implement blend/scissor drawing.
+4. Implement rectangle-level damage-aware redraw.
+5. Implement atlas miss fallback.
+6. Add GPU submit and device-loss counters.
 
 Acceptance:
 
