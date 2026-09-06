@@ -130,7 +130,18 @@ Semantic ownership remains in Emacs regardless of renderer.
 
 ## 6. PGTK parity matrix
 
-Status is specification status, not implementation status. Current implementation status is **not started** unless explicitly changed by a later workstream report.
+Priority and requirement columns define the specification target. The Status and Evidence columns are the current implementation snapshot. They are intentionally more conservative than historical workstream approvals: an approved bounded bridge is not claimed as PGTK parity.
+
+### Status legend
+
+| Status | Meaning |
+|---|---|
+| Implemented | Full row scope is available in the adapter-first path and covered by a gate |
+| Degraded | A bounded, safe subset works; the fallback and missing scope are explicit |
+| Pending | No adapter-first runtime implementation yet; the protocol/design may be specified |
+| Blocked | Requires a defined runtime seam or capability before it can proceed |
+
+The current snapshot records the state through `23da8d92855`: 18 PGTK rows are Degraded, 100 are Pending, and no row yet meets the full PGTK scope. Pending rows are not failures of the protocol design; they are requirements still separating the bounded facts bridge from W12 PGTK parity and the W16 real-frame acceptance test.
 
 Priorities:
 
@@ -143,156 +154,156 @@ Priorities:
 
 ### 6.1 Terminal/display
 
-| Capability | PGTK equivalent | Proto requirement | Priority |
-|---|---|---|---|
-| Terminal creation | `create_terminal(output_pgtk)` | `create_terminal(output_proto)` | P0 |
-| Terminal deletion | PGTK terminal hooks | EUP session/frame teardown | P0 |
-| Graphic frame predicate | `output_pgtk` frame | `output_proto` frame | P0 |
-| Focus frame | GDK focus | Frontend focus + core state | P0 |
-| Multi-frame | GTK windows | Multiple SDL windows | P1 |
-| Monitor attributes | GDK monitor | SDL monitor events | P1 |
-| Scale factor | GDK scale | SDL display scale | P1 |
-| DPI | GTK/GDK | SDL display data | P1 |
-| Monitor change | GDK signal | Frontend event/redisplay | P1 |
+| Capability | PGTK equivalent | Proto requirement | Priority | Status | Evidence |
+|---|---|---|---|---|---|
+| Terminal creation | `create_terminal(output_pgtk)` | `create_terminal(output_proto)` | P0 | Pending | Existing-frame observation is not terminal creation; no `output_proto` terminal |
+| Terminal deletion | PGTK terminal hooks | EUP session/frame teardown | P0 | Pending | Smoke process cleanup is not terminal deletion; no teardown contract |
+| Graphic frame predicate | `output_pgtk` frame | `output_proto` frame | P0 | Pending | No `output_proto`; W12/W16 P0 gap |
+| Focus frame | GDK focus | Frontend focus + core state | P0 | Pending | No frame-focus event round trip |
+| Multi-frame | GTK windows | Multiple SDL windows | P1 | Pending | Single SDL facts window and one EUP frame profile |
+| Monitor attributes | GDK monitor | SDL monitor events | P1 | Pending | No monitor observation or protocol event bridge |
+| Scale factor | GDK scale | SDL display scale | P1 | Degraded | EUP header accepts scale; facts profile remains scale 1 |
+| DPI | GTK/GDK | SDL display data | P1 | Degraded | EUP header accepts DPI values; facts profile remains 96 DPI |
+| Monitor change | GDK signal | Frontend event/redisplay | P1 | Pending | No monitor event or live redisplay bridge |
 
 ### 6.2 Frame lifecycle
 
-| Capability | Priority |
-|---|---|
-| Create/delete frame | P0 |
-| Visible/invisible | P0 |
-| Iconify/deiconify | P1 |
-| Raise/lower | P1 |
-| Restack | P1 |
-| Fullscreen states | P1 |
-| Maximize horizontal/vertical | P1 |
-| Undecorated frame | P1 |
-| Override redirect | P2 |
-| Parent frame | P2 |
-| Child frame | P2 |
-| Tooltip frame | P2 |
-| Title/name | P0 |
-| Icon | P1 |
-| Outer/native/text geometry | P0 |
-| Size hints | P1 |
-| Alpha/background alpha | P1 |
-| Internal border | P0 |
-| Skip taskbar | P2 |
-| Sticky | P2 |
-| Z-group | P2 |
+| Capability | Priority | Status | Evidence |
+|---|---|---|---|
+| Create/delete frame | P0 | Pending | Facts bridge only; no proto frame lifecycle |
+| Visible/invisible | P0 | Pending | No visibility intent or frame event round trip |
+| Iconify/deiconify | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Raise/lower | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Restack | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Fullscreen states | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Maximize horizontal/vertical | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Undecorated frame | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Override redirect | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Parent frame | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Child frame | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Tooltip frame | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Title/name | P0 | Degraded | SDL fixture title only; Emacs frame title is not published |
+| Icon | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Outer/native/text geometry | P0 | Degraded | Public frame/window geometry facts; no platform-native geometry contract |
+| Size hints | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Alpha/background alpha | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Internal border | P0 | Pending | Window edges are debug geometry, not frame border semantics |
+| Skip taskbar | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Sticky | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Z-group | P2 | Pending | W12/W16 PGTK parity gate not met |
 
 ### 6.3 Redisplay/rendering
 
-| Capability | Priority |
-|---|---|
-| Glyph rows | P0 |
-| Glyph runs | P0 |
-| Character glyphs | P0 |
-| Composite glyphs | P1 |
-| Glyphless glyphs | P1 |
-| Image glyphs | P1 |
-| Stretch glyphs | P1 |
-| XWidget glyphs | EXP |
-| Faces | P0 |
-| Cursor styles | P0 |
-| Mouse face | P1 |
-| Fringe bitmaps | P1 |
-| Window divider | P1 |
-| Vertical border | P1 |
-| Mode line | P0 |
-| Header line | P1 |
-| Tab line | P1 |
-| Tab bar | P1 |
-| Tool bar | P1 |
-| Menu bar | P1 |
-| Scrollbar | P1 |
-| Overlay arrow | P1 |
-| Hourglass | P2 |
-| Visible bell | P2 |
-| Audible bell | P1 |
-| Partial damage | P0 |
-| Scroll optimization | P1 |
-| Double-buffer equivalent | P1 |
+| Capability | Priority | Status | Evidence |
+|---|---|---|---|
+| Glyph rows | P0 | Degraded | Bounded public-fact rows in EUP; not redisplay-owned glyph rows |
+| Glyph runs | P0 | Pending | W12/W16 PGTK parity gate not met |
+| Character glyphs | P0 | Degraded | Bounded printable ASCII through SDL debug text |
+| Composite glyphs | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Glyphless glyphs | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Image glyphs | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Stretch glyphs | P1 | Pending | W12/W16 PGTK parity gate not met |
+| XWidget glyphs | EXP | Pending | W12/W16 PGTK parity gate not met |
+| Faces | P0 | Pending | W12/W16 PGTK parity gate not met |
+| Cursor styles | P0 | Degraded | Single filled rectangle; no shape, blink, or face model |
+| Mouse face | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Fringe bitmaps | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Window divider | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Vertical border | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Mode line | P0 | Pending | W12/W16 PGTK parity gate not met |
+| Header line | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Tab line | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Tab bar | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Tool bar | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Menu bar | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Scrollbar | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Overlay arrow | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Hourglass | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Visible bell | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Audible bell | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Partial damage | P0 | Degraded | Cursor and bounded text/region retained-frame clips; no partial present |
+| Scroll optimization | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Double-buffer equivalent | P1 | Degraded | Adapter-owned SDL target; no full redisplay invalidation model |
 
 ### 6.4 Text/fonts
 
-| Capability | Priority |
-|---|---|
-| Monospace Latin text | P0 |
-| Font fallback | P1 |
-| CJK text | P1 |
-| BiDi ordering | P1 |
-| Arabic shaping | P2 |
-| Indic shaping | P2 |
-| Emoji | P2 |
-| Color emoji | P2 |
-| Variable fonts | P2 |
-| Color fonts | P2 |
-| Synthetic bold/italic | P1 |
-| Underline/overline/strike-through | P0 |
-| Box faces | P0 |
-| Baseline/line spacing | P0 |
-| Frame font change | P1 |
-| Fontset semantics | P1 |
+| Capability | Priority | Status | Evidence |
+|---|---|---|---|
+| Monospace Latin text | P0 | Degraded | Bounded printable ASCII, 120 columns/32 lines, 8x8 debug font |
+| Font fallback | P1 | Pending | W12/W16 PGTK parity gate not met |
+| CJK text | P1 | Pending | W12/W16 PGTK parity gate not met |
+| BiDi ordering | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Arabic shaping | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Indic shaping | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Emoji | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Color emoji | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Variable fonts | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Color fonts | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Synthetic bold/italic | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Underline/overline/strike-through | P0 | Pending | W12/W16 PGTK parity gate not met |
+| Box faces | P0 | Pending | W12/W16 PGTK parity gate not met |
+| Baseline/line spacing | P0 | Degraded | Facts-profile row baseline and visible-height geometry only |
+| Frame font change | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Fontset semantics | P1 | Pending | W12/W16 PGTK parity gate not met |
 
 ### 6.5 Input/IME
 
-| Capability | Priority |
-|---|---|
-| Keyboard events | P0 |
-| Modifier state | P0 |
-| Multibyte input | P0 |
-| Dead keys | P1 |
-| Mouse motion | P0 |
-| Mouse buttons | P0 |
-| Click count | P1 |
-| Drag events | P1 |
-| Wheel scroll | P0 |
-| Touchpad scroll | P1 |
-| Touch | EXP |
-| Pen | EXP |
-| Gestures | EXP |
-| Focus enter/leave | P0 |
-| IME activation | P1 |
-| Preedit | P1 |
-| Commit | P1 |
-| Surrounding text | P2 |
-| Candidate placement | P1 |
+| Capability | Priority | Status | Evidence |
+|---|---|---|---|
+| Keyboard events | P0 | Degraded | Printable ASCII insert, backspace, arrows, copy, paste; no keymap commands |
+| Modifier state | P0 | Degraded | Ctrl+C and Ctrl+V only; general modifier sets rejected |
+| Multibyte input | P0 | Pending | W12/W16 PGTK parity gate not met |
+| Dead keys | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Mouse motion | P0 | Degraded | Best-effort idle motion and ordered drag session admission |
+| Mouse buttons | P0 | Degraded | Single left press/release through public point mapping |
+| Click count | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Drag events | P1 | Degraded | Ordered left press/motion/release; not selection drag |
+| Wheel scroll | P0 | Degraded | Vertical whole line ticks only |
+| Touchpad scroll | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Touch | EXP | Pending | W12/W16 PGTK parity gate not met |
+| Pen | EXP | Pending | W12/W16 PGTK parity gate not met |
+| Gestures | EXP | Pending | W12/W16 PGTK parity gate not met |
+| Focus enter/leave | P0 | Pending | W12/W16 PGTK parity gate not met |
+| IME activation | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Preedit | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Commit | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Surrounding text | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Candidate placement | P1 | Pending | W12/W16 PGTK parity gate not met |
 
 ### 6.6 Desktop integration
 
-| Capability | Priority |
-|---|---|
-| Clipboard text | P0 |
-| Clipboard images | P2 |
-| PRIMARY selection | P1 |
-| SECONDARY selection | P2 |
-| Selection ownership | P1 |
-| Selection target negotiation | P1 |
-| DND text | P2 |
-| DND files | P2 |
-| DND images | P2 |
-| DND copy/move/link | P2 |
-| System theme event | P2 |
-| System font preference | P2 |
-| App icon | P1 |
-| Taskbar state | P2 |
-| WM hints | P2 |
+| Capability | Priority | Status | Evidence |
+|---|---|---|---|
+| Clipboard text | P0 | Degraded | Bounded printable ASCII paste and copy smoke paths |
+| Clipboard images | P2 | Pending | W12/W16 PGTK parity gate not met |
+| PRIMARY selection | P1 | Pending | W12/W16 PGTK parity gate not met |
+| SECONDARY selection | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Selection ownership | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Selection target negotiation | P1 | Pending | W12/W16 PGTK parity gate not met |
+| DND text | P2 | Pending | W12/W16 PGTK parity gate not met |
+| DND files | P2 | Pending | W12/W16 PGTK parity gate not met |
+| DND images | P2 | Pending | W12/W16 PGTK parity gate not met |
+| DND copy/move/link | P2 | Pending | W12/W16 PGTK parity gate not met |
+| System theme event | P2 | Pending | W12/W16 PGTK parity gate not met |
+| System font preference | P2 | Pending | W12/W16 PGTK parity gate not met |
+| App icon | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Taskbar state | P2 | Pending | W12/W16 PGTK parity gate not met |
+| WM hints | P2 | Pending | W12/W16 PGTK parity gate not met |
 
 ### 6.7 Widgets
 
-| Capability | Priority |
-|---|---|
-| Menu bar model | P1 |
-| Popup menu model | P1 |
-| Native menu | Optional |
-| Tool bar model | P1 |
-| Dialog model | P1 |
-| File dialog | P1 |
-| Color dialog | P2 |
-| Font dialog | P2 |
-| Tooltip model | P1 |
-| Scrollbar model | P1 |
+| Capability | Priority | Status | Evidence |
+|---|---|---|---|
+| Menu bar model | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Popup menu model | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Native menu | Optional | Pending | No platform menu bridge |
+| Tool bar model | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Dialog model | P1 | Pending | W12/W16 PGTK parity gate not met |
+| File dialog | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Color dialog | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Font dialog | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Tooltip model | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Scrollbar model | P1 | Pending | Wheel intent exists, but no scrollbar model/render/interaction |
 
 ## 7. GPU acceleration tiers
 
@@ -399,7 +410,36 @@ A capability row is complete only when:
 7. Failure cannot crash Emacs.
 8. Implementation status is recorded.
 
-## 12. Initial explicit limitations
+## 12. Current implementation evidence
+
+Snapshot: `zig-build-step-4` through `23da8d92855`. This summary is scope-sensitive; "implemented" never implies PGTK parity.
+
+### 12.1 Layer status
+
+| Layer | Working now | Still required for parity | Evidence |
+|---|---|---|---|
+| Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry | General capability negotiation, resources, widgets, arbitrary recovery, remote safety | `proto-ui-conformance`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
+| Emacs observation | Real Emacs process publishes public frame/window geometry, bounded printable-ASCII text, point/cursor, and viewport facts | Redisplay-owned rows/glyphs/faces/fonts, full window tree, frame lifecycle, `output_proto` terminal | `proto-ui-module-smoke`, `sdl3-emacs-smoke`, `sdl3-epxl-facts-smoke` |
+| SDL3 rendering | Real SDL window, frame/window/row/cursor scene, software/GPU selection, clear/fill/debug-text list, retained cursor/text clips | Glyph atlas/runs, faces, images, widgets, true partial present, GPU timestamps | `sdl3-ui-smoke`, `sdl3-renderer-smoke`, `sdl3-pointer-smoke`, `sdl3-epxl-interactive-smoke` |
+| Input | Bounded ASCII insert/delete, arrows, Ctrl+C/Ctrl+V, left pointer sessions, vertical wheel | Full keymaps, Unicode/IME, focus, selection drag, pixel/horizontal scroll | `sdl3-input-translate-smoke`, `sdl3-epxl-input-smoke`, `sdl3-epxl-edit-smoke`, `sdl3-pointer-smoke`, `sdl3-wheel-smoke` |
+| Desktop | Bounded ASCII clipboard paste/copy | Unicode, MIME, PRIMARY/SECONDARY selection, DND, dialogs, menus, scrollbars | `sdl3-clipboard-smoke`, `sdl3-emacs-copy-smoke` |
+| Performance | Change-aware present/skip, damage-class counters, clip counters, renderer tier reporting | Machine-readable benchmark, latency percentiles, bandwidth/GPU evidence | Renderer/interactive smoke diagnostics; W14 harness remains pending |
+
+The status audit contains 118 PGTK capability rows: 18 Degraded, 100 Pending, 0 Blocked, and 0 fully Implemented. A Degraded row always identifies both the verified bounded subset and the parity gap that remains.
+
+### 12.2 Largest P0 gaps
+
+1. **Graphic frame ownership.** The dynamic-module bridge observes a real Emacs process, but there is no `output_proto` terminal or graphic frame predicate.
+2. **Redisplay-owned rendering.** EUP carries bounded facts rows, not authoritative glyph rows, runs, faces, fonts, or redisplay damage.
+3. **Frame lifecycle and focus.** No create/delete/visibility/focus round trip meets the P0 frame contract.
+4. **Capability negotiation.** Protocol tables exist, but EPXL does not yet negotiate the full effective capability set for every feature.
+5. **Resource model.** Faces, fonts, images, atlases, and generation eviction remain specified but unimplemented.
+
+### 12.3 Minimum next milestone
+
+Implement adapter-first capability negotiation and an implementation-status manifest gate before expanding UI features. This is the smallest W12 increment that makes effective-session scope machine-checkable, exposes unsupported features explicitly, and creates the contract needed by later frame/resource work.
+
+## 13. Initial explicit limitations
 
 These may be represented by the protocol but are not required for first completion:
 
