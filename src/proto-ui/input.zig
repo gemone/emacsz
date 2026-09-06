@@ -39,6 +39,14 @@ pub const SenderState = struct {
     }
 };
 
+/// Validates a bounded apply-ACK payload containing exactly one decimal
+/// sequence. Trailing filesystem newline whitespace is accepted.
+pub fn validApplyAck(payload: []const u8, expected_sequence: u64) bool {
+    const trimmed = std.mem.trim(u8, payload, " \t\r\n");
+    const sequence = std.fmt.parseInt(u64, trimmed, 10) catch return false;
+    return sequence == expected_sequence;
+}
+
 pub const TextEvent = struct {
     buffer: [max_text_bytes]u8 = undefined,
     length: usize = 0,
@@ -144,6 +152,16 @@ test "sender permits one monotonic in-flight input and exact ACK" {
     try std.testing.expectEqual(@as(u64, 2), second);
     try std.testing.expect(sender.acknowledge(second));
     try std.testing.expectEqual(@as(u64, 2), sender.last_acknowledged);
+}
+
+test "apply ACK accepts only the exact bounded sequence payload" {
+    try std.testing.expect(validApplyAck("7", 7));
+    try std.testing.expect(validApplyAck("7\n", 7));
+    try std.testing.expect(validApplyAck(" 7\r\n", 7));
+    try std.testing.expect(!validApplyAck("8\n", 7));
+    try std.testing.expect(!validApplyAck("", 7));
+    try std.testing.expect(!validApplyAck("7x", 7));
+    try std.testing.expect(!validApplyAck("7\n7", 7));
 }
 
 test "queue copies and bounds printable text" {

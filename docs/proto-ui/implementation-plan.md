@@ -84,6 +84,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8a bounded SDL input translation | Approved |
 | W8b-a persistent public-fact interactive bridge | Approved |
 | W8c-a EPXL reverse-input sequencing | Approved |
+| W8c-b Emacs apply-ACK | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
 | W8b-a persistent public-fact bridge | Approved: real SDL frame polls public Emacs facts and applies bounded local-file actions; persistent EPXL delivery remains pending |
 
@@ -769,6 +770,41 @@ boundary/docs/status passes. It verified one-in-flight ownership, monotonic
 sequence allocation, exact ACK matching and stale/duplicate rejection, text/key
 sender integration, publisher compatibility, changed-path and negative
 inherited-C audits, and explicit deferral of an Emacs apply-ACK.
+
+#### W8c-b — Emacs apply-ACK (approved)
+
+Goal: distinguish "the bridge published an action" from "Emacs executed that
+action" before EPXL acknowledges the reverse input.
+
+Tasks:
+
+1. Extend the EPXL action record to `sequence`, `kind`, and `value` lines.
+2. Have the real Emacs bridge execute the public editing action, write an
+   apply-ACK artifact containing the exact sequence, and delete the action.
+3. Have the publisher validate the exact sequence, remove the apply-ACK, and
+   only then send the EPXL ACK.
+4. Bound apply-ACK waiting to two seconds and reject malformed, empty, stale, or
+   duplicate payloads.
+5. Extend the sequence smoke to assert ordered final state after text insertion
+   followed by backspace.
+
+Implemented limits: this proves action application for the bounded facts-profile
+bridge. It is not an inherited terminal input-event ACK, redisplay-completion
+ACK, persistent frontend delivery, or reconnect/recovery contract.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-sequence-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-edit-smoke
+```
+
+Review: the dedicated reviewer completed correctness, integration/build, and
+boundary/docs/status passes, then approved fixes for the ACK/action cleanup race,
+ACK deletion failure propagation, and the edit regression assertion. Final checks
+verified exact sequence ACKs, bounded cleanup, ordered final state, changed-path
+audits, negative inherited-C rejection, and explicit non-redisplay scope.
 
 ### W9a — Independent SDL3 window lifecycle (approved)
 

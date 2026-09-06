@@ -221,9 +221,9 @@ fn writeTranslatedEvent(
                 .cursor_up => "cursor-up",
                 .cursor_down => "cursor-down",
             };
-            try writeInputArtifact(gpa, io, path, "key", action_name);
+            try writeActionArtifact(gpa, io, path, "key", action_name);
         },
-        .text => |text| try writeInputArtifact(gpa, io, path, "text", text.bytes()),
+        .text => |text| try writeActionArtifact(gpa, io, path, "text", text.bytes()),
     }
 }
 
@@ -258,7 +258,7 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
         \\    (while t
         \\      (when (file-readable-p input-path)
         \\        (let ((action (split-string (with-temp-buffer (insert-file-contents input-path) (buffer-string)) "\n" t)))
-        \\          (when (= (length action) 2)
+        \\          (when (= (length action) 3)
         \\            (cond
         \\              ((and (string= (nth 0 action) "key") (string= (nth 1 action) "backspace"))
         \\               (with-current-buffer buffer (when (> (point) (point-min)) (delete-char -1)) (set-window-point window (point)) (redisplay)))
@@ -523,11 +523,13 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     _ = std.Io.Dir.cwd().deleteFile(io, config.facts_path) catch {};
     const input_path = try std.fmt.allocPrint(gpa, "{s}.keys", .{config.facts_path});
     defer gpa.free(input_path);
-    _ = std.Io.Dir.cwd().deleteFile(io, input_path) catch {};
+    const ack_path = try std.fmt.allocPrint(gpa, "{s}.ack", .{input_path});
+    defer gpa.free(ack_path);
+    _ = std.Io.Dir.cwd().deleteFile(io, ack_path) catch {};
     _ = std.Io.Dir.cwd().deleteFile(io, config.endpoint) catch {};
     const eval = try std.fmt.allocPrint(
         gpa,
-        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let* ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\")))) (buffer (window-buffer window)) (facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (lines (split-string text \"\\n\")) (point (with-current-buffer buffer (window-point window))) (cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column)))))) (with-current-buffer buffer (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII textZ\") (redisplay)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.2) (set-frame-size frame 240 30) (while t (when (file-readable-p input-path) (let ((action (split-string (with-temp-buffer (insert-file-contents input-path) (buffer-string)) \"\\n\" t))) (cond ((and (= (length action) 2) (string= (nth 0 action) \"key\") (string= (nth 1 action) \"backspace\")) (with-current-buffer buffer (goto-char (point-max)) (delete-char -1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 2) (string= (nth 0 action) \"key\") (string= (nth 1 action) \"cursor-left\")) (with-current-buffer buffer (backward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 2) (string= (nth 0 action) \"key\") (string= (nth 1 action) \"cursor-right\")) (with-current-buffer buffer (forward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 2) (string= (nth 0 action) \"key\") (string= (nth 1 action) \"cursor-up\")) (with-current-buffer buffer (previous-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 2) (string= (nth 0 action) \"key\") (string= (nth 1 action) \"cursor-down\")) (with-current-buffer buffer (next-line 1) (set-window-point window (point)) (redisplay))) (when (and (= (length action) 2) (string= (nth 0 action) \"text\") (> (length (nth 1 action)) 0)) (with-current-buffer buffer (goto-char (point-min)) (insert (nth 1 action)) (set-window-point window (point)) (redisplay)))) (delete-file input-path))) (setq text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (setq lines (split-string text \"\\n\")) (setq point (with-current-buffer buffer (window-point window))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column))))) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.1))))",
+        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let* ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\")))) (buffer (window-buffer window)) (facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (lines (split-string text \"\\n\")) (point (with-current-buffer buffer (window-point window))) (cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column)))))) (with-current-buffer buffer (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII textZ\") (redisplay)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.2) (set-frame-size frame 240 30) (while t (when (file-readable-p input-path) (let ((action (split-string (with-temp-buffer (insert-file-contents input-path) (buffer-string)) \"\\n\" t))) (cond ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"backspace\")) (with-current-buffer buffer (goto-char (point-max)) (delete-char -1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-left\")) (with-current-buffer buffer (backward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-right\")) (with-current-buffer buffer (forward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-up\")) (with-current-buffer buffer (previous-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-down\")) (with-current-buffer buffer (next-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"text\") (> (length (nth 2 action)) 0)) (with-current-buffer buffer (goto-char (point-min)) (insert (nth 2 action)) (set-window-point window (point)) (redisplay)))) (with-temp-file (concat input-path \".ack\") (insert (nth 0 action))) (delete-file input-path))) (setq text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (setq lines (split-string text \"\\n\")) (setq point (with-current-buffer buffer (window-point window))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column))))) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor)))) (sit-for 0.1))))",
         .{ config.module_path, config.facts_path, input_path },
     );
     defer gpa.free(eval);
@@ -697,7 +699,7 @@ fn sendAutoKeyEvent(
     if (input_ack.kind != .ack or !sender.acknowledge(input_ack.sequence)) return error.ExpectedInputAck;
 }
 
-fn writeInputArtifact(gpa: std.mem.Allocator, io: std.Io, path: []const u8, kind: []const u8, value: []const u8) !void {
+fn writeActionArtifact(gpa: std.mem.Allocator, io: std.Io, path: []const u8, kind: []const u8, value: []const u8) !void {
     const temporary_path = try std.fmt.allocPrint(gpa, "{s}.tmp", .{path});
     defer gpa.free(temporary_path);
     _ = std.Io.Dir.cwd().deleteFile(io, temporary_path) catch {};
@@ -716,6 +718,57 @@ fn writeInputArtifact(gpa: std.mem.Allocator, io: std.Io, path: []const u8, kind
         _ = std.Io.Dir.cwd().deleteFile(io, temporary_path) catch {};
         return err;
     };
+}
+
+fn writeEpxlInputArtifact(gpa: std.mem.Allocator, io: std.Io, path: []const u8, sequence: u64, kind: []const u8, value: []const u8) !void {
+    const temporary_path = try std.fmt.allocPrint(gpa, "{s}.tmp", .{path});
+    defer gpa.free(temporary_path);
+    _ = std.Io.Dir.cwd().deleteFile(io, temporary_path) catch {};
+    {
+        var file = try std.Io.Dir.cwd().createFile(io, temporary_path, .{});
+        defer file.close(io);
+        var buffer: [256]u8 = undefined;
+        var writer = file.writer(io, &buffer);
+        try writer.interface.print("{d}\n{s}\n{s}\n", .{ sequence, kind, value });
+        try writer.interface.flush();
+    }
+    std.Io.Dir.renameAbsolute(temporary_path, path, io) catch |err| {
+        _ = std.Io.Dir.cwd().deleteFile(io, temporary_path) catch {};
+        return err;
+    };
+}
+
+fn waitForApplyAck(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    input_path: []const u8,
+    sequence: u64,
+) !void {
+    const ack_path = try std.fmt.allocPrint(gpa, "{s}.ack", .{input_path});
+    defer gpa.free(ack_path);
+    var waited_ms: u32 = 0;
+    while (waited_ms < 2000) : (waited_ms += 10) {
+        const bytes = std.Io.Dir.cwd().readFileAlloc(io, ack_path, gpa, .limited(32)) catch |err| switch (err) {
+            error.FileNotFound => {
+                try io.sleep(.fromMilliseconds(10), .awake);
+                continue;
+            },
+            else => return err,
+        };
+        defer gpa.free(bytes);
+        if (!input_policy.validApplyAck(bytes, sequence)) return error.InvalidApplyAck;
+        while (waited_ms < 2000) : (waited_ms += 10) {
+            if (std.Io.Dir.cwd().statFile(io, input_path, .{})) |_| {
+                try io.sleep(.fromMilliseconds(10), .awake);
+            } else |_| break;
+        }
+        if (std.Io.Dir.cwd().statFile(io, input_path, .{})) |_| {
+            return error.ApplyActionCleanupTimeout;
+        } else |_| {}
+        std.Io.Dir.cwd().deleteFile(io, ack_path) catch |err| return err;
+        return;
+    }
+    return error.ApplyAckTimeout;
 }
 
 const Inbound = union(enum) {
@@ -764,7 +817,7 @@ fn awaitFrameAck(
                     return error.InvalidSequence;
                 if (is_text) {
                     const input = try frontend.decodeTextInput(payload.bytes);
-                    try writeInputArtifact(gpa, io, input_path, "text", input.text);
+                    try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "text", input.text);
                 } else {
                     const event = try frontend.decodeKeyEvent(payload.bytes);
                     const action_name: []const u8 = switch (event.action) {
@@ -774,8 +827,9 @@ fn awaitFrameAck(
                         .cursor_up => "cursor-up",
                         .cursor_down => "cursor-down",
                     };
-                    try writeInputArtifact(gpa, io, input_path, "key", action_name);
+                    try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "key", action_name);
                 }
+                try waitForApplyAck(gpa, io, input_path, payload.envelope.sequence);
                 try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = input_sequence.* });
                 try writer.interface.flush();
                 input_sequence.* += 1;
@@ -1530,7 +1584,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     }
     if (config.mode == .emacs_epxl_sequence) {
         const applied = scene.text.items.len >= 2 and
-            std.mem.eql(u8, scene.text.items[0].bytes, "Emacs Proto-UI") and
+            std.mem.eql(u8, scene.text.items[0].bytes, "XEmacs Proto-UI") and
             std.mem.eql(u8, scene.text.items[1].bytes, "visible ASCII text") and
             scene.cursor != null and scene.cursor.?.x == 144 and scene.cursor.?.y == 1;
         if (!applied) return error.SequenceInputNotApplied;

@@ -124,7 +124,7 @@ pub const integration_points = [_]IntegrationPoint{
     .{ .id = "draw_list", .owner = .frontend, .status = .partial, .summary = "reusable backend-neutral clear/fill/debug-text command list executed by SDL software and GPU-backed renderers; glyph atlas, images, scissor/blend, rectangle damage, and native GPU counters pending" },
     .{ .id = "input_translation", .owner = .frontend, .status = .partial, .summary = "bounded SDL key/text translation queue for backspace/cursor and printable ASCII; modifiers, Unicode, pointer, focus, persistent EPXL delivery, and full keyboard support pending" },
     .{ .id = "emacs_interactive_bridge", .owner = .frontend, .status = .partial, .summary = "persistent real Emacs public-fact window with atomic bounded local-file actions; redisplay-owned glyphs and persistent EPXL input pending" },
-    .{ .id = "epxl_input_sequence", .owner = .frontend, .status = .partial, .summary = "monotonic reverse-input sequence state with one in-flight intent and exact ACK matching; persistent frontend delivery and Emacs apply-ACK pending" },
+    .{ .id = "epxl_input_sequence", .owner = .frontend, .status = .partial, .summary = "monotonic reverse-input sequence state with one in-flight intent and exact ACK matching; persistent frontend delivery pending; Emacs apply-ACK implemented" },
 };
 
 pub const ManifestIssue = struct {

@@ -799,7 +799,7 @@ pub fn build(b: *std.Build) void {
                 "zig-out/proto-ui/proto-ui-module{s}",
                 .{proto_suffix},
             ) catch @panic("OOM"),
-            "--auto-quit-ms=3000",
+            "--auto-quit-ms=5000",
         });
         run_sdl3_epxl_sequence.setCwd(b.path("."));
         run_sdl3_epxl_sequence.step.dependOn(&proto_module_smoke.step);
