@@ -360,7 +360,9 @@
         // is enabled.  lazy = true: not downloaded unless build.zig calls
         // b.dependency() on them, so a console build pays no cost.
         .png_src = .{
-            .url = "https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.47.tar.gz",
+            // Use codeload directly: GitHub's archive path intermittently
+            // closes CI connections; this CDN URL has the identical hash.
+            .url = "https://codeload.github.com/pnggroup/libpng/tar.gz/refs/tags/v1.6.47",
             .hash = "N-V-__8AALj-XgA044hQcz2biR55YBJHsz1kKk5UkLAWkI-Z",
             .lazy = true,
         },
