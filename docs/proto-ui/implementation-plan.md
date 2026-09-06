@@ -96,6 +96,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W9g2 bounded viewport facts | Approved |
 | W10b-b2a bounded glyph-atlas policy | Approved |
 | W10c-a damage classification baseline | Approved |
+| W10c-b cursor-only clipped redraw | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
@@ -1834,6 +1835,50 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-smoke
 ```
 
 Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes; approved fixes added a conservative SHA-256 text signature, complete optional cursor observation, frame-update-only observation, damage counters, and diagnostics documentation. Final checks verified unchanged-frame skipping, cursor/viewport classification, interactive and EPXL regressions, boundary and inherited-C audits, and the full built-in check run.
+
+#### W10c-b — Cursor-only clipped redraw (in review)
+
+Goal: use the W10c-a cursor-only classification to avoid a full-frame clear and
+redraw when only the rendered cursor changes.
+
+1. Retain the complete old and new cursor observations in `DamageDecision`.
+2. Build a conservative logical clip rectangle that is the union of the old and
+   new cursor rectangles plus one logical-pixel margin.
+3. Classify all rendered scene inputs: viewport facts, text bytes/count,
+   cursor state, frame/window/row geometry, and structure object count. Do not
+   let non-render metadata such as update timestamps force a redraw.
+4. Keep the prior rendered frame in a sized, primed, adapter-owned offscreen
+   SDL target. Resize, render-target reset, or device loss discards it. Full
+   frames rebuild that target, compose it to the window, and present. Never
+   assume the window backbuffer survives present.
+5. Fall back to full-frame rendering when either cursor endpoint is absent, the
+   cursor changes window, the retained target is unavailable or unprimed, the
+   logical dimensions exceed exact frontend coordinate representation, or the
+   clipped device rectangle is empty.
+6. In cursor-clipped mode, redraw the retained draw list inside the old/new
+   cursor union without `SDL_RenderClear`. The explicit opaque full-frame
+   background fill is still submitted and restores every pixel in the union
+   before row/text/cursor commands; then compose and present the retained
+   target.
+7. Track cursor-clipped frames, full-fallback frames, and the actual submitted
+   command count so clipped execution remains observable.
+
+Implemented limits: this optimization applies only to cursor-only changes.
+Text-only, viewport, resize, initial, and clipped-unable changes retain
+conservative full-frame rendering. The implementation does not yet claim
+partial GPU compositing, dirty texture uploads, GPU timestamps, or general
+rectangle damage.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-interactive-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interactive-smoke
+```
+
+Status: approved. The dedicated reviewer completed correctness, integration/runtime, and boundary/docs/status passes; approved fixes added sized/primed retained-target lifecycle handling, render-reset invalidation, exact cursor geometry and clip bounds, explicit background restoration, and accurate submitted-command counters.
 
 ### W11 — Desktop integration
 

@@ -429,11 +429,16 @@ through public `posn-at-x-y` / `posn-point` and republishes the resulting
 point; intermediate drag motion is not text-selection semantics.
 
 The frontend classifies scene changes as initial, cursor-only, viewport, or
-unchanged, including a SHA-256 text signature and complete rendered cursor
-state. Unchanged states are skipped. Cursor, text-only, and viewport changes
-remain conservative full-frame work. Smoke diagnostics report
-`initial/cursor/viewport/unchanged` damage counts; clipped redraw, partial
-present, GPU submit counters, and rectangle-area damage remain pending.
+unchanged, including SHA-256 text and structure signatures and complete
+rendered cursor state. Unchanged states are skipped. Cursor-only changes use a
+sized, primed offscreen retained target and a bounded old/new cursor clip; the
+clipped pass still submits the explicit opaque full-frame background fill, and
+the clip restricts it to the old/new cursor union before row/text/cursor
+commands. Text-only and viewport changes remain conservative full-frame work.
+Smoke diagnostics report
+`initial/cursor/viewport/unchanged` damage counts; general clipped rendering
+beyond bounded cursor-only changes, partial present, GPU submit counters, and
+rectangle-area damage remain pending.
 
 A bounded viewport section accompanies each facts `FRAME_UPDATE`. It carries
 the absolute Emacs `window-start` line, visible line count, and viewport-relative
@@ -478,8 +483,13 @@ nanoseconds, and the last monotonic present timestamp.
 
 W10c adds damage classification counters to EPXL smoke diagnostics:
 `initial_damage_frames`, `cursor_damage_frames`, `viewport_damage_frames`, and
-`unchanged_frames`. Rectangle-area damage, clipped redraw, partial present, GPU
-submit, atlas, texture-upload, and memory counters remain pending.
+`unchanged_frames`. Cursor-only changes use a conservative old/new cursor clip
+and skip full-frame clear. The explicit opaque background fill is still
+submitted and restores every pixel in the clip before other draw commands.
+Text-only and viewport changes remain conservative full-frame work. Smoke
+diagnostics also report cursor clipped/fallback frames and submitted clipped
+commands; partial present, GPU submit counters, and general rectangle-area
+damage remain pending.
 
 ## 17. CLI contract
 

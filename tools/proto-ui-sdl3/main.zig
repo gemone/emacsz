@@ -18,6 +18,9 @@ const live = proto_ui.live;
 const SDL_INIT_VIDEO: c_uint = 0x0000_0020;
 const SDL_WINDOW_RESIZABLE: c_ulonglong = 0x0000_0020;
 const SDL_EVENT_QUIT: c_uint = 0x100;
+const SDL_EVENT_RENDER_TARGETS_RESET: c_uint = 0x2000;
+const SDL_EVENT_RENDER_DEVICE_RESET: c_uint = 0x2001;
+const SDL_EVENT_RENDER_DEVICE_LOST: c_uint = 0x2002;
 const SDL_EVENT_KEY_DOWN: c_uint = 0x300;
 const SDL_EVENT_TEXT_INPUT: c_uint = 0x303;
 const SDL_EVENT_MOUSE_MOTION: c_uint = 0x400;
@@ -29,6 +32,14 @@ const SDL_MOUSEWHEEL_NORMAL: u32 = 0;
 
 const SDL_Window = opaque {};
 const SDL_Renderer = opaque {};
+const SDL_Texture = opaque {};
+
+const SDL_PixelFormat = c_uint;
+const SDL_TextureAccess = c_int;
+const SDL_ScaleMode = c_int;
+const SDL_PIXELFORMAT_RGBA8888: SDL_PixelFormat = 0x1646_2004;
+const SDL_TEXTUREACCESS_TARGET: SDL_TextureAccess = 2;
+const SDL_SCALEMODE_NEAREST: SDL_ScaleMode = 1;
 
 const SDLInitFlags = c_uint;
 const SDLWindowFlags = c_ulonglong;
@@ -46,7 +57,24 @@ extern fn SDL_SetRenderDrawColor(renderer: *SDL_Renderer, r: u8, g: u8, b: u8, a
 extern fn SDL_RenderClear(renderer: *SDL_Renderer) bool;
 extern fn SDL_RenderFillRect(renderer: *SDL_Renderer, rect: ?*const SDL_Rect) bool;
 extern fn SDL_RenderPresent(renderer: *SDL_Renderer) bool;
+extern fn SDL_SetRenderClipRect(renderer: *SDL_Renderer, rect: ?*const SDL_Rect) bool;
 extern fn SDL_RenderDebugText(renderer: *SDL_Renderer, x: f32, y: f32, text: [*:0]const u8) bool;
+extern fn SDL_CreateTexture(
+    renderer: *SDL_Renderer,
+    format: SDL_PixelFormat,
+    access: SDL_TextureAccess,
+    width: c_int,
+    height: c_int,
+) ?*SDL_Texture;
+extern fn SDL_DestroyTexture(texture: *SDL_Texture) void;
+extern fn SDL_SetTextureScaleMode(texture: *SDL_Texture, scale_mode: SDL_ScaleMode) bool;
+extern fn SDL_SetRenderTarget(renderer: *SDL_Renderer, texture: ?*SDL_Texture) bool;
+extern fn SDL_RenderTexture(
+    renderer: *SDL_Renderer,
+    texture: *SDL_Texture,
+    source: ?*const SDL_FRect,
+    destination: ?*const SDL_FRect,
+) bool;
 extern fn SDL_PollEvent(event: *SDL_Event) bool;
 extern fn SDL_PushEvent(event: *SDL_Event) bool;
 extern fn SDL_Delay(ms: c_uint) void;
@@ -249,6 +277,13 @@ const SDL_Rect = extern struct {
     y: c_int,
     w: c_int,
     h: c_int,
+};
+
+const SDL_FRect = extern struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
 };
 
 const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_edit, emacs_epxl_sequence, input_translation, emacs_interactive, clipboard };
@@ -1197,6 +1232,8 @@ fn boundedPointerCoordinate(value: f32) ?i32 {
 fn pollEpxlInteractiveInput(
     delivery: *input_policy.DeliveryJournal,
     config: *const Config,
+    retained: *RetainedFrame,
+    gate: *renderer_policy.FrameGate,
     dirty: *bool,
 ) !void {
     var event: SDL_Event = undefined;
@@ -1303,6 +1340,10 @@ fn pollEpxlInteractiveInput(
                     dirty.* = true;
                 }
             },
+            SDL_EVENT_RENDER_TARGETS_RESET, SDL_EVENT_RENDER_DEVICE_RESET, SDL_EVENT_RENDER_DEVICE_LOST => {
+                destroyRetainedFrame(retained);
+                gate.dirty = true;
+            },
             else => {},
         }
     }
@@ -1323,11 +1364,41 @@ fn observeSceneDamage(
     }
     var text_hash: [32]u8 = undefined;
     hasher.final(&text_hash);
+
+    var structure_hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    if (scene.frame_header) |header| {
+        writeStructureField(&structure_hasher, "frame");
+        writeStructureI32s(
+            &structure_hasher,
+            &.{ header.logical_x, header.logical_y, header.logical_width, header.logical_height, header.physical_x, header.physical_y, header.physical_width, header.physical_height },
+        );
+        writeStructureF32s(&structure_hasher, &.{ header.scale, header.dpi_x, header.dpi_y });
+    }
+    for (scene.windows.items) |window| {
+        writeStructureField(&structure_hasher, "window");
+        writeStructureU64s(&structure_hasher, &.{window.id});
+        writeStructureI32s(&structure_hasher, &.{ window.x, window.y, window.width, window.height });
+    }
+    for (scene.rows.items) |row| {
+        writeStructureField(&structure_hasher, "row");
+        writeStructureU64s(&structure_hasher, &.{row.window_id});
+        writeStructureU32s(&structure_hasher, &.{ row.index, row.flags });
+        writeStructureI32s(
+            &structure_hasher,
+            &.{ row.x, row.y, row.width, row.height, row.ascent, row.descent, row.baseline, row.visible_height },
+        );
+    }
+    var structure_hash: [32]u8 = undefined;
+    structure_hasher.final(&structure_hash);
+
+    const cursor_owner = if (scene.cursor) |cursor| findWindowById(scene.windows.items, cursor.window_id) else null;
     const decision = gate.observeScene(.{
         .viewport_start_line = if (scene.viewport) |viewport| viewport.start_line else 0,
         .viewport_line_count = if (scene.viewport) |viewport| viewport.line_count else 0,
         .cursor = if (scene.cursor) |cursor| .{
             .window_id = cursor.window_id,
+            .owner_x = if (cursor_owner) |owner| owner.x else 0,
+            .owner_y = if (cursor_owner) |owner| owner.y else 0,
             .x = cursor.x,
             .y = cursor.y,
             .width = cursor.width,
@@ -1338,10 +1409,57 @@ fn observeSceneDamage(
         } else null,
         .text_hash = text_hash,
         .text_line_count = scene.text.items.len,
+        .structure_hash = structure_hash,
+        .structure_object_count = scene.windows.items.len + scene.rows.items.len,
     });
     counters.recordDamage(decision.kind);
     if (decision.kind != .none) gate.dirty = true;
     return decision;
+}
+
+fn findWindowById(windows: []const frontend.Window, id: u64) ?frontend.Window {
+    for (windows) |window| {
+        if (window.id == id) return window;
+    }
+    return null;
+}
+
+fn writeStructureField(hasher: *std.crypto.hash.sha2.Sha256, name: []const u8) void {
+    hasher.update(name);
+    hasher.update(&.{0});
+}
+
+fn writeStructureI32s(hasher: *std.crypto.hash.sha2.Sha256, values: []const i32) void {
+    for (values) |value| {
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(i32, &bytes, value, .little);
+        hasher.update(&bytes);
+    }
+}
+
+fn writeStructureU32s(hasher: *std.crypto.hash.sha2.Sha256, values: []const u32) void {
+    for (values) |value| {
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(u32, &bytes, value, .little);
+        hasher.update(&bytes);
+    }
+}
+
+fn writeStructureF32s(hasher: *std.crypto.hash.sha2.Sha256, values: []const f32) void {
+    for (values) |value| {
+        const bits: u32 = @bitCast(value);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(u32, &bytes, bits, .little);
+        hasher.update(&bytes);
+    }
+}
+
+fn writeStructureU64s(hasher: *std.crypto.hash.sha2.Sha256, values: []const u64) void {
+    for (values) |value| {
+        var bytes: [8]u8 = undefined;
+        std.mem.writeInt(u64, &bytes, value, .little);
+        hasher.update(&bytes);
+    }
 }
 
 fn runEpxlInteractiveFrontend(
@@ -1391,6 +1509,8 @@ fn runEpxlInteractiveFrontend(
     defer SDL_DestroyWindow(window);
     const selected_renderer = try createRenderer(gpa, window, config.renderer_request, config.present_mode);
     defer destroyRenderer(selected_renderer);
+    var retained_frame: RetainedFrame = .{};
+    defer destroyRetainedFrame(&retained_frame);
     if (!SDL_StartTextInput(window)) return sdlFail("SDL_StartTextInput");
 
     var frame_gate: renderer_policy.FrameGate = .{};
@@ -1455,7 +1575,7 @@ fn runEpxlInteractiveFrontend(
         var release = mouseButtonEvent(120, 2, SDL_EVENT_MOUSE_BUTTON_UP, false);
         if (!SDL_PushEvent(&release)) return sdlFail("SDL_PushEvent");
     }
-    try pollEpxlInteractiveInput(delivery, config, &input_dirty);
+    try pollEpxlInteractiveInput(delivery, config, &retained_frame, &frame_gate, &input_dirty);
 
     var quit = false;
     const started_ticks = SDL_GetTicks();
@@ -1468,7 +1588,8 @@ fn runEpxlInteractiveFrontend(
         const envelope = (try protocol.decodeEnvelope(message)).envelope;
         try scene.apply(message);
         const is_frame_update = envelope.message_type == protocol.Message.frame_update;
-        if (is_frame_update) _ = observeSceneDamage(&scene, &frame_gate, &frame_counters);
+        var damage: ?renderer_policy.DamageDecision = null;
+        if (is_frame_update) damage = observeSceneDamage(&scene, &frame_gate, &frame_counters);
         if (is_frame_update) {
             const before = delivery.pending == null;
             const outcome = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
@@ -1485,7 +1606,7 @@ fn runEpxlInteractiveFrontend(
         }
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
-        pollEpxlInteractiveInput(delivery, config, &input_dirty) catch |err| switch (err) {
+        pollEpxlInteractiveInput(delivery, config, &retained_frame, &frame_gate, &input_dirty) catch |err| switch (err) {
             error.InteractiveQuit => quit = true,
             else => return err,
         };
@@ -1504,7 +1625,20 @@ fn runEpxlInteractiveFrontend(
                 frame_gate.dirty = true;
             }
         }
-        try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+        if (damage) |decision| {
+            try presentSceneDamage(
+                &scene,
+                &draw_list,
+                selected_renderer.handle,
+                window,
+                &retained_frame,
+                &frame_gate,
+                &frame_counters,
+                decision,
+            );
+        } else {
+            try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+        }
     }
 
     if (scene.stats.frame_updates < 2) return error.UnexpectedFactUpdateCount;
@@ -1534,7 +1668,7 @@ fn runEpxlInteractiveFrontend(
         );
     }
     std.debug.print(
-        "sdl3-epxl-interactive-smoke: delivered SDL input over EPXL; frames={d} present={d} skipped={d} damage=initial:{d}/cursor:{d}/viewport:{d}/unchanged:{d}; lifecycle OK\n",
+        "sdl3-epxl-interactive-smoke: delivered SDL input over EPXL; frames={d} present={d} skipped={d} damage=initial:{d}/cursor:{d}/viewport:{d}/unchanged:{d} cursor_clipped={d}/fallback:{d} clipped_commands={d}; lifecycle OK\n",
         .{
             scene.stats.frame_updates,
             frame_counters.presented_frames,
@@ -1543,6 +1677,9 @@ fn runEpxlInteractiveFrontend(
             frame_counters.cursor_damage_frames,
             frame_counters.viewport_damage_frames,
             frame_counters.unchanged_frames,
+            frame_counters.cursor_clipped_frames,
+            frame_counters.cursor_full_fallback_frames,
+            frame_counters.clipped_draw_commands_total,
         },
     );
     return scene;
@@ -1602,6 +1739,10 @@ fn buildSceneDrawList(
     list.reset();
     list.setLogicalSize(@floatFromInt(header.logical_width), @floatFromInt(header.logical_height));
     try list.clear(.{ .r = 0x18, .g = 0x20, .b = 0x2a });
+    try list.fillRect(
+        .{ .x = 0, .y = 0, .width = @floatFromInt(header.logical_width), .height = @floatFromInt(header.logical_height) },
+        .{ .r = 0x18, .g = 0x20, .b = 0x2a },
+    );
 
     for (scene.rows.items) |row| {
         const owner = findSceneWindow(scene, row.window_id) orelse continue;
@@ -1654,11 +1795,12 @@ fn buildSceneDrawList(
 
     if (scene.cursor) |cursor| {
         const owner = findSceneWindow(scene, cursor.window_id) orelse return error.CursorWithoutWindow;
+        const size = renderer_policy.renderedCursorSize(cursor.width, cursor.height);
         try list.fillRect(.{
             .x = @floatFromInt(owner.x + cursor.x),
             .y = @floatFromInt(owner.y + cursor.y),
-            .width = @floatFromInt(@max(2, cursor.width)),
-            .height = @floatFromInt(@max(2, cursor.height)),
+            .width = @floatFromInt(size.width),
+            .height = @floatFromInt(size.height),
         }, .{ .r = 0xff, .g = 0xd5, .b = 0x4d });
     }
 }
@@ -1719,40 +1861,132 @@ fn executeDrawList(
     list: *renderer_policy.DrawList,
     renderer: *SDL_Renderer,
     window: *SDL_Window,
-) !void {
+    target: ?*SDL_Texture,
+    clip: ?renderer_policy.LogicalRect,
+) !u64 {
     var output_width: c_int = 0;
     var output_height: c_int = 0;
     SDL_GetWindowSize(window, &output_width, &output_height);
     if (output_width <= 0 or output_height <= 0 or
         list.logical_width <= 0 or list.logical_height <= 0) return error.InvalidOutputGeometry;
-    const scale: f32 = @min(
-        @as(f32, @floatFromInt(output_width)) / list.logical_width,
-        @as(f32, @floatFromInt(output_height)) / list.logical_height,
-    );
+    if (target != null and !SDL_SetRenderTarget(renderer, target)) return sdlFail("SDL_SetRenderTarget");
 
-    for (list.commands.items) |command| switch (command) {
-        .clear => |color| {
-            if (!SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a)) return sdlFail("SDL_SetRenderDrawColor");
-            if (!SDL_RenderClear(renderer)) return sdlFail("SDL_RenderClear");
-        },
-        .fill => |draw| {
-            const rect = SDL_Rect{
-                .x = @intFromFloat(draw.rect.x * scale),
-                .y = @intFromFloat(draw.rect.y * scale),
-                .w = @max(1, @as(c_int, @intFromFloat(draw.rect.width * scale))),
-                .h = @max(1, @as(c_int, @intFromFloat(draw.rect.height * scale))),
-            };
-            if (!SDL_SetRenderDrawColor(renderer, draw.color.r, draw.color.g, draw.color.b, draw.color.a)) return sdlFail("SDL_SetRenderDrawColor");
-            if (!SDL_RenderFillRect(renderer, &rect)) return sdlFail("SDL_RenderFillRect");
-        },
-        .text => |draw| {
-            var text: [121]u8 = undefined;
-            @memcpy(text[0..draw.bytes.len], draw.bytes);
-            text[draw.bytes.len] = 0;
-            if (!SDL_RenderDebugText(renderer, draw.x * scale, draw.y * scale, text[0..draw.bytes.len :0])) return sdlFail("SDL_RenderDebugText");
-        },
-    };
+    var submitted: u64 = 0;
+    var device_clip: SDL_Rect = undefined;
+    if (clip) |logical| {
+        const x: c_int = @intFromFloat(@max(0, logical.x * @as(f32, @floatFromInt(output_width)) / list.logical_width));
+        const y: c_int = @intFromFloat(@max(0, logical.y * @as(f32, @floatFromInt(output_height)) / list.logical_height));
+        const right: c_int = @intFromFloat(@min(
+            @as(f32, @floatFromInt(output_width)),
+            (logical.x + logical.width) * @as(f32, @floatFromInt(output_width)) / list.logical_width,
+        ));
+        const bottom: c_int = @intFromFloat(@min(
+            @as(f32, @floatFromInt(output_height)),
+            (logical.y + logical.height) * @as(f32, @floatFromInt(output_height)) / list.logical_height,
+        ));
+        if (right <= x or bottom <= y) {
+            if (target != null and !SDL_SetRenderTarget(renderer, null)) return sdlFail("SDL_SetRenderTarget");
+            return 0;
+        }
+        device_clip = .{ .x = x, .y = y, .w = right - x, .h = bottom - y };
+        if (!SDL_SetRenderClipRect(renderer, &device_clip)) return sdlFail("SDL_SetRenderClipRect");
+    }
+
+    for (list.commands.items) |command| {
+        submitted += 1;
+        switch (command) {
+            // The retained texture keeps the prior frame, so a cursor-only
+            // pass redraws only the old/new cursor union and skips the clear.
+            .clear => |color| {
+                if (clip != null) {
+                    submitted -= 1;
+                    continue;
+                }
+                if (!SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a)) return sdlFail("SDL_SetRenderDrawColor");
+                if (!SDL_RenderClear(renderer)) return sdlFail("SDL_RenderClear");
+            },
+            .fill => |draw| {
+                const rect = SDL_Rect{
+                    .x = @intFromFloat(draw.rect.x * @as(f32, @floatFromInt(output_width)) / list.logical_width),
+                    .y = @intFromFloat(draw.rect.y * @as(f32, @floatFromInt(output_height)) / list.logical_height),
+                    .w = @max(1, @as(c_int, @intFromFloat(draw.rect.width * @as(f32, @floatFromInt(output_width)) / list.logical_width))),
+                    .h = @max(1, @as(c_int, @intFromFloat(draw.rect.height * @as(f32, @floatFromInt(output_height)) / list.logical_height))),
+                };
+                if (!SDL_SetRenderDrawColor(renderer, draw.color.r, draw.color.g, draw.color.b, draw.color.a)) return sdlFail("SDL_SetRenderDrawColor");
+                if (!SDL_RenderFillRect(renderer, &rect)) return sdlFail("SDL_RenderFillRect");
+            },
+            .text => |draw| {
+                var text: [121]u8 = undefined;
+                @memcpy(text[0..draw.bytes.len], draw.bytes);
+                text[draw.bytes.len] = 0;
+                if (!SDL_RenderDebugText(
+                    renderer,
+                    draw.x * @as(f32, @floatFromInt(output_width)) / list.logical_width,
+                    draw.y * @as(f32, @floatFromInt(output_height)) / list.logical_height,
+                    text[0..draw.bytes.len :0],
+                )) return sdlFail("SDL_RenderDebugText");
+            },
+        }
+    }
+    if (clip != null and !SDL_SetRenderClipRect(renderer, null)) return sdlFail("SDL_SetRenderClipRect");
+    if (target != null and !SDL_SetRenderTarget(renderer, null)) return sdlFail("SDL_SetRenderTarget");
+    return submitted;
+}
+
+fn presentRetainedOutput(renderer: *SDL_Renderer, texture: *SDL_Texture) !void {
+    if (!SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255)) return sdlFail("SDL_SetRenderDrawColor");
+    if (!SDL_RenderClear(renderer)) return sdlFail("SDL_RenderClear");
+    if (!SDL_RenderTexture(renderer, texture, null, null)) return sdlFail("SDL_RenderTexture");
     if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
+}
+
+const RetainedFrame = struct {
+    texture: ?*SDL_Texture = null,
+    width: c_int = 0,
+    height: c_int = 0,
+    primed: bool = false,
+};
+
+fn destroyRetainedFrame(frame: *RetainedFrame) void {
+    if (frame.texture) |texture| SDL_DestroyTexture(texture);
+    frame.* = .{};
+}
+
+fn retainedFrameTexture(
+    renderer: *SDL_Renderer,
+    window: *SDL_Window,
+    frame: *RetainedFrame,
+) ?*SDL_Texture {
+    var width: c_int = 0;
+    var height: c_int = 0;
+    SDL_GetWindowSize(window, &width, &height);
+    if (width <= 0 or height <= 0) return null;
+    if (frame.width != width or frame.height != height) destroyRetainedFrame(frame);
+
+    if (frame.texture) |texture| return texture;
+
+    const texture = SDL_CreateTexture(
+        renderer,
+        SDL_PIXELFORMAT_RGBA8888,
+        SDL_TEXTUREACCESS_TARGET,
+        width,
+        height,
+    ) orelse return null;
+    if (!SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_NEAREST)) {
+        SDL_DestroyTexture(texture);
+        return null;
+    }
+    frame.* = .{ .texture = texture, .width = width, .height = height, .primed = false };
+    return texture;
+}
+
+fn frameDimensionsRenderable(width: i32, height: i32) bool {
+    // f32 coordinate arithmetic is exact through 2^24. Larger protocol frames
+    // take the conservative direct path until scaled render coordinates are
+    // represented explicitly.
+    const precise_f32_limit: i32 = 1 << 24;
+    return width >= 0 and height >= 0 and
+        width <= precise_f32_limit and height <= precise_f32_limit;
 }
 
 fn presentScene(
@@ -1772,7 +2006,63 @@ fn presentScene(
     }
     const started_ticks = SDL_GetPerformanceCounter();
     try buildSceneDrawList(scene, list, @intCast(width), @intCast(height));
-    try executeDrawList(list, renderer, window);
+    _ = try executeDrawList(list, renderer, window, null, null);
+    if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
+    counters.recordDrawList(list.stats);
+    const ended_ticks = SDL_GetPerformanceCounter();
+    counters.recordPresent(
+        performanceTicksToNanos(ended_ticks - started_ticks),
+        performanceTicksToNanos(ended_ticks),
+    );
+}
+
+fn presentSceneDamage(
+    scene: *frontend.Scene,
+    list: *renderer_policy.DrawList,
+    renderer: *SDL_Renderer,
+    window: *SDL_Window,
+    retained: *RetainedFrame,
+    gate: *renderer_policy.FrameGate,
+    counters: *renderer_policy.FrameCounters,
+    decision: renderer_policy.DamageDecision,
+) !void {
+    var width: c_int = 0;
+    var height: c_int = 0;
+    SDL_GetWindowSize(window, &width, &height);
+    if (!gate.shouldPresent(@intCast(width), @intCast(height))) {
+        counters.recordSkipped();
+        return;
+    }
+    const started_ticks = SDL_GetPerformanceCounter();
+    try buildSceneDrawList(scene, list, @intCast(width), @intCast(height));
+    const header = scene.frame_header orelse return error.NoFrameUpdate;
+    const renderable = frameDimensionsRenderable(header.logical_width, header.logical_height);
+    const texture = if (renderable) retainedFrameTexture(renderer, window, retained) else null;
+    var clip: ?renderer_policy.LogicalRect = null;
+    if (renderable and texture != null and retained.primed and decision.kind == .cursor)
+        clip = renderer_policy.cursorDamageClip(
+            decision.old_cursor,
+            decision.new_cursor,
+            header.logical_width,
+            header.logical_height,
+        );
+
+    var clipped = false;
+    var submitted: u64 = 0;
+    if (texture) |target| {
+        if (clip) |rect| {
+            submitted = try executeDrawList(list, renderer, window, target, rect);
+            clipped = submitted != 0;
+        }
+        if (!clipped) submitted = try executeDrawList(list, renderer, window, target, null);
+        retained.primed = true;
+        try presentRetainedOutput(renderer, target);
+    } else {
+        submitted = try executeDrawList(list, renderer, window, null, null);
+        if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
+        retained.primed = false;
+    }
+    if (decision.kind == .cursor) counters.recordCursorClip(clipped, submitted);
     counters.recordDrawList(list.stats);
     const ended_ticks = SDL_GetPerformanceCounter();
     counters.recordPresent(
@@ -1798,7 +2088,8 @@ fn presentFacts(
     }
     const started_ticks = SDL_GetPerformanceCounter();
     try buildFactsDrawList(snapshot, list, @intCast(width), @intCast(height));
-    try executeDrawList(list, renderer, window);
+    _ = try executeDrawList(list, renderer, window, null, null);
+    if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
     counters.recordDrawList(list.stats);
     const ended_ticks = SDL_GetPerformanceCounter();
     counters.recordPresent(

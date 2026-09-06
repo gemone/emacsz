@@ -33,9 +33,59 @@ pub const DamageKind = enum {
 
 pub const DamageDecision = struct {
     kind: DamageKind,
-    old_cursor_y: ?i32 = null,
-    new_cursor_y: ?i32 = null,
+    old_cursor: ?CursorObservation = null,
+    new_cursor: ?CursorObservation = null,
 };
+
+pub const DamageClip = union(enum) {
+    full,
+    rect: LogicalRect,
+};
+
+pub const CursorSize = struct { width: i32, height: i32 };
+
+/// Returns the smallest rectangle the debug renderer can draw for a cursor.
+pub fn renderedCursorSize(width: i32, height: i32) CursorSize {
+    return .{ .width = @max(2, width), .height = @max(2, height) };
+}
+
+/// Returns the conservative logical union of the old and new cursor rectangles
+/// for a cursor-only change. Different windows or a missing endpoint require
+/// full-frame fallback.
+pub fn cursorDamageClip(
+    old: ?CursorObservation,
+    new: ?CursorObservation,
+    frame_width: i32,
+    frame_height: i32,
+) ?LogicalRect {
+    const old_cursor = old orelse return null;
+    const new_cursor = new orelse return null;
+    if (old_cursor.window_id != new_cursor.window_id) return null;
+    const old_size = renderedCursorSize(old_cursor.width, old_cursor.height);
+    const new_size = renderedCursorSize(new_cursor.width, new_cursor.height);
+    const old_left: i64 = @as(i64, old_cursor.owner_x) + old_cursor.x;
+    const old_top: i64 = @as(i64, old_cursor.owner_y) + old_cursor.y;
+    const old_right: i64 = old_left + old_size.width;
+    const old_bottom: i64 = old_top + old_size.height;
+    const new_left: i64 = @as(i64, new_cursor.owner_x) + new_cursor.x;
+    const new_top: i64 = @as(i64, new_cursor.owner_y) + new_cursor.y;
+    const new_right: i64 = new_left + new_size.width;
+    const new_bottom: i64 = new_top + new_size.height;
+
+    const left_i64: i64 = @max(0, @min(old_left, new_left) - 1);
+    const top_i64: i64 = @max(0, @min(old_top, new_top) - 1);
+    const right_i64: i64 = @min(@as(i64, frame_width), @max(old_right, new_right) + 1);
+    const bottom_i64: i64 = @min(@as(i64, frame_height), @max(old_bottom, new_bottom) + 1);
+    if (left_i64 >= right_i64 or top_i64 >= bottom_i64) return null;
+    if (left_i64 > std.math.maxInt(i32) or right_i64 > std.math.maxInt(i32) or
+        top_i64 > std.math.maxInt(i32) or bottom_i64 > std.math.maxInt(i32)) return null;
+    return .{
+        .x = @floatFromInt(left_i64),
+        .y = @floatFromInt(top_i64),
+        .width = @floatFromInt(right_i64 - left_i64),
+        .height = @floatFromInt(bottom_i64 - top_i64),
+    };
+}
 
 pub const SceneDamageObservation = struct {
     viewport_start_line: i32,
@@ -43,10 +93,14 @@ pub const SceneDamageObservation = struct {
     cursor: ?CursorObservation,
     text_hash: [32]u8,
     text_line_count: usize,
+    structure_hash: [32]u8,
+    structure_object_count: usize,
 };
 
 pub const CursorObservation = struct {
     window_id: u64,
+    owner_x: i32,
+    owner_y: i32,
     x: i32,
     y: i32,
     width: i32,
@@ -80,27 +134,29 @@ pub const FrameGate = struct {
             if (old.viewport_start_line != observation.viewport_start_line or
                 old.viewport_line_count != observation.viewport_line_count or
                 !std.mem.eql(u8, &old.text_hash, &observation.text_hash) or
-                old.text_line_count != observation.text_line_count)
+                old.text_line_count != observation.text_line_count or
+                !std.mem.eql(u8, &old.structure_hash, &observation.structure_hash) or
+                old.structure_object_count != observation.structure_object_count)
                 return .{
                     .kind = .viewport,
-                    .old_cursor_y = if (old.cursor) |cursor| cursor.y else null,
-                    .new_cursor_y = if (observation.cursor) |cursor| cursor.y else null,
+                    .old_cursor = old.cursor,
+                    .new_cursor = observation.cursor,
                 };
             if (!std.meta.eql(old.cursor, observation.cursor))
                 return .{
                     .kind = .cursor,
-                    .old_cursor_y = if (old.cursor) |cursor| cursor.y else null,
-                    .new_cursor_y = if (observation.cursor) |cursor| cursor.y else null,
+                    .old_cursor = old.cursor,
+                    .new_cursor = observation.cursor,
                 };
             return .{
                 .kind = .none,
-                .old_cursor_y = if (old.cursor) |cursor| cursor.y else null,
-                .new_cursor_y = if (observation.cursor) |cursor| cursor.y else null,
+                .old_cursor = old.cursor,
+                .new_cursor = observation.cursor,
             };
         }
         return .{
             .kind = .initial,
-            .new_cursor_y = if (observation.cursor) |cursor| cursor.y else null,
+            .new_cursor = observation.cursor,
         };
     }
 };
@@ -123,6 +179,18 @@ pub const FrameCounters = struct {
     cursor_damage_frames: u64 = 0,
     viewport_damage_frames: u64 = 0,
     unchanged_frames: u64 = 0,
+    cursor_clipped_frames: u64 = 0,
+    cursor_full_fallback_frames: u64 = 0,
+    clipped_draw_commands_total: u64 = 0,
+
+    pub fn recordCursorClip(self: *FrameCounters, clipped: bool, submitted_commands: u64) void {
+        if (clipped) {
+            self.cursor_clipped_frames += 1;
+            self.clipped_draw_commands_total += submitted_commands;
+        } else {
+            self.cursor_full_fallback_frames += 1;
+        }
+    }
 
     pub fn recordDamage(self: *FrameCounters, kind: DamageKind) void {
         switch (kind) {
@@ -558,15 +626,37 @@ test "draw list rejects absent oversized and non-ASCII text" {
     try std.testing.expectError(error.InvalidDrawText, list.drawText(0, 0, oversized[0..]));
 }
 
+test "cursor-only damage produces a bounded clip rectangle" {
+    const old: CursorObservation = .{ .window_id = 1, .owner_x = 0, .owner_y = 0, .x = 8, .y = 0, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true };
+    const new: CursorObservation = .{ .window_id = 1, .owner_x = 0, .owner_y = 0, .x = 16, .y = 8, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true };
+    const clip = (cursorDamageClip(old, new, 120, 80) orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqual(@as(f32, 7), clip.x);
+    try std.testing.expectEqual(@as(f32, 0), clip.y);
+    try std.testing.expectEqual(@as(f32, 12), clip.width);
+    try std.testing.expectEqual(@as(f32, 17), clip.height);
+    try std.testing.expect(cursorDamageClip(null, new, 120, 80) == null);
+    try std.testing.expect(cursorDamageClip(old, .{ .window_id = 2, .owner_x = 0, .owner_y = 0, .x = 16, .y = 8, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true }, 120, 80) == null);
+    try std.testing.expect(cursorDamageClip(old, new, 1, 1) == null);
+
+    const degenerate: CursorObservation = .{ .window_id = 1, .owner_x = 10, .owner_y = 10, .x = 20, .y = 20, .width = 0, .height = 1, .kind = 1, .visible = true, .active = true };
+    const degenerate_clip = (cursorDamageClip(degenerate, degenerate, 120, 80) orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqual(@as(f32, 29), degenerate_clip.x);
+    try std.testing.expectEqual(@as(f32, 29), degenerate_clip.y);
+    try std.testing.expectEqual(@as(f32, 4), degenerate_clip.width);
+    try std.testing.expectEqual(@as(f32, 4), degenerate_clip.height);
+}
+
 test "frame gate classifies text-only changes as viewport damage" {
     var gate: FrameGate = .{};
-    const cursor: CursorObservation = .{ .window_id = 1, .x = 8, .y = 0, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true };
+    const cursor: CursorObservation = .{ .window_id = 1, .owner_x = 0, .owner_y = 0, .x = 8, .y = 0, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true };
     const first: SceneDamageObservation = .{
         .viewport_start_line = 1,
         .viewport_line_count = 2,
         .cursor = cursor,
         .text_hash = [_]u8{1} ** 32,
         .text_line_count = 2,
+        .structure_hash = [_]u8{3} ** 32,
+        .structure_object_count = 2,
     };
     const second: SceneDamageObservation = .{
         .viewport_start_line = 1,
@@ -574,6 +664,33 @@ test "frame gate classifies text-only changes as viewport damage" {
         .cursor = cursor,
         .text_hash = [_]u8{2} ** 32,
         .text_line_count = 2,
+        .structure_hash = [_]u8{3} ** 32,
+        .structure_object_count = 2,
+    };
+    _ = gate.observeScene(first);
+    try std.testing.expectEqual(DamageKind.viewport, gate.observeScene(second).kind);
+}
+
+test "frame gate classifies structure-only changes as viewport damage" {
+    var gate: FrameGate = .{};
+    const cursor: CursorObservation = .{ .window_id = 1, .owner_x = 0, .owner_y = 0, .x = 8, .y = 0, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true };
+    const first: SceneDamageObservation = .{
+        .viewport_start_line = 1,
+        .viewport_line_count = 2,
+        .cursor = cursor,
+        .text_hash = [_]u8{1} ** 32,
+        .text_line_count = 2,
+        .structure_hash = [_]u8{3} ** 32,
+        .structure_object_count = 2,
+    };
+    const second: SceneDamageObservation = .{
+        .viewport_start_line = 1,
+        .viewport_line_count = 2,
+        .cursor = cursor,
+        .text_hash = first.text_hash,
+        .text_line_count = 2,
+        .structure_hash = [_]u8{4} ** 32,
+        .structure_object_count = 2,
     };
     _ = gate.observeScene(first);
     try std.testing.expectEqual(DamageKind.viewport, gate.observeScene(second).kind);
@@ -586,9 +703,11 @@ test "frame gate classifies initial cursor and viewport damage" {
     const base: SceneDamageObservation = .{
         .viewport_start_line = 1,
         .viewport_line_count = 15,
-        .cursor = .{ .window_id = 1, .x = 8, .y = 0, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true },
+        .cursor = .{ .window_id = 1, .owner_x = 0, .owner_y = 0, .x = 8, .y = 0, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true },
         .text_hash = [_]u8{0} ** 32,
         .text_line_count = 15,
+        .structure_hash = [_]u8{0} ** 32,
+        .structure_object_count = 15,
     };
     const first = gate.observeScene(base);
     try std.testing.expectEqual(DamageKind.initial, first.kind);
@@ -601,9 +720,11 @@ test "frame gate classifies initial cursor and viewport damage" {
     const moved = gate.observeScene(.{
         .viewport_start_line = 1,
         .viewport_line_count = 15,
-        .cursor = .{ .window_id = 1, .x = 16, .y = 8, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true },
+        .cursor = .{ .window_id = 1, .owner_x = 0, .owner_y = 0, .x = 16, .y = 8, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true },
         .text_hash = [_]u8{0} ** 32,
         .text_line_count = 15,
+        .structure_hash = [_]u8{0} ** 32,
+        .structure_object_count = 15,
     });
     try std.testing.expectEqual(DamageKind.cursor, moved.kind);
     counters.recordDamage(moved.kind);
@@ -611,9 +732,11 @@ test "frame gate classifies initial cursor and viewport damage" {
     const scrolled = gate.observeScene(.{
         .viewport_start_line = 2,
         .viewport_line_count = 15,
-        .cursor = .{ .window_id = 1, .x = 16, .y = 8, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true },
+        .cursor = .{ .window_id = 1, .owner_x = 0, .owner_y = 0, .x = 16, .y = 8, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true },
         .text_hash = [_]u8{1} ** 32,
         .text_line_count = 15,
+        .structure_hash = [_]u8{0} ** 32,
+        .structure_object_count = 15,
     });
     try std.testing.expectEqual(DamageKind.viewport, scrolled.kind);
     counters.recordDamage(scrolled.kind);
@@ -622,4 +745,13 @@ test "frame gate classifies initial cursor and viewport damage" {
     try std.testing.expectEqual(@as(u64, 1), counters.cursor_damage_frames);
     try std.testing.expectEqual(@as(u64, 1), counters.viewport_damage_frames);
     try std.testing.expectEqual(@as(u64, 1), counters.unchanged_frames);
+}
+
+test "frame counters record cursor clipped and fallback frames" {
+    var counters: FrameCounters = .{};
+    counters.recordCursorClip(true, 93);
+    counters.recordCursorClip(false, 0);
+    try std.testing.expectEqual(@as(u64, 1), counters.cursor_clipped_frames);
+    try std.testing.expectEqual(@as(u64, 1), counters.cursor_full_fallback_frames);
+    try std.testing.expectEqual(@as(u64, 93), counters.clipped_draw_commands_total);
 }
