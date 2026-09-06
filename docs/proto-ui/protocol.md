@@ -984,6 +984,26 @@ the text to 120 bytes.  The frontend sends this complete EUP message on its own
 frontend-to-core sequence; the core replies with the normal EPXL `ACK` control
 before applying the input intent.  This is not a full keyboard/keymap protocol.
 
+#### Bounded resource-generation declarations
+
+`FRAME_UPDATE.resources` (section kind 10) carries generation declarations, not
+resource payloads. The W12b facts/EPXL contract uses an exact 16-byte record:
+
+```text
+kind              u8   (1=face, 2=font, 3=image, 4=fringe bitmap, 5=icon, 6=string)
+reserved          u24  (zero)
+resource_id       u32  (nonzero)
+generation        u32  (nonzero)
+flags             u32  (zero)
+```
+
+A section may contain at most 64 unique declarations for this profile. The
+frontend validates the complete update before committing it. A declaration for
+an existing resource kind/id must have a strictly newer generation; older or
+equal generations are stale and reject the update atomically. Payload delivery,
+deletion messages, snapshots, eviction, missing-resource requests, and actual
+face/font/image content remain future resource-model work.
+
 The facts profile also defines a deliberately bounded `KEY_EVENT` payload for
 `0x0600`: `u16 action` (`1=backspace`, `2=cursor-left`, `3=cursor-right`,
 `4=cursor-up`, `5=cursor-down`, `6=copy`), `u8 state` (`1=pressed`), and

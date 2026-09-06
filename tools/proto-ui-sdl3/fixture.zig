@@ -134,7 +134,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             .damage_mode = 2,
             .update_cause = 1,
             .coalesced_count = 0,
-            .timestamp_ns = 2,
+            .timestamp_ns = 6,
         },
         .sections = &sections,
     }, &update_payload);

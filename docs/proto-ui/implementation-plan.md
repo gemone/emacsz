@@ -99,6 +99,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W10c-b cursor-only clipped redraw | Approved |
 | W10c-c bounded text-region clipping | Approved |
 | W12a EPXL capability/status manifest | Approved |
+| W12b frame lifecycle/resource generation contract | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
@@ -2060,6 +2061,35 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-interact
 
 Status: approved. The dedicated reviewer completed correctness, integration/runtime, and boundary/docs/status passes; approved fixes added exact envelope-context validation, reserved monotonic session sequences, capability-gated clipboard/input/damage/renderer behavior, source-authoritative JSON manifest generation, and precise docs for reconnect sequence handling.
 
+#### W12b — Frame lifecycle/resource generation contract (approved)
+
+Goal: give bounded EPXL frames and future resources deterministic identity,
+generation, teardown, and atomic commit semantics before transporting faces,
+fonts, images, or redisplay-owned rows.
+
+1. Add an adapter-owned frame registry with create, active-update, destroy,
+   non-recycled identity, and bounded table behavior.
+2. Add an adapter-owned resource registry covering face, font, image,
+   fringe-bitmap, icon, and string identities with live/deleted state.
+3. Require strictly newer generations for redeclaring a resource kind/id.
+4. Validate complete `FRAME_UPDATE.resources` declaration sets before committing
+   them atomically with visual state; stale declarations reject the update.
+5. Implement `FRAME_DESTROY` in the frontend, validate envelope/payload frame
+   identity and generation, release bounded visual state, and reject later
+   updates for the destroyed generation.
+6. Keep payload delivery, snapshots, eviction, and missing-resource requests
+   out of scope until the full resource model lands.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-interactive-smoke
+zig build check
+```
+
+Status: approved. The dedicated reviewer completed correctness, integration/runtime, and boundary/docs/status passes; approved fixes added non-recycled single-active-frame enforcement, initial-generation checks, resource capacity preflight, duplicate/non-live declaration rejection, exact frame destroy cleanup, and precise bounded-status documentation.
 
 Tasks:
 

@@ -6,8 +6,9 @@
 
 const std = @import("std");
 const protocol = @import("protocol.zig");
+const lifecycle = @import("lifecycle.zig");
 
-pub const Error = protocol.Error || error{OutOfMemory};
+pub const Error = protocol.Error || lifecycle.Error || error{OutOfMemory};
 
 pub const Window = struct {
     id: u64,
@@ -159,6 +160,9 @@ const cursor_record_size: usize = 56;
 const damage_record_size: usize = 16;
 const present_record_size: usize = 16;
 const max_text_columns: usize = 120;
+const resource_record_size: usize = 16;
+pub const ResourceDeclaration = lifecycle.Resource;
+pub const max_resources = lifecycle.max_resources;
 
 fn putU16(out: *std.ArrayList(u8), a: std.mem.Allocator, value: u16) !void {
     var bytes: [2]u8 = undefined;
@@ -499,11 +503,37 @@ pub const ApplyStats = struct {
     frame_updates: u64 = 0,
 };
 
+fn encodeResourceDeclaration(a: std.mem.Allocator, declaration: ResourceDeclaration, out: *std.ArrayList(u8)) !void {
+    if (declaration.id == 0 or declaration.generation == 0) return Error.InvalidMessage;
+    try out.append(a, @intFromEnum(declaration.kind));
+    try out.appendSlice(a, &.{ 0, 0, 0 });
+    var bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, &bytes, declaration.id, .little);
+    try out.appendSlice(a, &bytes);
+    std.mem.writeInt(u32, &bytes, declaration.generation, .little);
+    try out.appendSlice(a, &bytes);
+    try out.appendSlice(a, &.{ 0, 0, 0, 0 });
+}
+
+fn decodeResourceDeclaration(bytes: []const u8) Error!ResourceDeclaration {
+    if (bytes.len != resource_record_size) return Error.InvalidTable;
+    if (bytes[0] == 0 or bytes[0] > 6) return Error.InvalidTable;
+    const kind: lifecycle.ResourceKind = @enumFromInt(bytes[0]);
+    if (bytes[1] != 0 or bytes[2] != 0 or bytes[3] != 0) return Error.InvalidTable;
+    const id = std.mem.readInt(u32, bytes[4..8], .little);
+    const generation = std.mem.readInt(u32, bytes[8..12], .little);
+    if (bytes[12] != 0 or bytes[13] != 0 or bytes[14] != 0 or bytes[15] != 0) return Error.InvalidTable;
+    if (id == 0 or generation == 0) return Error.InvalidTable;
+    return .{ .kind = kind, .id = id, .generation = generation, .status = .live };
+}
+
 pub const Scene = struct {
     allocator: std.mem.Allocator,
     session_id: ?u64 = null,
     next_sequence: ?u64 = null,
     frame: ?FrameIdentity = null,
+    frames: lifecycle.FrameRegistry = .{},
+    resources: lifecycle.ResourceRegistry = .{},
     frame_header: ?protocol.FrameUpdateHeader = null,
     windows: std.ArrayList(Window) = .empty,
     rows: std.ArrayList(Row) = .empty,
@@ -531,6 +561,8 @@ pub const Scene = struct {
         self.session_id = null;
         self.next_sequence = null;
         self.frame = null;
+        self.frames.reset();
+        self.resources.reset();
         self.frame_header = null;
         self.cursor = null;
         self.present = null;
@@ -558,10 +590,40 @@ pub const Scene = struct {
         switch (payload.envelope.message_type) {
             protocol.Message.frame_create => try self.applyFrameCreate(payload.envelope, payload.bytes),
             protocol.Message.frame_update => try self.applyFrameUpdate(payload),
+            protocol.Message.frame_destroy => try self.applyFrameDestroy(payload.envelope, payload.bytes),
             else => self.stats.control_messages += 1,
         }
         self.next_sequence = next_sequence;
         if (previous_session == null) self.session_id = payload.envelope.session_id;
+    }
+
+    fn clearVisualState(self: *Scene) void {
+        self.windows.deinit(self.allocator);
+        self.rows.deinit(self.allocator);
+        self.damage.deinit(self.allocator);
+        for (self.text.items) |line| self.allocator.free(line.bytes);
+        self.text.deinit(self.allocator);
+        self.windows = .empty;
+        self.rows = .empty;
+        self.damage = .empty;
+        self.text = .empty;
+        self.frame_header = null;
+        self.cursor = null;
+        self.present = null;
+        self.viewport = null;
+    }
+
+    fn applyFrameDestroy(self: *Scene, envelope: protocol.Envelope, bytes: []const u8) Error!void {
+        if (bytes.len != 8) return Error.InvalidMessage;
+        const frame_id = std.mem.readInt(u32, bytes[0..4], .little);
+        const generation = std.mem.readInt(u32, bytes[4..8], .little);
+        if (frame_id == 0 or generation == 0 or envelope.frame_id != frame_id) return Error.InvalidMessage;
+        try self.frames.destroy(frame_id, generation);
+        if (self.frame) |frame| {
+            if (frame.frame_id == frame_id and frame.generation == generation) self.frame = null;
+        }
+        self.clearVisualState();
+        self.stats.control_messages += 1;
     }
 
     fn applyFrameCreate(self: *Scene, envelope: protocol.Envelope, bytes: []const u8) Error!void {
@@ -569,9 +631,8 @@ pub const Scene = struct {
         const frame_id = std.mem.readInt(u32, bytes[0..4], .little);
         const generation = std.mem.readInt(u32, bytes[4..8], .little);
         if (frame_id == 0 or generation == 0 or envelope.frame_id != frame_id) return Error.InvalidMessage;
-        if (self.frame) |old| {
-            if (old.frame_id != frame_id or old.generation >= generation) return Error.InvalidMessage;
-        }
+        if (generation != 1) return Error.InvalidMessage;
+        try self.frames.create(frame_id, generation);
         self.frame = .{ .frame_id = frame_id, .generation = generation };
         self.stats.control_messages += 1;
     }
@@ -584,6 +645,7 @@ pub const Scene = struct {
             if (frame.frame_id != update.header.frame_id or frame.generation != update.header.frame_generation)
                 return Error.InvalidMessage;
         } else return Error.InvalidMessage;
+        try self.frames.update(update.header.frame_id, update.header.frame_generation);
 
         var windows: std.ArrayList(Window) = .empty;
         defer windows.deinit(self.allocator);
@@ -596,6 +658,8 @@ pub const Scene = struct {
         var cursor: ?Cursor = null;
         var present: ?PresentHint = null;
         var viewport: ?Viewport = null;
+        var resource_declarations: [max_resources]ResourceDeclaration = undefined;
+        var resource_count: usize = 0;
 
         for (update.sections) |section| {
             switch (section.kind) {
@@ -654,6 +718,20 @@ pub const Scene = struct {
                         try damage.append(self.allocator, rect);
                     }
                 },
+                protocol.SectionKind.resources => {
+                    if (section.records.len % resource_record_size != 0) return Error.InvalidTable;
+                    if (section.records.len / resource_record_size > max_resources) return Error.Unsupported;
+                    var offset: usize = 0;
+                    while (offset < section.records.len) : (offset += resource_record_size) {
+                        const declaration = try decodeResourceDeclaration(section.records[offset..][0..resource_record_size]);
+                        for (resource_declarations[0..resource_count]) |old| {
+                            if (old.kind == declaration.kind and old.id == declaration.id) return Error.InvalidTable;
+                        }
+                        if (resource_count == max_resources) return Error.Unsupported;
+                        resource_declarations[resource_count] = declaration;
+                        resource_count += 1;
+                    }
+                },
                 protocol.SectionKind.present_hint => {
                     if (section.records.len != present_record_size or present != null) return Error.InvalidTable;
                     present = try decodePresentHint(section.records);
@@ -701,6 +779,9 @@ pub const Scene = struct {
         }
         if (update.header.damage_mode != 1 and update.header.damage_mode != 2)
             return Error.InvalidMessage;
+        // The update is now known to be complete; resource generation is
+        // validated and committed atomically with the visual state below.
+        try self.resources.declareAll(resource_declarations[0..resource_count]);
         // The update is now known to be complete; commit it atomically.
         const old_windows = self.windows;
         const old_rows = self.rows;
@@ -828,9 +909,19 @@ fn createMessage(
     envelope_frame: u32,
     payload_frame: u32,
 ) ![]u8 {
+    return createMessageGeneration(a, sequence, envelope_frame, payload_frame, 1);
+}
+
+fn createMessageGeneration(
+    a: std.mem.Allocator,
+    sequence: u64,
+    envelope_frame: u32,
+    payload_frame: u32,
+    generation: u32,
+) ![]u8 {
     var payload: [8]u8 = undefined;
     std.mem.writeInt(u32, payload[0..4], payload_frame, .little);
-    std.mem.writeInt(u32, payload[4..8], 1, .little);
+    std.mem.writeInt(u32, payload[4..8], generation, .little);
     var message: std.ArrayList(u8) = .empty;
     errdefer message.deinit(a);
     try protocol.encodeEnvelope(a, .{
@@ -1115,4 +1206,127 @@ test "key event codec round trips bounded cursor actions" {
         const decoded = try decodeKeyEvent(bytes.items);
         try std.testing.expectEqual(action, decoded.action);
     }
+}
+
+test "scene applies frame destroy and clears owned visual state" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+    const update = try updateMessage(a, 2, 7, 7, 10, 0);
+    defer a.free(update);
+    try scene.apply(update);
+
+    var destroy: [8]u8 = undefined;
+    std.mem.writeInt(u32, destroy[0..4], 7, .little);
+    std.mem.writeInt(u32, destroy[4..8], 1, .little);
+    var message: std.ArrayList(u8) = .empty;
+    defer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{ .flags = 0, .message_type = protocol.Message.frame_destroy, .sequence = 3, .ack_sequence = 0, .session_id = 9, .frame_id = 7, .timestamp_ns = 3 }, &destroy, &message);
+    try scene.apply(message.items);
+
+    try std.testing.expectEqual(lifecycle.FrameStatus.destroyed, scene.frames.frames[0].status);
+    try std.testing.expect(scene.frame == null);
+    try std.testing.expectEqual(@as(usize, 0), scene.windows.items.len);
+    try std.testing.expect(scene.frame_header == null);
+}
+
+test "scene rejects second active frame and noninitial generation" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const bad_create = try createMessageGeneration(a, 1, 7, 7, 2);
+    defer a.free(bad_create);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(bad_create));
+
+    const good_create = try createMessage(a, 1, 7, 7);
+    defer a.free(good_create);
+    try scene.apply(good_create);
+
+    const second = try createMessage(a, 2, 8, 8);
+    defer a.free(second);
+    try std.testing.expectError(Error.FrameAlreadyExists, scene.apply(second));
+    try std.testing.expectEqual(@as(u32, 7), scene.frame.?.frame_id);
+    try std.testing.expectEqual(@as(u64, 2), scene.next_sequence.?);
+}
+
+test "scene atomically validates resource generation declarations" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+    const update = try updateMessage(a, 2, 7, 7, 10, 0);
+    defer a.free(update);
+    try scene.apply(update);
+
+    var resource_bytes: std.ArrayList(u8) = .empty;
+    defer resource_bytes.deinit(a);
+    try encodeResourceDeclaration(a, .{ .kind = .font, .id = 12, .generation = 2, .status = .live }, &resource_bytes);
+    try resource_bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeResourceDeclaration(resource_bytes.items));
+
+    resource_bytes.clearRetainingCapacity();
+    try encodeResourceDeclaration(a, .{ .kind = .font, .id = 12, .generation = 2, .status = .live }, &resource_bytes);
+    try encodeResourceDeclaration(a, .{ .kind = .string, .id = 30, .generation = 1, .status = .live }, &resource_bytes);
+    const third = try updateWithResources(a, 3, resource_bytes.items);
+    defer a.free(third);
+    try scene.apply(third);
+    try std.testing.expectEqual(@as(u32, 2), scene.resources.lookup(.font, 12).?.generation);
+    try std.testing.expectEqual(lifecycle.ResourceStatus.live, scene.resources.lookup(.string, 30).?.status);
+
+    const stale = try updateWithResources(a, 4, resource_bytes.items);
+    defer a.free(stale);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(stale));
+    try std.testing.expectEqual(@as(u32, 2), scene.resources.lookup(.font, 12).?.generation);
+    try std.testing.expectEqual(@as(u64, 2), scene.stats.frame_updates);
+}
+
+fn updateWithResources(a: std.mem.Allocator, sequence: u64, resource_records: []const u8) ![]u8 {
+    const header: protocol.FrameUpdateHeader = .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .sequence = sequence,
+        .redisplay_generation = sequence,
+        .logical_x = 0,
+        .logical_y = 0,
+        .logical_width = 80,
+        .logical_height = 60,
+        .physical_x = 0,
+        .physical_y = 0,
+        .physical_width = 80,
+        .physical_height = 60,
+        .scale = 1,
+        .dpi_x = 96,
+        .dpi_y = 96,
+        .damage_mode = 2,
+        .update_cause = 1,
+        .coalesced_count = 0,
+        .timestamp_ns = sequence,
+    };
+    var windows: std.ArrayList(u8) = .empty;
+    defer windows.deinit(a);
+    try encodeWindow(a, .{ .id = 100, .frame_id = 7, .x = 0, .y = 0, .width = 80, .height = 60 }, &windows);
+    var rows: std.ArrayList(u8) = .empty;
+    defer rows.deinit(a);
+    try encodeRow(a, .{ .window_id = 100, .index = 0, .flags = 0, .x = 0, .y = 0, .width = 10, .height = 10, .ascent = 7, .descent = 3, .baseline = 7, .visible_height = 10 }, &rows);
+    var damage: std.ArrayList(u8) = .empty;
+    defer damage.deinit(a);
+    try encodeRect(a, .{ .x = 0, .y = 0, .width = 80, .height = 60 }, &damage);
+    const sections = [_]protocol.Section{
+        .{ .kind = protocol.SectionKind.windows, .records = windows.items },
+        .{ .kind = protocol.SectionKind.rows, .records = rows.items },
+        .{ .kind = protocol.SectionKind.damage, .records = damage.items },
+        .{ .kind = protocol.SectionKind.resources, .records = resource_records },
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeFrameUpdate(a, .{ .header = header, .sections = &sections }, &payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{ .flags = protocol.Flags.delta, .message_type = protocol.Message.frame_update, .sequence = sequence, .ack_sequence = 0, .session_id = 9, .frame_id = 7, .timestamp_ns = sequence }, payload.items, &message);
+    return message.toOwnedSlice(a);
 }
