@@ -74,6 +74,8 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
 | P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
 | P9-prep authoritative geometry | Implemented in runtime bridge with host rectangle caching and frame/window/damage bounds; real monitor/DPI events pending |
+| P10-prep face-bound debug runs | Implemented with GLYPH_RUN v2, exact live-face validation, and colored SDL fallback; not production face/shaping parity |
+
 
 
 
@@ -3097,6 +3099,10 @@ Non-goals:
 3. Adding scattered Proto-UI branches to inherited Emacs C/H/Lisp.
 4. Registering `output_proto` before the R7 host contract is explicitly approved.
 
+P10 preparation adds face-bound `GLYPH_RUN` v2: the frontend validates a live
+face generation, removes dependent runs on face replacement/delete, and renders
+bounded ASCII text with face foreground/background in the diagnostic SDL path.
+Production redisplay, shaping, fonts, and atlas rendering remain pending.
 P9 geometry preparation adds `refreshFrameGeometry`, authoritative frame
 bounds, and observation validation in `runtime_bridge`; real monitor and scale
 events remain pending.

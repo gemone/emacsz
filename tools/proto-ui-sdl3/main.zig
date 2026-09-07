@@ -1836,6 +1836,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         .run_id = 1,
         .window_id = 10,
         .row_index = 0,
+        .face_id = 7,
+        .face_generation = 1,
         .x = 12,
         .y = 8,
         .width = 40,
@@ -1858,19 +1860,41 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
 
     var scene = frontend.Scene.init(gpa);
     defer scene.deinit();
+    var face_payload: std.ArrayList(u8) = .empty;
+    defer face_payload.deinit(gpa);
+    try protocol.encodeFaceDefine(gpa, .{
+        .face_id = 7,
+        .generation = 1,
+        .presence = .{ .foreground = true, .background = true },
+        .foreground = .{ 0xff, 0xd5, 0x4d, 255 },
+        .background = .{ 0x20, 0x28, 0x38, 255 },
+    }, &face_payload);
+    var face_define: std.ArrayList(u8) = .empty;
+    defer face_define.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.face_define,
+        .sequence = 1,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = 1,
+        .timestamp_ns = 1,
+    }, face_payload.items, &face_define);
+    try scene.apply(face_define.items);
+
     var create: std.ArrayList(u8) = .empty;
     defer create.deinit(gpa);
-    try bridge.encodeFrameCreate(gpa, 1, capability.session_id, 1, &create);
+    try bridge.encodeFrameCreate(gpa, 2, capability.session_id, 1, &create);
     try scene.apply(create.items);
 
     var update: std.ArrayList(u8) = .empty;
     defer update.deinit(gpa);
-    try bridge.encodeFrameUpdate(gpa, 2, capability.session_id, 2, &update);
+    try bridge.encodeFrameUpdate(gpa, 3, capability.session_id, 2, &update);
     try scene.apply(update.items);
 
     var run: std.ArrayList(u8) = .empty;
     defer run.deinit(gpa);
-    try bridge.encodeRun(gpa, 0, 3, capability.session_id, 3, &run);
+    try bridge.encodeRun(gpa, 0, 4, capability.session_id, 3, &run);
     try scene.apply(run.items);
 
     if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
@@ -1891,16 +1915,23 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     defer draw_list.deinit();
     try buildSceneDrawList(&scene, &draw_list, 240, 96);
     var run_rendered = false;
+    var face_background = false;
     for (draw_list.commands.items) |command| {
         switch (command) {
+            .fill => |fill| {
+                if (fill.rect.x == 20 and fill.rect.y == 16 and fill.color.r == 0x20 and fill.color.g == 0x28 and fill.color.b == 0x38)
+                    face_background = true;
+            },
             .text => |text| {
-                if (text.x == 20 and text.y == 16 and std.mem.eql(u8, text.bytes, "Emacs"))
+                if (text.x == 20 and text.y == 16 and text.color != null and
+                    text.color.?.r == 0xff and text.color.?.g == 0xd5 and
+                    std.mem.eql(u8, text.bytes, "Emacs"))
                     run_rendered = true;
             },
             else => {},
         }
     }
-    if (!run_rendered) return error.RuntimeBridgeNotRendered;
+    if (!face_background or !run_rendered) return error.RuntimeBridgeNotRendered;
 
     var frame_gate: renderer_policy.FrameGate = .{};
     var frame_counters: renderer_policy.FrameCounters = .{};
@@ -3090,17 +3121,41 @@ fn buildSceneDrawList(
             @floatFromInt(text_x),
             @floatFromInt(text_y),
             line.bytes,
+            null,
         );
     }
 
     for (scene.glyph_runs.items) |run| {
         const owner = findSceneWindow(scene, run.window_id) orelse continue;
-        // GLYPH_RUN v1 is diagnostic ASCII fallback only.  Future redisplay-
-        // owned runs will carry shaping, direction, face, and font identity.
+        const face = if (run.face_id == 0) null else scene.faces.lookup(run.face_id);
+        if (face) |resource| {
+            if (resource.payload.presence.background) {
+                try list.fillRect(.{
+                    .x = @floatFromInt(owner.x + run.x),
+                    .y = @floatFromInt(owner.y + run.y),
+                    .width = @floatFromInt(run.width),
+                    .height = @floatFromInt(run.height),
+                }, .{
+                    .r = resource.payload.background[0],
+                    .g = resource.payload.background[1],
+                    .b = resource.payload.background[2],
+                    .a = resource.payload.background[3],
+                });
+            }
+        }
+        const foreground: ?renderer_policy.Color = if (face) |resource| (if (resource.payload.presence.foreground) renderer_policy.Color{
+            .r = resource.payload.foreground[0],
+            .g = resource.payload.foreground[1],
+            .b = resource.payload.foreground[2],
+            .a = resource.payload.foreground[3],
+        } else null) else null;
+        // GLYPH_RUN remains bounded ASCII fallback; face color does not imply
+        // shaped text, fonts, atlas rendering, or full Emacs face parity.
         try list.drawText(
             @floatFromInt(owner.x + run.x),
             @floatFromInt(owner.y + run.y),
             run.text,
+            foreground,
         );
     }
 
@@ -3257,12 +3312,19 @@ fn executeDrawList(
                 var text: [121]u8 = undefined;
                 @memcpy(text[0..draw.bytes.len], draw.bytes);
                 text[draw.bytes.len] = 0;
-                if (!SDL_RenderDebugText(
+                if (draw.color) |color| {
+                    if (!SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a)) return sdlFail("SDL_SetRenderDrawColor");
+                }
+                const rendered = SDL_RenderDebugText(
                     renderer,
                     draw.x * @as(f32, @floatFromInt(output_width)) / list.logical_width,
                     draw.y * @as(f32, @floatFromInt(output_height)) / list.logical_height,
                     text[0..draw.bytes.len :0],
-                )) return sdlFail("SDL_RenderDebugText");
+                );
+                if (draw.color) |_| {
+                    if (!SDL_SetRenderDrawColor(renderer, 0xd8, 0xd8, 0xd8, 255)) return sdlFail("SDL_SetRenderDrawColor");
+                }
+                if (!rendered) return sdlFail("SDL_RenderDebugText");
                 executed.commands += 1;
                 executed.texts += 1;
             },

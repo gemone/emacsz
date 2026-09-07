@@ -90,6 +90,8 @@ pub const GlyphRun = struct {
     generation: u32,
     window_id: u64,
     row_index: u32,
+    face_id: u32,
+    face_generation: u32,
     x: i32,
     y: i32,
     width: i32,
@@ -106,6 +108,7 @@ pub const GlyphRunWire = struct {
     window_id: u64,
     row_index: u32,
     face_id: u32 = 0,
+    face_generation: u32 = 0,
     font_id: u32 = 0,
     x: i32,
     y: i32,
@@ -127,14 +130,18 @@ pub const GlyphRunDeleteWire = struct {
 };
 
 pub fn encodeGlyphRun(a: std.mem.Allocator, run: GlyphRunWire, out: *std.ArrayList(u8)) !void {
-    if (run.schema != 1 or run.flags != glyph_debug_fallback or run.direction != 1 or
-        run.face_id != 0 or run.font_id != 0 or run.run_id == 0 or
+    const face_bound = run.schema == 2;
+    if ((run.schema != 1 and run.schema != 2) or run.flags != glyph_debug_fallback or
+        run.direction != 1 or run.font_id != 0 or run.run_id == 0 or
         run.generation == 0 or run.window_id == 0 or
         !validGlyphRunText(run.text)) return Error.InvalidMessage;
+    if ((face_bound and (run.face_id == 0 or run.face_generation == 0)) or
+        (!face_bound and (run.face_id != 0 or run.face_generation != 0)))
+        return Error.InvalidMessage;
     if (run.x < 0 or run.y < 0 or run.width < 0 or run.height < 0)
         return Error.InvalidMessage;
     try out.appendSlice(a, &[8]u8{
-        1,                          0,
+        @intCast(run.schema),       0,
         @intCast(run.flags & 0xff), @intCast(run.flags >> 8),
         1,                          0,
         0,                          0,
@@ -149,7 +156,9 @@ pub fn encodeGlyphRun(a: std.mem.Allocator, run: GlyphRunWire, out: *std.ArrayLi
     try putI32(out, a, run.y);
     try putI32(out, a, run.width);
     try putI32(out, a, run.height);
-    try out.appendSlice(a, &[_]u8{0} ** 8);
+    var reserved: [8]u8 = [_]u8{0} ** 8;
+    std.mem.writeInt(u32, reserved[0..4], run.face_generation, .little);
+    try out.appendSlice(a, &reserved);
     try out.appendSlice(a, run.text);
 }
 
@@ -161,14 +170,18 @@ pub fn decodeGlyphRun(bytes: []const u8) Error!GlyphRunWire {
     const schema = std.mem.readInt(u16, header[0..2], .little);
     const flags = std.mem.readInt(u16, header[2..4], .little);
     const direction = std.mem.readInt(u16, header[4..6], .little);
-    if (schema != 1 or flags != glyph_debug_fallback or direction != 1 or
+    const face_generation = std.mem.readInt(u32, header[52..56], .little);
+    if ((schema != 1 and schema != 2) or flags != glyph_debug_fallback or direction != 1 or
         std.mem.readInt(u16, header[6..8], .little) != 0) return Error.InvalidVersion;
+    if ((schema == 1 and (face_generation != 0)) or
+        (schema == 2 and face_generation == 0)) return Error.InvalidVersion;
     const run: GlyphRunWire = .{
         .run_id = std.mem.readInt(u32, header[8..12], .little),
         .generation = std.mem.readInt(u32, header[12..16], .little),
         .window_id = std.mem.readInt(u64, header[16..24], .little),
         .row_index = std.mem.readInt(u32, header[24..28], .little),
         .face_id = std.mem.readInt(u32, header[28..32], .little),
+        .face_generation = face_generation,
         .font_id = std.mem.readInt(u32, header[32..36], .little),
         .x = @bitCast(std.mem.readInt(u32, header[36..40], .little)),
         .y = @bitCast(std.mem.readInt(u32, header[40..44], .little)),
@@ -176,7 +189,9 @@ pub fn decodeGlyphRun(bytes: []const u8) Error!GlyphRunWire {
         .height = @bitCast(std.mem.readInt(u32, header[48..52], .little)),
         .text = text,
     };
-    if (!std.mem.allEqual(u8, header[52..60], 0)) return Error.InvalidReserved;
+    if (!std.mem.allEqual(u8, header[56..60], 0)) return Error.InvalidReserved;
+    if ((schema == 1 and run.face_id != 0) or
+        (schema == 2 and run.face_id == 0)) return Error.InvalidMessage;
     if (!run.valid() or !validGlyphRunText(text)) return Error.InvalidMessage;
     return run;
 }
@@ -1294,6 +1309,11 @@ pub const Scene = struct {
         if (!inside(wire.x, wire.width, header.logical_width) or
             !inside(wire.y, wire.height, header.logical_height)) return Error.InvalidMessage;
 
+        if (wire.face_id != 0) {
+            const face = self.faces.lookup(wire.face_id) orelse return Error.ResourceNotLive;
+            if (face.generation != wire.face_generation) return Error.StaleGeneration;
+        }
+
         var existing_index: ?usize = null;
         for (self.glyph_runs.items, 0..) |active, index| {
             if (active.run_id == wire.run_id) {
@@ -1315,6 +1335,8 @@ pub const Scene = struct {
             .generation = wire.generation,
             .window_id = wire.window_id,
             .row_index = wire.row_index,
+            .face_id = wire.face_id,
+            .face_generation = wire.face_generation,
             .x = wire.x,
             .y = wire.y,
             .width = wire.width,
@@ -1389,15 +1411,35 @@ pub const Scene = struct {
         self.stats.control_messages += 1;
     }
 
+    fn removeGlyphRunsForFace(
+        self: *Scene,
+        face_id: u32,
+        face_generation: u32,
+    ) void {
+        var index: usize = 0;
+        while (index < self.glyph_runs.items.len) {
+            const run = self.glyph_runs.items[index];
+            if (run.face_id == face_id and run.face_generation == face_generation) {
+                const owned = run.text;
+                _ = self.glyph_runs.orderedRemove(index);
+                self.allocator.free(owned);
+            } else index += 1;
+        }
+    }
+
     fn applyFaceDefine(self: *Scene, payload: protocol.Payload) Error!void {
         const face = try protocol.decodeFaceDefine(payload.bytes);
+        const old = self.faces.lookup(face.face_id);
+        const old_generation: ?u32 = if (old) |resource| resource.generation else null;
         try self.faces.define(&self.resources, face);
+        if (old_generation) |generation| self.removeGlyphRunsForFace(face.face_id, generation);
         self.stats.control_messages += 1;
     }
 
     fn applyFaceDelete(self: *Scene, payload: protocol.Payload) Error!void {
         const face = try protocol.decodeFaceDelete(payload.bytes);
         try self.faces.delete(&self.resources, face);
+        self.removeGlyphRunsForFace(face.face_id, face.generation);
         self.stats.control_messages += 1;
     }
 
@@ -2086,6 +2128,44 @@ fn glyphRunMessage(
     return message.toOwnedSlice(a);
 }
 
+fn faceBoundGlyphRunMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    generation: u32,
+    face_id: u32,
+    face_generation: u32,
+    text: []const u8,
+) ![]u8 {
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeGlyphRun(a, .{
+        .schema = 2,
+        .run_id = 9,
+        .generation = generation,
+        .window_id = 100,
+        .row_index = 0,
+        .face_id = face_id,
+        .face_generation = face_generation,
+        .x = 1,
+        .y = 2,
+        .width = 20,
+        .height = 8,
+        .text = text,
+    }, &payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = protocol.Flags.debug,
+        .message_type = protocol.Message.glyph_run,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 7,
+        .timestamp_ns = sequence,
+    }, payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
 fn glyphRunDeleteMessage(
     a: std.mem.Allocator,
     sequence: u64,
@@ -2163,6 +2243,68 @@ const default_glyph_delete: GlyphRunDeleteWire = .{
     .window_id = 100,
     .row_index = 0,
 };
+
+test "face bound glyph run validates resource and face generation" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var face_payload: std.ArrayList(u8) = .empty;
+    defer face_payload.deinit(a);
+    try protocol.encodeFaceDefine(a, .{ .face_id = 11, .generation = 2 }, &face_payload);
+    const face_defined = try faceMessage(a, protocol.Message.face_define, 3, face_payload.items);
+    defer a.free(face_defined);
+    try scene.apply(face_defined);
+
+    var bound_payload: std.ArrayList(u8) = .empty;
+    defer bound_payload.deinit(a);
+    try encodeGlyphRun(a, .{
+        .schema = 2,
+        .run_id = 9,
+        .generation = 2,
+        .window_id = 100,
+        .row_index = 0,
+        .face_id = 11,
+        .face_generation = 2,
+        .x = 1,
+        .y = 2,
+        .width = 20,
+        .height = 8,
+        .text = "Emacs",
+    }, &bound_payload);
+    const bound = try faceBoundGlyphRunMessage(a, 4, 2, 11, 2, "Emacs");
+    defer a.free(bound);
+    try scene.apply(bound);
+    try std.testing.expectEqual(@as(usize, 1), scene.glyph_runs.items.len);
+    try std.testing.expectEqual(@as(u32, 11), scene.glyph_runs.items[0].face_id);
+
+    var stale_payload: std.ArrayList(u8) = .empty;
+    defer stale_payload.deinit(a);
+    try encodeGlyphRun(a, .{
+        .schema = 2,
+        .run_id = 9,
+        .generation = 3,
+        .window_id = 100,
+        .row_index = 0,
+        .face_id = 11,
+        .face_generation = 1,
+        .x = 1,
+        .y = 2,
+        .width = 20,
+        .height = 8,
+        .text = "stale",
+    }, &stale_payload);
+    const stale = try faceBoundGlyphRunMessage(a, 5, 3, 11, 1, "stale");
+    defer a.free(stale);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(stale));
+}
 
 test "scene validates glyph context and replaces by strictly newer generation" {
     const a = std.testing.allocator;

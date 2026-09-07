@@ -571,11 +571,15 @@ pub const Bridge = struct {
         const record = self.runs[run_index];
         var payload: std.ArrayList(u8) = .empty;
         defer payload.deinit(gpa);
+        const face_bound = record.face_id != 0;
         try frontend.encodeGlyphRun(gpa, .{
+            .schema = if (face_bound) 2 else 1,
             .run_id = @intCast(record.run_id),
             .generation = @intCast(self.redisplay_generation),
             .window_id = record.window_id,
             .row_index = record.row_index,
+            .face_id = record.face_id,
+            .face_generation = record.face_generation,
             .x = record.x,
             .y = record.y,
             .width = record.width,

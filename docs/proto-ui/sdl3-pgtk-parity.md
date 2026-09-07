@@ -186,6 +186,11 @@ planned differential suite, not parity evidence; all cases remain `planned` and
 the aggregate result remains `not_implemented`.  It is distinct from the future
 `sdl3-pgtk-parity` runtime acceptance gate.
 
+P10 preparation adds face-bound GLYPH_RUN v2 to the bridge and SDL fallback.
+The scene validates an exact live face generation and uses its bounded
+foreground/background colors for diagnostic ASCII text only.  This is not
+redisplay capture, shaping, font rendering, atlas rendering, or face parity.
+
 P9 preparation adds authoritative host geometry: `runtime_bridge` refreshes
 `read_geometry`, caches the host rectangle, validates observed windows and
 damage against it, and emits frame headers from that authoritative geometry.

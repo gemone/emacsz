@@ -565,7 +565,7 @@ pub const LogicalRect = struct {
 pub const DrawCommand = union(enum) {
     clear: Color,
     fill: struct { rect: LogicalRect, color: Color },
-    text: struct { x: f32, y: f32, bytes: []const u8 },
+    text: struct { x: f32, y: f32, color: ?Color = null, bytes: []const u8 },
 };
 
 pub const DrawStats = struct {
@@ -612,12 +612,12 @@ pub const DrawList = struct {
         self.stats.fills += 1;
     }
 
-    pub fn drawText(self: *DrawList, x: f32, y: f32, bytes: []const u8) !void {
+    pub fn drawText(self: *DrawList, x: f32, y: f32, bytes: []const u8, color: ?Color) !void {
         if (bytes.len == 0 or bytes.len > 120) return error.InvalidDrawText;
         for (bytes) |byte| {
             if (byte < 0x20 or byte > 0x7e) return error.InvalidDrawText;
         }
-        try self.commands.append(self.allocator, .{ .text = .{ .x = x, .y = y, .bytes = bytes } });
+        try self.commands.append(self.allocator, .{ .text = .{ .x = x, .y = y, .color = color, .bytes = bytes } });
         self.stats.commands += 1;
         self.stats.texts += 1;
     }
@@ -802,7 +802,7 @@ test "draw list records and resets backend-neutral commands" {
     list.setLogicalSize(100, 80);
     try list.clear(.{ .r = 0x18, .g = 0x20, .b = 0x2a });
     try list.fillRect(.{ .x = 1, .y = 2, .width = 3, .height = 4 }, .{ .r = 1, .g = 2, .b = 3 });
-    try list.drawText(4, 5, "Emacs");
+    try list.drawText(4, 5, "Emacs", null);
 
     try std.testing.expectEqual(@as(usize, 3), list.commands.items.len);
     try std.testing.expectEqual(@as(u64, 3), list.stats.commands);
@@ -820,10 +820,10 @@ test "draw list records and resets backend-neutral commands" {
 test "draw list rejects absent oversized and non-ASCII text" {
     var list: DrawList = .{ .allocator = std.testing.allocator };
     defer list.deinit();
-    try std.testing.expectError(error.InvalidDrawText, list.drawText(0, 0, ""));
-    try std.testing.expectError(error.InvalidDrawText, list.drawText(0, 0, "CJK 字"));
+    try std.testing.expectError(error.InvalidDrawText, list.drawText(0, 0, "", null));
+    try std.testing.expectError(error.InvalidDrawText, list.drawText(0, 0, "CJK 字", null));
     const oversized = "a" ** 121;
-    try std.testing.expectError(error.InvalidDrawText, list.drawText(0, 0, oversized[0..]));
+    try std.testing.expectError(error.InvalidDrawText, list.drawText(0, 0, oversized[0..], null));
 }
 
 test "cursor-only damage produces a bounded clip rectangle" {

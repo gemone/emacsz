@@ -92,6 +92,7 @@ pub const RunRecord = extern struct {
     window_id: u64 = 0,
     row_index: u32 = 0,
     face_id: u32 = 0,
+    face_generation: u32 = 0,
     font_id: u32 = 0,
     x: i32 = 0,
     y: i32 = 0,
@@ -363,6 +364,8 @@ pub fn validateRunRecord(record: *const RunRecord) Error!void {
         record.text_length > record.text.len or record.x < 0 or record.y < 0 or
         record.width < 0 or record.height < 0 or record.direction != 1 or
         record.reserved != 0) return error.InvalidRuntimeHost;
+    if ((record.face_id == 0) != (record.face_generation == 0))
+        return error.InvalidRuntimeHost;
     for (record.text[0..record.text_length]) |byte| {
         if (byte < 0x20 or byte == 0x7f or byte > 0x7e) return error.InvalidRuntimeHost;
     }

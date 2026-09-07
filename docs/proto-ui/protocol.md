@@ -414,6 +414,22 @@ teardown free all owned text.
 This schema has no shaping, cluster, BiDi reorder, font, face, atlas, image,
 widget, Emacs capture, or `output_proto` semantics.
 
+#### `GLYPH_RUN` v2 — face-bound debug fallback
+
+Schema 2 keeps the same 60-byte header and 1..120 printable-ASCII body.  It adds
+one generation-qualified face reference:
+
+* `schema = 2`
+* `face_id` is nonzero (offset 28)
+* `face_generation` is nonzero and occupies offset 52..56
+* offsets 56..60 remain zero
+* `font_id` remains zero
+
+The frontend accepts v2 only when that exact face generation is live.  Redefining
+or deleting the face removes dependent debug runs.  This remains a diagnostic
+ASCII fallback and does not provide shaped text, BiDi, fonts, atlas rendering, or
+full Emacs face parity.
+
 ### 13.2 `GLYPH_RUN_DELETE` debug-fallback v1 (implemented bounded adapter contract)
 
 `GLYPH_RUN_DELETE = 0x0406` is the exact identity delete for the bounded W10d
