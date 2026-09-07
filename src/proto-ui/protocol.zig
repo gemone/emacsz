@@ -13,6 +13,12 @@ pub const FrameMonitorFlags = struct {
     pub const primary: u8 = 1 << 0;
 };
 
+pub const FrameMaximizeFlags = struct {
+    pub const horizontal: u8 = 1 << 0;
+    pub const vertical: u8 = 1 << 1;
+    pub const both: u8 = horizontal | vertical;
+};
+
 pub const Error = error{
     InvalidEnvelope,
     InvalidVersion,
@@ -64,6 +70,7 @@ pub const Message = struct {
     pub const frame_scale: u16 = 0x020f;
     pub const frame_fullscreen: u16 = 0x020b;
     pub const frame_monitor: u16 = 0x020e;
+    pub const frame_maximize: u16 = 0x020c;
     pub const resource_request: u16 = 0x0510;
     pub const resource_evict: u16 = 0x0511;
     pub const resource_snapshot: u16 = 0x0512;
@@ -1147,6 +1154,14 @@ pub const FrameMonitorPayload = struct {
     reserved_tail: u32 = 0,
 };
 
+pub const FrameMaximizePayload = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    reserved_after_flags: [4]u8 = .{ 0, 0, 0, 0 },
+    frame_generation: u32,
+};
+
 pub const FrameFocusPayload = struct {
     frame_id: u32,
     frame_generation: u32,
@@ -1850,6 +1865,49 @@ pub fn decodeFrameMonitor(data: []const u8) Error!FrameMonitorPayload {
 
 pub fn validateFrameMonitorEnvelope(payload: FrameMonitorPayload, envelope: Envelope) Error!void {
     try validateFrameMonitor(payload);
+    if (envelope.frame_id == 0) return Error.InvalidMessage;
+}
+
+fn validateFrameMaximize(payload: FrameMaximizePayload) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or
+        payload.flags & ~FrameMaximizeFlags.both != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_after_flags, 0))
+        return Error.InvalidMessage;
+    if (payload.flags == 0 or payload.frame_generation == 0) return Error.InvalidMessage;
+}
+
+pub fn encodeFrameMaximize(
+    a: std.mem.Allocator,
+    payload: FrameMaximizePayload,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameMaximize(payload);
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &bytes, payload.schema, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, payload.flags);
+    try out.append(a, payload.reserved);
+    try out.appendSlice(a, &payload.reserved_after_flags);
+    var word: [4]u8 = undefined;
+    std.mem.writeInt(u32, &word, payload.frame_generation, .little);
+    try out.appendSlice(a, &word);
+}
+
+pub fn decodeFrameMaximize(data: []const u8) Error!FrameMaximizePayload {
+    if (data.len != 12) return Error.InvalidTable;
+    const payload = FrameMaximizePayload{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .reserved_after_flags = data[4..8][0..4].*,
+        .frame_generation = std.mem.readInt(u32, data[8..12], .little),
+    };
+    try validateFrameMaximize(payload);
+    return payload;
+}
+
+pub fn validateFrameMaximizeEnvelope(payload: FrameMaximizePayload, envelope: Envelope) Error!void {
+    try validateFrameMaximize(payload);
     if (envelope.frame_id == 0) return Error.InvalidMessage;
 }
 
@@ -2746,6 +2804,39 @@ test "frame monitor payload enforces strict wire form" {
         .width = 1,
         .height = 1,
         .frame_generation = 1,
+    }, &bytes));
+}
+
+test "frame maximize payload enforces strict wire form" {
+    const a = std.testing.allocator;
+    const payload = FrameMaximizePayload{
+        .flags = FrameMaximizeFlags.both,
+        .frame_generation = 2,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFrameMaximize(a, payload, &bytes);
+    try std.testing.expectEqual(@as(usize, 12), bytes.items.len);
+    try std.testing.expectEqual(payload, try decodeFrameMaximize(bytes.items));
+
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameMaximize(bytes.items));
+    bytes.items[0] = 1;
+    bytes.items[2] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameMaximize(bytes.items));
+    bytes.items[2] = 7;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameMaximize(bytes.items));
+    bytes.items[2] = FrameMaximizeFlags.both;
+    for ([_]usize{ 3, 4, 5, 6, 7 }) |reserved_index| {
+        bytes.items[reserved_index] = 1;
+        try std.testing.expectError(Error.InvalidMessage, decodeFrameMaximize(bytes.items));
+        bytes.items[reserved_index] = 0;
+    }
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFrameMaximize(bytes.items));
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameMaximize(a, .{
+        .flags = FrameMaximizeFlags.horizontal,
+        .frame_generation = 0,
     }, &bytes));
 }
 

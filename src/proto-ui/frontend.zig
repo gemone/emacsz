@@ -1271,6 +1271,7 @@ pub const Scene = struct {
     scale: ?protocol.FrameScalePayload = null,
     fullscreen: ?protocol.FrameFullscreenPayload = null,
     monitor: ?protocol.FrameMonitorPayload = null,
+    maximize: ?protocol.FrameMaximizePayload = null,
     present: ?PresentHint = null,
     viewport: ?Viewport = null,
     window_tree: ?protocol.WindowTreeSnapshot = null,
@@ -1297,6 +1298,7 @@ pub const Scene = struct {
         self.scale = null;
         self.fullscreen = null;
         self.monitor = null;
+        self.maximize = null;
         self.windows = .empty;
         self.rows = .empty;
         self.glyph_runs = .empty;
@@ -1352,6 +1354,7 @@ pub const Scene = struct {
             protocol.Message.frame_scale => try self.applyFrameScale(payload),
             protocol.Message.frame_fullscreen => try self.applyFrameFullscreen(payload),
             protocol.Message.frame_monitor => try self.applyFrameMonitor(payload),
+            protocol.Message.frame_maximize => try self.applyFrameMaximize(payload),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.font_define => try self.applyFontDefine(payload),
@@ -1375,6 +1378,7 @@ pub const Scene = struct {
         self.scale = null;
         self.fullscreen = null;
         self.monitor = null;
+        self.maximize = null;
         self.clearGlyphRuns();
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
@@ -1599,6 +1603,17 @@ pub const Scene = struct {
             frame.generation != monitor.frame_generation)
             return Error.InvalidMessage;
         self.monitor = monitor;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFrameMaximize(self: *Scene, payload: protocol.Payload) Error!void {
+        const maximize = try protocol.decodeFrameMaximize(payload.bytes);
+        try protocol.validateFrameMaximizeEnvelope(maximize, payload.envelope);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != maximize.frame_generation)
+            return Error.InvalidMessage;
+        self.maximize = maximize;
         self.stats.control_messages += 1;
     }
 
@@ -2368,6 +2383,29 @@ fn frameMonitorMessage(
         .frame_id = envelope_frame,
         .timestamp_ns = sequence,
     }, monitor_payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
+fn frameMaximizeMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    envelope_frame: u32,
+    payload: protocol.FrameMaximizePayload,
+) ![]u8 {
+    var maximize_payload: std.ArrayList(u8) = .empty;
+    defer maximize_payload.deinit(a);
+    try protocol.encodeFrameMaximize(a, payload, &maximize_payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_maximize,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = envelope_frame,
+        .timestamp_ns = sequence,
+    }, maximize_payload.items, &message);
     return message.toOwnedSlice(a);
 }
 
@@ -3371,6 +3409,74 @@ test "scene applies monitor only to the active frame generation" {
 
     scene.resetForResync();
     try std.testing.expect(scene.monitor == null);
+}
+
+test "scene applies maximize only to the active frame generation" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    const horizontal = try frameMaximizeMessage(a, 2, 7, .{
+        .flags = protocol.FrameMaximizeFlags.horizontal,
+        .frame_generation = 1,
+    });
+    defer a.free(horizontal);
+    try scene.apply(horizontal);
+    try std.testing.expectEqual(@as(u8, protocol.FrameMaximizeFlags.horizontal), scene.maximize.?.flags);
+
+    const vertical = try frameMaximizeMessage(a, 3, 7, .{
+        .flags = protocol.FrameMaximizeFlags.vertical,
+        .frame_generation = 1,
+    });
+    defer a.free(vertical);
+    try scene.apply(vertical);
+    try std.testing.expectEqual(@as(u8, protocol.FrameMaximizeFlags.vertical), scene.maximize.?.flags);
+
+    const stale = try frameMaximizeMessage(a, 4, 7, .{
+        .flags = protocol.FrameMaximizeFlags.both,
+        .frame_generation = 2,
+    });
+    defer a.free(stale);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(stale));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const wrong_frame = try frameMaximizeMessage(a, 4, 8, .{
+        .flags = protocol.FrameMaximizeFlags.both,
+        .frame_generation = 1,
+    });
+    defer a.free(wrong_frame);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_frame));
+
+    const current = try frameMaximizeMessage(a, 4, 7, .{
+        .flags = protocol.FrameMaximizeFlags.both,
+        .frame_generation = 1,
+    });
+    defer a.free(current);
+    try scene.apply(current);
+
+    var destroy_payload: [8]u8 = undefined;
+    std.mem.writeInt(u32, destroy_payload[0..4], 7, .little);
+    std.mem.writeInt(u32, destroy_payload[4..8], 1, .little);
+    var destroy: std.ArrayList(u8) = .empty;
+    defer destroy.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_destroy,
+        .sequence = 5,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 7,
+        .timestamp_ns = 5,
+    }, &destroy_payload, &destroy);
+    try scene.apply(destroy.items);
+    try std.testing.expect(scene.maximize == null);
+
+    scene.resetForResync();
+    try std.testing.expect(scene.maximize == null);
 }
 
 test "scene atomically validates resource generation declarations" {

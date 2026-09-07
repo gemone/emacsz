@@ -49,6 +49,7 @@ const SDLInitFlags = c_uint;
 const SDLWindowFlags = c_ulonglong;
 const SDL_WINDOW_BORDERLESS: SDLWindowFlags = 0x10;
 const SDL_WINDOW_FULLSCREEN: SDLWindowFlags = 0x01;
+const SDL_WINDOW_MAXIMIZED: SDLWindowFlags = 0x80;
 const SDL_DisplayID = c_uint;
 
 extern fn SDL_Init(flags: SDLInitFlags) bool;
@@ -65,6 +66,9 @@ extern fn SDL_SetWindowFullscreen(window: *SDL_Window, fullscreen: bool) bool;
 extern fn SDL_SyncWindow(window: *SDL_Window) bool;
 extern fn SDL_GetDisplayForWindow(window: *SDL_Window) SDL_DisplayID;
 extern fn SDL_GetDisplayBounds(display: SDL_DisplayID, rect: *SDL_Rect) bool;
+extern fn SDL_SetWindowResizable(window: *SDL_Window, resizable: bool) bool;
+extern fn SDL_MaximizeWindow(window: *SDL_Window) bool;
+extern fn SDL_RestoreWindow(window: *SDL_Window) bool;
 extern fn SDL_CreateRenderer(window: *SDL_Window, name: ?[*:0]const u8) ?*SDL_Renderer;
 extern fn SDL_DestroyRenderer(renderer: *SDL_Renderer) void;
 extern fn SDL_GetRendererName(renderer: *SDL_Renderer) [*:0]const u8;
@@ -2040,14 +2044,33 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     }, monitor_payload.items, &monitor);
     try scene.apply(monitor.items);
 
+    var maximize_payload: std.ArrayList(u8) = .empty;
+    defer maximize_payload.deinit(gpa);
+    try protocol.encodeFrameMaximize(gpa, .{
+        .flags = protocol.FrameMaximizeFlags.both,
+        .frame_generation = bridge.eup_frame_generation,
+    }, &maximize_payload);
+    var maximize: std.ArrayList(u8) = .empty;
+    defer maximize.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_maximize,
+        .sequence = 10,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, maximize_payload.items, &maximize);
+    try scene.apply(maximize.items);
+
     var update: std.ArrayList(u8) = .empty;
     defer update.deinit(gpa);
-    try bridge.encodeFrameUpdate(gpa, 10, capability.session_id, 2, &update);
+    try bridge.encodeFrameUpdate(gpa, 11, capability.session_id, 2, &update);
     try scene.apply(update.items);
 
     var run: std.ArrayList(u8) = .empty;
     defer run.deinit(gpa);
-    try bridge.encodeRun(gpa, 0, 11, capability.session_id, 3, &run);
+    try bridge.encodeRun(gpa, 0, 12, capability.session_id, 3, &run);
     try scene.apply(run.items);
 
     if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
@@ -2067,6 +2090,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         return error.RuntimeBridgeFullscreenInvalid;
     if (scene.monitor == null or scene.monitor.?.monitor_id == 0)
         return error.RuntimeBridgeMonitorInvalid;
+    if (scene.maximize == null or scene.maximize.?.flags != protocol.FrameMaximizeFlags.both)
+        return error.RuntimeBridgeMaximizeInvalid;
 
     if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
     defer SDL_Quit();
@@ -2130,6 +2155,22 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         if (platform_monitor_id != 0 and SDL_GetDisplayBounds(platform_monitor_id, &platform_monitor)) {
             monitor_supported = platform_monitor.w > 0 and platform_monitor.h > 0;
         }
+    }
+    var maximize_supported = false;
+    if (scene.maximize != null and scene.maximize.?.flags == protocol.FrameMaximizeFlags.both) {
+        if (SDL_SetWindowResizable(window, true)) {
+            const requested = SDL_MaximizeWindow(window);
+            maximize_supported = requested and SDL_SyncWindow(window) and
+                (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0;
+            const restore_required = requested or
+                (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0;
+            if (restore_required) {
+                const restored = SDL_RestoreWindow(window) and SDL_SyncWindow(window) and
+                    (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) == 0;
+                if (!restored) return error.RuntimeBridgeMaximizeRestoreFailed;
+            }
+        }
+        _ = SDL_SetWindowResizable(window, false);
     }
     const selected_renderer = try createRenderer(gpa, window, config.renderer_request, config.present_mode);
     defer destroyRenderer(selected_renderer);
@@ -2225,7 +2266,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             opacity_supported,
             decorations_supported,
@@ -2236,6 +2277,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
             platform_monitor_id,
             platform_monitor.w,
             platform_monitor.h,
+            maximize_supported,
         },
     );
 }

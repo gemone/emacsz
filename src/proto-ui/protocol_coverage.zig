@@ -72,7 +72,7 @@ const ranges = [_]Range{
     .{ .low = 0x0209, .high = 0x0209, .status = .implemented_codec, .domain = .frame, .family = "frame-title", .note = "generation-qualified title codec, Scene state, SDL smoke" },
     .{ .low = 0x020a, .high = 0x020a, .status = .planned, .domain = .frame, .family = "frame-icon", .note = "icon resource payload pending" },
     .{ .low = 0x020b, .high = 0x020b, .status = .implemented_codec, .domain = .frame, .family = "frame-fullscreen", .note = "Emacs fullscreen-mode codec, Scene state, SDL fullboth probe" },
-    .{ .low = 0x020c, .high = 0x020c, .status = .planned, .domain = .frame, .family = "frame-maximize", .note = "horizontal/vertical maximize payload pending" },
+    .{ .low = 0x020c, .high = 0x020c, .status = .implemented_codec, .domain = .frame, .family = "frame-maximize", .note = "horizontal/vertical maximize codec, Scene state, SDL both-axis probe" },
     .{ .low = 0x020d, .high = 0x020d, .status = .implemented_codec, .domain = .frame, .family = "frame-alpha", .note = "active/inactive/background opacity codec, Scene state, SDL probe" },
     .{ .low = 0x020e, .high = 0x020e, .status = .implemented_codec, .domain = .frame, .family = "frame-monitor", .note = "generation-qualified monitor identity, primary flag, bounds codec, SDL query" },
     .{ .low = 0x020f, .high = 0x020f, .status = .implemented_codec, .domain = .frame, .family = "frame-scale", .note = "generation-qualified scale/DPI codec, Scene state, SDL probe" },

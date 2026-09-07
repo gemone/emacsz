@@ -73,6 +73,11 @@ W12d-m adds `FRAME_MONITOR` v1 for a generation-qualified monitor identity,
 primary flag, and logical bounds.  The diagnostic SDL bridge queries the real
 SDL display ID and bounds; change events and frame migration remain pending.
 
+W12d-x adds `FRAME_MAXIMIZE` v1 for independent horizontal and vertical
+maximize policy.  The diagnostic SDL bridge applies and restores both-axis
+maximization; single-axis platform mapping and redisplay adaptation remain
+pending.
+
 W12e adds a bounded adapter-owned resource payload cache with LRU eviction and
 strict wire contracts for `RESOURCE_REQUEST` and `RESOURCE_EVICT`.  The cache
 accepts at most 32 entries, 4096 bytes per payload, and 16 KiB total; existing

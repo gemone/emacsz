@@ -1001,9 +1001,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 38 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 39 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 123 | Assigned for the target protocol but not implemented |
+| `planned` | 122 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every
@@ -1559,6 +1559,27 @@ clears it on frame destruction, authenticated resync, or scene teardown. The
 diagnostic SDL bridge queries the real SDL display ID and bounds. This does not
 yet implement monitor-change events, frontend-to-core monitor events, display
 hotplug recovery, or redisplay-driven frame migration.
+
+#### Frame maximize state
+
+`FRAME_MAXIMIZE` (`0x020c`) carries explicit horizontal and vertical maximize
+policy in a fixed 12-byte payload:
+
+```text
+schema                 u16 = 1
+flags                  u8  (bit 0=horizontal, bit 1=vertical)
+reserved               u8  = 0
+reserved               u32 = 0
+frame_generation       u32 (nonzero)
+```
+
+At least one axis must be requested, and all other flags are invalid. The
+envelope frame ID, active frame identity, and `frame_generation` must agree.
+Scene stores the complete axis set and clears it on frame destruction,
+authenticated resync, or scene teardown. The diagnostic SDL bridge applies and
+restores the both-axis case through SDL's whole-window maximize command; SDL
+cannot generally express independent horizontal/vertical maximization, so
+single-axis mapping and redisplay geometry adaptation remain pending.
 
 The facts profile also defines a deliberately bounded `KEY_EVENT` payload for
 `0x0600`: `u16 action` (`1=backspace`, `2=cursor-left`, `3=cursor-right`,

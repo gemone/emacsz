@@ -202,7 +202,7 @@ Priorities:
 | Raise/lower | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Restack | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Fullscreen states | P1 | Degraded | EUP `FRAME_FULLSCREEN` v1 models none/fullboth/fullwidth/fullheight/maximized and SDL probes and restores fullboth; width-only, height-only, maximized, persistence policy, and PGTK parity remain pending |
-| Maximize horizontal/vertical | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Maximize horizontal/vertical | P1 | Degraded | EUP `FRAME_MAXIMIZE` v1 carries independent axis flags; SDL probes/restores both-axis maximization, while single-axis mapping, geometry adaptation, and PGTK parity remain pending |
 | Undecorated frame | P1 | Degraded | EUP `FRAME_DECORATIONS` v1 maps decorated/undecorated policy to the diagnostic SDL border flag; persistence, parent/tooltip policies, and PGTK parity remain pending |
 | Override redirect | P2 | Pending | W12/W16 PGTK parity gate not met |
 | Parent frame | P2 | Pending | W12/W16 PGTK parity gate not met |
@@ -467,7 +467,7 @@ parity.
 
 | Layer | Working now | Still required for parity | Evidence |
 |---|---|---|---|
-| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 38 implemented codecs, 3 partial, and 123 planned; no unassigned or unclassified ID | Production implementation of the 126 planned IDs |
+| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 39 implemented codecs, 3 partial, and 122 planned; no unassigned or unclassified ID | Production implementation of the 125 planned IDs |
 | Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry, deterministic ordered/resync/ACK-loss/ERP1 convergence differential with
 `RESOURCE_SNAPSHOT`-aware concrete face/font/string/image fingerprints, bounded EPXL capability negotiation/status manifest, frame visibility/focus state codec, bounded resource payload cache/eviction policy, request/evict codecs, bounded string define/delete, fixed-layout face/font/image define/data/delete, and atomic concrete `RESOURCE_SNAPSHOT` v1 restore with frontend ownership, optional host frame-state ABI seam, terminal-lifecycle core, generated read-only C adapter, dynamically linkable observation library, bounded host-frame to EUP-frame service mapping, deterministic atomic capture batches, deterministic protocol fuzz hardening, and bounded process-level frontend crash isolation, and negotiated strict focus/window observation | General resource/widget capability coverage, arbitrary recovery, remote safety, runtime terminal registration | `proto-ui-conformance`, `proto-ui-unit`, `proto-ui-fuzz`, `proto-ui-recovery-diff`, `proto-ui-crash-isolation`, `proto-ui-shim-conformance`, `proto-ui-shim-library-conformance`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
 | Emacs observation | Real Emacs process publishes public frame/window geometry, bounded printable-ASCII text, point/cursor, and viewport facts; W12c creates/deletes one real display-backed frame and synchronizes one EUP/SDL3 frame lifecycle; W10e renders that public-facts marker through the bounded glyph-run debug fallback | Redisplay-owned rows/glyphs/faces/fonts, full window tree, `output_proto`-owned frame creation/deletion, runtime visibility/focus events | `proto-ui-module-smoke`, `sdl3-emacs-smoke`, `sdl3-epxl-facts-smoke`, `sdl3-frame-smoke` |
