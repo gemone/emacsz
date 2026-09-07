@@ -73,6 +73,8 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P6-prep reverse input bridge | Implemented for bounded SDL key/text intents through PureRuntimeHostV1 delivery/result/completion; not keymap/command parity |
 | P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
 | P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
+| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 27 implemented codecs, 5 partial, 132 planned; prevents an unclassified or overclaimed protocol table |
+| Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
 | P9-prep authoritative geometry | Implemented in runtime bridge with host rectangle caching and frame/window/damage bounds; real monitor/DPI events pending |
 | P10-prep face-bound debug runs | Implemented with GLYPH_RUN v2, exact live-face validation, and colored SDL fallback; not production face/shaping parity |
 
@@ -3106,6 +3108,9 @@ Production redisplay, shaping, fonts, and atlas rendering remain pending.
 P9 geometry preparation adds `refreshFrameGeometry`, authoritative frame
 bounds, and observation validation in `runtime_bridge`; real monitor and scale
 events remain pending.
+Protocol coverage preparation adds `proto-ui-protocol-coverage`: every assigned
+EUP ID now has one honest status and evidence/gap classification.  The current
+counts are 27 implemented codecs, 5 partial, and 132 planned.
 P8 lifecycle preparation binds heartbeat, flush, diagnostics, and
 cancel-all-pending-work into `runtime_bridge`, with safe cancellation of
 accepted but incomplete input transactions.

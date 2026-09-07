@@ -1,0 +1,252 @@
+//! Source-authoritative implementation coverage for every assigned EUP v1 ID.
+//!
+//! This manifest is an honest completeness audit, not a claim that EUP is
+//! production complete.  A `planned` entry means the assigned ID remains to be
+//! implemented and must not be sent or accepted as a concrete codec.
+
+const std = @import("std");
+const protocol = @import("protocol.zig");
+
+pub const manifest_version: u32 = 1;
+pub const coverage_schema_version: u32 = 1;
+pub const authoritative_source = "src/proto-ui/protocol.zig";
+
+pub const Status = enum(u8) {
+    implemented_codec = 0,
+    partial = 1,
+    planned = 2,
+    reserved_diagnostic = 3,
+};
+
+pub const Domain = enum(u8) {
+    session = 0,
+    frame = 1,
+    window = 2,
+    render = 3,
+    resource = 4,
+    input = 5,
+    ime = 6,
+    selection = 7,
+    widget = 8,
+    diagnostic = 9,
+    extension = 10,
+};
+
+pub const Entry = struct {
+    id: u16,
+    status: Status,
+    domain: Domain,
+    name: []const u8,
+    evidence_or_gap: []const u8,
+};
+
+pub const Counters = struct {
+    total: usize,
+    implemented_codec: usize,
+    partial: usize,
+    planned: usize,
+    reserved_diagnostic: usize,
+};
+
+const Range = struct {
+    low: u16,
+    high: u16,
+    status: Status,
+    domain: Domain,
+    family: []const u8,
+    note: []const u8,
+};
+
+const ranges = [_]Range{
+    .{ .low = 0x0001, .high = 0x0002, .status = .partial, .domain = .session, .family = "handshake", .note = "EPXL handshake exists; full EUP payload codecs pending" },
+    .{ .low = 0x0003, .high = 0x0004, .status = .implemented_codec, .domain = .session, .family = "capabilities", .note = "capability table encode/decode and negotiation tests" },
+    .{ .low = 0x0005, .high = 0x000e, .status = .planned, .domain = .session, .family = "session-control", .note = "concrete session-control payload pending" },
+    .{ .low = 0x000f, .high = 0x0011, .status = .partial, .domain = .session, .family = "resync", .note = "authenticated local resync/recovery smoke; arbitrary recovery pending" },
+    .{ .low = 0x0200, .high = 0x0200, .status = .implemented_codec, .domain = .frame, .family = "frame-create", .note = "frontend lifecycle and runtime bridge conformance" },
+    .{ .low = 0x0201, .high = 0x0202, .status = .planned, .domain = .frame, .family = "frame-state", .note = "patch and snapshot payload pending" },
+    .{ .low = 0x0203, .high = 0x0203, .status = .implemented_codec, .domain = .frame, .family = "frame-update", .note = "atomic header/section codec, Scene apply, replay tests" },
+    .{ .low = 0x0204, .high = 0x0205, .status = .planned, .domain = .frame, .family = "frame-feedback", .note = "presentation feedback payload pending" },
+    .{ .low = 0x0206, .high = 0x0206, .status = .implemented_codec, .domain = .frame, .family = "frame-destroy", .note = "frontend and runtime bridge lifecycle conformance" },
+    .{ .low = 0x0207, .high = 0x0207, .status = .planned, .domain = .frame, .family = "frame-geometry", .note = "dedicated geometry message pending" },
+    .{ .low = 0x0208, .high = 0x0208, .status = .implemented_codec, .domain = .frame, .family = "frame-visibility", .note = "state codec, Scene registry, bridge conformance" },
+    .{ .low = 0x0209, .high = 0x020f, .status = .planned, .domain = .frame, .family = "frame-platform", .note = "title/icon/fullscreen/monitor/scale payloads pending" },
+    .{ .low = 0x0210, .high = 0x0210, .status = .implemented_codec, .domain = .frame, .family = "frame-focus", .note = "state codec, Scene registry, bridge conformance" },
+    .{ .low = 0x0211, .high = 0x0214, .status = .planned, .domain = .frame, .family = "frame-window-manager", .note = "hints/z-order/parent/decoration payloads pending" },
+    .{ .low = 0x0300, .high = 0x030a, .status = .planned, .domain = .window, .family = "window-tree", .note = "authoritative window-tree messages pending" },
+    .{ .low = 0x0400, .high = 0x0404, .status = .planned, .domain = .render, .family = "render-debug", .note = "granular render boundary/row messages pending" },
+    .{ .low = 0x0405, .high = 0x0405, .status = .implemented_codec, .domain = .render, .family = "glyph-run", .note = "bounded ASCII fallback v1/v2 and Scene rendering" },
+    .{ .low = 0x0406, .high = 0x0406, .status = .implemented_codec, .domain = .render, .family = "glyph-run-delete", .note = "exact identity deletion and fallback restore" },
+    .{ .low = 0x0407, .high = 0x040f, .status = .planned, .domain = .render, .family = "render-control", .note = "cursor/fringe/divider/damage/flush/hint codecs pending" },
+    .{ .low = 0x0500, .high = 0x0500, .status = .implemented_codec, .domain = .resource, .family = "face-define", .note = "bounded face resource codec and Scene ownership" },
+    .{ .low = 0x0501, .high = 0x0501, .status = .planned, .domain = .resource, .family = "face-patch", .note = "attribute patch codec pending" },
+    .{ .low = 0x0502, .high = 0x0502, .status = .implemented_codec, .domain = .resource, .family = "face-delete", .note = "generation-qualified bounded delete" },
+    .{ .low = 0x0503, .high = 0x0503, .status = .implemented_codec, .domain = .resource, .family = "font-define", .note = "bounded font resource codec and Scene ownership" },
+    .{ .low = 0x0504, .high = 0x0505, .status = .planned, .domain = .resource, .family = "font-patch-metrics", .note = "font patch and metrics codecs pending" },
+    .{ .low = 0x0506, .high = 0x0506, .status = .implemented_codec, .domain = .resource, .family = "font-delete", .note = "generation-qualified bounded delete" },
+    .{ .low = 0x0507, .high = 0x0509, .status = .implemented_codec, .domain = .resource, .family = "image-lifecycle", .note = "bounded static RGBA define/data/delete codecs" },
+    .{ .low = 0x050a, .high = 0x050d, .status = .planned, .domain = .resource, .family = "fringe-icon", .note = "fringe and icon resource codecs pending" },
+    .{ .low = 0x050e, .high = 0x050f, .status = .implemented_codec, .domain = .resource, .family = "string-lifecycle", .note = "bounded UTF-8 string define/delete" },
+    .{ .low = 0x0510, .high = 0x0512, .status = .implemented_codec, .domain = .resource, .family = "resource-policy-snapshot", .note = "request, eviction, and atomic concrete snapshot codecs" },
+    .{ .low = 0x0513, .high = 0x0516, .status = .planned, .domain = .resource, .family = "atlas", .note = "glyph atlas publication and recovery pending" },
+    .{ .low = 0x0600, .high = 0x0603, .status = .implemented_codec, .domain = .input, .family = "key-text-pointer-wheel", .note = "bounded codecs plus SDL/EPXL delivery paths" },
+    .{ .low = 0x0604, .high = 0x0605, .status = .planned, .domain = .input, .family = "touch-gesture", .note = "touch and gesture codecs pending" },
+    .{ .low = 0x0606, .high = 0x0607, .status = .implemented_codec, .domain = .input, .family = "platform-focus-window", .note = "strict focus/window intent codecs and smoke" },
+    .{ .low = 0x0608, .high = 0x060c, .status = .planned, .domain = .input, .family = "extended-platform", .note = "extended platform input intents pending" },
+    .{ .low = 0x0700, .high = 0x0719, .status = .planned, .domain = .ime, .family = "ime", .note = "IME composition and candidate payloads pending" },
+    .{ .low = 0x0800, .high = 0x0826, .status = .planned, .domain = .selection, .family = "selection-clipboard-dnd", .note = "MIME, PRIMARY/SECONDARY, and DND codecs pending" },
+    .{ .low = 0x0900, .high = 0x0941, .status = .planned, .domain = .widget, .family = "widgets", .note = "menu/toolbar/dialog/tooltip/scrollbar models pending" },
+    .{ .low = 0x0a00, .high = 0x0a09, .status = .planned, .domain = .diagnostic, .family = "diagnostics", .note = "performance/trace/replay diagnostic payloads pending" },
+};
+
+fn rangeFor(id: u16) ?Range {
+    for (ranges) |range| {
+        if (id >= range.low and id <= range.high) return range;
+    }
+    return null;
+}
+
+pub fn domainName(domain: Domain) []const u8 {
+    return @tagName(domain);
+}
+
+pub fn statusName(status: Status) []const u8 {
+    return @tagName(status);
+}
+
+fn entryFor(id: u16) !Entry {
+    if (!protocol.knownMessage(id)) return error.UnknownMessageId;
+    const range = rangeFor(id) orelse return error.UnclassifiedMessageId;
+    return .{
+        .id = id,
+        .status = range.status,
+        .domain = range.domain,
+        .name = range.family,
+        .evidence_or_gap = range.note,
+    };
+}
+
+pub fn entries() [protocol.known_message_ids.len]Entry {
+    var result: [protocol.known_message_ids.len]Entry = undefined;
+    for (protocol.known_message_ids, 0..) |id, index| {
+        result[index] = entryFor(id) catch unreachable;
+    }
+    return result;
+}
+
+pub fn counters() Counters {
+    var result = Counters{
+        .total = protocol.known_message_ids.len,
+        .implemented_codec = 0,
+        .partial = 0,
+        .planned = 0,
+        .reserved_diagnostic = 0,
+    };
+    for (protocol.known_message_ids) |id| {
+        const entry = entryFor(id) catch unreachable;
+        switch (entry.status) {
+            .implemented_codec => result.implemented_codec += 1,
+            .partial => result.partial += 1,
+            .planned => result.planned += 1,
+            .reserved_diagnostic => result.reserved_diagnostic += 1,
+        }
+    }
+    return result;
+}
+
+pub fn validateState() ?[]const u8 {
+    if (protocol.known_message_ids.len == 0) return "assigned ID table is empty";
+    var previous: u16 = 0;
+    for (protocol.known_message_ids, 0..) |id, index| {
+        if (index != 0 and id <= previous) return "assigned IDs are not sorted/unique";
+        previous = id;
+        _ = entryFor(id) catch return "assigned ID is unclassified";
+    }
+    const counts = counters();
+    if (counts.total != counts.implemented_codec + counts.partial +
+        counts.planned + counts.reserved_diagnostic) return "coverage counters do not sum";
+    if (counts.implemented_codec == 0) return "no implemented codecs recorded";
+    if (counts.planned == 0) return "coverage dishonestly omits planned IDs";
+    return null;
+}
+
+fn appendJsonString(gpa: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
+    try out.append(gpa, '"');
+    for (value) |char| {
+        switch (char) {
+            '"' => try out.appendSlice(gpa, "\\\""),
+            '\\' => try out.appendSlice(gpa, "\\\\"),
+            '\n' => try out.appendSlice(gpa, "\\n"),
+            '\r' => try out.appendSlice(gpa, "\\r"),
+            '\t' => try out.appendSlice(gpa, "\\t"),
+            else => {
+                if (char < 0x20) {
+                    try out.print(gpa, "\\u{x:0>4}", .{char});
+                } else {
+                    try out.append(gpa, char);
+                }
+            },
+        }
+    }
+    try out.append(gpa, '"');
+}
+
+pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
+    if (validateState() != null) return error.InvalidProtocolCoverage;
+    try out.appendSlice(gpa, "{\"manifest_version\":");
+    try out.print(gpa, "{d}", .{manifest_version});
+    try out.appendSlice(gpa, ",\"kind\":\"proto-ui-eup-message-coverage\",");
+    try out.appendSlice(gpa, "\"authoritative_source\":");
+    try appendJsonString(gpa, out, authoritative_source);
+    try out.appendSlice(gpa, ",\"coverage_schema_version\":");
+    try out.print(gpa, "{d}", .{coverage_schema_version});
+    try out.appendSlice(gpa, ",\"counters\":");
+    const counts = counters();
+    try out.print(gpa, "{{\"total\":{d},\"implemented_codec\":{d},\"partial\":{d},\"planned\":{d},\"reserved_diagnostic\":{d}}}", .{
+        counts.total,
+        counts.implemented_codec,
+        counts.partial,
+        counts.planned,
+        counts.reserved_diagnostic,
+    });
+    try out.appendSlice(gpa, ",\"entries\":[");
+    for (protocol.known_message_ids, 0..) |id, index| {
+        const entry = try entryFor(id);
+        if (index != 0) try out.append(gpa, ',');
+        try out.print(gpa, "{{\"id\":\"0x{x:0>4}\",\"status\":", .{id});
+        try appendJsonString(gpa, out, statusName(entry.status));
+        try out.appendSlice(gpa, ",\"domain\":");
+        try appendJsonString(gpa, out, domainName(entry.domain));
+        try out.appendSlice(gpa, ",\"name\":");
+        try appendJsonString(gpa, out, entry.name);
+        try out.appendSlice(gpa, ",\"evidence_or_gap\":");
+        try appendJsonString(gpa, out, entry.evidence_or_gap);
+        try out.append(gpa, '}');
+    }
+    try out.appendSlice(gpa, "]}\n");
+}
+
+test "coverage table covers every assigned ID exactly once" {
+    try std.testing.expectEqual(protocol.known_message_ids.len, counters().total);
+    try std.testing.expectEqual(@as(?[]const u8, null), validateState());
+}
+
+test "implemented and planned protocol coverage remain honest" {
+    const implemented = entryFor(0x0203) catch unreachable;
+    try std.testing.expectEqual(Status.implemented_codec, implemented.status);
+    const planned = entryFor(0x0300) catch unreachable;
+    try std.testing.expectEqual(Status.planned, planned.status);
+    try std.testing.expectError(error.UnknownMessageId, entryFor(0xffff));
+}
+
+test "protocol coverage manifest is deterministic" {
+    const gpa = std.testing.allocator;
+    var first: std.ArrayList(u8) = .empty;
+    defer first.deinit(gpa);
+    var second: std.ArrayList(u8) = .empty;
+    defer second.deinit(gpa);
+    try writeManifest(gpa, &first);
+    try writeManifest(gpa, &second);
+    try std.testing.expectEqualSlices(u8, first.items, second.items);
+    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"planned\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"domain\":\"frame\"") != null);
+}

@@ -1,4 +1,5 @@
 pub const protocol = @import("protocol.zig");
+pub const protocol_coverage = @import("protocol_coverage.zig");
 pub const capability = @import("capability.zig");
 pub const lifecycle = @import("lifecycle.zig");
 pub const frontend = @import("frontend.zig");
@@ -24,6 +25,7 @@ pub const isolation_audit = @import("isolation_audit.zig");
 
 test {
     _ = protocol;
+    _ = protocol_coverage;
     _ = capability;
     _ = lifecycle;
     _ = frontend;

@@ -953,6 +953,24 @@ v1 targets local trusted IPC. Encryption, when present, is a transport property.
 
 ## 27. Conformance
 
+### 27.0 Assigned-message coverage
+
+EUP v1 assigns exactly 164 message IDs.  `proto-ui-protocol-coverage` emits and
+audits a source-authoritative manifest for every assigned ID.  The current
+honest classification is:
+
+| Status | IDs | Meaning |
+|---|---:|---|
+| `implemented_codec` | 27 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `partial` | 5 | Concrete local path exists; full payload/recovery semantics remain pending |
+| `planned` | 132 | Assigned for the target protocol but not implemented |
+| `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
+
+The manifest records one status, domain, family, and evidence/gap note for every
+assigned ID.  A `planned` entry must not be sent as a concrete codec or counted
+as production capability.  This is completeness auditing for the protocol table,
+not a claim that EUP parity is complete.
+
 A conformant backend:
 
 1. Emits valid envelopes and sequences.

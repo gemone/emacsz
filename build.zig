@@ -1022,6 +1022,50 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&run_runtime_host_abi_conformance.step);
         boundary_step.dependOn(&run_runtime_host_abi_gate.step);
 
+        // Complete assigned-ID coverage is auditable while implementation
+        // status remains intentionally and honestly partial.
+        const protocol_coverage_gen_tool = b.addExecutable(.{
+            .name = "proto-ui-protocol-coverage-gen",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/protocol_coverage_gen.zig"),
+            }),
+        });
+        protocol_coverage_gen_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_protocol_coverage_gen = b.addRunArtifact(protocol_coverage_gen_tool);
+        const protocol_coverage_artifact = run_protocol_coverage_gen.addOutputFileArg(
+            "protocol_coverage.json",
+        );
+        const install_protocol_coverage = b.addInstallFile(
+            protocol_coverage_artifact,
+            "proto-ui/protocol_coverage.json",
+        );
+
+        const protocol_coverage_gate_tool = b.addExecutable(.{
+            .name = "proto-ui-protocol-coverage-gate",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/protocol_coverage_gate.zig"),
+            }),
+        });
+        protocol_coverage_gate_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_protocol_coverage_gate = b.addRunArtifact(protocol_coverage_gate_tool);
+        run_protocol_coverage_gate.addFileArg(protocol_coverage_artifact);
+        run_protocol_coverage_gate.step.dependOn(&run_protocol_coverage_gen.step);
+
+        const protocol_coverage_step = b.step(
+            "proto-ui-protocol-coverage",
+            "Audit implementation coverage for every assigned EUP message ID",
+        );
+        protocol_coverage_step.dependOn(&run_protocol_coverage_gen.step);
+        protocol_coverage_step.dependOn(&install_protocol_coverage.step);
+        protocol_coverage_step.dependOn(&run_protocol_coverage_gate.step);
+
+        boundary_step.dependOn(&install_protocol_coverage.step);
+        boundary_step.dependOn(&run_protocol_coverage_gate.step);
+
         // R2: source-authoritative runtime manifest plus an independent
         // machine-readable gate.  Audit mode succeeds only by reporting
         // unavailability; require mode is deliberately nonzero.
