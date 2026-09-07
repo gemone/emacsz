@@ -68,7 +68,7 @@ const ranges = [_]Range{
     .{ .low = 0x0203, .high = 0x0203, .status = .implemented_codec, .domain = .frame, .family = "frame-update", .note = "atomic header/section codec, Scene apply, replay tests" },
     .{ .low = 0x0204, .high = 0x0205, .status = .implemented_codec, .domain = .frame, .family = "frame-feedback", .note = "presented/dropped codecs and SDL counter feedback conformance; core consumer pending" },
     .{ .low = 0x0206, .high = 0x0206, .status = .implemented_codec, .domain = .frame, .family = "frame-destroy", .note = "frontend and runtime bridge lifecycle conformance" },
-    .{ .low = 0x0207, .high = 0x0207, .status = .planned, .domain = .frame, .family = "frame-geometry", .note = "dedicated geometry message pending" },
+    .{ .low = 0x0207, .high = 0x0207, .status = .implemented_codec, .domain = .frame, .family = "frame-geometry", .note = "outer/content/text/window/body rectangles, Scene state, SDL border query" },
     .{ .low = 0x0208, .high = 0x0208, .status = .implemented_codec, .domain = .frame, .family = "frame-visibility", .note = "state codec, Scene registry, bridge conformance" },
     .{ .low = 0x0209, .high = 0x0209, .status = .implemented_codec, .domain = .frame, .family = "frame-title", .note = "generation-qualified title codec, Scene state, SDL smoke" },
     .{ .low = 0x020a, .high = 0x020a, .status = .planned, .domain = .frame, .family = "frame-icon", .note = "icon resource payload pending" },

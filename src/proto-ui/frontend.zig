@@ -1276,6 +1276,7 @@ pub const Scene = struct {
     fullscreen: ?protocol.FrameFullscreenPayload = null,
     monitor: ?protocol.FrameMonitorPayload = null,
     maximize: ?protocol.FrameMaximizePayload = null,
+    geometry: ?protocol.FrameGeometryPayload = null,
     present: ?PresentHint = null,
     viewport: ?Viewport = null,
     window_tree: ?protocol.WindowTreeSnapshot = null,
@@ -1304,6 +1305,7 @@ pub const Scene = struct {
         self.fullscreen = null;
         self.monitor = null;
         self.maximize = null;
+        self.geometry = null;
         self.windows = .empty;
         self.rows = .empty;
         self.glyph_runs = .empty;
@@ -1394,6 +1396,7 @@ pub const Scene = struct {
             protocol.Message.frame_fullscreen => try self.applyFrameFullscreen(payload),
             protocol.Message.frame_monitor => try self.applyFrameMonitor(payload),
             protocol.Message.frame_maximize => try self.applyFrameMaximize(payload),
+            protocol.Message.frame_geometry => try self.applyFrameGeometry(payload),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.font_define => try self.applyFontDefine(payload),
@@ -1418,6 +1421,7 @@ pub const Scene = struct {
         self.fullscreen = null;
         self.monitor = null;
         self.maximize = null;
+        self.geometry = null;
         self.clearGlyphRuns();
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
@@ -1653,6 +1657,17 @@ pub const Scene = struct {
             frame.generation != maximize.frame_generation)
             return Error.InvalidMessage;
         self.maximize = maximize;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFrameGeometry(self: *Scene, payload: protocol.Payload) Error!void {
+        const geometry = try protocol.decodeFrameGeometry(payload.bytes);
+        try protocol.validateFrameGeometryEnvelope(geometry, payload.envelope);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != geometry.frame_generation)
+            return Error.InvalidMessage;
+        self.geometry = geometry;
         self.stats.control_messages += 1;
     }
 
@@ -2448,6 +2463,29 @@ fn frameMaximizeMessage(
     return message.toOwnedSlice(a);
 }
 
+fn frameGeometryMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    envelope_frame: u32,
+    payload: protocol.FrameGeometryPayload,
+) ![]u8 {
+    var geometry_payload: std.ArrayList(u8) = .empty;
+    defer geometry_payload.deinit(a);
+    try protocol.encodeFrameGeometry(a, payload, &geometry_payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_geometry,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = envelope_frame,
+        .timestamp_ns = sequence,
+    }, geometry_payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
 fn sessionControlMessage(
     a: std.mem.Allocator,
     sequence: u64,
@@ -2511,6 +2549,63 @@ test "scene rejects frame ownership geometry and reserved bytes" {
     try std.testing.expectError(Error.InvalidMessage, scene.apply(flagged));
     try std.testing.expectEqual(@as(u64, 0), scene.stats.frame_updates);
     try std.testing.expectEqual(@as(u64, 2), scene.next_sequence.?);
+}
+
+test "scene owns geometry and enforces sequence and frame identity" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    const geometry = protocol.FrameGeometryPayload{
+        .frame_generation = 1,
+        .outer = .{ .x = 0, .y = 0, .width = 248, .height = 104 },
+        .content = .{ .x = 4, .y = 4, .width = 240, .height = 96 },
+        .text = .{ .x = 4, .y = 4, .width = 240, .height = 96 },
+        .window = .{ .x = 4, .y = 4, .width = 240, .height = 96 },
+        .body = .{ .x = 4, .y = 4, .width = 240, .height = 96 },
+    };
+    const wrong_envelope = try frameGeometryMessage(a, 2, 8, geometry);
+    defer a.free(wrong_envelope);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_envelope));
+
+    const wrong_generation = try frameGeometryMessage(a, 2, 7, b: {
+        var payload = geometry;
+        payload.frame_generation = 2;
+        break :b payload;
+    });
+    defer a.free(wrong_generation);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_generation));
+    try std.testing.expectEqual(@as(u64, 2), scene.next_sequence.?);
+
+    const future = try frameGeometryMessage(a, 4, 7, geometry);
+    defer a.free(future);
+    try std.testing.expectError(Error.InvalidSequence, scene.apply(future));
+
+    const geometry_message = try frameGeometryMessage(a, 2, 7, geometry);
+    defer a.free(geometry_message);
+    try scene.apply(geometry_message);
+    try std.testing.expectEqual(geometry, scene.geometry.?);
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+
+    var destroy: [8]u8 = undefined;
+    std.mem.writeInt(u32, destroy[0..4], 7, .little);
+    std.mem.writeInt(u32, destroy[4..8], 1, .little);
+    var destroy_message: std.ArrayList(u8) = .empty;
+    defer destroy_message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_destroy,
+        .sequence = 3,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 7,
+        .timestamp_ns = 3,
+    }, &destroy, &destroy_message);
+    try scene.apply(destroy_message.items);
+    try std.testing.expect(scene.geometry == null);
 }
 
 test "scene replacement is allocation atomic" {

@@ -94,6 +94,11 @@ SDL bridge now encodes and validates real `FRAME_PRESENTED` counter data from a
 rendered frame plus a deterministic superseded-frame drop record; core
 consumption and pacing remain pending.
 
+W12f-g adds `FRAME_GEOMETRY` v1 for outer, content, text, window, and body
+rectangles with containment validation.  The SDL bridge consumes Scene geometry
+and queries real window border sizes; core-owned platform placement and resize
+migration remain pending.
+
 W12e adds a bounded adapter-owned resource payload cache with LRU eviction and
 strict wire contracts for `RESOURCE_REQUEST` and `RESOURCE_EVICT`.  The cache
 accepts at most 32 entries, 4096 bytes per payload, and 16 KiB total; existing

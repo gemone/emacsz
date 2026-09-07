@@ -78,6 +78,7 @@ pub const Message = struct {
     pub const frame_decorations: u16 = 0x0214;
     pub const frame_scale: u16 = 0x020f;
     pub const frame_fullscreen: u16 = 0x020b;
+    pub const frame_geometry: u16 = 0x0207;
     pub const frame_monitor: u16 = 0x020e;
     pub const frame_maximize: u16 = 0x020c;
     pub const resource_request: u16 = 0x0510;
@@ -1171,6 +1172,26 @@ pub const FrameMaximizePayload = struct {
     frame_generation: u32,
 };
 
+pub const GeometryRect = struct {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+};
+
+pub const FrameGeometryPayload = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    frame_generation: u32,
+    outer: GeometryRect,
+    content: GeometryRect,
+    text: GeometryRect,
+    window: GeometryRect,
+    body: GeometryRect,
+    reserved_tail: [8]u8 = .{ 0, 0, 0, 0, 0, 0, 0, 0 },
+};
+
 pub const PresentDamageKind = enum(u8) {
     none = 0,
     initial = 1,
@@ -2096,6 +2117,114 @@ pub fn decodeFrameDropped(data: []const u8) Error!FrameDroppedPayload {
     };
     try validateFrameDropped(payload);
     return payload;
+}
+
+fn containsGeometryRect(outer: GeometryRect, inner: GeometryRect) bool {
+    const outer_right = @as(i64, outer.x) + outer.width;
+    const outer_bottom = @as(i64, outer.y) + outer.height;
+    const inner_right = @as(i64, inner.x) + inner.width;
+    const inner_bottom = @as(i64, inner.y) + inner.height;
+    return inner.x >= outer.x and inner.y >= outer.y and
+        inner_right <= outer_right and inner_bottom <= outer_bottom;
+}
+
+fn validGeometryRect(rect: GeometryRect) bool {
+    return rect.width > 0 and rect.height > 0 and
+        @as(i64, rect.x) + rect.width <= std.math.maxInt(i32) and
+        @as(i64, rect.y) + rect.height <= std.math.maxInt(i32);
+}
+
+fn validateFrameGeometry(payload: FrameGeometryPayload) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or payload.reserved != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0))
+        return Error.InvalidMessage;
+    if (payload.frame_generation == 0) return Error.InvalidMessage;
+    const rects = [_]GeometryRect{ payload.outer, payload.content, payload.text, payload.window, payload.body };
+    for (rects) |rect| {
+        if (!validGeometryRect(rect)) return Error.InvalidMessage;
+    }
+    if (!containsGeometryRect(payload.outer, payload.content) or
+        !containsGeometryRect(payload.content, payload.text) or
+        !containsGeometryRect(payload.content, payload.window) or
+        !containsGeometryRect(payload.window, payload.body))
+        return Error.InvalidMessage;
+}
+
+fn encodeGeometryRect(a: std.mem.Allocator, rect: GeometryRect, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    var word: [4]u8 = undefined;
+    inline for (.{ rect.x, rect.y, rect.width, rect.height }) |value| {
+        std.mem.writeInt(u32, &word, @bitCast(value), .little);
+        try out.appendSlice(a, &word);
+    }
+}
+
+pub fn encodeFrameGeometry(
+    a: std.mem.Allocator,
+    payload: FrameGeometryPayload,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameGeometry(payload);
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &bytes, payload.schema, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, payload.flags);
+    try out.append(a, payload.reserved);
+    var word: [4]u8 = undefined;
+    std.mem.writeInt(u32, &word, payload.frame_generation, .little);
+    try out.appendSlice(a, &word);
+    inline for (.{ payload.outer, payload.content, payload.text, payload.window, payload.body }) |rect| {
+        try encodeGeometryRect(a, rect, out);
+    }
+    try out.appendSlice(a, &payload.reserved_tail);
+}
+
+pub fn decodeFrameGeometry(data: []const u8) Error!FrameGeometryPayload {
+    if (data.len != 96) return Error.InvalidTable;
+    const payload = FrameGeometryPayload{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .frame_generation = std.mem.readInt(u32, data[4..8], .little),
+        .outer = .{
+            .x = @bitCast(std.mem.readInt(u32, data[8..12], .little)),
+            .y = @bitCast(std.mem.readInt(u32, data[12..16], .little)),
+            .width = @bitCast(std.mem.readInt(u32, data[16..20], .little)),
+            .height = @bitCast(std.mem.readInt(u32, data[20..24], .little)),
+        },
+        .content = .{
+            .x = @bitCast(std.mem.readInt(u32, data[24..28], .little)),
+            .y = @bitCast(std.mem.readInt(u32, data[28..32], .little)),
+            .width = @bitCast(std.mem.readInt(u32, data[32..36], .little)),
+            .height = @bitCast(std.mem.readInt(u32, data[36..40], .little)),
+        },
+        .text = .{
+            .x = @bitCast(std.mem.readInt(u32, data[40..44], .little)),
+            .y = @bitCast(std.mem.readInt(u32, data[44..48], .little)),
+            .width = @bitCast(std.mem.readInt(u32, data[48..52], .little)),
+            .height = @bitCast(std.mem.readInt(u32, data[52..56], .little)),
+        },
+        .window = .{
+            .x = @bitCast(std.mem.readInt(u32, data[56..60], .little)),
+            .y = @bitCast(std.mem.readInt(u32, data[60..64], .little)),
+            .width = @bitCast(std.mem.readInt(u32, data[64..68], .little)),
+            .height = @bitCast(std.mem.readInt(u32, data[68..72], .little)),
+        },
+        .body = .{
+            .x = @bitCast(std.mem.readInt(u32, data[72..76], .little)),
+            .y = @bitCast(std.mem.readInt(u32, data[76..80], .little)),
+            .width = @bitCast(std.mem.readInt(u32, data[80..84], .little)),
+            .height = @bitCast(std.mem.readInt(u32, data[84..88], .little)),
+        },
+    };
+    if (std.mem.readInt(u32, data[88..92], .little) != 0 or
+        std.mem.readInt(u32, data[92..96], .little) != 0) return Error.InvalidTable;
+    try validateFrameGeometry(payload);
+    return payload;
+}
+
+pub fn validateFrameGeometryEnvelope(payload: FrameGeometryPayload, envelope: Envelope) Error!void {
+    try validateFrameGeometry(payload);
+    if (envelope.frame_id == 0) return Error.InvalidMessage;
 }
 
 pub fn encodeResourceRequests(a: std.mem.Allocator, requests: []const ResourceRequest, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
@@ -3025,6 +3154,50 @@ test "frame maximize payload enforces strict wire form" {
         .flags = FrameMaximizeFlags.horizontal,
         .frame_generation = 0,
     }, &bytes));
+}
+
+test "frame geometry payload enforces nested rectangles" {
+    const a = std.testing.allocator;
+    const payload = FrameGeometryPayload{
+        .frame_generation = 2,
+        .outer = .{ .x = 0, .y = 0, .width = 260, .height = 116 },
+        .content = .{ .x = 10, .y = 10, .width = 240, .height = 96 },
+        .text = .{ .x = 12, .y = 12, .width = 236, .height = 92 },
+        .window = .{ .x = 12, .y = 12, .width = 236, .height = 92 },
+        .body = .{ .x = 13, .y = 13, .width = 234, .height = 90 },
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFrameGeometry(a, payload, &bytes);
+    try std.testing.expectEqual(@as(usize, 96), bytes.items.len);
+    try std.testing.expectEqual(payload, try decodeFrameGeometry(bytes.items));
+    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, bytes.items[0..2], .little));
+    try std.testing.expectEqual(payload.frame_generation, std.mem.readInt(u32, bytes.items[4..8], .little));
+    try std.testing.expectEqual(payload.content.x, @as(i32, @bitCast(std.mem.readInt(u32, bytes.items[24..28], .little))));
+    try std.testing.expectEqual(payload.window.height, @as(i32, @bitCast(std.mem.readInt(u32, bytes.items[68..72], .little))));
+    try std.testing.expect(std.mem.allEqual(u8, bytes.items[88..96], 0));
+
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameGeometry(bytes.items));
+    bytes.items[0] = 1;
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameGeometry(bytes.items));
+    bytes.items[3] = 0;
+    bytes.items[90] = 1;
+    try std.testing.expectError(Error.InvalidTable, decodeFrameGeometry(bytes.items));
+    bytes.items[90] = 0;
+    var invalid = payload;
+    invalid.text.width = 300;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameGeometry(a, invalid, &bytes));
+    invalid = payload;
+    invalid.frame_generation = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameGeometry(a, invalid, &bytes));
+    invalid = payload;
+    invalid.body.width = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameGeometry(a, invalid, &bytes));
+    invalid = payload;
+    invalid.body.width = std.math.maxInt(i32);
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameGeometry(a, invalid, &bytes));
 }
 
 test "frame presented payload enforces strict wire form" {

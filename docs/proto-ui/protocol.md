@@ -273,6 +273,35 @@ none, initial, cursor, text, region, viewport, and unchanged presents. These
 codecs and SDL counter conformance are implemented; core consumption, adaptive
 pacing decisions, and GPU timestamps remain pending.
 
+#### Frame geometry state
+
+`FRAME_GEOMETRY` (`0x0207`) carries the complete frame geometry model in a
+fixed 96-byte payload. All fields are little-endian; rectangles use logical
+pixels in one outer-frame coordinate space.
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 2 | schema | `1` |
+| 2 | 1 | flags | `0` |
+| 3 | 1 | reserved | `0` |
+| 4 | 4 | frame_generation | nonzero |
+| 8 | 16 | outer | x, y, width, height as `i32` |
+| 24 | 16 | content | x, y, width, height as `i32` |
+| 40 | 16 | text | x, y, width, height as `i32` |
+| 56 | 16 | window | x, y, width, height as `i32` |
+| 72 | 16 | body | x, y, width, height as `i32` |
+| 88 | 8 | reserved | zero |
+
+Signed `i32` fields use two's-complement representation on the wire. Every
+rectangle must have positive width and height, its right and bottom
+edges must not exceed `INT32_MAX`, and the rectangles must nest as
+`outer ⊇ content ⊇ {text, window}` and `window ⊇ body`. `Scene`
+stores the complete geometry atomically and clears it on frame destruction,
+authenticated resync, or scene teardown. The diagnostic SDL bridge reads that
+Scene state and queries real window border sizes, but does not yet move or resize
+the platform window. Emacs/runtime ownership of the authoritative values and
+live resize migration remain pending.
+
 ## 11. Window messages
 
 | ID | Name | Direction | Payload | Semantics |

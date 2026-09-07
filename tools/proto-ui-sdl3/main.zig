@@ -66,6 +66,7 @@ extern fn SDL_GetWindowOpacity(window: *SDL_Window) f32;
 extern fn SDL_SetWindowBordered(window: *SDL_Window, bordered: bool) bool;
 extern fn SDL_GetWindowFlags(window: *SDL_Window) SDLWindowFlags;
 extern fn SDL_GetWindowDisplayScale(window: *SDL_Window) f32;
+extern fn SDL_GetWindowBordersSize(window: *SDL_Window, top: *c_int, left: *c_int, bottom: *c_int, right: *c_int) bool;
 extern fn SDL_SetWindowFullscreen(window: *SDL_Window, fullscreen: bool) bool;
 extern fn SDL_SyncWindow(window: *SDL_Window) bool;
 extern fn SDL_GetDisplayForWindow(window: *SDL_Window) SDL_DisplayID;
@@ -2336,6 +2337,31 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (scene.control.stage != .active or scene.next_sequence.? != 16)
         return error.RuntimeBridgeControlSequenceInvalid;
 
+    var geometry_payload: std.ArrayList(u8) = .empty;
+    defer geometry_payload.deinit(gpa);
+    try protocol.encodeFrameGeometry(gpa, .{
+        .frame_generation = bridge.eup_frame_generation,
+        .outer = .{ .x = 0, .y = 0, .width = 248, .height = 104 },
+        .content = .{ .x = 4, .y = 4, .width = 240, .height = 96 },
+        .text = .{ .x = 4, .y = 4, .width = 240, .height = 96 },
+        .window = .{ .x = 4, .y = 4, .width = 240, .height = 96 },
+        .body = .{ .x = 4, .y = 4, .width = 240, .height = 96 },
+    }, &geometry_payload);
+    var geometry: std.ArrayList(u8) = .empty;
+    defer geometry.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_geometry,
+        .sequence = 16,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, geometry_payload.items, &geometry);
+    try scene.apply(geometry.items);
+    if (scene.geometry == null or scene.geometry.?.content.width != 240)
+        return error.RuntimeBridgeGeometryInvalid;
+
     if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
         scene.glyph_runs.items.len != 1 or scene.cursor == null)
         return error.RuntimeBridgeSceneInvalid;
@@ -2362,6 +2388,12 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         return sdlFail("SDL_CreateWindow");
     defer SDL_DestroyWindow(window);
     SDL_SetWindowTitle(window, scene.title.?.ptr);
+    var border_top: c_int = 0;
+    var border_left: c_int = 0;
+    var border_bottom: c_int = 0;
+    var border_right: c_int = 0;
+    const borders_supported = SDL_GetWindowBordersSize(window, &border_top, &border_left, &border_bottom, &border_right) and
+        border_top >= 0 and border_left >= 0 and border_bottom >= 0 and border_right >= 0;
     var opacity_supported = false;
     if (scene.alpha) |alpha_state| {
         const requested_opacity = @as(f32, @floatFromInt(alpha_state.active_opacity)) / 10000.0;
@@ -2573,8 +2605,9 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
+            borders_supported,
             opacity_supported,
             decorations_supported,
             scale_supported,

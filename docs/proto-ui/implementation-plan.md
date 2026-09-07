@@ -73,11 +73,12 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P6-prep reverse input bridge | Implemented for bounded SDL key/text intents through PureRuntimeHostV1 delivery/result/completion; not keymap/command parity |
 | P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
 | P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
-| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 49 implemented codecs, 3 partial, 112 planned; prevents an unclassified or overclaimed protocol table |
+| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 50 implemented codecs, 3 partial, 111 planned; prevents an unclassified or overclaimed protocol table |
 | Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
 | P12-prep EUP session setup | Implemented standard HELLO/HELLO_ACK/SESSION_READY/READY_ACK codecs and bounded state machine; not yet wired to EPXL transport |
 | P12-prep EUP session control | Implemented all eight standard-control codecs, automatic PONG, Scene integration, and EPXL transport for every control, including fatal VERSION_MISMATCH |
 | P12-prep frame presentation feedback | Implemented `FRAME_PRESENTED`/`FRAME_DROPPED` codecs and SDL counter conformance; core consumption and adaptive pacing pending |
+| P12-prep frame geometry | Implemented `FRAME_GEOMETRY` codec, nested-rectangle validation, Scene state, and SDL border query; core-owned resize migration pending |
 
 | P9-prep authoritative geometry | Implemented in runtime bridge with host rectangle caching and frame/window/damage bounds; real monitor/DPI events pending |
 | P10-prep face-bound debug runs | Implemented with GLYPH_RUN v2, exact live-face validation, and colored SDL fallback; not production face/shaping parity |
@@ -3129,7 +3130,7 @@ bounds, and observation validation in `runtime_bridge`; real monitor and scale
 events remain pending.
 Protocol coverage preparation adds `proto-ui-protocol-coverage`: every assigned
 EUP ID now has one honest status and evidence/gap classification.  The current
-counts are 49 implemented codecs, 3 partial, and 112 planned.
+counts are 50 implemented codecs, 3 partial, and 111 planned.
 P12 session-setup preparation adds concrete standard EUP HELLO, HELLO_ACK,
 SESSION_READY, and READY_ACK codecs with a bounded frontend state machine.  The
 authenticated EPXL handshake remains the current transport path.
@@ -3173,6 +3174,9 @@ P12 presentation-feedback preparation adds little-endian `FRAME_PRESENTED` and
 `FRAME_DROPPED` payloads.  The SDL bridge encodes and validates real
 presented-frame counter data and a deterministic superseded-frame drop record.
 Core consumption, adaptive pacing, and GPU timestamps remain pending.
+P12 geometry preparation adds `FRAME_GEOMETRY` v1 for outer, content, text,
+window, and body rectangles.  The Scene validates containment and the SDL
+bridge queries real border sizes; core-owned resize migration remains pending.
 P12 maximize preparation adds `FRAME_MAXIMIZE` v1 for horizontal and vertical
 axis flags.  The diagnostic SDL bridge applies and restores both-axis
 maximization; single-axis mapping and redisplay adaptation remain pending.
