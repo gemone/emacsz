@@ -2,10 +2,19 @@
 
 const std = @import("std");
 const frontend = @import("frontend.zig");
+const protocol = @import("protocol.zig");
 
 pub const SDL_EVENT_KEY_DOWN: c_uint = 0x300;
 pub const SDL_EVENT_KEY_UP: c_uint = 0x301;
 pub const SDL_EVENT_TEXT_INPUT: c_uint = 0x303;
+pub const SDL_EVENT_WINDOW_FOCUS_GAINED: c_uint = 0x20e;
+pub const SDL_EVENT_WINDOW_FOCUS_LOST: c_uint = 0x20f;
+pub const SDL_EVENT_WINDOW_CLOSE_REQUESTED: c_uint = 0x210;
+pub const SDL_EVENT_WINDOW_MOVED: c_uint = 0x205;
+pub const SDL_EVENT_WINDOW_RESIZED: c_uint = 0x206;
+pub const SDL_EVENT_WINDOW_MINIMIZED: c_uint = 0x209;
+pub const SDL_EVENT_WINDOW_MAXIMIZED: c_uint = 0x20a;
+pub const SDL_EVENT_WINDOW_RESTORED: c_uint = 0x20b;
 
 pub const SDL_SCANCODE_COPY: i32 = 6;
 pub const SDL_SCANCODE_BACKSPACE: i32 = 42;
@@ -204,6 +213,46 @@ pub fn duplicatesTextInput(event: FullKeyEvent) bool {
         event.logicalKey()[0] >= 0x20 and event.logicalKey()[0] <= 0x7e;
 }
 
+pub fn translateFocus(
+    event_type: c_uint,
+    frame_id: u32,
+    sdl_window_id: u32,
+) ?protocol.FocusEvent {
+    const phase: protocol.FocusPhase = switch (event_type) {
+        SDL_EVENT_WINDOW_FOCUS_GAINED => .gained,
+        SDL_EVENT_WINDOW_FOCUS_LOST => .lost,
+        else => return null,
+    };
+    return .{ .phase = phase, .frame_id = frame_id, .sdl_window_id = sdl_window_id };
+}
+
+pub fn translateWindow(
+    event_type: c_uint,
+    sdl_window_id: u32,
+    data1: i32,
+    data2: i32,
+) ?protocol.WindowRequest {
+    return switch (event_type) {
+        SDL_EVENT_WINDOW_CLOSE_REQUESTED => .{ .kind = .close, .sdl_window_id = sdl_window_id },
+        SDL_EVENT_WINDOW_RESIZED => .{
+            .kind = .resize,
+            .sdl_window_id = sdl_window_id,
+            .width = data1,
+            .height = data2,
+        },
+        SDL_EVENT_WINDOW_MOVED => .{
+            .kind = .move,
+            .sdl_window_id = sdl_window_id,
+            .x = data1,
+            .y = data2,
+        },
+        SDL_EVENT_WINDOW_MINIMIZED => .{ .kind = .minimize, .sdl_window_id = sdl_window_id },
+        SDL_EVENT_WINDOW_MAXIMIZED => .{ .kind = .maximize, .sdl_window_id = sdl_window_id },
+        SDL_EVENT_WINDOW_RESTORED => .{ .kind = .restore, .sdl_window_id = sdl_window_id },
+        else => null,
+    };
+}
+
 /// Enforces the facts-profile reverse-input sequencing contract: exactly one
 /// input may be in flight, ACKs must match that sequence, and sequence zero is
 /// reserved. The EPXL framing layer remains responsible for wire encoding.
@@ -251,6 +300,8 @@ pub const TranslatedEvent = union(enum) {
     text: TextEvent,
     pointer: frontend.PointerInput,
     wheel: frontend.WheelInput,
+    focus: protocol.FocusEvent,
+    window: protocol.WindowRequest,
 };
 
 pub const TextSupport = enum { ascii, unicode };
@@ -298,6 +349,20 @@ pub const Queue = struct {
         self.length += 1;
     }
 
+    pub fn pushFocus(self: *Queue, event: protocol.FocusEvent) !void {
+        protocol.validateFocusEvent(event) catch return error.InvalidFocusEvent;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .focus = event };
+        self.length += 1;
+    }
+
+    pub fn pushWindow(self: *Queue, event: protocol.WindowRequest) !void {
+        protocol.validateWindowRequest(event) catch return error.InvalidWindowRequest;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .window = event };
+        self.length += 1;
+    }
+
     pub fn pushText(self: *Queue, text: []const u8) !void {
         if (!validTextInput(text)) return error.InvalidInputText;
         if (self.length == queue_capacity) return error.InputQueueFull;
@@ -320,6 +385,13 @@ pub const Queue = struct {
     }
 };
 
+/// Both negotiation sides must agree before SDL state is translated.  This
+/// prevents a stale/unconfigured journal from accepting an effective capability
+/// and prevents an advertised journal from bypassing the session capability set.
+pub fn platformEventsNegotiated(journal: *const DeliveryJournal, effective: bool) bool {
+    return effective and journal.platform_negotiated;
+}
+
 /// Bounded frontend-owned delivery state. The queue preserves intent order;
 /// `pending` retains the one EPXL intent whose transport ACK has not arrived,
 /// including across a reconnect. Retry attempts use the original wire sequence.
@@ -332,6 +404,7 @@ pub const DeliveryJournal = struct {
     retry_armed: bool = false,
     pointer_active: bool = false,
     key_v2_negotiated: bool = false,
+    platform_negotiated: bool = false,
 
     pub const Sent = struct {
         sequence: u64,
@@ -376,6 +449,45 @@ pub const DeliveryJournal = struct {
     pub fn pushWheel(self: *DeliveryJournal, event: frontend.WheelInput) !void {
         if (self.pointer_active) return error.PointerSessionActive;
         try self.queue.pushWheel(event);
+    }
+
+    pub fn pushFocus(self: *DeliveryJournal, event: protocol.FocusEvent) !void {
+        if (!self.platform_negotiated) return error.PlatformCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushFocus(event);
+    }
+
+    pub fn pushWindow(self: *DeliveryJournal, event: protocol.WindowRequest) !void {
+        if (!self.platform_negotiated) return error.PlatformCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushWindow(event);
+    }
+
+    /// SDL poll paths use this for incidental platform observations.  The
+    /// effective capability and journal flag must agree; an unconfigured or
+    /// stale journal ignores the event instead of failing an unrelated smoke.
+    pub fn pushFocusIfNegotiated(self: *DeliveryJournal, effective: bool, event: protocol.FocusEvent) !bool {
+        if (!effective or !self.platform_negotiated) return false;
+        self.pushFocus(event) catch |err| switch (err) {
+            error.PlatformCapabilityNotNegotiated,
+            error.PointerSessionActive,
+            error.InputQueueFull,
+            error.InvalidFocusEvent,
+            => return false,
+        };
+        return true;
+    }
+
+    pub fn pushWindowIfNegotiated(self: *DeliveryJournal, effective: bool, event: protocol.WindowRequest) !bool {
+        if (!effective or !self.platform_negotiated) return false;
+        self.pushWindow(event) catch |err| switch (err) {
+            error.PlatformCapabilityNotNegotiated,
+            error.PointerSessionActive,
+            error.InputQueueFull,
+            error.InvalidWindowRequest,
+            => return false,
+        };
+        return true;
     }
 
     pub fn pushText(self: *DeliveryJournal, text: []const u8) !void {
@@ -883,4 +995,79 @@ test "full key v2 delivery is capability gated and ordered" {
     const second = (try journal.take()).?;
     try std.testing.expectEqual(@as(u64, 2), second.sequence);
     try std.testing.expectEqual(frontend.KeyAction.cursor_right, second.event.key.action);
+}
+
+test "SDL focus and window translation preserves identity and order" {
+    const gained = translateFocus(SDL_EVENT_WINDOW_FOCUS_GAINED, 7, 9).?;
+    try std.testing.expectEqual(protocol.FocusPhase.gained, gained.phase);
+    try std.testing.expectEqual(@as(u32, 7), gained.frame_id);
+    try std.testing.expectEqual(@as(u32, 9), gained.sdl_window_id);
+    try std.testing.expectEqual(protocol.FocusPhase.lost, translateFocus(SDL_EVENT_WINDOW_FOCUS_LOST, 7, 9).?.phase);
+    try std.testing.expect(translateFocus(0x201, 7, 9) == null);
+
+    const resize = translateWindow(SDL_EVENT_WINDOW_RESIZED, 9, 480, 320).?;
+    try std.testing.expectEqual(protocol.WindowRequestKind.resize, resize.kind);
+    try std.testing.expectEqual(@as(i32, 480), resize.width);
+    try std.testing.expectEqual(@as(i32, 320), resize.height);
+    const move = translateWindow(SDL_EVENT_WINDOW_MOVED, 9, -1, 2).?;
+    try std.testing.expectEqual(protocol.WindowRequestKind.move, move.kind);
+    try std.testing.expectEqual(@as(i32, -1), move.x);
+    try std.testing.expectEqual(protocol.WindowRequestKind.close, translateWindow(SDL_EVENT_WINDOW_CLOSE_REQUESTED, 9, 0, 0).?.kind);
+    try std.testing.expectEqual(protocol.WindowRequestKind.minimize, translateWindow(SDL_EVENT_WINDOW_MINIMIZED, 9, 0, 0).?.kind);
+    try std.testing.expectEqual(protocol.WindowRequestKind.maximize, translateWindow(SDL_EVENT_WINDOW_MAXIMIZED, 9, 0, 0).?.kind);
+    try std.testing.expectEqual(protocol.WindowRequestKind.restore, translateWindow(SDL_EVENT_WINDOW_RESTORED, 9, 0, 0).?.kind);
+    try std.testing.expect(translateWindow(0x201, 9, 0, 0) == null);
+}
+
+test "platform delivery is capability gated without invalid side effects" {
+    var journal: DeliveryJournal = .{};
+    const focus = translateFocus(SDL_EVENT_WINDOW_FOCUS_GAINED, 7, 9).?;
+    const close = translateWindow(SDL_EVENT_WINDOW_CLOSE_REQUESTED, 9, 0, 0).?;
+    const bad_resize = translateWindow(SDL_EVENT_WINDOW_RESIZED, 9, 0, 320).?;
+    try std.testing.expectError(error.PlatformCapabilityNotNegotiated, journal.pushFocus(focus));
+    try std.testing.expectError(error.PlatformCapabilityNotNegotiated, journal.pushWindow(close));
+    try std.testing.expectEqual(@as(usize, 0), journal.queue.length);
+    journal.platform_negotiated = true;
+    try std.testing.expectError(error.InvalidWindowRequest, journal.pushWindow(bad_resize));
+    try std.testing.expectEqual(@as(usize, 0), journal.queue.length);
+    try journal.pushFocus(focus);
+    try journal.pushWindow(close);
+    try journal.pushKey(.{ .action = .cursor_right });
+    const first = (try journal.take()).?;
+    try std.testing.expectEqual(@as(u64, 1), first.sequence);
+    try std.testing.expectEqual(protocol.FocusPhase.gained, first.event.focus.phase);
+    try std.testing.expectError(error.InputInFlight, journal.take());
+    try std.testing.expect(journal.acknowledge(1));
+    const second = (try journal.take()).?;
+    try std.testing.expect(journal.acknowledge(2));
+    const third = (try journal.take()).?;
+    try std.testing.expect(journal.acknowledge(3));
+    try std.testing.expectEqual(protocol.WindowRequestKind.close, second.event.window.kind);
+    try std.testing.expectEqual(frontend.KeyAction.cursor_right, third.event.key.action);
+}
+
+test "platform SDL ingestion requires journal and effective agreement" {
+    var journal: DeliveryJournal = .{};
+    const focus = translateFocus(SDL_EVENT_WINDOW_FOCUS_GAINED, 7, 9).?;
+    const close = translateWindow(SDL_EVENT_WINDOW_CLOSE_REQUESTED, 9, 0, 0).?;
+    try std.testing.expect(!platformEventsNegotiated(&journal, true));
+    try std.testing.expect(!platformEventsNegotiated(&journal, false));
+    try std.testing.expect(!try journal.pushFocusIfNegotiated(true, focus));
+    try std.testing.expect(!try journal.pushWindowIfNegotiated(true, close));
+    try std.testing.expectEqual(@as(usize, 0), journal.queue.length);
+
+    journal.platform_negotiated = true;
+    try std.testing.expect(platformEventsNegotiated(&journal, true));
+    try std.testing.expect(!platformEventsNegotiated(&journal, false));
+    try std.testing.expect(try journal.pushFocusIfNegotiated(true, focus));
+    try std.testing.expect(try journal.pushWindowIfNegotiated(true, close));
+    try std.testing.expectEqual(@as(usize, 2), journal.queue.length);
+
+    // An out-of-profile incidental resize is ignored, not treated as a fatal
+    // error by the SDL poll loop.
+    const oversized = translateWindow(SDL_EVENT_WINDOW_RESIZED, 9, protocol.max_window_size + 1, 1).?;
+    try std.testing.expect(!try journal.pushWindowIfNegotiated(true, oversized));
+    try std.testing.expectEqual(@as(usize, 2), journal.queue.length);
+    journal.queue.clear();
+    try std.testing.expectEqual(@as(usize, 0), journal.queue.length);
 }

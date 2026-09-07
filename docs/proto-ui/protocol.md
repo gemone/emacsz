@@ -1324,8 +1324,47 @@ transported and ACKed but has no text-selection semantics.
 If the transport ACK is lost before disconnect, a frontend may retry the same
 bounded intent with its original reverse-input sequence after authenticated
 resync.  The publisher must remain idempotent at the sequence boundary: a
-duplicate `KEY_EVENT`, `TEXT_INPUT`, `POINTER_EVENT`, or `WHEEL_EVENT` sequence must not be applied twice, and a
+duplicate `KEY_EVENT`, `TEXT_INPUT`, `POINTER_EVENT`, `WHEEL_EVENT`,
+`FOCUS_EVENT`, or `WINDOW_REQUEST` sequence must not be applied twice, and a
 new sequence may not advance until the prior sequence has been acknowledged.
+
+W9m defines two strict, negotiated platform observation payloads.
+
+`FOCUS_EVENT` (`0x0606`) is exactly 20 bytes:
+
+```text
+schema           u16 (1, little endian)
+phase            u8  (0=lost, 1=gained)
+reserved         u8  (zero)
+frame_id         u32 (nonzero adapter identity)
+sdl_window_id    u32 (nonzero SDL WindowID)
+reserved         u64 (zero)
+```
+
+`WINDOW_REQUEST` (`0x0607`) is exactly 32 bytes:
+
+```text
+schema           u16 (1, little endian)
+request          u8  (1=close, 2=resize, 3=move, 4=fullscreen,
+                      5=fullscreen-desktop, 6=maximize, 7=minimize,
+                      8=restore)
+reserved         u8  (zero)
+sdl_window_id    u32 (nonzero SDL WindowID)
+width            i32 (resize: 1..16384; otherwise zero)
+height           i32 (resize: 1..16384; otherwise zero)
+x                i32 (move: signed; otherwise zero)
+y                i32 (move: signed; otherwise zero)
+reserved         u64 (zero)
+```
+
+Unknown request values are invalid. Values that are not meaningful to the
+request must be zero, so close/fullscreen/maximize/minimize/restore carry no
+geometry and resize cannot carry position. Truncated, trailing, contradictory,
+reserved, and zero-identity payloads reject before queue mutation. These
+events are translated by the SDL frontend only when `platform.focus_window_events`
+is effective. They use the ordinary one-in-flight EPXL reverse-input sequence
+and ACK discipline; the smoke intentionally does not destroy Emacs in response
+to a synthetic close request.
 
 #### Security and limits
 

@@ -66,6 +66,8 @@ pub const Message = struct {
     pub const text_input: u16 = 0x0601;
     pub const pointer_event: u16 = 0x0602;
     pub const wheel_event: u16 = 0x0603;
+    pub const focus_event: u16 = 0x0606;
+    pub const window_request: u16 = 0x0607;
     pub const extension: u16 = 0xf000;
     pub const invalid: u16 = 0xffff;
 };
@@ -1063,6 +1065,135 @@ pub const FrameFocusPayload = struct {
     frame_generation: u32,
     focused: bool,
 };
+
+pub const FocusPhase = enum(u8) {
+    lost = 0,
+    gained = 1,
+};
+
+/// Fixed FOCUS_EVENT v1: schema, phase, frame/SDL-window identity, then eight
+/// reserved bytes.  The IDs are adapter-side protocol identities, not Emacs
+/// terminal handles.
+pub const FocusEvent = struct {
+    phase: FocusPhase,
+    frame_id: u32,
+    sdl_window_id: u32,
+};
+
+pub const focus_event_size: usize = 20;
+pub const focus_schema: u16 = 1;
+
+pub fn validateFocusEvent(payload: FocusEvent) Error!void {
+    if (payload.frame_id == 0 or payload.sdl_window_id == 0) return Error.InvalidMessage;
+}
+
+pub fn encodeFocusEvent(a: std.mem.Allocator, payload: FocusEvent, out: *std.ArrayList(u8)) !void {
+    try validateFocusEvent(payload);
+    var bytes: [focus_event_size]u8 = @splat(0);
+    std.mem.writeInt(u16, bytes[0..2], focus_schema, .little);
+    bytes[2] = @intFromEnum(payload.phase);
+    std.mem.writeInt(u32, bytes[4..8], payload.frame_id, .little);
+    std.mem.writeInt(u32, bytes[8..12], payload.sdl_window_id, .little);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeFocusEvent(data: []const u8) Error!FocusEvent {
+    if (data.len != focus_event_size) return Error.InvalidTable;
+    if (std.mem.readInt(u16, data[0..2], .little) != focus_schema) return Error.InvalidTable;
+    if (data[3] != 0 or !std.mem.allEqual(u8, data[12..20], 0)) return Error.InvalidReserved;
+    const payload: FocusEvent = .{
+        .phase = switch (data[2]) {
+            0 => .lost,
+            1 => .gained,
+            else => return Error.InvalidTable,
+        },
+        .frame_id = std.mem.readInt(u32, data[4..8], .little),
+        .sdl_window_id = std.mem.readInt(u32, data[8..12], .little),
+    };
+    try validateFocusEvent(payload);
+    return payload;
+}
+
+pub const WindowRequestKind = enum(u8) {
+    close = 1,
+    resize = 2,
+    move = 3,
+    fullscreen = 4,
+    fullscreen_desktop = 5,
+    maximize = 6,
+    minimize = 7,
+    restore = 8,
+};
+
+pub const max_window_size: i32 = 16384;
+pub const window_request_size: usize = 32;
+pub const window_request_schema: u16 = 1;
+
+pub const WindowRequest = struct {
+    kind: WindowRequestKind,
+    sdl_window_id: u32,
+    width: i32 = 0,
+    height: i32 = 0,
+    x: i32 = 0,
+    y: i32 = 0,
+};
+
+pub fn validateWindowRequest(payload: WindowRequest) Error!void {
+    if (payload.sdl_window_id == 0) return Error.InvalidMessage;
+    switch (payload.kind) {
+        .resize => {
+            if (payload.width < 1 or payload.width > max_window_size or
+                payload.height < 1 or payload.height > max_window_size) return Error.InvalidMessage;
+            if (payload.x != 0 or payload.y != 0) return Error.InvalidMessage;
+        },
+        .move => {
+            if (payload.width != 0 or payload.height != 0) return Error.InvalidMessage;
+        },
+        else => {
+            if (payload.width != 0 or payload.height != 0 or
+                payload.x != 0 or payload.y != 0) return Error.InvalidMessage;
+        },
+    }
+}
+
+pub fn encodeWindowRequest(a: std.mem.Allocator, payload: WindowRequest, out: *std.ArrayList(u8)) !void {
+    try validateWindowRequest(payload);
+    var bytes: [window_request_size]u8 = @splat(0);
+    std.mem.writeInt(u16, bytes[0..2], window_request_schema, .little);
+    bytes[2] = @intFromEnum(payload.kind);
+    std.mem.writeInt(u32, bytes[4..8], payload.sdl_window_id, .little);
+    std.mem.writeInt(i32, bytes[8..12], payload.width, .little);
+    std.mem.writeInt(i32, bytes[12..16], payload.height, .little);
+    std.mem.writeInt(i32, bytes[16..20], payload.x, .little);
+    std.mem.writeInt(i32, bytes[20..24], payload.y, .little);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeWindowRequest(data: []const u8) Error!WindowRequest {
+    if (data.len != window_request_size) return Error.InvalidTable;
+    if (std.mem.readInt(u16, data[0..2], .little) != window_request_schema) return Error.InvalidTable;
+    if (data[3] != 0 or !std.mem.allEqual(u8, data[24..32], 0)) return Error.InvalidReserved;
+    const payload: WindowRequest = .{
+        .kind = switch (data[2]) {
+            1 => .close,
+            2 => .resize,
+            3 => .move,
+            4 => .fullscreen,
+            5 => .fullscreen_desktop,
+            6 => .maximize,
+            7 => .minimize,
+            8 => .restore,
+            else => return Error.InvalidTable,
+        },
+        .sdl_window_id = std.mem.readInt(u32, data[4..8], .little),
+        .width = std.mem.readInt(i32, data[8..12], .little),
+        .height = std.mem.readInt(i32, data[12..16], .little),
+        .x = std.mem.readInt(i32, data[16..20], .little),
+        .y = std.mem.readInt(i32, data[20..24], .little),
+    };
+    try validateWindowRequest(payload);
+    return payload;
+}
 
 fn validateFrameStateIdentity(frame_id: u32, frame_generation: u32) Error!void {
     if (frame_id == 0 or frame_generation == 0) return Error.InvalidMessage;
@@ -2439,4 +2570,100 @@ test "resource snapshot rejects malformed boundaries identity and duplicates" {
     malformed[8] = 0;
     malformed[10] = 0;
     try std.testing.expectError(Error.InvalidResource, decodeResourceSnapshot(a, &malformed));
+}
+
+test "focus event codec enforces fixed schema identity and reserved bytes" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFocusEvent(a, .{ .phase = .gained, .frame_id = 7, .sdl_window_id = 9 }, &bytes);
+    try std.testing.expectEqual(focus_event_size, bytes.items.len);
+    const decoded = try decodeFocusEvent(bytes.items);
+    try std.testing.expectEqual(FocusPhase.gained, decoded.phase);
+    try std.testing.expectEqual(@as(u32, 7), decoded.frame_id);
+    try std.testing.expectEqual(@as(u32, 9), decoded.sdl_window_id);
+    try std.testing.expectEqual(@as(u16, focus_schema), std.mem.readInt(u16, bytes.items[0..2], .little));
+    try std.testing.expectEqual(@as(u8, 0), bytes.items[3]);
+    try std.testing.expect(std.mem.allEqual(u8, bytes.items[12..], 0));
+
+    try std.testing.expectError(Error.InvalidTable, decodeFocusEvent(bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFocusEvent(bytes.items));
+    var invalid = try decodeFocusEvent(bytes.items[0 .. bytes.items.len - 1]);
+    invalid.frame_id = 0;
+    try std.testing.expectError(Error.InvalidMessage, validateFocusEvent(invalid));
+    invalid.frame_id = 7;
+    invalid.sdl_window_id = 0;
+    try std.testing.expectError(Error.InvalidMessage, validateFocusEvent(invalid));
+
+    var wire: [focus_event_size]u8 = @splat(0);
+    std.mem.writeInt(u16, wire[0..2], focus_schema, .little);
+    wire[2] = @intFromEnum(FocusPhase.lost);
+    std.mem.writeInt(u32, wire[4..8], 7, .little);
+    std.mem.writeInt(u32, wire[8..12], 9, .little);
+    wire[2] = 2;
+    try std.testing.expectError(Error.InvalidTable, decodeFocusEvent(&wire));
+    wire[2] = 1;
+    wire[3] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeFocusEvent(&wire));
+    wire[3] = 0;
+    wire[12] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeFocusEvent(&wire));
+    try std.testing.expectError(Error.InvalidMessage, encodeFocusEvent(a, .{ .phase = .lost, .frame_id = 0, .sdl_window_id = 9 }, &bytes));
+}
+
+test "window request codec enforces bounded requests and payload agreement" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    const resize: WindowRequest = .{ .kind = .resize, .sdl_window_id = 4, .width = 1, .height = max_window_size };
+    try encodeWindowRequest(a, resize, &bytes);
+    try std.testing.expectEqual(window_request_size, bytes.items.len);
+    try std.testing.expectEqual(WindowRequestKind.resize, (try decodeWindowRequest(bytes.items)).kind);
+    try std.testing.expectEqual(@as(i32, 1), (try decodeWindowRequest(bytes.items)).width);
+    try std.testing.expectEqual(@as(i32, max_window_size), (try decodeWindowRequest(bytes.items)).height);
+
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeWindowRequest(bytes.items));
+    try std.testing.expectError(Error.InvalidTable, decodeWindowRequest(bytes.items[0 .. bytes.items.len - 2]));
+
+    var oversized = resize;
+    oversized.width = max_window_size + 1;
+    try std.testing.expectError(Error.InvalidMessage, validateWindowRequest(oversized));
+    oversized.width = 1;
+    oversized.height = 0;
+    try std.testing.expectError(Error.InvalidMessage, validateWindowRequest(oversized));
+    oversized.height = max_window_size;
+    oversized.x = 1;
+    try std.testing.expectError(Error.InvalidMessage, validateWindowRequest(oversized));
+
+    const move: WindowRequest = .{ .kind = .move, .sdl_window_id = 4, .x = -3, .y = 4 };
+    bytes.clearRetainingCapacity();
+    try encodeWindowRequest(a, move, &bytes);
+    try std.testing.expectEqual(move, try decodeWindowRequest(bytes.items));
+    var contradictory = move;
+    contradictory.width = 1;
+    try std.testing.expectError(Error.InvalidMessage, validateWindowRequest(contradictory));
+
+    const close: WindowRequest = .{ .kind = .close, .sdl_window_id = 4 };
+    bytes.clearRetainingCapacity();
+    try encodeWindowRequest(a, close, &bytes);
+    try std.testing.expectEqual(close, try decodeWindowRequest(bytes.items));
+    var invalid_close = close;
+    invalid_close.y = -1;
+    try std.testing.expectError(Error.InvalidMessage, validateWindowRequest(invalid_close));
+
+    var wire: [window_request_size]u8 = @splat(0);
+    std.mem.writeInt(u16, wire[0..2], window_request_schema, .little);
+    wire[2] = @intFromEnum(WindowRequestKind.close);
+    std.mem.writeInt(u32, wire[4..8], 4, .little);
+    wire[2] = 9;
+    try std.testing.expectError(Error.InvalidTable, decodeWindowRequest(&wire));
+    wire[2] = @intFromEnum(WindowRequestKind.close);
+    wire[3] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeWindowRequest(&wire));
+    wire[3] = 0;
+    wire[24] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeWindowRequest(&wire));
+    try std.testing.expectError(Error.InvalidMessage, encodeWindowRequest(a, .{ .kind = .close, .sdl_window_id = 0 }, &bytes));
 }

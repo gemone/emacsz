@@ -224,6 +224,7 @@ zig build -Dproto-ui=true -Dsdl3-frontend=true
 zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-frame-smoke
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-unicode-input-smoke
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-focus-window-smoke
 ```
 
 Additional facts, input, clipboard, recovery, renderer, and interactive smoke

@@ -311,8 +311,22 @@ remain out of scope.
 W8b-a adds a persistent public-fact bridge: the SDL loop writes one translated
 action to an atomic local file, waits for consumption, polls the republished
 public facts, and rebuilds the scene. This is not persistent EPXL input and not
-a full keyboard surface; modifiers, Unicode, pointer, focus, keymaps, and
+a full keyboard surface; modifiers, Unicode, pointer, keymaps, and
 redisplay-owned sessions remain pending.
+
+### 10.2 Platform focus and window requests
+
+W9m adds optional `platform.focus_window_events`. SDL focus gained/lost maps to
+`FOCUS_EVENT`; close, resized, moved, minimized, maximized, and restored window
+events map to the corresponding strict `WINDOW_REQUEST`. The adapter supplies a
+nonzero protocol frame ID and preserves the nonzero SDL WindowID. Unknown SDL
+window events remain unobserved. Without effective negotiation, translation is
+rejected before queue mutation.
+
+Platform intents join the existing bounded delivery queue and use the same
+one-in-flight EPXL ordering and exact-sequence ACK discipline as input. The
+opt-in synthetic smoke verifies focus gained, resize, and close order. It never
+turns a synthetic close into Emacs destruction.
 
 ### 10.2 Mouse and wheel
 

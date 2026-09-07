@@ -944,6 +944,14 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_input_translate_step.dependOn(&run_sdl3_input_translate_smoke.step);
 
+        const run_sdl3_focus_window_smoke = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_focus_window_smoke.addArg("--focus-window-smoke");
+        const sdl3_focus_window_step = b.step(
+            "sdl3-focus-window-smoke",
+            "Translate synthetic SDL focus, resize, and close requests into ordered platform intents",
+        );
+        sdl3_focus_window_step.dependOn(&run_sdl3_focus_window_smoke.step);
+
         const run_sdl3_clipboard_smoke = b.addRunArtifact(sdl3_frontend);
         run_sdl3_clipboard_smoke.addArg("--clipboard-smoke");
         const sdl3_clipboard_step = b.step(

@@ -79,6 +79,7 @@ extern fn SDL_RenderTexture(
 ) bool;
 extern fn SDL_PollEvent(event: *SDL_Event) bool;
 extern fn SDL_PushEvent(event: *SDL_Event) bool;
+extern fn SDL_GetWindowID(window: *SDL_Window) u32;
 extern fn SDL_Delay(ms: c_uint) void;
 extern fn SDL_StartTextInput(window: *SDL_Window) bool;
 extern fn SDL_GetKeyName(key: c_uint) ?[*:0]const u8;
@@ -154,6 +155,15 @@ const SDL_MouseWheelEvent = extern struct {
     integer_y: i32,
 };
 
+const SDL_WindowEvent = extern struct {
+    type: c_uint,
+    reserved: c_uint,
+    timestamp: u64,
+    window_id: u32,
+    data1: i32,
+    data2: i32,
+};
+
 const SDL_Event = extern union {
     type: c_uint,
     key: SDL_KeyboardEvent,
@@ -161,8 +171,22 @@ const SDL_Event = extern union {
     motion: SDL_MouseMotionEvent,
     button: SDL_MouseButtonEvent,
     wheel: SDL_MouseWheelEvent,
+    window: SDL_WindowEvent,
     padding: [128]u8,
 };
+
+fn windowEvent(event_type: c_uint, window_id: u32, data1: i32, data2: i32) SDL_Event {
+    var event: SDL_Event = undefined;
+    event.window = .{
+        .type = event_type,
+        .reserved = 0,
+        .timestamp = 0,
+        .window_id = window_id,
+        .data1 = data1,
+        .data2 = data2,
+    };
+    return event;
+}
 
 fn keyboardEvent(scancode: i32, down: bool, modifiers: u16) SDL_Event {
     var event: SDL_Event = undefined;
@@ -289,7 +313,7 @@ const SDL_FRect = extern struct {
     h: f32,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, emacs_interactive, clipboard, emacs_clipboard_unicode };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, emacs_clipboard_unicode };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -388,6 +412,70 @@ fn runInputTranslationSmoke() !void {
     );
 }
 
+fn runFocusWindowSmoke() !void {
+    if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
+    defer SDL_Quit();
+    const window = SDL_CreateWindow(
+        "Emacs Proto-UI Focus Window Translation",
+        480,
+        320,
+        SDL_WINDOW_RESIZABLE,
+    ) orelse return sdlFail("SDL_CreateWindow");
+    defer SDL_DestroyWindow(window);
+    const sdl_window_id = SDL_GetWindowID(window);
+    if (sdl_window_id == 0) return error.InvalidSdlWindowId;
+
+    var journal: input_policy.DeliveryJournal = .{};
+    journal.platform_negotiated = true;
+    if (!input_policy.platformEventsNegotiated(&journal, true)) return error.CapabilityJournalMismatch;
+    var synthetic = [_]SDL_Event{
+        windowEvent(input_policy.SDL_EVENT_WINDOW_FOCUS_GAINED, sdl_window_id, 0, 0),
+        windowEvent(input_policy.SDL_EVENT_WINDOW_RESIZED, sdl_window_id, 480, 320),
+        windowEvent(input_policy.SDL_EVENT_WINDOW_CLOSE_REQUESTED, sdl_window_id, 0, 0),
+    };
+    for (&synthetic) |*event| {
+        if (!SDL_PushEvent(event)) return sdlFail("SDL_PushEvent");
+    }
+
+    var received: usize = 0;
+    const expected_received: usize = 3;
+    var polls: usize = 0;
+    while (received < expected_received and polls < 256) : (polls += 1) {
+        var event: SDL_Event = undefined;
+        if (!SDL_PollEvent(&event)) {
+            SDL_Delay(1);
+            continue;
+        }
+        if (input_policy.translateFocus(event.type, 0x4567, event.window.window_id)) |focus| {
+            try journal.pushFocus(focus);
+            received += 1;
+        } else if (input_policy.translateWindow(
+            event.type,
+            event.window.window_id,
+            event.window.data1,
+            event.window.data2,
+        )) |request| {
+            try journal.pushWindow(request);
+            received += 1;
+        }
+    }
+    if (received != expected_received) return error.PlatformTranslationIncomplete;
+    if (journal.queue.length != expected_received) return error.PlatformQueueCount;
+
+    const first = journal.queue.items[0].focus;
+    const second = journal.queue.items[1].window;
+    const third = journal.queue.items[2].window;
+    const ordered = first.phase == .gained and first.frame_id == 0x4567 and
+        first.sdl_window_id == sdl_window_id and
+        second.kind == .resize and second.width == 480 and second.height == 320 and
+        third.kind == .close and third.width == 0 and third.height == 0;
+    if (!ordered) return error.PlatformIntentOrderMismatch;
+    std.debug.print(
+        "sdl3-focus-window-smoke: {{\"kind\":\"sdl3-focus-window-smoke\",\"window_id\":{d},\"received\":{d},\"order\":[\"focus-gained\",\"resize\",\"close-request\"],\"emacs_destroyed\":false,\"result\":\"pass\"}}\n",
+        .{ sdl_window_id, received },
+    );
+}
+
 fn writeTranslatedEvent(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -414,6 +502,10 @@ fn writeTranslatedEvent(
         // does not pretend to support them.
         .pointer => {},
         .wheel => {},
+        // Platform observation is EPXL-only by design; there is no inherited
+        // Emacs core fallback and no local mutation.
+        .focus => {},
+        .window => {},
     }
 }
 
@@ -1051,6 +1143,14 @@ fn sendDeliveryEvent(
             try frontend.encodeWheelInput(gpa, wheel, &payload);
             break :blk protocol.Message.wheel_event;
         },
+        .focus => |focus| blk: {
+            try protocol.encodeFocusEvent(gpa, focus, &payload);
+            break :blk protocol.Message.focus_event;
+        },
+        .window => |request| blk: {
+            try protocol.encodeWindowRequest(gpa, request, &payload);
+            break :blk protocol.Message.window_request;
+        },
     };
     var input_message: std.ArrayList(u8) = .empty;
     defer input_message.deinit(gpa);
@@ -1232,6 +1332,8 @@ fn awaitFrameAck(
                 var full_key: ?input_policy.FullKeyEvent = null;
                 const is_pointer = payload.envelope.message_type == protocol.Message.pointer_event;
                 const is_wheel = payload.envelope.message_type == protocol.Message.wheel_event;
+                const is_focus = payload.envelope.message_type == protocol.Message.focus_event;
+                const is_window = payload.envelope.message_type == protocol.Message.window_request;
                 var copy_action = false;
                 if (is_key_v2) {
                     full_key = try input_policy.decodeFullKeyEvent(payload.bytes);
@@ -1244,7 +1346,9 @@ fn awaitFrameAck(
                     (is_key and capabilities.contains(.input_key_bounded) and
                         (!copy_action or capabilities.contains(.clipboard_ascii_bounded))) or
                     (is_pointer and capabilities.contains(.input_pointer_bounded)) or
-                    (is_wheel and capabilities.contains(.input_wheel_line));
+                    (is_wheel and capabilities.contains(.input_wheel_line)) or
+                    (is_focus and capabilities.contains(.platform_focus_window_events)) or
+                    (is_window and capabilities.contains(.platform_focus_window_events));
                 if (!input_allowed or
                     payload.envelope.flags & protocol.Flags.requires_ack == 0 or
                     payload.envelope.ack_sequence != 0 or
@@ -1278,6 +1382,32 @@ fn awaitFrameAck(
                     try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "pointer", value);
                 } else if (is_key_v2) {
                     try writeKeyV2Artifact(gpa, io, input_path, payload.envelope.sequence, full_key.?);
+                } else if (is_focus) {
+                    const event = try protocol.decodeFocusEvent(payload.bytes);
+                    const phase = if (event.phase == .gained) "focus-gained" else "focus-lost";
+                    const value = try std.fmt.allocPrint(
+                        gpa,
+                        "{{\"phase\":\"{s}\",\"frame_id\":{d},\"sdl_window_id\":{d},\"execution\":\"observed\"}}",
+                        .{ phase, event.frame_id, event.sdl_window_id },
+                    );
+                    defer gpa.free(value);
+                    try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "platform-focus", value);
+                } else if (is_window) {
+                    const event = try protocol.decodeWindowRequest(payload.bytes);
+                    const value = try std.fmt.allocPrint(
+                        gpa,
+                        "{{\"request\":\"{s}\",\"sdl_window_id\":{d},\"width\":{d},\"height\":{d},\"x\":{d},\"y\":{d},\"execution\":\"observed\"}}",
+                        .{
+                            @tagName(event.kind),
+                            event.sdl_window_id,
+                            event.width,
+                            event.height,
+                            event.x,
+                            event.y,
+                        },
+                    );
+                    defer gpa.free(value);
+                    try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "platform-window", value);
                 } else {
                     const event = try frontend.decodeKeyEvent(payload.bytes);
                     const action_name: []const u8 = switch (event.action) {
@@ -1374,6 +1504,9 @@ fn runLiveFrontend(
     var zero_token: live.Token = [_]u8{0} ** live.token_len;
     if (!live.tokenEql(&zero_token, &ready.token)) return error.InvalidHandshake;
     const negotiated = try negotiateFrontendSide(gpa, &reader.interface, &writer.interface);
+    syncDeliveryCapabilities(delivery, negotiated.effective);
+    if (negotiated.effective.contains(.platform_focus_window_events) != delivery.platform_negotiated)
+        return error.CapabilityJournalMismatch;
 
     if (config.mode == .emacs_epxl_unicode_input) {
         if (!negotiated.effective.contains(.input_text_ascii) or
@@ -1385,7 +1518,6 @@ fn runLiveFrontend(
         );
     }
 
-    delivery.key_v2_negotiated = negotiated.effective.contains(.input_key_full_v2);
     if (config.mode == .emacs_epxl_key_v2) {
         if (!negotiated.effective.contains(.input_key_bounded) or
             !negotiated.effective.contains(.input_key_full_v2))
@@ -1472,6 +1604,8 @@ fn inputEventAllowed(capabilities: capability.Set, event: input_policy.Translate
         .key_v2 => capabilities.contains(.input_key_full_v2),
         .pointer => capabilities.contains(.input_pointer_bounded),
         .wheel => capabilities.contains(.input_wheel_line),
+        .focus => capabilities.contains(.platform_focus_window_events),
+        .window => capabilities.contains(.platform_focus_window_events),
     };
 }
 
@@ -1520,10 +1654,16 @@ fn clipboardSupportFor(capabilities: capability.Set) ?input_policy.TextSupport {
         .ascii;
 }
 
+fn syncDeliveryCapabilities(delivery: *input_policy.DeliveryJournal, capabilities: capability.Set) void {
+    delivery.key_v2_negotiated = capabilities.contains(.input_key_full_v2);
+    delivery.platform_negotiated = capabilities.contains(.platform_focus_window_events);
+}
+
 fn pollEpxlInteractiveInput(
     delivery: *input_policy.DeliveryJournal,
     config: *const Config,
     retained: *RetainedFrame,
+    scene: *frontend.Scene,
     gate: *renderer_policy.FrameGate,
     capabilities: capability.Set,
     dirty: *bool,
@@ -1573,6 +1713,53 @@ fn pollEpxlInteractiveInput(
                     if (input_policy.translateText(event.text.text, support)) |text| {
                         try delivery.pushTextAllowed(text.bytes(), support);
                         dirty.* = true;
+                    }
+                }
+            },
+            input_policy.SDL_EVENT_WINDOW_FOCUS_GAINED,
+            input_policy.SDL_EVENT_WINDOW_FOCUS_LOST,
+            => {
+                if (input_policy.platformEventsNegotiated(
+                    delivery,
+                    capabilities.contains(.platform_focus_window_events),
+                )) {
+                    if (scene.frame_header) |header| {
+                        if (input_policy.translateFocus(
+                            event.type,
+                            header.frame_id,
+                            event.window.window_id,
+                        )) |focus| {
+                            if (try delivery.pushFocusIfNegotiated(
+                                capabilities.contains(.platform_focus_window_events),
+                                focus,
+                            )) dirty.* = true;
+                        }
+                    }
+                }
+            },
+            input_policy.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
+            input_policy.SDL_EVENT_WINDOW_RESIZED,
+            input_policy.SDL_EVENT_WINDOW_MOVED,
+            input_policy.SDL_EVENT_WINDOW_MINIMIZED,
+            input_policy.SDL_EVENT_WINDOW_MAXIMIZED,
+            input_policy.SDL_EVENT_WINDOW_RESTORED,
+            => {
+                if (input_policy.platformEventsNegotiated(
+                    delivery,
+                    capabilities.contains(.platform_focus_window_events),
+                )) {
+                    if (scene.frame_header != null) {
+                        if (input_policy.translateWindow(
+                            event.type,
+                            event.window.window_id,
+                            event.window.data1,
+                            event.window.data2,
+                        )) |request| {
+                            if (try delivery.pushWindowIfNegotiated(
+                                capabilities.contains(.platform_focus_window_events),
+                                request,
+                            )) dirty.* = true;
+                        }
                     }
                 }
             },
@@ -1880,13 +2067,16 @@ fn runEpxlInteractiveFrontend(
     if (ready.kind != .server_ready or !live.tokenEql(&zero_token, &ready.token))
         return error.InvalidHandshake;
     const negotiated = try negotiateFrontendSide(gpa, &reader.interface, &writer.interface);
+    syncDeliveryCapabilities(delivery, negotiated.effective);
+    if (negotiated.effective.contains(.platform_focus_window_events) != delivery.platform_negotiated)
+        return error.CapabilityJournalMismatch;
 
     if (config.mode == .emacs_clipboard_unicode) {
         if (!negotiated.effective.contains(.clipboard_ascii_bounded) or
             !negotiated.effective.contains(.clipboard_text_unicode))
             return error.ClipboardCapabilityNotNegotiated;
         std.debug.print(
-            "sdl3-clipboard-unicode-smoke: {{\"kind\":\"sdl3-clipboard-unicode-smoke\",\"negotiated\":{{\"clipboard.ascii_bounded\":true,\"clipboard.text_unicode\":true}},\"result\":\"negotiated\"}}\n",
+            "sdl3-clipboard-unicode-smoke: {{\"kind\":\"sdl3-clipboard-unicode-smoke\",\"negotiated\":{{\"clipboard.ascii_bounded\":true,\"clipboard.text_unicode\":true,\"platform_focus_window_events\":true}},\"result\":\"negotiated\"}}\n",
             .{},
         );
     }
@@ -1977,7 +2167,7 @@ fn runEpxlInteractiveFrontend(
         var release = mouseButtonEvent(120, 2, SDL_EVENT_MOUSE_BUTTON_UP, false);
         if (!SDL_PushEvent(&release)) return sdlFail("SDL_PushEvent");
     }
-    try pollEpxlInteractiveInput(delivery, config, &retained_frame, &frame_gate, negotiated.effective, &input_dirty);
+    try pollEpxlInteractiveInput(delivery, config, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty);
     try deliveryAllowed(delivery, negotiated.effective);
 
     var quit = false;
@@ -2009,7 +2199,7 @@ fn runEpxlInteractiveFrontend(
         }
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
-        pollEpxlInteractiveInput(delivery, config, &retained_frame, &frame_gate, negotiated.effective, &input_dirty) catch |err| switch (err) {
+        pollEpxlInteractiveInput(delivery, config, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty) catch |err| switch (err) {
             error.InteractiveQuit => quit = true,
             else => return err,
         };
@@ -2819,6 +3009,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.clipboard_unicode_publisher = false;
         } else if (std.mem.eql(u8, arg, "--input-translate-smoke")) {
             config.mode = .input_translation;
+        } else if (std.mem.eql(u8, arg, "--focus-window-smoke")) {
+            config.mode = .focus_window_translation;
         } else if (std.mem.eql(u8, arg, "--facts")) {
             try setString(gpa, &config.facts_path, args.next() orelse return error.MissingFactsPath);
         } else {
@@ -2841,6 +3033,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         if (config.token_path.len == 0) return error.MissingTokenPath;
         config.token = try readTokenFile(gpa, io, config.token_path);
         try runPublisher(gpa, io, &config);
+        return;
+    }
+    if (config.mode == .focus_window_translation) {
+        try runFocusWindowSmoke();
         return;
     }
 
@@ -3006,6 +3202,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .publisher => unreachable,
         .emacs => unreachable,
         .input_translation => unreachable,
+        .focus_window_translation => unreachable,
         .emacs_interactive => unreachable,
         .clipboard => unreachable,
         .emacs_epxl => try runEmacsEpxlSession(gpa, io, &config, 1),

@@ -1852,6 +1852,34 @@ Acceptance:
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-edit-smoke
 ```
 
+#### W9m-b — Bounded focus/window event observation (approved)
+
+Goal: observe platform focus and window-manager requests without adding an
+inherited Emacs core integration or allowing the frontend to mutate Emacs.
+
+Tasks:
+
+1. Define strict fixed schemas for assigned `FOCUS_EVENT=0x0606` and
+   `WINDOW_REQUEST=0x0607`.
+2. Map SDL focus gained/lost and close/resize/move/minimize/maximize/restore
+   events to bounded protocol intents.
+3. Gate queue insertion and EPXL delivery on optional
+   `platform.focus_window_events`.
+4. Preserve one-in-flight EPXL ordering with existing reverse input.
+5. Add a synthetic SDL smoke for focus gained, resize, and close ordering.
+
+Implemented limits: this is observation/request transport only. The smoke does
+not destroy Emacs for a synthetic close request. No terminal registration,
+`output_proto`, host contract, fullscreen event mapping, window-manager
+execution, inherited C/Lisp bridge, or full desktop parity is enabled.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-focus-window-smoke
+```
+
 ### W10 — GPU renderer path
 
 Goal: add optional acceleration without making it required.
