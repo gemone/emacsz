@@ -105,10 +105,8 @@ pub fn parseText(gpa: std.mem.Allocator, bytes: []const u8) !TextLines {
     const body = if (std.mem.endsWith(u8, bytes, "\n")) bytes[0 .. bytes.len - 1] else bytes;
     var iterator = std.mem.splitScalar(u8, body, '\n');
     while (iterator.next()) |line| {
-        if (count == max_text_lines or line.len > max_text_columns) return error.InvalidTextFacts;
-        for (line) |byte| {
-            if (byte < 0x20 or byte > 0x7e) return error.InvalidTextFacts;
-        }
+        if (count == max_text_lines or
+            !frontend.validBoundedUtf8Line(line, max_text_columns)) return error.InvalidTextFacts;
         lines[count] = line;
         total += line.len;
         count += 1;
@@ -147,10 +145,7 @@ pub fn parseSnapshot(gpa: std.mem.Allocator, bytes: []const u8) !Snapshot {
         wire.window_height > wire.frame_height) return error.InvalidFrameFacts;
     if (wire.text.len > max_text_lines) return error.InvalidTextFacts;
     for (wire.text) |line| {
-        if (line.len > max_text_columns) return error.InvalidTextFacts;
-        for (line) |byte| {
-            if (byte < 0x20 or byte > 0x7e) return error.InvalidTextFacts;
-        }
+        if (!frontend.validBoundedUtf8Line(line, max_text_columns)) return error.InvalidTextFacts;
     }
     if (wire.cursor.line < 1 or wire.cursor.line > max_text_lines or
         wire.cursor.column < 0 or wire.cursor.column > max_text_columns)
@@ -602,6 +597,13 @@ test "wire snapshot carries validated public text lines" {
     try std.testing.expectEqual(@as(i32, 8), scene.cursor.?.x);
     try std.testing.expectEqual(@as(i32, 0), scene.cursor.?.y);
     try std.testing.expectError(error.InvalidTextFacts, parseText(a, "bad\n\x00"));
+    try std.testing.expectError(error.InvalidTextFacts, parseText(a, "bad\n\xff\xfe"));
+    var unicode = try parseText(a, "你好é\u{0301}\n");
+    defer unicode.deinit(a);
+    var unicode_scene = frontend.Scene.init(a);
+    defer unicode_scene.deinit();
+    try appendWireSnapshot(a, parsed, unicode.lines, .{ .line = 1, .column = 2 }, .{ .start_line = 1, .line_count = 1 }, &unicode_scene, &messages);
+    try std.testing.expectEqualStrings("你好é\u{0301}", unicode_scene.text.items[0].bytes);
 
     const narrow = FrameFacts{ .frame_width = 9, .frame_height = 90, .window_width = 9, .window_height = 75 };
     try std.testing.expectError(error.InvalidCursorFacts, appendWireSnapshot(a, narrow, text.lines, .{ .line = 1, .column = 1 }, .{ .start_line = 1, .line_count = 2 }, &scene, &messages));

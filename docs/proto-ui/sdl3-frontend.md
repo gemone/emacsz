@@ -277,15 +277,17 @@ Required fields include physical key, logical key, platform key, Unicode text, m
 The frontend does not resolve Emacs key bindings.
 
 W8a implements the first bounded translation policy: pressed, unmodified
-backspace and cursor-direction keys map to facts-profile `KEY_EVENT`; printable
-ASCII `TEXT_INPUT` is copied into a fixed queue. Key release, repeat, modifiers,
-empty/non-printable/oversized text, and queue overflow are rejected. A synthetic
-SDL event smoke verifies this path.
+backspace and cursor-direction keys map to facts-profile `KEY_EVENT`; bounded
+UTF-8 `TEXT_INPUT` is copied into a fixed queue. Key release, repeat, modifiers,
+empty/NUL/invalid-UTF-8/oversized text, and queue overflow are rejected.
+W8g adds negotiated `input.text_unicode`; an ASCII-only negotiated set still
+accepts printable ASCII and rejects non-ASCII without queue side effects. A
+synthetic SDL event smoke verifies this path.
 
 W11a implements the first clipboard capture path: Ctrl+V reads SDL clipboard
 text, accepts only bounded printable ASCII through the input queue, and frees
-SDL-owned text on every path. Unicode, rich text, MIME selection, ownership
-events, and external clipboard targets remain pending.
+SDL-owned text on every path. Unicode clipboard, rich text, MIME selection,
+ownership events, and external clipboard targets remain pending.
 
 W11b implements the opposite bounded smoke path: Ctrl+C publishes a first-line
 Emacs buffer artifact after `kill-ring-save`; SDL3 accepts only non-empty,

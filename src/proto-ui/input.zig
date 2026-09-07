@@ -68,6 +68,20 @@ pub const TranslatedEvent = union(enum) {
     wheel: frontend.WheelInput,
 };
 
+pub const TextSupport = enum { ascii, unicode };
+
+pub fn isAsciiText(text: []const u8) bool {
+    for (text) |byte| {
+        if (byte < 0x20 or byte > 0x7e) return false;
+    }
+    return true;
+}
+
+pub fn validTextInput(text: []const u8) bool {
+    return text.len > 0 and text.len <= max_text_bytes and
+        frontend.validBoundedUtf8Text(text, max_text_bytes);
+}
+
 pub const Queue = struct {
     items: [queue_capacity]TranslatedEvent = undefined,
     length: usize = 0,
@@ -93,10 +107,7 @@ pub const Queue = struct {
     }
 
     pub fn pushText(self: *Queue, text: []const u8) !void {
-        if (text.len == 0 or text.len > max_text_bytes) return error.InvalidInputText;
-        for (text) |byte| {
-            if (byte < 0x20 or byte > 0x7e) return error.InvalidInputText;
-        }
+        if (!validTextInput(text)) return error.InvalidInputText;
         if (self.length == queue_capacity) return error.InputQueueFull;
         var translated: TextEvent = .{ .length = text.len };
         @memcpy(translated.buffer[0..text.len], text);
@@ -173,6 +184,17 @@ pub const DeliveryJournal = struct {
         try self.queue.pushText(text);
     }
 
+    pub fn pushTextAllowed(
+        self: *DeliveryJournal,
+        text: []const u8,
+        support: TextSupport,
+    ) !void {
+        if (!validTextInput(text)) return error.InvalidInputText;
+        if (!isAsciiText(text) and support != .unicode)
+            return error.TextCapabilityNotNegotiated;
+        try self.pushText(text);
+    }
+
     pub fn take(self: *DeliveryJournal) !?Sent {
         if (self.pending == null) {
             self.pending = self.queue.pop() orelse return null;
@@ -236,13 +258,11 @@ pub fn translateKey(
     return .{ .action = action, .state = 1, .modifiers = 0 };
 }
 
-pub fn translateText(source: ?[*:0]const u8) ?TextEvent {
+pub fn translateText(source: ?[*:0]const u8, support: TextSupport) ?TextEvent {
     const source_text = source orelse return null;
     const text = std.mem.span(source_text);
-    if (text.len == 0 or text.len > max_text_bytes) return null;
-    for (text) |byte| {
-        if (byte < 0x20 or byte > 0x7e) return null;
-    }
+    if (!validTextInput(text)) return null;
+    if (!isAsciiText(text) and support != .unicode) return null;
     var translated: TextEvent = .{ .length = text.len };
     @memcpy(translated.buffer[0..text.len], text);
     return translated;
@@ -284,6 +304,40 @@ test "validates bounded clipboard copy payload" {
     try std.testing.expect(!validClipboardText(""));
     try std.testing.expect(!validClipboardText("a" ** 121));
     try std.testing.expect(!validClipboardText("bad\npayload"));
+}
+
+test "text support validates ASCII, Unicode, and hostile bytes" {
+    try std.testing.expect(isAsciiText("Emacs"));
+    try std.testing.expect(!isAsciiText("你好"));
+    try std.testing.expect(validTextInput("你好"));
+    try std.testing.expect(validTextInput("e\u{0301}"));
+    try std.testing.expect(!validTextInput(""));
+    try std.testing.expect(!validTextInput("a\x00b"));
+    try std.testing.expect(!validTextInput("a" ** 121));
+    try std.testing.expect(!validTextInput("\xff\xfe"));
+
+    try std.testing.expect(translateText("X", .ascii) != null);
+    try std.testing.expect(translateText("你好", .unicode) != null);
+    try std.testing.expect(translateText("你好", .ascii) == null);
+    try std.testing.expect(translateText(null, .unicode) == null);
+    try std.testing.expect(translateText("", .unicode) == null);
+    try std.testing.expect(translateText("\xff\xfe", .unicode) == null);
+}
+
+test "delivery gate rejects Unicode without side effects under ASCII mode" {
+    var journal: DeliveryJournal = .{};
+    try journal.pushTextAllowed("ASCII", .ascii);
+    try std.testing.expectEqual(@as(usize, 1), journal.queue.length);
+    try std.testing.expectError(
+        error.TextCapabilityNotNegotiated,
+        journal.pushTextAllowed("你好", .ascii),
+    );
+    try std.testing.expectEqual(@as(usize, 1), journal.queue.length);
+    try std.testing.expectEqualStrings("ASCII", journal.queue.items[0].text.bytes());
+
+    try journal.pushTextAllowed("你好", .unicode);
+    try std.testing.expectEqual(@as(usize, 2), journal.queue.length);
+    try std.testing.expectEqualStrings("你好", journal.queue.items[1].text.bytes());
 }
 
 test "sender permits one monotonic in-flight input and exact ACK" {
@@ -438,16 +492,18 @@ test "apply ACK accepts only the exact bounded sequence payload" {
     try std.testing.expect(!validApplyAck("7\n7", 7));
 }
 
-test "queue copies and bounds printable text" {
+test "queue copies and bounds UTF-8 text" {
     var queue: Queue = .{};
     try queue.pushText("Emacs");
+    try queue.pushText("你好");
     try queue.pushKey(.{ .action = .cursor_left });
-    try std.testing.expectEqual(@as(usize, 2), queue.length);
+    try std.testing.expectEqual(@as(usize, 3), queue.length);
     try std.testing.expectEqualStrings("Emacs", queue.items[0].text.bytes());
-    try std.testing.expectEqual(frontend.KeyAction.cursor_left, queue.items[1].key.action);
+    try std.testing.expectEqualStrings("你好", queue.items[1].text.bytes());
+    try std.testing.expectEqual(frontend.KeyAction.cursor_left, queue.items[2].key.action);
 
     try std.testing.expectError(error.InvalidInputText, queue.pushText(""));
-    try std.testing.expectError(error.InvalidInputText, queue.pushText("CJK 字"));
+    try std.testing.expectError(error.InvalidInputText, queue.pushText("\xff\xfe"));
     const oversized = "a" ** 121;
     try std.testing.expectError(error.InvalidInputText, queue.pushText(oversized[0..]));
 

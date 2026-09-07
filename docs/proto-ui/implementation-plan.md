@@ -1713,6 +1713,40 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-input-sm
 
 The final scene must contain the applied input marker.
 
+### W8g — Negotiated bounded Unicode text input (approved)
+
+Goal: extend `TEXT_INPUT` from printable ASCII to bounded UTF-8 without
+changing the wire shape, while ASCII-only peers continue to negotiate and run.
+
+Implemented:
+
+1. `TEXT_INPUT` remains `u32 byte_length` plus bytes, but accepts 1..120 valid
+   UTF-8 bytes with no NUL or C0 controls. Encoders and decoders reject empty,
+   oversized, malformed, NUL-bearing, and trailing-byte payloads.
+2. SDL `translateText` and the fixed input queue validate the same bounded
+   UTF-8 rule. Delivery is capability-aware: ASCII needs the effective
+   `input.text_ascii`/Unicode superset; non-ASCII requires effective
+   `input.text_unicode`. Rejected non-ASCII input does not enter the queue.
+3. `input.text_unicode` is optional, negotiable, degraded, and evidenced by
+   `sdl3-epxl-unicode-input-smoke`; `input.text_ascii` remains retained.
+4. The publisher artifact encodes text as ASCII base64 and Emacs decodes it
+   explicitly as UTF-8 before public `insert`; fact/ack writes explicitly use
+   UTF-8. This avoids raw-text coding prompts and file recoding corruption.
+5. Public facts and EUP text lines accept bounded UTF-8 scene text. The smoke
+   asserts the scene contains `你好Emacs Proto-UI`, but the bitmap renderer
+   intentionally skips non-ASCII draw text; no shaping or CJK font parity is
+   claimed.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-input-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-unicode-input-smoke --summary all
+```
+
+This is adapter/protocol frontend behavior. It does not enable `output_proto`,
+register a runtime terminal, or implement IME, shaping, fonts, or keymaps.
+
 ### W9l — Public point and dynamic cursor (approved)
 
 Goal: replace the fixed facts-profile cursor with public Emacs point observation

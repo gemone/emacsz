@@ -78,12 +78,16 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
   sdl3-epxl-input-smoke --summary all
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
+  sdl3-epxl-unicode-input-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
   sdl3-epxl-interactive-smoke --summary all
 ```
 
-These checks cover bounded ASCII text, a few key actions, pointer/wheel
-intents, and refreshed public facts.  They do not provide a full Emacs
-keyboard/keymap/IME input stack.
+These checks cover bounded ASCII text, negotiated bounded Unicode text, a few
+key actions, pointer/wheel intents, and refreshed public facts.  The Unicode
+gate checks scene bytes only; the current bitmap renderer has no CJK shaping or
+font fallback.  They do not provide a full Emacs keyboard/keymap/IME input
+stack.
 
 ## 7. Interpreting failures
 

@@ -223,6 +223,7 @@ zig build -Dproto-ui=true -Dsdl3-frontend=true
 # Run current frontend and real-frame lifecycle smoke tests.
 zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-frame-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-unicode-input-smoke
 ```
 
 Additional facts, input, clipboard, recovery, renderer, and interactive smoke

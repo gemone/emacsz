@@ -42,6 +42,7 @@ pub const Feature = enum {
     frame_facts_profile,
     text_ascii_bounded,
     input_text_ascii,
+    input_text_unicode,
     input_key_bounded,
     input_pointer_bounded,
     input_wheel_line,
@@ -86,6 +87,7 @@ pub const Feature = enum {
             .frame_facts_profile => "frame.facts_profile",
             .text_ascii_bounded => "text.ascii_bounded",
             .input_text_ascii => "input.text_ascii",
+            .input_text_unicode => "input.text_unicode",
             .input_key_bounded => "input.key_bounded",
             .input_pointer_bounded => "input.pointer_bounded",
             .input_wheel_line => "input.wheel_line",
@@ -181,6 +183,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .frame_facts_profile, .status = .degraded, .evidence = "sdl3-epxl-facts-smoke" },
     .{ .feature = .text_ascii_bounded, .status = .degraded, .evidence = "sdl3-epxl-input-smoke" },
     .{ .feature = .input_text_ascii, .status = .degraded, .evidence = "sdl3-epxl-input-smoke" },
+    .{ .feature = .input_text_unicode, .status = .degraded, .evidence = "sdl3-epxl-unicode-input-smoke" },
     .{ .feature = .input_key_bounded, .status = .degraded, .evidence = "sdl3-epxl-edit-smoke" },
     .{ .feature = .input_pointer_bounded, .status = .degraded, .evidence = "sdl3-pointer-smoke" },
     .{ .feature = .input_wheel_line, .status = .degraded, .evidence = "sdl3-wheel-smoke" },
@@ -483,4 +486,24 @@ test "negotiation intersects and enforces required features" {
     left_only.bits[@intFromEnum(Feature.clipboard_ascii_bounded)] = false;
     const effective = try negotiate(left_only, all);
     try std.testing.expect(!effective.effective.contains(.clipboard_ascii_bounded));
+}
+
+test "text Unicode negotiation remains optional alongside ASCII" {
+    const all = backendSupported();
+    const effective = try negotiate(all, all);
+    try std.testing.expect(effective.effective.contains(.input_text_ascii));
+    try std.testing.expect(effective.effective.contains(.input_text_unicode));
+
+    var ascii_only = all;
+    ascii_only.bits[@intFromEnum(Feature.input_text_unicode)] = false;
+    const negotiated = try negotiate(all, ascii_only);
+    try std.testing.expect(negotiated.effective.contains(.input_text_ascii));
+    try std.testing.expect(!negotiated.effective.contains(.input_text_unicode));
+
+    var no_text = all;
+    no_text.bits[@intFromEnum(Feature.input_text_ascii)] = false;
+    no_text.bits[@intFromEnum(Feature.input_text_unicode)] = false;
+    const no_text_negotiated = try negotiate(all, no_text);
+    try std.testing.expect(!no_text_negotiated.effective.contains(.input_text_ascii));
+    try std.testing.expect(!no_text_negotiated.effective.contains(.input_text_unicode));
 }

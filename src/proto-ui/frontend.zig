@@ -84,6 +84,21 @@ pub const TextLineWire = struct {
     line: []const u8,
 };
 
+/// Bounded facts/scene text is UTF-8 and excludes C0 controls (including NUL).
+/// Printable ASCII remains a strict subset; combining marks and CJK are valid.
+pub fn validBoundedUtf8Text(text: []const u8, max_bytes: usize) bool {
+    if (!validBoundedUtf8Line(text, max_bytes)) return false;
+    return text.len != 0;
+}
+
+pub fn validBoundedUtf8Line(text: []const u8, max_bytes: usize) bool {
+    if (text.len > max_bytes) return false;
+    for (text) |byte| {
+        if (byte < 0x20) return false;
+    }
+    return std.unicode.utf8ValidateSlice(text);
+}
+
 pub const TextInput = struct {
     text: []const u8,
 };
@@ -836,6 +851,7 @@ pub fn encodePresentHint(a: std.mem.Allocator, hint: PresentHint, out: *std.Arra
 }
 
 pub fn encodeTextLine(a: std.mem.Allocator, line: TextLineWire, out: *std.ArrayList(u8)) !void {
+    if (!validBoundedUtf8Text(line.line, max_text_columns)) return Error.InvalidTable;
     try putU32(out, a, line.row_index);
     try putU32(out, a, @intCast(line.line.len));
     try out.appendSlice(a, line.line);
@@ -846,17 +862,12 @@ pub fn decodeTextLine(bytes: []const u8) Error!TextLineWire {
     const length = std.mem.readInt(u32, bytes[4..8], .little);
     if (bytes.len != 8 + length) return Error.InvalidTable;
     const payload = bytes[8..];
-    for (payload) |byte| {
-        if (byte < 0x20 or byte > 0x7e) return Error.InvalidTable;
-    }
+    if (!validBoundedUtf8Text(payload, max_text_columns)) return Error.InvalidTable;
     return .{ .row_index = std.mem.readInt(u32, bytes[0..4], .little), .line = payload };
 }
 
 pub fn encodeTextInput(a: std.mem.Allocator, input: TextInput, out: *std.ArrayList(u8)) !void {
-    if (input.text.len == 0 or input.text.len > max_text_columns) return Error.InvalidTable;
-    for (input.text) |byte| {
-        if (byte < 0x20 or byte > 0x7e) return Error.InvalidTable;
-    }
+    if (!validBoundedUtf8Text(input.text, max_text_columns)) return Error.InvalidTable;
     try putU32(out, a, @intCast(input.text.len));
     try out.appendSlice(a, input.text);
 }
@@ -867,9 +878,7 @@ pub fn decodeTextInput(bytes: []const u8) Error!TextInput {
     if (length == 0 or length > max_text_columns or
         bytes.len < 4 or bytes.len - 4 != length) return Error.InvalidTable;
     const text = bytes[4..];
-    for (text) |byte| {
-        if (byte < 0x20 or byte > 0x7e) return Error.InvalidTable;
-    }
+    if (!validBoundedUtf8Text(text, max_text_columns)) return Error.InvalidTable;
     return .{ .text = text };
 }
 
@@ -1775,7 +1784,7 @@ test "resync reset allows a coherent scene replay" {
     try std.testing.expectEqual(@as(u64, 1), scene.stats.frame_updates);
 }
 
-test "text input codec validates bounded printable ASCII" {
+test "text codecs accept bounded UTF-8 and reject malformed input" {
     const a = std.testing.allocator;
     var bytes: std.ArrayList(u8) = .empty;
     defer bytes.deinit(a);
@@ -1784,6 +1793,10 @@ test "text input codec validates bounded printable ASCII" {
     try encodeTextInput(a, .{ .text = "X" }, &bytes);
     const decoded = try decodeTextInput(bytes.items);
     try std.testing.expectEqualStrings("X", decoded.text);
+    bytes.clearRetainingCapacity();
+    try encodeTextInput(a, .{ .text = "你好é\u{0301}" }, &bytes);
+    const unicode = try decodeTextInput(bytes.items);
+    try std.testing.expectEqualStrings("你好é\u{0301}", unicode.text);
     try bytes.append(a, 0);
     try std.testing.expectError(Error.InvalidTable, decodeTextInput(bytes.items));
 
