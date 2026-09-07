@@ -494,6 +494,8 @@ Proto frame.  The target ownership model, PGTK responsibility matrix, protocol
 gaps, differential gates, and final acceptance rules are defined in
 [`sdl3-pgtk-parity.md`](sdl3-pgtk-parity.md).
 
+`runtime_bridge` proves the same host ABI can produce deterministic EUP frame
+create/update/destroy messages with a fake host.  It is not runtime registration.
 `proto-ui-runtime-host-abi` projects that contract to a generated C header and
 compiles a conformance translation unit.  `proto-ui-runtime-host` defines and conformance-tests a versioned five-group
 PureRuntimeHostV1 ABI while keeping runtime unavailable.  It does not register a

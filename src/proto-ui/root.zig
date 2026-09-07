@@ -16,6 +16,7 @@ pub const host_contract = @import("host_contract.zig");
 pub const r7_proposal = @import("r7_proposal.zig");
 pub const pgtk_parity = @import("pgtk_parity.zig");
 pub const runtime_host = @import("runtime_host.zig");
+pub const runtime_bridge = @import("runtime_bridge.zig");
 pub const fuzz = @import("fuzz.zig");
 pub const recovery_diff = @import("recovery_diff.zig");
 pub const crash_isolation = @import("crash_isolation.zig");
@@ -40,6 +41,7 @@ test {
     _ = r7_proposal;
     _ = pgtk_parity;
     _ = runtime_host;
+    _ = runtime_bridge;
     _ = fuzz;
     _ = recovery_diff;
     _ = crash_isolation;

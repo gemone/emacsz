@@ -166,6 +166,7 @@ capabilities must keep the relevant capability pending and block W16.
 | P1. PGTK semantic inventory and differential plan | Every PGTK capability row maps to an owner, EUP record, SDL action, fallback, and gate; 48 concrete differential cases remain planned | `proto-ui-pgtk-parity-plan` emits and audits `pgtk_parity_manifest.json` |
 | P2. R7 registration proposal and decision | A source-authoritative proposal is ready for review, then explicitly approved or denied | `r7_proposal.json`, proposal gate, signed-off host registration contract, and review metadata |
 | P3. Runtime host ABI preparation | All five required callback groups have a versioned C-ABI table, validator, fake-host conformance, generated C header, and manifest | `proto-ui-runtime-host` and `proto-ui-runtime-host-abi`; live terminal registration still requires R7 approval |
+| P4-prep. Runtime bridge | `PureRuntimeHostV1` observations can drive deterministic EUP create/update/destroy messages in fake-host conformance | `runtime_bridge` unit suite; still no Emacs registration |
 | P4. Terminal registration | `output_proto` can exist as a real terminal without PGTK initialization | Fake-host plus live terminal lifecycle tests after explicit R7 approval |
 | P4. First pure frame | Emacs creates `window-system = proto`; SDL creates the visible surface | One local command creates, focuses, resizes, deletes the frame |
 | P5. Redisplay-owned display | Rows/runs/cursor/damage come from Emacs redisplay | ASCII/CJK/BiDi/face fixtures compare against PGTK baselines |
@@ -179,6 +180,10 @@ P1 preparation adds `proto-ui-pgtk-parity-plan`.  The generated manifest is a
 planned differential suite, not parity evidence; all cases remain `planned` and
 the aggregate result remains `not_implemented`.  It is distinct from the future
 `sdl3-pgtk-parity` runtime acceptance gate.
+
+A P4-preparation bridge now connects the same host ABI to bounded EUP frame
+lifecycle messages.  It is exercised only with the adapter-owned fake host and
+remains independent of Emacs registration, transport, and SDL presentation.
 
 P3 also adds `proto-ui-runtime-host-abi`, which emits the matching C header and
 runs a generated C conformance translation unit.  The C projection is build

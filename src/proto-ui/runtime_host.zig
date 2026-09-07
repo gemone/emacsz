@@ -428,6 +428,11 @@ pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
 
 pub const TerminalState = enum { absent, active, draining, deleted };
 
+/// Converts a C-ABI status into a Zig error for adapter-owned callers.
+pub fn ensureOk(status: Status) Error!void {
+    if (status != .ok) return error.HostCallbackFailed;
+}
+
 fn appendJsonString(gpa: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
     try out.append(gpa, '"');
     for (value) |char| {

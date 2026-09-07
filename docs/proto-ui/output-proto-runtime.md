@@ -188,6 +188,7 @@ Current and target options:
 | `proto-ui-pgtk-parity-plan` step | Generate and audit the planned PGTK-to-Proto differential matrix | Implemented as planning policy; all 48 cases remain planned and parity is not implemented |
 | `proto-ui-runtime-host` step | Validate the five-group versioned `PureRuntimeHostV1` ABI with a fake host | ABI conformance implemented; registration is absent and runtime remains fail closed |
 | `proto-ui-runtime-host-abi` step | Generate, compile, and conformance-test the C projection of `PureRuntimeHostV1` | Implemented; generated header is installed under `zig-out/include/proto-ui` and remains unlinked from Emacs |
+| `runtime_bridge` module | Drive the pure host ABI and encode bounded `FRAME_CREATE`/`FRAME_UPDATE`/`FRAME_DESTROY` | Fake-host unit conformance implemented; no Emacs host, transport, SDL presentation, or registration |
 | `-Dmodules=true` | Public dynamic-module observation bridge | Implemented in bounded slices |
 | `-Dproto-ui-runtime=true` | Require the future host extension contract; without it the boundary fails with `host_registration_contract_missing` | Fail-closed audit/gate implemented; runtime absent |
 | `-Dproto-ui-frontend=true` | Install and smoke the independent SDL3 frontend | Design for final name; current SDL option remains opt-in |
@@ -217,6 +218,10 @@ manifest must record:
 | R8. First terminal smoke | Real `window-system . proto` frame | Emacs creates, displays, operates, and deletes one SDL3 frame |
 | R9. Differential compatibility | PGTK vs Proto-UI behavior suite | Frame, text, cursor, input, scroll, resize, and lifecycle baselines pass |
 
+A P4-preparation `runtime_bridge` now drives validated `PureRuntimeHostV1`
+callbacks and emits bounded frame lifecycle/update messages for fake-host
+conformance.  It is not linked to an Emacs host and does not authorize terminal
+registration.
 P3 also projects `PureRuntimeHostV1` to C through
 `proto-ui-runtime-host-abi`.  The generated `pure_runtime_host_v1.h` and C
 conformance translation unit are build artifacts outside inherited source; they
