@@ -164,7 +164,7 @@ capabilities must keep the relevant capability pending and block W16.
 |---|---|---|
 | P0. Freeze this target | Documents and gates agree that PGTK is reference-only | This file plus consistent status manifests/docs |
 | P1. PGTK semantic inventory | Every PGTK capability row maps to an owner, EUP record, SDL action, fallback, and gate | Updated capability matrix with no unspecified rows |
-| P2. R7 host contract decision | A reviewed adapter-owned terminal registration seam is approved or explicitly denied | Signed-off host registration contract and review metadata |
+| P2. R7 registration proposal and decision | A source-authoritative proposal is ready for review, then explicitly approved or denied | `r7_proposal.json`, proposal gate, signed-off host registration contract, and review metadata |
 | P3. Terminal registration | `output_proto` can exist as a real terminal without PGTK initialization | Fake-host plus live terminal lifecycle tests |
 | P4. First pure frame | Emacs creates `window-system = proto`; SDL creates the visible surface | One local command creates, focuses, resizes, deletes the frame |
 | P5. Redisplay-owned display | Rows/runs/cursor/damage come from Emacs redisplay | ASCII/CJK/BiDi/face fixtures compare against PGTK baselines |
@@ -174,8 +174,12 @@ capabilities must keep the relevant capability pending and block W16.
 | P9. Recovery/performance | Frontend failure is contained and performance targets are met | replay, fuzz, disconnect, GPU-reset, latency, throughput evidence |
 | P10. W16 acceptance | Final user scenario is fully green | W16 checklist plus machine-readable artifacts |
 
-P2 is the policy gate.  Until it is approved, no code path may register
-`output_proto` or present PGTK evidence as a pure SDL3 runtime.
+P2 preparation adds `proto-ui-r7-proposal`, which emits
+`zig-out/proto-ui/r7_proposal.json`.  The proposal is **ready for review** while
+the decision itself remains **pending**.  The gate verifies pure-SDL3 target
+policy, required callback groups, prerequisite groundwork, and fail-closed
+state.  It does not approve R7, register a terminal, enable runtime, or relax
+PGTK isolation.
 
 ## 7. PGTK differential gates
 

@@ -816,6 +816,51 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&install_host_contract.step);
         boundary_step.dependOn(&run_host_contract_gate.step);
 
+        // P2: the R7 proposal is review input only.  Its gate proves that the
+        // pure-SDL3 registration request is coherent while registration and
+        // runtime remain unavailable and fail closed.
+        const r7_proposal_gen_tool = b.addExecutable(.{
+            .name = "proto-ui-r7-proposal-gen",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/r7_proposal_gen.zig"),
+            }),
+        });
+        r7_proposal_gen_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_r7_proposal_gen = b.addRunArtifact(r7_proposal_gen_tool);
+        const r7_proposal_artifact = run_r7_proposal_gen.addOutputFileArg(
+            "r7_proposal.json",
+        );
+        const install_r7_proposal = b.addInstallFile(
+            r7_proposal_artifact,
+            "proto-ui/r7_proposal.json",
+        );
+
+        const r7_proposal_gate_tool = b.addExecutable(.{
+            .name = "proto-ui-r7-proposal-gate",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/r7_proposal_gate.zig"),
+            }),
+        });
+        r7_proposal_gate_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_r7_proposal_gate = b.addRunArtifact(r7_proposal_gate_tool);
+        run_r7_proposal_gate.addFileArg(r7_proposal_artifact);
+        run_r7_proposal_gate.step.dependOn(&run_r7_proposal_gen.step);
+
+        const r7_proposal_step = b.step(
+            "proto-ui-r7-proposal",
+            "Generate and audit the pending pure-SDL3 R7 registration proposal",
+        );
+        r7_proposal_step.dependOn(&run_r7_proposal_gen.step);
+        r7_proposal_step.dependOn(&install_r7_proposal.step);
+        r7_proposal_step.dependOn(&run_r7_proposal_gate.step);
+
+        boundary_step.dependOn(&install_r7_proposal.step);
+        boundary_step.dependOn(&run_r7_proposal_gate.step);
+
         // R2: source-authoritative runtime manifest plus an independent
         // machine-readable gate.  Audit mode succeeds only by reporting
         // unavailability; require mode is deliberately nonzero.

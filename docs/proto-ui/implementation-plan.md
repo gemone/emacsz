@@ -64,6 +64,8 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | Bounded real-frame lifecycle bridge | Implemented by W12c: one real PGTK observation frame and one EUP/SDL3 frame are created, rendered, and deleted |
 | Final real `output_proto` SDL3 Emacs frame | Not achieved |
 | Pure SDL3 PGTK-parity target | Normative target documented; runtime and parity not implemented |
+| P2 R7 registration proposal | Implemented as ready-for-review policy artifact; R7 decision, terminal registration, and runtime remain pending |
+
 | Adapter-first C boundary | Required; no new inherited-C Proto-UI edits |
 | W9a independent SDL3 lifecycle smoke | Approved |
 | W9b SDL3 EUP replay scene renderer | Approved |
@@ -3074,8 +3076,10 @@ Non-goals:
 3. Adding scattered Proto-UI branches to inherited Emacs C/H/Lisp.
 4. Registering `output_proto` before the R7 host contract is explicitly approved.
 
-Acceptance is defined by the P0-P10 milestones in the parity document and by the
-W16 final scenario.  The distinguishing R8 evidence is a real frame whose
+P2 readiness adds `proto-ui-r7-proposal`: the generated proposal is
+`ready_for_review`, but its decision remains pending and the runtime remains
+fail-closed.  Acceptance is defined by the P0-P10 milestones in the parity
+document and by the W16 final scenario.  The distinguishing R8 evidence is a real frame whose
 `window-system` is `proto`, whose visible surface is SDL3-owned, and whose
 frame, redisplay, resource, input, and desktop-integration paths require no
 GDK/GTK initialization.
