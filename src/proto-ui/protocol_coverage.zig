@@ -115,6 +115,13 @@ pub fn statusName(status: Status) []const u8 {
 
 fn entryFor(id: u16) !Entry {
     if (!protocol.knownMessage(id)) return error.UnknownMessageId;
+    if (id == 0x0001 or id == 0x0002 or id == 0x0005 or id == 0x0006) return Entry{
+        .id = id,
+        .status = .implemented_codec,
+        .domain = .session,
+        .name = "session-setup",
+        .evidence_or_gap = "standard EUP setup codec and bounded state-machine tests",
+    };
     if (id == 0x0300) return Entry{
         .id = id,
         .status = .implemented_codec,

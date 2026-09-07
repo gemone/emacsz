@@ -75,6 +75,8 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
 | Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 27 implemented codecs, 5 partial, 132 planned; prevents an unclassified or overclaimed protocol table |
 | Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
+| P12-prep EUP session setup | Implemented standard HELLO/HELLO_ACK/SESSION_READY/READY_ACK codecs and bounded state machine; not yet wired to EPXL transport |
+
 | P9-prep authoritative geometry | Implemented in runtime bridge with host rectangle caching and frame/window/damage bounds; real monitor/DPI events pending |
 | P10-prep face-bound debug runs | Implemented with GLYPH_RUN v2, exact live-face validation, and colored SDL fallback; not production face/shaping parity |
 | P11-prep SDL image presentation | Implemented for complete bounded RGBA8 resources in fake-host bridge smoke; redisplay capture and PGTK parity pending |
@@ -3125,7 +3127,10 @@ bounds, and observation validation in `runtime_bridge`; real monitor and scale
 events remain pending.
 Protocol coverage preparation adds `proto-ui-protocol-coverage`: every assigned
 EUP ID now has one honest status and evidence/gap classification.  The current
-counts are 27 implemented codecs, 5 partial, and 132 planned.
+counts are 32 implemented codecs, 3 partial, and 129 planned.
+P12 session-setup preparation adds concrete standard EUP HELLO, HELLO_ACK,
+SESSION_READY, and READY_ACK codecs with a bounded frontend state machine.  The
+authenticated EPXL handshake remains the current transport path.
 P8 lifecycle preparation binds heartbeat, flush, diagnostics, and
 cancel-all-pending-work into `runtime_bridge`, with safe cancellation of
 accepted but incomplete input transactions.

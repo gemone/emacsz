@@ -186,7 +186,8 @@ Current and target options:
 | `proto-ui-host-contract` step | Generate and audit the source-authoritative registration decision | Implemented; decision is pending and runtime unavailable |
 | `proto-ui-r7-proposal` step | Generate and audit the pure-SDL3 R7 registration proposal | Implemented; proposal is ready for review, decision remains pending, and runtime is unavailable |
 | `proto-ui-pgtk-parity-plan` step | Generate and audit the planned PGTK-to-Proto differential matrix | Implemented as planning policy; all 48 cases remain planned and parity is not implemented |
-| `proto-ui-protocol-coverage` step | Audit every assigned EUP message ID against its implementation status | Implemented; 27 codecs implemented, 5 partial, and 132 planned |
+| `proto-ui-protocol-coverage` step | Audit every assigned EUP message ID against its implementation status | Implemented; 32 codecs implemented, 3 partial, and 129 planned |
+| `session` module | Standard EUP HELLO/HELLO_ACK/SESSION_READY/READY_ACK codecs and setup state machine | Implemented as protocol preparation; not yet wired to EPXL transport |
 | `proto-ui-runtime-host` step | Validate the five-group versioned `PureRuntimeHostV1` ABI with a fake host | ABI conformance implemented; registration is absent and runtime remains fail closed |
 | `proto-ui-runtime-host-abi` step | Generate, compile, and conformance-test the C projection of `PureRuntimeHostV1` | Implemented; generated header is installed under `zig-out/include/proto-ui` and remains unlinked from Emacs |
 | `runtime_bridge` module | Drive the pure host ABI in both directions: frames, runs, input lifecycle, visibility/focus state, host lifecycle operations, and authoritative geometry | Fake-host unit and SDL3 presentation conformance implemented; no Emacs host, transport, or registration |

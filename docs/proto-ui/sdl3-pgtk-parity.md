@@ -186,6 +186,9 @@ planned differential suite, not parity evidence; all cases remain `planned` and
 the aggregate result remains `not_implemented`.  It is distinct from the future
 `sdl3-pgtk-parity` runtime acceptance gate.
 
+P12 session-setup preparation adds standard EUP setup codecs and a bounded
+frontend state machine; EPXL authentication remains the current transport path
+and standard setup is not yet wired into runtime.
 P11 image presentation adds bounded RGBA8 resource rendering to the SDL bridge
 smoke.  The smoke uses adapter-owned fake resources, so it is not Emacs
 redisplay capture, production image policy, or PGTK parity.
