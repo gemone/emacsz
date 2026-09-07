@@ -68,6 +68,8 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P3 PureRuntimeHostV1 ABI | Implemented as adapter-owned fake-host contract for five callback groups; Emacs registration and runtime remain absent |
 | P3 PureRuntimeHostV1 C projection | Implemented with generated header and compiled C conformance; not linked to inherited Emacs or runtime |
 | P4-prep PureRuntimeHostV1 bridge | Implemented with bounded fake-host EUP frame lifecycle/update conformance; no Emacs registration, transport, or SDL presentation |
+| P5-prep bounded run payload | Implemented for fake-host debug `GLYPH_RUN` fallback; redisplay capture, shaping, faces, and production runs remain pending |
+
 
 
 
@@ -3084,6 +3086,9 @@ Non-goals:
 3. Adding scattered Proto-UI branches to inherited Emacs C/H/Lisp.
 4. Registering `output_proto` before the R7 host contract is explicitly approved.
 
+P5 run-payload preparation extends `PureRuntimeHostV1.RunRecord` and lets
+`runtime_bridge` emit bounded debug `GLYPH_RUN` messages from fake-host runs.
+Redisplay-owned capture and production runs remain pending.
 P4 bridge preparation adds `runtime_bridge`: a validated pure host table can now
 emit bounded EUP frame lifecycle/update messages in fake-host tests, while
 terminal registration remains absent.

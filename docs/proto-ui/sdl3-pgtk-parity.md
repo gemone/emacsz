@@ -167,6 +167,7 @@ capabilities must keep the relevant capability pending and block W16.
 | P2. R7 registration proposal and decision | A source-authoritative proposal is ready for review, then explicitly approved or denied | `r7_proposal.json`, proposal gate, signed-off host registration contract, and review metadata |
 | P3. Runtime host ABI preparation | All five required callback groups have a versioned C-ABI table, validator, fake-host conformance, generated C header, and manifest | `proto-ui-runtime-host` and `proto-ui-runtime-host-abi`; live terminal registration still requires R7 approval |
 | P4-prep. Runtime bridge | `PureRuntimeHostV1` observations can drive deterministic EUP create/update/destroy messages in fake-host conformance | `runtime_bridge` unit suite; still no Emacs registration |
+| P5-prep. Run payload bridge | Host text runs become bounded EUP debug glyph runs and are rendered as fallback text | `runtime_bridge` unit suite; still not redisplay capture or shaped text |
 | P4. Terminal registration | `output_proto` can exist as a real terminal without PGTK initialization | Fake-host plus live terminal lifecycle tests after explicit R7 approval |
 | P4. First pure frame | Emacs creates `window-system = proto`; SDL creates the visible surface | One local command creates, focuses, resizes, deletes the frame |
 | P5. Redisplay-owned display | Rows/runs/cursor/damage come from Emacs redisplay | ASCII/CJK/BiDi/face fixtures compare against PGTK baselines |
@@ -180,6 +181,12 @@ P1 preparation adds `proto-ui-pgtk-parity-plan`.  The generated manifest is a
 planned differential suite, not parity evidence; all cases remain `planned` and
 the aggregate result remains `not_implemented`.  It is distinct from the future
 `sdl3-pgtk-parity` runtime acceptance gate.
+
+P5 preparation extends the pure host run record with a bounded printable-ASCII
+payload and lets `runtime_bridge` emit negotiated debug `GLYPH_RUN` messages
+after a frame update.  This enables fallback text presentation in tests, but it
+is not redisplay capture, shaping, BiDi reordering, faces, fonts, or production
+glyph rendering.
 
 A P4-preparation bridge now connects the same host ABI to bounded EUP frame
 lifecycle messages.  It is exercised only with the adapter-owned fake host and

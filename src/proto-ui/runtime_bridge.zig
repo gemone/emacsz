@@ -383,6 +383,42 @@ pub const Bridge = struct {
         }, payload.items, out);
     }
 
+    pub fn encodeRun(
+        self: *const Bridge,
+        gpa: std.mem.Allocator,
+        run_index: usize,
+        sequence: u64,
+        session_id: u64,
+        timestamp_ns: u64,
+        out: *std.ArrayList(u8),
+    ) Error!void {
+        try self.requireState(.captured);
+        if (run_index >= self.counts.runs) return error.InvalidState;
+        const record = self.runs[run_index];
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(gpa);
+        try frontend.encodeGlyphRun(gpa, .{
+            .run_id = @intCast(record.run_id),
+            .generation = @intCast(self.redisplay_generation),
+            .window_id = record.window_id,
+            .row_index = record.row_index,
+            .x = record.x,
+            .y = record.y,
+            .width = record.width,
+            .height = record.height,
+            .text = record.text[0..record.text_length],
+        }, &payload);
+        try protocol.encodeEnvelope(gpa, .{
+            .flags = protocol.Flags.debug,
+            .message_type = protocol.Message.glyph_run,
+            .sequence = sequence,
+            .ack_sequence = 0,
+            .session_id = session_id,
+            .frame_id = @intCast(self.frame.id),
+            .timestamp_ns = timestamp_ns,
+        }, payload.items, out);
+    }
+
     pub fn destroy(self: *Bridge) Error!void {
         if (self.state == .destroyed or self.state == .idle) return error.InvalidState;
         if (self.state == .capturing) {
@@ -442,7 +478,9 @@ test "pure runtime bridge produces a valid bounded EUP frame lifecycle" {
 
     try bridge.observeWindow(.{ .id = 10, .generation = 8, .width = 80, .height = 60 });
     try bridge.observeRow(.{ .window_id = 10, .row_index = 0, .width = 80, .height = 10, .ascent = 7, .descent = 3, .baseline = 7, .visible_height = 10 });
-    try bridge.observeRun(.{ .run_id = 1, .window_id = 10, .row_index = 0, .byte_length = 5 });
+    var run_text = [_]u8{0} ** 120;
+    @memcpy(run_text[0..5], "Emacs");
+    try bridge.observeRun(.{ .run_id = 1, .window_id = 10, .row_index = 0, .x = 2, .y = 0, .width = 40, .height = 10, .text_length = 5, .text = run_text });
     try bridge.observeCursor(.{ .window_id = 10, .x = 0, .y = 0, .width = 2, .height = 8, .visible = true, .active = true });
     try bridge.observeDamage(.{ .width = 80, .height = 60 });
     try std.testing.expectEqual(Counts{ .windows = 1, .rows = 1, .runs = 1, .cursors = 1, .damage = 1 }, bridge.snapshotCounts());
@@ -465,10 +503,17 @@ test "pure runtime bridge produces a valid bounded EUP frame lifecycle" {
     try std.testing.expectEqual(@as(usize, 1), scene.rows.items.len);
     try std.testing.expect(scene.cursor != null);
 
+    var run: std.ArrayList(u8) = .empty;
+    defer run.deinit(gpa);
+    try bridge.encodeRun(gpa, 0, 3, 9, 3, &run);
+    try scene.apply(run.items);
+    try std.testing.expectEqual(@as(usize, 1), scene.glyph_runs.items.len);
+    try std.testing.expectEqualStrings("Emacs", scene.glyph_runs.items[0].text);
+
     try bridge.destroy();
     var destroy: std.ArrayList(u8) = .empty;
     defer destroy.deinit(gpa);
-    try bridge.encodeFrameDestroy(gpa, 3, 9, 3, &destroy);
+    try bridge.encodeFrameDestroy(gpa, 4, 9, 4, &destroy);
     try scene.apply(destroy.items);
     try std.testing.expectEqual(State.destroyed, bridge.state);
     try std.testing.expectEqual(@as(usize, 0), scene.windows.items.len);

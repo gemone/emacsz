@@ -77,10 +77,15 @@ pub const header =
     \\  uint32_t row_index;
     \\  uint32_t face_id;
     \\  uint32_t font_id;
+    \\  int32_t x;
+    \\  int32_t y;
+    \\  int32_t width;
+    \\  int32_t height;
     \\  uint8_t direction;
     \\  uint8_t kind;
-    \\  uint32_t byte_offset;
-    \\  uint32_t byte_length;
+    \\  uint16_t text_length;
+    \\  uint32_t reserved;
+    \\  uint8_t text[120];
     \\} ProtoUiRunRecord;
     \\
     \\typedef struct ProtoUiCursorRecord {
@@ -270,6 +275,10 @@ pub const header =
     \\              "invalid TerminalCreateRequest ABI");
     \\_Static_assert(offsetof(ProtoUiCaptureRequest, redisplay_generation) == 16u,
     \\              "invalid CaptureRequest ABI");
+    \\_Static_assert(offsetof(ProtoUiRunRecord, text) == 52u,
+    \\              "invalid RunRecord ABI");
+    \\_Static_assert(sizeof(ProtoUiRunRecord) == 176u,
+    \\              "invalid RunRecord ABI");
     \\_Static_assert(offsetof(ProtoUiInputEvent, payload) == 32u,
     \\              "invalid InputEvent ABI");
     \\_Static_assert(sizeof(ProtoUiPureRuntimeHostV1) >= 56u,

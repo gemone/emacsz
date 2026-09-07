@@ -93,10 +93,15 @@ pub const RunRecord = extern struct {
     row_index: u32 = 0,
     face_id: u32 = 0,
     font_id: u32 = 0,
+    x: i32 = 0,
+    y: i32 = 0,
+    width: i32 = 0,
+    height: i32 = 0,
     direction: u8 = 1,
     kind: u8 = @intFromEnum(RunKind.text),
-    byte_offset: u32 = 0,
-    byte_length: u32 = 0,
+    text_length: u16 = 0,
+    reserved: u32 = 0,
+    text: [120]u8 = [_]u8{0} ** 120,
 };
 
 pub const RunKind = enum(u8) { text = 1, glyphless = 2, composition = 3, image = 4, stretch = 5, rectangle = 6 };
@@ -344,8 +349,16 @@ pub fn validateRowRecord(record: *const RowRecord) Error!void {
 }
 
 pub fn validateRunRecord(record: *const RunRecord) Error!void {
-    if (record.run_id == 0 or record.window_id == 0 or record.byte_length == 0 or
-        record.direction != 1) return error.InvalidRuntimeHost;
+    if (record.run_id == 0 or record.window_id == 0 or record.text_length == 0 or
+        record.text_length > record.text.len or record.x < 0 or record.y < 0 or
+        record.width < 0 or record.height < 0 or record.direction != 1 or
+        record.reserved != 0) return error.InvalidRuntimeHost;
+    for (record.text[0..record.text_length]) |byte| {
+        if (byte < 0x20 or byte == 0x7f or byte > 0x7e) return error.InvalidRuntimeHost;
+    }
+    for (record.text[record.text_length..]) |byte| {
+        if (byte != 0) return error.InvalidRuntimeHost;
+    }
     switch (record.kind) {
         @intFromEnum(RunKind.text),
         @intFromEnum(RunKind.glyphless),
