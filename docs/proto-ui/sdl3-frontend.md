@@ -284,6 +284,15 @@ W8g adds negotiated `input.text_unicode`; an ASCII-only negotiated set still
 accepts printable ASCII and rejects non-ASCII without queue side effects. A
 synthetic SDL event smoke verifies this path.
 
+W8h adds optional `input.key_full_v2`. When negotiated, SDL key down, up,
+and repeat events become strict v2 intents with scancode, logical-key name,
+folded left/right modifiers, and explicit state/repeat. Printable unmodified
+presses defer to `TEXT_INPUT`; ASCII-only peers continue using the existing
+4-byte profile. The frontend never evaluates Elisp. The EPXL Emacs bridge
+ACKs observed v2 events and may execute only a tiny explicit compatibility
+subset; all other events remain observed/unhandled. This is not full keymap,
+IME, or command execution parity.
+
 W11a implements the first clipboard capture path: Ctrl+V reads SDL clipboard
 text, accepts only bounded printable ASCII through the input queue, and frees
 SDL-owned text on every path. Unicode clipboard, rich text, MIME selection,

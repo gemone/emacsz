@@ -23,6 +23,7 @@ const SDL_EVENT_RENDER_TARGETS_RESET: c_uint = 0x2000;
 const SDL_EVENT_RENDER_DEVICE_RESET: c_uint = 0x2001;
 const SDL_EVENT_RENDER_DEVICE_LOST: c_uint = 0x2002;
 const SDL_EVENT_KEY_DOWN: c_uint = 0x300;
+const SDL_EVENT_KEY_UP: c_uint = 0x301;
 const SDL_EVENT_TEXT_INPUT: c_uint = 0x303;
 const SDL_EVENT_MOUSE_MOTION: c_uint = 0x400;
 const SDL_EVENT_MOUSE_BUTTON_DOWN: c_uint = 0x401;
@@ -80,6 +81,7 @@ extern fn SDL_PollEvent(event: *SDL_Event) bool;
 extern fn SDL_PushEvent(event: *SDL_Event) bool;
 extern fn SDL_Delay(ms: c_uint) void;
 extern fn SDL_StartTextInput(window: *SDL_Window) bool;
+extern fn SDL_GetKeyName(key: c_uint) ?[*:0]const u8;
 extern fn SDL_GetClipboardText() [*c]u8;
 extern fn SDL_SetClipboardText(text: [*:0]const u8) bool;
 extern fn SDL_free(mem: ?*anyopaque) void;
@@ -287,7 +289,7 @@ const SDL_FRect = extern struct {
     h: f32,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, emacs_interactive, clipboard };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, emacs_interactive, clipboard };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -403,6 +405,9 @@ fn writeTranslatedEvent(
             try writeActionArtifact(gpa, io, path, "key", action_name);
         },
         .text => |text| try writeActionArtifact(gpa, io, path, "text", text.bytes()),
+        // Full keys are negotiated EPXL-only; the local file path has no
+        // capability table and therefore must not pretend to deliver them.
+        .key_v2 => {},
         // Pointer/wheel intents are intentionally EPXL-only; the local fallback
         // does not pretend to support them.
         .pointer => {},
@@ -865,7 +870,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     _ = std.Io.Dir.cwd().deleteFile(io, config.endpoint) catch {};
     const eval = try std.fmt.allocPrint(
         gpa,
-        "(progn (setq-default buffer-file-coding-system (quote utf-8)) (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let* ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\")))) (clipboard-path (expand-file-name (format \"%s\" (format \"{s}\")))) (buffer (window-buffer window)) (buffer-ready (progn (with-current-buffer buffer (set-buffer-multibyte t)) t)) (facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (lines (split-string text \"\\n\")) (point (with-current-buffer buffer (window-point window))) (cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column))))) (viewport-start (window-start window)) (viewport-end (window-end window t)) (viewport-start-line 1) (viewport-line-count 0) (viewport-cursor-line 1)) (with-current-buffer buffer (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII textZ\") (dotimes (i 28) (insert (format \"\\nline %02d\" i))) (redisplay)) (setq viewport-start (window-start window)) (setq viewport-end (window-end window t)) (setq viewport-start-line (line-number-at-pos viewport-start)) (setq viewport-line-count (count-lines viewport-start viewport-end)) (setq text (buffer-substring-no-properties viewport-start viewport-end)) (setq lines (split-string text \"\\n\" t)) (setq point (window-point window)) (setq viewport-cursor-line (min 15 (max 1 (+ 1 (- (line-number-at-pos point) viewport-start-line))))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line viewport-cursor-line :column (current-column))))) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (let ((coding-system-for-write (quote utf-8))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor :window_start_line viewport-start-line :window_visible_lines viewport-line-count))))) (sit-for 0.2) (set-frame-size frame 240 30) (while t (when (file-readable-p input-path) (let ((action (split-string (with-temp-buffer (let ((coding-system-for-read (quote utf-8))) (insert-file-contents input-path)) (buffer-string)) \"\\n\" t))) (cond ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"backspace\")) (with-current-buffer buffer (goto-char (point-max)) (delete-char -1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-left\")) (with-current-buffer buffer (backward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-right\")) (with-current-buffer buffer (forward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-up\")) (with-current-buffer buffer (previous-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-down\")) (with-current-buffer buffer (next-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"copy\")) (with-current-buffer buffer (let* ((copy-end (progn (goto-char (point-min)) (line-end-position))) (copy-length (<= (- copy-end (point-min)) 120)) (copy-ascii (save-excursion (let ((ascii t) (pos (point-min))) (while (< pos copy-end) (let ((ch (char-after pos))) (when (or (< ch 32) (> ch 126)) (setq ascii nil) (setq pos copy-end))) (setq pos (+ pos 1))) ascii))) (copy-text (and copy-length copy-ascii (buffer-substring-no-properties (point-min) copy-end)))) (when copy-text (kill-ring-save (point-min) copy-end) (with-temp-file clipboard-path (insert copy-text)) (set-window-point window (point)) (redisplay))))) ((and (= (length action) 3) (string= (nth 1 action) \"pointer\")) (let* ((pointer (split-string (nth 2 action) \" \" t)) (pointer-phase (nth 0 pointer)) (pointer-x (string-to-number (nth 1 pointer))) (pointer-y (string-to-number (nth 2 pointer)))) (when (and (= (length pointer) 3) (or (string= pointer-phase \"press\") (string= pointer-phase \"release\"))) (condition-case nil (let ((point (posn-point (posn-at-x-y pointer-x pointer-y window)))) (when point (with-current-buffer buffer (goto-char point) (redisplay)))) (error nil))))) ((and (= (length action) 3) (string= (nth 1 action) \"wheel\")) (let ((wheel (split-string (nth 2 action) \" \" t))) (when (= (length wheel) 2) (with-current-buffer buffer (condition-case nil (if (string= (nth 0 wheel) \"down\") (scroll-up (string-to-number (nth 1 wheel))) (scroll-down (string-to-number (nth 1 wheel)))) (error nil)))))) ((and (= (length action) 3) (string= (nth 1 action) \"text\") (> (length (nth 2 action)) 0)) (with-current-buffer buffer (goto-char (point-min)) (insert (decode-coding-string (base64-decode-string (nth 2 action)) (quote utf-8))) (set-window-point window (point)) (redisplay)))) (let ((coding-system-for-write (quote utf-8))) (with-temp-file (concat input-path \".ack\") (insert (nth 0 action)))) (delete-file input-path))) (setq viewport-start (window-start window)) (setq viewport-end (window-end window t)) (setq viewport-start-line (line-number-at-pos viewport-start)) (setq viewport-line-count (count-lines viewport-start viewport-end)) (setq text (buffer-substring-no-properties viewport-start viewport-end)) (setq lines (split-string text \"\\n\" t)) (setq point (window-point window)) (setq viewport-cursor-line (min 15 (max 1 (+ 1 (- (line-number-at-pos point) viewport-start-line))))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line viewport-cursor-line :column (current-column))))) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (let ((coding-system-for-write (quote utf-8))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor :window_start_line viewport-start-line :window_visible_lines viewport-line-count))))) (sit-for 0.1))))",
+        "(progn (setq-default buffer-file-coding-system (quote utf-8)) (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (let* ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\")))) (clipboard-path (expand-file-name (format \"%s\" (format \"{s}\")))) (buffer (window-buffer window)) (buffer-ready (progn (with-current-buffer buffer (set-buffer-multibyte t)) t)) (facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (lines (split-string text \"\\n\")) (point (with-current-buffer buffer (window-point window))) (cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column))))) (viewport-start (window-start window)) (viewport-end (window-end window t)) (viewport-start-line 1) (viewport-line-count 0) (viewport-cursor-line 1)) (with-current-buffer buffer (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII textZ\") (dotimes (i 28) (insert (format \"\\nline %02d\" i))) (redisplay)) (setq viewport-start (window-start window)) (setq viewport-end (window-end window t)) (setq viewport-start-line (line-number-at-pos viewport-start)) (setq viewport-line-count (count-lines viewport-start viewport-end)) (setq text (buffer-substring-no-properties viewport-start viewport-end)) (setq lines (split-string text \"\\n\" t)) (setq point (window-point window)) (setq viewport-cursor-line (min 15 (max 1 (+ 1 (- (line-number-at-pos point) viewport-start-line))))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line viewport-cursor-line :column (current-column))))) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (let ((coding-system-for-write (quote utf-8))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor :window_start_line viewport-start-line :window_visible_lines viewport-line-count))))) (sit-for 0.2) (set-frame-size frame 240 30) (while t (when (file-readable-p input-path) (let ((action (split-string (with-temp-buffer (let ((coding-system-for-read (quote utf-8))) (insert-file-contents input-path)) (buffer-string)) \"\\n\" t))) (cond ((and (= (length action) 3) (string= (nth 1 action) \"key-v2\")) (let* ((event (json-parse-string (nth 2 action) :object-type (quote plist))) (logical (decode-coding-string (base64-decode-string (plist-get event :logical_key)) (quote utf-8))) (state (plist-get event :state)) (modifiers (plist-get event :modifiers)) (physical (plist-get event :physical_key))) (when (and (= state 1) (= modifiers 2)) (with-current-buffer buffer (cond ((and (= physical 4) (string= logical \"a\")) (beginning-of-line)) ((and (= physical 8) (string= logical \"e\")) (end-of-line))) (set-window-point window (point)) (redisplay))))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"backspace\")) (with-current-buffer buffer (goto-char (point-max)) (delete-char -1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-left\")) (with-current-buffer buffer (backward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-right\")) (with-current-buffer buffer (forward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-up\")) (with-current-buffer buffer (previous-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-down\")) (with-current-buffer buffer (next-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"copy\")) (with-current-buffer buffer (let* ((copy-end (progn (goto-char (point-min)) (line-end-position))) (copy-length (<= (- copy-end (point-min)) 120)) (copy-ascii (save-excursion (let ((ascii t) (pos (point-min))) (while (< pos copy-end) (let ((ch (char-after pos))) (when (or (< ch 32) (> ch 126)) (setq ascii nil) (setq pos copy-end))) (setq pos (+ pos 1))) ascii))) (copy-text (and copy-length copy-ascii (buffer-substring-no-properties (point-min) copy-end)))) (when copy-text (kill-ring-save (point-min) copy-end) (with-temp-file clipboard-path (insert copy-text)) (set-window-point window (point)) (redisplay))))) ((and (= (length action) 3) (string= (nth 1 action) \"pointer\")) (let* ((pointer (split-string (nth 2 action) \" \" t)) (pointer-phase (nth 0 pointer)) (pointer-x (string-to-number (nth 1 pointer))) (pointer-y (string-to-number (nth 2 pointer)))) (when (and (= (length pointer) 3) (or (string= pointer-phase \"press\") (string= pointer-phase \"release\"))) (condition-case nil (let ((point (posn-point (posn-at-x-y pointer-x pointer-y window)))) (when point (with-current-buffer buffer (goto-char point) (redisplay)))) (error nil))))) ((and (= (length action) 3) (string= (nth 1 action) \"wheel\")) (let ((wheel (split-string (nth 2 action) \" \" t))) (when (= (length wheel) 2) (with-current-buffer buffer (condition-case nil (if (string= (nth 0 wheel) \"down\") (scroll-up (string-to-number (nth 1 wheel))) (scroll-down (string-to-number (nth 1 wheel)))) (error nil)))))) ((and (= (length action) 3) (string= (nth 1 action) \"text\") (> (length (nth 2 action)) 0)) (with-current-buffer buffer (goto-char (point-min)) (insert (decode-coding-string (base64-decode-string (nth 2 action)) (quote utf-8))) (set-window-point window (point)) (redisplay)))) (let ((coding-system-for-write (quote utf-8))) (with-temp-file (concat input-path \".ack\") (insert (nth 0 action)))) (delete-file input-path))) (setq viewport-start (window-start window)) (setq viewport-end (window-end window t)) (setq viewport-start-line (line-number-at-pos viewport-start)) (setq viewport-line-count (count-lines viewport-start viewport-end)) (setq text (buffer-substring-no-properties viewport-start viewport-end)) (setq lines (split-string text \"\\n\" t)) (setq point (window-point window)) (setq viewport-cursor-line (min 15 (max 1 (+ 1 (- (line-number-at-pos point) viewport-start-line))))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line viewport-cursor-line :column (current-column))))) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (let ((coding-system-for-write (quote utf-8))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :text (vconcat lines) :cursor cursor :window_start_line viewport-start-line :window_visible_lines viewport-line-count))))) (sit-for 0.1))))",
         .{ config.module_path, config.facts_path, input_path, clipboard_path },
     );
     defer gpa.free(eval);
@@ -1026,6 +1031,10 @@ fn sendDeliveryEvent(
             try frontend.encodeKeyEvent(gpa, key, &payload);
             break :blk protocol.Message.key_event;
         },
+        .key_v2 => |key| blk: {
+            try input_policy.encodeFullKeyEvent(gpa, key, &payload);
+            break :blk protocol.Message.key_event;
+        },
         .pointer => |pointer| blk: {
             try frontend.encodePointerInput(gpa, pointer, &payload);
             break :blk protocol.Message.pointer_event;
@@ -1067,7 +1076,7 @@ fn writeActionArtifact(gpa: std.mem.Allocator, io: std.Io, path: []const u8, kin
     {
         var file = try std.Io.Dir.cwd().createFile(io, temporary_path, .{});
         defer file.close(io);
-        var buffer: [256]u8 = undefined;
+        var buffer: [1024]u8 = undefined;
         var writer = file.writer(io, &buffer);
         try writer.interface.writeAll(kind);
         try writer.interface.writeAll("\n");
@@ -1143,6 +1152,38 @@ const Inbound = union(enum) {
     frame: []u8,
 };
 
+fn base64Alloc(gpa: std.mem.Allocator, bytes: []const u8) ![]u8 {
+    const encoded = try gpa.alloc(u8, std.base64.standard.Encoder.calcSize(bytes.len));
+    errdefer gpa.free(encoded);
+    _ = std.base64.standard.Encoder.encode(encoded, bytes);
+    return encoded;
+}
+
+fn writeKeyV2Artifact(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    sequence: u64,
+    event: input_policy.FullKeyEvent,
+) !void {
+    const logical = try base64Alloc(gpa, event.logicalKey());
+    defer gpa.free(logical);
+    const text = try base64Alloc(gpa, event.text());
+    defer gpa.free(text);
+    const value = try std.fmt.allocPrint(
+        gpa,
+        "{{\"schema\":2,\"state\":{d},\"modifiers\":{d},\"physical_key\":{d},\"repeat_count\":{d},\"device_id\":{d},\"layout_id\":{d},\"logical_key\":\"{s}\",\"text\":\"{s}\",\"execution\":\"observed\"}}",
+        .{
+            @intFromEnum(event.state), event.modifiers,
+            event.physical_key,        event.repeat_count,
+            event.device_id,           event.layout_id,
+            logical,                   text,
+        },
+    );
+    defer gpa.free(value);
+    try writeEpxlInputArtifact(gpa, io, path, sequence, "key-v2", value);
+}
+
 fn readInbound(reader: anytype, gpa: std.mem.Allocator) !Inbound {
     const header = try reader.interface.peekArray(4);
     if (std.mem.eql(u8, header, &live.control_magic)) {
@@ -1177,14 +1218,21 @@ fn awaitFrameAck(
                 const payload = try protocol.decodeEnvelope(frame);
                 const is_text = payload.envelope.message_type == protocol.Message.text_input;
                 const is_key = payload.envelope.message_type == protocol.Message.key_event;
+                const is_key_v2 = is_key and payload.bytes.len >= input_policy.key_v2_fixed_tail and
+                    std.mem.readInt(u16, payload.bytes[0..2], .little) == 0 and
+                    std.mem.readInt(u16, payload.bytes[2..4], .little) == input_policy.key_v2_schema;
+                var full_key: ?input_policy.FullKeyEvent = null;
                 const is_pointer = payload.envelope.message_type == protocol.Message.pointer_event;
                 const is_wheel = payload.envelope.message_type == protocol.Message.wheel_event;
                 var copy_action = false;
-                if (is_key) {
+                if (is_key_v2) {
+                    full_key = try input_policy.decodeFullKeyEvent(payload.bytes);
+                } else if (is_key) {
                     const key = try frontend.decodeKeyEvent(payload.bytes);
                     copy_action = key.action == .copy;
                 }
                 const input_allowed = (is_text and capabilities.contains(.input_text_ascii)) or
+                    (is_key_v2 and capabilities.contains(.input_key_full_v2)) or
                     (is_key and capabilities.contains(.input_key_bounded) and
                         (!copy_action or capabilities.contains(.clipboard_ascii_bounded))) or
                     (is_pointer and capabilities.contains(.input_pointer_bounded)) or
@@ -1220,6 +1268,8 @@ fn awaitFrameAck(
                     const value = try std.fmt.allocPrint(gpa, "{s} {d} {d}", .{ @tagName(event.phase), event.x, event.y });
                     defer gpa.free(value);
                     try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "pointer", value);
+                } else if (is_key_v2) {
+                    try writeKeyV2Artifact(gpa, io, input_path, payload.envelope.sequence, full_key.?);
                 } else {
                     const event = try frontend.decodeKeyEvent(payload.bytes);
                     const action_name: []const u8 = switch (event.action) {
@@ -1327,12 +1377,26 @@ fn runLiveFrontend(
         );
     }
 
+    delivery.key_v2_negotiated = negotiated.effective.contains(.input_key_full_v2);
+    if (config.mode == .emacs_epxl_key_v2) {
+        if (!negotiated.effective.contains(.input_key_bounded) or
+            !negotiated.effective.contains(.input_key_full_v2))
+            return error.FullKeyCapabilityNotNegotiated;
+        std.debug.print(
+            "sdl3-epxl-key-v2-smoke: {{\"kind\":\"sdl3-epxl-key-v2-smoke\",\"negotiated\":{{\"input.key_bounded\":true,\"input.key_full_v2\":true}},\"result\":\"negotiated\"}}\n",
+            .{},
+        );
+        try delivery.pushKeyV2(input_policy.translateFullKey(4, "a", true, false, input_policy.sdl_kmod_lctrl, 0).?);
+        try delivery.pushKeyV2(input_policy.translateFullKey(8, "e", true, false, input_policy.sdl_kmod_lctrl, 0).?);
+        try delivery.pushKeyV2(input_policy.translateFullKey(60, "F5", true, false, 0, 0).?);
+    }
+
     reserveFrontendInputSequence(delivery);
 
     const use_resync = config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect or
         config.mode == .emacs_epxl_recovery or config.mode == .emacs_epxl_input or
         config.mode == .emacs_epxl_unicode_input or config.mode == .emacs_epxl_edit or
-        config.mode == .emacs_epxl_sequence;
+        config.mode == .emacs_epxl_key_v2 or config.mode == .emacs_epxl_sequence;
     var scene = frontend.Scene.init(gpa);
     errdefer scene.deinit();
     var resync_complete = false;
@@ -1397,9 +1461,32 @@ fn inputEventAllowed(capabilities: capability.Set, event: input_policy.Translate
         else
             capabilities.contains(.input_text_unicode),
         .key => capabilities.contains(.input_key_bounded),
+        .key_v2 => capabilities.contains(.input_key_full_v2),
         .pointer => capabilities.contains(.input_pointer_bounded),
         .wheel => capabilities.contains(.input_wheel_line),
     };
+}
+
+fn enqueueSdlFullKey(
+    delivery: *input_policy.DeliveryJournal,
+    event_key: SDL_KeyboardEvent,
+    capabilities: capability.Set,
+) !bool {
+    if (!capabilities.contains(.input_key_full_v2)) return false;
+    const translated = input_policy.translateFullKey(
+        event_key.scancode,
+        SDL_GetKeyName(event_key.key),
+        event_key.down,
+        event_key.repeat,
+        event_key.modifiers,
+        @intCast(event_key.which),
+    ) orelse return false;
+    if (event_key.down and !event_key.repeat and
+        input_policy.duplicatesTextInput(translated) and
+        (capabilities.contains(.input_text_ascii) or capabilities.contains(.input_text_unicode)))
+        return true;
+    try delivery.pushKeyV2(translated);
+    return true;
 }
 
 fn textSupportFor(capabilities: capability.Set) ?input_policy.TextSupport {
@@ -1429,30 +1516,34 @@ fn pollEpxlInteractiveInput(
     while (SDL_PollEvent(&event)) {
         switch (event.type) {
             SDL_EVENT_QUIT => return error.InteractiveQuit,
-            SDL_EVENT_KEY_DOWN => {
-                if (input_policy.isPasteShortcut(
-                    event.key.scancode,
-                    event.key.down,
-                    event.key.repeat,
-                    event.key.modifiers,
-                ) and capabilities.contains(.clipboard_ascii_bounded)) {
-                    if (try queueClipboardText(delivery, .ascii)) dirty.* = true;
-                } else if (input_policy.isCopyShortcut(
-                    event.key.scancode,
-                    event.key.down,
-                    event.key.repeat,
-                    event.key.modifiers,
-                ) and capabilities.contains(.clipboard_ascii_bounded)) {
-                    try delivery.pushKey(.{ .action = .copy });
+            SDL_EVENT_KEY_DOWN, SDL_EVENT_KEY_UP => {
+                if (try enqueueSdlFullKey(delivery, event.key, capabilities)) {
                     dirty.* = true;
-                } else if (input_policy.translateKey(
-                    event.key.scancode,
-                    event.key.down,
-                    event.key.repeat,
-                    event.key.modifiers,
-                )) |key| {
-                    try delivery.pushKey(key);
-                    dirty.* = true;
+                } else if (event.type == SDL_EVENT_KEY_DOWN) {
+                    if (input_policy.isPasteShortcut(
+                        event.key.scancode,
+                        event.key.down,
+                        event.key.repeat,
+                        event.key.modifiers,
+                    ) and capabilities.contains(.clipboard_ascii_bounded)) {
+                        if (try queueClipboardText(delivery, .ascii)) dirty.* = true;
+                    } else if (input_policy.isCopyShortcut(
+                        event.key.scancode,
+                        event.key.down,
+                        event.key.repeat,
+                        event.key.modifiers,
+                    ) and capabilities.contains(.clipboard_ascii_bounded)) {
+                        try delivery.pushKey(.{ .action = .copy });
+                        dirty.* = true;
+                    } else if (input_policy.translateKey(
+                        event.key.scancode,
+                        event.key.down,
+                        event.key.repeat,
+                        event.key.modifiers,
+                    )) |key| {
+                        try delivery.pushKey(key);
+                        dirty.* = true;
+                    }
                 }
             },
             SDL_EVENT_TEXT_INPUT => {
@@ -2625,6 +2716,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-unicode-input-smoke")) {
             config.mode = .emacs_epxl_unicode_input;
             config.auto_input = "你好";
+        } else if (std.mem.eql(u8, arg, "--emacs-epxl-key-v2-smoke")) {
+            config.mode = .emacs_epxl_key_v2;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-edit-smoke")) {
             config.mode = .emacs_epxl_edit;
             config.auto_key = .backspace;
@@ -2831,6 +2924,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .emacs_epxl_interactive => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_input => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_unicode_input => try runEmacsEpxlSession(gpa, io, &config, 1),
+        .emacs_epxl_key_v2 => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_edit => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_sequence => try runEmacsEpxlSession(gpa, io, &config, 1),
         .frame_lifecycle => {
@@ -2863,6 +2957,16 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         return error.CursorNotApplied;
     if (config.mode == .emacs_epxl_unicode_input and scene.stats.frame_updates < 2)
         return error.UnexpectedFactUpdateCount;
+    if (config.mode == .emacs_epxl_key_v2 and scene.stats.frame_updates < 3)
+        return error.UnexpectedFactUpdateCount;
+    if (config.mode == .emacs_epxl_key_v2 and
+        (scene.cursor == null or scene.cursor.?.x != 56 or scene.cursor.?.y != 14))
+        return error.FullKeyExecutionNotApplied;
+    if (config.mode == .emacs_epxl_key_v2)
+        std.debug.print(
+            "sdl3-epxl-key-v2-smoke: {{\"kind\":\"sdl3-epxl-key-v2-smoke\",\"assertion\":\"ctrl-a/ctrl-e/end-of-line\",\"unhandled_acked\":true,\"frame_updates\":{d},\"result\":\"pass\"}}\n",
+            .{scene.stats.frame_updates},
+        );
     if (config.mode == .emacs_epxl_unicode_input and
         !sceneHasText(&scene, "你好Emacs Proto-UI")) return error.UnicodeInputNotApplied;
     if (config.mode == .emacs_epxl_unicode_input)

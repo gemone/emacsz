@@ -1282,6 +1282,18 @@ or Unicode-key surface is accepted.  Like text input, it
 uses a separate frontend-to-core sequence and requires an EPXL `ACK` before the
 intent is applied.
 
+Within `KEY_EVENT`, `u16 action=0` is a backward-compatible v2
+discriminator. The next `u16` is exactly `2`. The remaining payload is:
+`u8 state` (`1=down`, `2=up`, `3=repeat`), `u32 modifiers`, `u32
+physical_key` (nonzero), `u32 repeat_count`, `u32 device_id` (`0` local),
+`u32 layout_id` (`0` default), `u8 logical_key_length` (0..64), `u8
+text_length` (0..120), logical-key UTF-8, and text UTF-8. Modifier bits are
+shift/control/meta/alt/super/hyper/function/caps-lock/num-lock/scroll-lock
+from bit zero; unknown bits are invalid. Repeat count is zero for down/up and
+at least one only for repeat. Exact length, valid UTF-8, and no NUL are
+mandatory. This negotiation-gated profile carries intents only; it is not a
+keymap or command execution protocol.
+
 The facts profile reserves extension section `0x8001` for bounded viewport
 metadata. A `FRAME_UPDATE` may carry at most one such section; its payload is
 exactly `i32 window_start_line` followed by `i32 window_visible_lines`. The

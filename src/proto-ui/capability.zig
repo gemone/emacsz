@@ -44,6 +44,7 @@ pub const Feature = enum {
     input_text_ascii,
     input_text_unicode,
     input_key_bounded,
+    input_key_full_v2,
     input_pointer_bounded,
     input_wheel_line,
     clipboard_ascii_bounded,
@@ -89,6 +90,7 @@ pub const Feature = enum {
             .input_text_ascii => "input.text_ascii",
             .input_text_unicode => "input.text_unicode",
             .input_key_bounded => "input.key_bounded",
+            .input_key_full_v2 => "input.key_full_v2",
             .input_pointer_bounded => "input.pointer_bounded",
             .input_wheel_line => "input.wheel_line",
             .clipboard_ascii_bounded => "clipboard.ascii_bounded",
@@ -185,6 +187,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .input_text_ascii, .status = .degraded, .evidence = "sdl3-epxl-input-smoke" },
     .{ .feature = .input_text_unicode, .status = .degraded, .evidence = "sdl3-epxl-unicode-input-smoke" },
     .{ .feature = .input_key_bounded, .status = .degraded, .evidence = "sdl3-epxl-edit-smoke" },
+    .{ .feature = .input_key_full_v2, .status = .degraded, .evidence = "sdl3-epxl-key-v2-smoke" },
     .{ .feature = .input_pointer_bounded, .status = .degraded, .evidence = "sdl3-pointer-smoke" },
     .{ .feature = .input_wheel_line, .status = .degraded, .evidence = "sdl3-wheel-smoke" },
     .{ .feature = .clipboard_ascii_bounded, .status = .degraded, .evidence = "sdl3-clipboard-smoke" },
@@ -506,4 +509,17 @@ test "text Unicode negotiation remains optional alongside ASCII" {
     const no_text_negotiated = try negotiate(all, no_text);
     try std.testing.expect(!no_text_negotiated.effective.contains(.input_text_ascii));
     try std.testing.expect(!no_text_negotiated.effective.contains(.input_text_unicode));
+}
+
+test "full key v2 remains optional for ASCII-only peers" {
+    const all = backendSupported();
+    const negotiated = try negotiate(all, all);
+    try std.testing.expect(negotiated.effective.contains(.input_key_bounded));
+    try std.testing.expect(negotiated.effective.contains(.input_key_full_v2));
+
+    var ascii_only = all;
+    ascii_only.bits[@intFromEnum(Feature.input_key_full_v2)] = false;
+    const effective = try negotiate(all, ascii_only);
+    try std.testing.expect(effective.effective.contains(.input_key_bounded));
+    try std.testing.expect(!effective.effective.contains(.input_key_full_v2));
 }

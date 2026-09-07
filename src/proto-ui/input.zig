@@ -4,6 +4,7 @@ const std = @import("std");
 const frontend = @import("frontend.zig");
 
 pub const SDL_EVENT_KEY_DOWN: c_uint = 0x300;
+pub const SDL_EVENT_KEY_UP: c_uint = 0x301;
 pub const SDL_EVENT_TEXT_INPUT: c_uint = 0x303;
 
 pub const SDL_SCANCODE_COPY: i32 = 6;
@@ -19,6 +20,189 @@ pub const max_text_bytes: usize = 120;
 pub const queue_capacity: usize = 32;
 pub const sdl_ctrl_modifiers: u16 = 0x00c0;
 pub const max_clipboard_bytes: usize = 120;
+
+pub const max_logical_key_bytes: usize = 64;
+
+pub const KeyState = enum(u8) {
+    down = 1,
+    up = 2,
+    repeat = 3,
+};
+
+pub const key_modifier_shift: u32 = 1 << 0;
+pub const key_modifier_control: u32 = 1 << 1;
+pub const key_modifier_meta: u32 = 1 << 2;
+pub const key_modifier_alt: u32 = 1 << 3;
+pub const key_modifier_super: u32 = 1 << 4;
+pub const key_modifier_hyper: u32 = 1 << 5;
+pub const key_modifier_function: u32 = 1 << 6;
+pub const key_modifier_caps_lock: u32 = 1 << 7;
+pub const key_modifier_num_lock: u32 = 1 << 8;
+pub const key_modifier_scroll_lock: u32 = 1 << 9;
+pub const key_modifier_mask: u32 = (1 << 10) - 1;
+
+/// Fixed storage keeps reverse-input queue ownership explicit and bounded.
+pub const FullKeyEvent = struct {
+    state: KeyState,
+    modifiers: u32,
+    physical_key: u32,
+    repeat_count: u32 = 0,
+    device_id: u32 = 0,
+    layout_id: u32 = 0,
+    logical_key_buffer: [max_logical_key_bytes]u8 = undefined,
+    logical_key_length: usize = 0,
+    text_buffer: [max_text_bytes]u8 = undefined,
+    text_length: usize = 0,
+
+    pub fn logicalKey(self: *const FullKeyEvent) []const u8 {
+        return self.logical_key_buffer[0..self.logical_key_length];
+    }
+
+    pub fn text(self: *const FullKeyEvent) []const u8 {
+        return self.text_buffer[0..self.text_length];
+    }
+};
+
+pub const key_v2_schema: u16 = 2;
+pub const key_v2_fixed_tail: usize = 27;
+
+fn validKeyV2String(bytes: []const u8, max_bytes: usize) bool {
+    if (bytes.len > max_bytes) return false;
+    for (bytes) |byte| {
+        if (byte == 0) return false;
+    }
+    return std.unicode.utf8ValidateSlice(bytes);
+}
+
+pub fn validFullKeyEvent(event: FullKeyEvent) bool {
+    if (event.device_id != 0 or event.layout_id != 0) return false;
+    if (event.modifiers & ~key_modifier_mask != 0) return false;
+    if (event.physical_key == 0) return false;
+    if (!validKeyV2String(event.logicalKey(), max_logical_key_bytes) or
+        !validKeyV2String(event.text(), max_text_bytes)) return false;
+    return switch (event.state) {
+        .down, .up => event.repeat_count == 0,
+        .repeat => event.repeat_count >= 1,
+    };
+}
+
+pub fn encodeFullKeyEvent(a: std.mem.Allocator, event: FullKeyEvent, out: *std.ArrayList(u8)) !void {
+    if (!validFullKeyEvent(event)) return error.InvalidFullKeyEvent;
+    const logical = event.logicalKey();
+    const text = event.text();
+    const total = key_v2_fixed_tail + logical.len + text.len;
+    try out.ensureUnusedCapacity(a, total);
+    out.appendAssumeCapacity(0);
+    out.appendAssumeCapacity(0);
+    out.appendAssumeCapacity(key_v2_schema);
+    out.appendAssumeCapacity(0);
+    out.appendAssumeCapacity(@intFromEnum(event.state));
+    inline for (.{ event.modifiers, event.physical_key, event.repeat_count, event.device_id, event.layout_id }) |value| {
+        out.items.len += 4;
+        std.mem.writeInt(u32, out.items[out.items.len - 4 ..][0..4], value, .little);
+    }
+    out.appendAssumeCapacity(@intCast(logical.len));
+    out.appendAssumeCapacity(@intCast(text.len));
+    out.appendSliceAssumeCapacity(logical);
+    out.appendSliceAssumeCapacity(text);
+}
+
+pub fn decodeFullKeyEvent(bytes: []const u8) !FullKeyEvent {
+    if (bytes.len < key_v2_fixed_tail or
+        std.mem.readInt(u16, bytes[0..2], .little) != 0 or
+        std.mem.readInt(u16, bytes[2..4], .little) != key_v2_schema)
+        return error.InvalidFullKeyEvent;
+    const state: KeyState = switch (bytes[4]) {
+        1 => .down,
+        2 => .up,
+        3 => .repeat,
+        else => return error.InvalidFullKeyEvent,
+    };
+    var event: FullKeyEvent = .{ .state = state, .modifiers = 0, .physical_key = 0 };
+    var offset: usize = 5;
+    inline for (.{ "modifiers", "physical_key", "repeat_count", "device_id", "layout_id" }) |field| {
+        if (bytes.len < offset + 4) return error.InvalidFullKeyEvent;
+        @field(event, field) = std.mem.readInt(u32, bytes[offset..][0..4], .little);
+        offset += 4;
+    }
+    const logical_length: usize = bytes[offset];
+    const text_length: usize = bytes[offset + 1];
+    offset += 2;
+    if (bytes.len != offset + logical_length + text_length or
+        logical_length > max_logical_key_bytes or text_length > max_text_bytes)
+        return error.InvalidFullKeyEvent;
+    event.logical_key_length = logical_length;
+    event.text_length = text_length;
+    @memcpy(event.logical_key_buffer[0..logical_length], bytes[offset..][0..logical_length]);
+    @memcpy(event.text_buffer[0..text_length], bytes[offset + logical_length ..][0..text_length]);
+    if (!validFullKeyEvent(event)) return error.InvalidFullKeyEvent;
+    return event;
+}
+
+pub const sdl_kmod_lshift: u16 = 0x0001;
+pub const sdl_kmod_rshift: u16 = 0x0002;
+pub const sdl_kmod_lctrl: u16 = 0x0040;
+pub const sdl_kmod_rctrl: u16 = 0x0080;
+pub const sdl_kmod_lalt: u16 = 0x0100;
+pub const sdl_kmod_ralt: u16 = 0x0200;
+pub const sdl_kmod_lgui: u16 = 0x0400;
+pub const sdl_kmod_rgui: u16 = 0x0800;
+pub const sdl_kmod_mode: u16 = 0x1000;
+pub const sdl_kmod_caps: u16 = 0x2000;
+pub const sdl_kmod_num: u16 = 0x4000;
+pub const sdl_kmod_scroll: u16 = 0x8000;
+
+pub fn sdlModifiersToEup(modifiers: u16) u32 {
+    var result: u32 = 0;
+    if (modifiers & (sdl_kmod_lshift | sdl_kmod_rshift) != 0) result |= key_modifier_shift;
+    if (modifiers & (sdl_kmod_lctrl | sdl_kmod_rctrl) != 0) result |= key_modifier_control;
+    if (modifiers & sdl_kmod_mode != 0) result |= key_modifier_meta;
+    if (modifiers & (sdl_kmod_lalt | sdl_kmod_ralt) != 0) result |= key_modifier_alt;
+    if (modifiers & (sdl_kmod_lgui | sdl_kmod_rgui) != 0) result |= key_modifier_super;
+    if (modifiers & sdl_kmod_caps != 0) result |= key_modifier_caps_lock;
+    if (modifiers & sdl_kmod_num != 0) result |= key_modifier_num_lock;
+    if (modifiers & sdl_kmod_scroll != 0) result |= key_modifier_scroll_lock;
+    return result;
+}
+
+pub fn sdlState(down: bool, repeat: bool) KeyState {
+    return if (repeat) .repeat else if (down) .down else .up;
+}
+
+pub fn sdlLogicalKey(name: ?[*:0]const u8) struct { buffer: [max_logical_key_bytes]u8, length: usize } {
+    var result: [max_logical_key_bytes]u8 = undefined;
+    const source: []const u8 = if (name) |value| std.mem.span(value) else "";
+    const length = @min(source.len, max_logical_key_bytes);
+    @memcpy(result[0..length], source[0..length]);
+    return .{ .buffer = result, .length = length };
+}
+
+pub fn translateFullKey(
+    scancode: i32,
+    logical_name: ?[*:0]const u8,
+    down: bool,
+    repeat: bool,
+    modifiers: u16,
+    device_id: u32,
+) ?FullKeyEvent {
+    if (scancode <= 0 or scancode > std.math.maxInt(u32)) return null;
+    const logical = sdlLogicalKey(logical_name);
+    return .{
+        .state = sdlState(down, repeat),
+        .modifiers = sdlModifiersToEup(modifiers),
+        .physical_key = @intCast(scancode),
+        .repeat_count = if (repeat) 1 else 0,
+        .device_id = device_id,
+        .logical_key_buffer = logical.buffer,
+        .logical_key_length = logical.length,
+    };
+}
+
+pub fn duplicatesTextInput(event: FullKeyEvent) bool {
+    return event.state == .down and event.modifiers == 0 and
+        event.logicalKey().len == 1 and
+        event.logicalKey()[0] >= 0x20 and event.logicalKey()[0] <= 0x7e;
+}
 
 /// Enforces the facts-profile reverse-input sequencing contract: exactly one
 /// input may be in flight, ACKs must match that sequence, and sequence zero is
@@ -63,6 +247,7 @@ pub const TextEvent = struct {
 
 pub const TranslatedEvent = union(enum) {
     key: frontend.KeyEvent,
+    key_v2: FullKeyEvent,
     text: TextEvent,
     pointer: frontend.PointerInput,
     wheel: frontend.WheelInput,
@@ -89,6 +274,13 @@ pub const Queue = struct {
     pub fn pushKey(self: *Queue, event: frontend.KeyEvent) !void {
         if (self.length == queue_capacity) return error.InputQueueFull;
         self.items[self.length] = .{ .key = event };
+        self.length += 1;
+    }
+
+    pub fn pushKeyV2(self: *Queue, event: FullKeyEvent) !void {
+        if (!validFullKeyEvent(event)) return error.InvalidFullKeyEvent;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .key_v2 = event };
         self.length += 1;
     }
 
@@ -139,6 +331,7 @@ pub const DeliveryJournal = struct {
     max_attempts: u32 = 3,
     retry_armed: bool = false,
     pointer_active: bool = false,
+    key_v2_negotiated: bool = false,
 
     pub const Sent = struct {
         sequence: u64,
@@ -148,6 +341,12 @@ pub const DeliveryJournal = struct {
     pub fn pushKey(self: *DeliveryJournal, event: frontend.KeyEvent) !void {
         if (self.pointer_active) return error.PointerSessionActive;
         try self.queue.pushKey(event);
+    }
+
+    pub fn pushKeyV2(self: *DeliveryJournal, event: FullKeyEvent) !void {
+        if (!self.key_v2_negotiated) return error.FullKeyCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushKeyV2(event);
     }
 
     pub fn pushPointer(self: *DeliveryJournal, event: frontend.PointerInput) !void {
@@ -517,4 +716,104 @@ test "queue copies and bounds UTF-8 text" {
     try std.testing.expect(many.pop() != null);
     many.clear();
     try std.testing.expectEqual(@as(?TranslatedEvent, null), many.pop());
+}
+
+test "full key v2 round trips strict variable-length payloads" {
+    const a = std.testing.allocator;
+    var event: FullKeyEvent = .{
+        .state = .repeat,
+        .modifiers = key_modifier_control | key_modifier_hyper | key_modifier_num_lock,
+        .physical_key = 8,
+        .repeat_count = 3,
+        .device_id = 0,
+        .layout_id = 0,
+    };
+    const logical = "é【key】";
+    const text = "こんにちは";
+    @memcpy(event.logical_key_buffer[0..logical.len], logical);
+    event.logical_key_length = logical.len;
+    @memcpy(event.text_buffer[0..text.len], text);
+    event.text_length = text.len;
+
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFullKeyEvent(a, event, &bytes);
+    const decoded = try decodeFullKeyEvent(bytes.items);
+    try std.testing.expectEqual(event.state, decoded.state);
+    try std.testing.expectEqual(event.modifiers, decoded.modifiers);
+    try std.testing.expectEqual(event.physical_key, decoded.physical_key);
+    try std.testing.expectEqual(event.repeat_count, decoded.repeat_count);
+    try std.testing.expectEqualStrings(event.logicalKey(), decoded.logicalKey());
+    try std.testing.expectEqualStrings(event.text(), decoded.text());
+    try std.testing.expectError(error.InvalidFullKeyEvent, decodeFullKeyEvent(bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(error.InvalidFullKeyEvent, decodeFullKeyEvent(bytes.items));
+
+    var invalid = event;
+    invalid.state = .down;
+    invalid.repeat_count = 3;
+    try std.testing.expect(!validFullKeyEvent(invalid));
+    invalid.state = .repeat;
+    invalid.modifiers = key_modifier_mask + 1;
+    try std.testing.expect(!validFullKeyEvent(invalid));
+    invalid.modifiers = 0;
+    invalid.physical_key = 0;
+    try std.testing.expect(!validFullKeyEvent(invalid));
+
+    var nul = event;
+    nul.state = .down;
+    nul.repeat_count = 0;
+    nul.text_buffer[0] = 0;
+    nul.text_length = 1;
+    try std.testing.expect(!validFullKeyEvent(nul));
+}
+
+test "old key receiver and encoder reject the v2 discriminator" {
+    const wire = [_]u8{
+        0, 0, 2, 0, @intFromEnum(KeyState.down),
+        0, 0, 0, 0, 4,
+        0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0,
+        0, 0,
+    };
+    try std.testing.expectError(error.InvalidTable, frontend.decodeKeyEvent(&wire));
+}
+
+test "SDL full-key translation folds modifiers and preserves states" {
+    const down = translateFullKey(8, "e", true, false, sdl_kmod_rctrl | sdl_kmod_lshift | sdl_kmod_caps, 7).?;
+    try std.testing.expectEqual(KeyState.down, down.state);
+    try std.testing.expectEqual(key_modifier_control | key_modifier_shift | key_modifier_caps_lock, down.modifiers);
+    try std.testing.expectEqual(@as(u32, 8), down.physical_key);
+    try std.testing.expectEqual(@as(u32, 7), down.device_id);
+    try std.testing.expectEqualStrings("e", down.logicalKey());
+
+    const up = translateFullKey(8, "e", false, false, sdl_kmod_lctrl, 0).?;
+    try std.testing.expectEqual(KeyState.up, up.state);
+    try std.testing.expectEqual(@as(u32, 0), up.repeat_count);
+
+    const repeat = translateFullKey(11, "b", true, true, sdl_kmod_mode | sdl_kmod_ralt | sdl_kmod_num, 0).?;
+    try std.testing.expectEqual(KeyState.repeat, repeat.state);
+    try std.testing.expectEqual(key_modifier_meta | key_modifier_alt | key_modifier_num_lock, repeat.modifiers);
+    try std.testing.expectEqual(@as(u32, 1), repeat.repeat_count);
+    try std.testing.expect(translateFullKey(0, "bad", true, false, 0, 0) == null);
+    try std.testing.expect(duplicatesTextInput(translateFullKey(8, "x", true, false, 0, 0).?));
+}
+
+test "full key v2 delivery is capability gated and ordered" {
+    var journal: DeliveryJournal = .{};
+    const event = translateFullKey(8, "e", true, false, sdl_kmod_lctrl, 0).?;
+    try std.testing.expectError(error.FullKeyCapabilityNotNegotiated, journal.pushKeyV2(event));
+    journal.key_v2_negotiated = true;
+    try journal.pushKeyV2(event);
+    try journal.pushKey(.{ .action = .cursor_right });
+    const first = (try journal.take()).?;
+    try std.testing.expectEqual(@as(u64, 1), first.sequence);
+    try std.testing.expectEqual(KeyState.down, first.event.key_v2.state);
+    try std.testing.expectEqualStrings("e", first.event.key_v2.logicalKey());
+    try std.testing.expectError(error.InputInFlight, journal.take());
+    try std.testing.expect(journal.acknowledge(1));
+    const second = (try journal.take()).?;
+    try std.testing.expectEqual(@as(u64, 2), second.sequence);
+    try std.testing.expectEqual(frontend.KeyAction.cursor_right, second.event.key.action);
 }

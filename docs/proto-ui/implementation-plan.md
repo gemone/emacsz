@@ -1747,6 +1747,40 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-unicode-
 This is adapter/protocol frontend behavior. It does not enable `output_proto`,
 register a runtime terminal, or implement IME, shaping, fonts, or keymaps.
 
+### W8h — Bounded full key event v2 transport (approved)
+
+Goal: extend the existing 4-byte `KEY_EVENT` profile with a backward-compatible,
+strictly bounded full-key intent without claiming keymap or command parity.
+
+Implemented:
+
+1. The original facts-profile `KEY_EVENT` codec is unchanged. Within the same
+   `0x0600` message, `u16 action=0` followed by `u16 schema=2` is the v2
+   discriminator; legacy receivers reject it, while peers that negotiate
+   `input.key_full_v2` accept it.
+2. Key v2 is variable length with little-endian fields: state, a ten-bit EUP
+   modifier bitset, nonzero physical key, repeat count, local device/layout
+   identifiers, and bounded UTF-8 logical-key and text strings. Exact length,
+   unknown bits, invalid states/repeats, NUL, malformed UTF-8, nonzero layout,
+   and trailing bytes fail without queue mutation.
+3. SDL down/up/repeat translation preserves scancode and folds left/right
+   platform modifiers into EUP bits. Printable unmodified key presses defer to
+   `TEXT_INPUT`. Delivery remains one-in-flight and is gated by negotiated
+   `input.key_full_v2`; ASCII-only peers retain `input.key_bounded`.
+4. EPXL artifacts carry canonical JSON with base64 logical-key/text fields.
+   The Emacs-owned adapter acknowledges every observed event and executes only
+   the explicit C-a/C-e subset for this smoke. It does not evaluate Elisp from
+   the frontend or expose general command/keymap execution.
+5. `input.key_full_v2` is optional, negotiable, and degraded with evidence from
+   `sdl3-epxl-key-v2-smoke`. The smoke executes C-a/C-e and observes an
+   unhandled F5 ACK without claiming full Emacs key compatibility.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-key-v2-smoke --summary all
+```
+
 ### W9l — Public point and dynamic cursor (approved)
 
 Goal: replace the fixed facts-profile cursor with public Emacs point observation
