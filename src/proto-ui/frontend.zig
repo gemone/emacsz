@@ -1091,6 +1091,7 @@ pub const Scene = struct {
             protocol.Message.image_define => try self.applyImageDefine(payload),
             protocol.Message.image_data => try self.applyImageData(payload),
             protocol.Message.image_delete => try self.applyImageDelete(payload),
+            protocol.Message.resource_snapshot => try self.applyResourceSnapshot(payload),
             else => self.stats.control_messages += 1,
         }
         self.next_sequence = next_sequence;
@@ -1203,6 +1204,90 @@ pub const Scene = struct {
         if (generation != 1) return Error.InvalidMessage;
         try self.frames.create(frame_id, generation);
         self.frame = .{ .frame_id = frame_id, .generation = generation };
+        self.stats.control_messages += 1;
+    }
+
+    fn appendSnapshotTombstone(
+        resources: *lifecycle.ResourceRegistry,
+        entry: protocol.ResourceSnapshotEntry,
+    ) Error!void {
+        if (resources.len == lifecycle.max_resources) return Error.ResourceTableFull;
+        resources.resources[resources.len] = .{
+            .kind = entry.kind,
+            .id = entry.resource_id,
+            .generation = entry.generation,
+            .status = .deleted,
+        };
+        resources.len += 1;
+    }
+
+    fn restoreImageEntry(
+        images: *ImageResources,
+        resources: *lifecycle.ResourceRegistry,
+        allocator: std.mem.Allocator,
+        entry: protocol.ResourceSnapshotEntry,
+    ) Error!void {
+        const metadata = try protocol.decodeImageDefine(entry.payload[0..protocol.image_record_size]);
+        try images.define(allocator, resources, metadata);
+        const fragment_count = (entry.payload.len - protocol.image_record_size +
+            protocol.max_image_fragment_bytes - 1) / protocol.max_image_fragment_bytes;
+        var offset: usize = protocol.image_record_size;
+        var fragment_index: u16 = 0;
+        while (offset < entry.payload.len) : (fragment_index += 1) {
+            const end = @min(entry.payload.len, offset + protocol.max_image_fragment_bytes);
+            try images.data(allocator, .{
+                .image_id = metadata.image_id,
+                .generation = metadata.generation,
+                .fragment_index = fragment_index,
+                .fragment_count = @intCast(fragment_count),
+                .bytes = entry.payload[offset..end],
+            });
+            offset = end;
+        }
+    }
+
+    /// A snapshot is authoritative: validate and build every replacement table
+    /// before releasing the old state.  No snapshot error reaches this swap.
+    fn applyResourceSnapshot(self: *Scene, payload: protocol.Payload) Error!void {
+        var snapshot = try protocol.decodeResourceSnapshot(self.allocator, payload.bytes);
+        defer protocol.freeResourceSnapshot(self.allocator, &snapshot);
+
+        var strings = StringResources{};
+        var faces = FaceResources{};
+        var fonts = FontResources{};
+        var images = ImageResources{};
+        var resources = lifecycle.ResourceRegistry{};
+        errdefer {
+            strings.deinit(self.allocator);
+            images.clear(self.allocator);
+        }
+
+        for (snapshot.entries) |entry| {
+            switch (entry.status) {
+                .deleted => try appendSnapshotTombstone(&resources, entry),
+                .live => switch (entry.kind) {
+                    .face => try faces.define(&resources, try protocol.decodeFaceDefine(entry.payload)),
+                    .font => try fonts.define(&resources, try protocol.decodeFontDefine(entry.payload)),
+                    .string => try strings.define(self.allocator, &resources, .{
+                        .resource_id = entry.resource_id,
+                        .generation = entry.generation,
+                        .bytes = entry.payload,
+                    }),
+                    .image => try restoreImageEntry(&images, &resources, self.allocator, entry),
+                    .fringe_bitmap, .icon => return Error.Unsupported,
+                },
+            }
+        }
+
+        var old_strings = self.strings;
+        var old_images = self.images;
+        self.strings = strings;
+        self.faces = faces;
+        self.fonts = fonts;
+        self.images = images;
+        self.resources = resources;
+        old_strings.deinit(self.allocator);
+        old_images.clear(self.allocator);
         self.stats.control_messages += 1;
     }
 
@@ -2846,5 +2931,188 @@ test "image fragment order totals malformed records and limits fail closed" {
     const truncated = try imageMessage(a, protocol.Message.image_data, 2, truncated_payload);
     defer a.free(truncated);
     try std.testing.expectError(Error.InvalidTable, scene.apply(truncated));
+    scene.deinit();
+}
+
+fn snapshotFontFixture(id: u32, generation: u32) protocol.FontDefine {
+    var payload = protocol.FontDefine{
+        .font_id = id,
+        .generation = generation,
+        .family_len = 1,
+        .foundry_len = 5,
+        .style_len = 5,
+        .slant = .roman,
+        .spacing = .mono,
+        .scalable = true,
+        .fixed_pitch = true,
+        .pixel_size = 16,
+        .point_size_tenths = 120,
+        .x_dpi = 96,
+        .y_dpi = 96,
+        .ascent = 10,
+        .descent = 4,
+        .line_height = 14,
+        .average_advance = 8,
+        .space_advance = 8,
+        .max_advance = 10,
+        .min_advance = 6,
+        .baseline_offset = 10,
+        .underline_position = -2,
+        .underline_thickness = 1,
+    };
+    payload.family[0] = 'F';
+    @memcpy(payload.foundry[0..5], "found");
+    @memcpy(payload.style[0..5], "Book1");
+    return payload;
+}
+
+fn snapshotMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    entries: []const protocol.ResourceSnapshotEntry,
+) ![]u8 {
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeResourceSnapshot(a, .{ .entries = entries }, &payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = protocol.Flags.snapshot,
+        .message_type = protocol.Message.resource_snapshot,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .timestamp_ns = sequence,
+    }, payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
+test "snapshot atomically restores concrete resources and tombstones" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    // Seed incomplete and superseded state to prove authoritative replacement.
+    try scene.strings.define(a, &scene.resources, .{
+        .resource_id = 100,
+        .generation = 1,
+        .bytes = "old",
+    });
+    try scene.images.define(a, &scene.resources, frontendImageFixture(20, 1));
+    try scene.images.data(a, .{
+        .image_id = 20,
+        .generation = 1,
+        .fragment_index = 0,
+        .fragment_count = 2,
+        .bytes = "half",
+    });
+
+    const face_wire = try protocol.encodeFaceDefineBytes(.{ .face_id = 11, .generation = 2 });
+    const font_wire = try protocol.encodeFontDefineBytes(snapshotFontFixture(12, 3));
+    const image_metadata = try protocol.encodeImageDefineBytes(frontendImageFixture(14, 3));
+    var image_wire: [protocol.image_record_size + 16]u8 = undefined;
+    @memcpy(image_wire[0..protocol.image_record_size], &image_metadata);
+    @memcpy(image_wire[protocol.image_record_size..], "sixteen_pixels!!");
+    const entries = [_]protocol.ResourceSnapshotEntry{
+        .{ .kind = .face, .status = .live, .resource_id = 11, .generation = 2, .payload = &face_wire },
+        .{ .kind = .font, .status = .live, .resource_id = 12, .generation = 3, .payload = &font_wire },
+        .{ .kind = .image, .status = .live, .resource_id = 14, .generation = 3, .payload = &image_wire },
+        .{ .kind = .string, .status = .live, .resource_id = 16, .generation = 4, .payload = "snapshot" },
+        .{ .kind = .image, .status = .deleted, .resource_id = 20, .generation = 2, .payload = &.{} },
+    };
+    const message = try snapshotMessage(a, 2, &entries);
+    defer a.free(message);
+    try scene.apply(message);
+
+    try std.testing.expectEqual(@as(u32, 2), scene.faces.lookup(11).?.generation);
+    try std.testing.expectEqual(@as(u32, 3), scene.fonts.lookup(12).?.generation);
+    try std.testing.expectEqualStrings("snapshot", scene.strings.lookup(16).?.bytes);
+    const image = scene.images.lookup(14).?;
+    try std.testing.expect(image.complete);
+    try std.testing.expectEqualStrings("sixteen_pixels!!", image.bytes);
+    try std.testing.expectEqual(lifecycle.ResourceStatus.deleted, scene.resources.lookup(.image, 20).?.status);
+    try std.testing.expectEqual(@as(u64, 2), scene.stats.control_messages);
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+}
+
+test "empty snapshot replaces all resources and clears incomplete images" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    try scene.strings.define(a, &scene.resources, .{ .resource_id = 1, .generation = 1, .bytes = "old" });
+    try scene.faces.define(&scene.resources, .{ .face_id = 2, .generation = 1 });
+    try scene.fonts.define(&scene.resources, snapshotFontFixture(3, 1));
+    try scene.images.define(a, &scene.resources, frontendImageFixture(4, 1));
+
+    const empty = [_]protocol.ResourceSnapshotEntry{};
+    const message = try snapshotMessage(a, 2, &empty);
+    defer a.free(message);
+    try scene.apply(message);
+
+    try std.testing.expectEqual(@as(usize, 0), scene.strings.len);
+    try std.testing.expectEqual(@as(usize, 0), scene.faces.len);
+    try std.testing.expectEqual(@as(usize, 0), scene.fonts.len);
+    try std.testing.expectEqual(@as(usize, 0), scene.images.len);
+    try std.testing.expectEqual(@as(usize, 0), scene.resources.len);
+}
+
+test "rejected snapshot is atomic and preserves sequence continuity" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+    try scene.strings.define(a, &scene.resources, .{ .resource_id = 8, .generation = 1, .bytes = "kept" });
+
+    const face_wire = try protocol.encodeFaceDefineBytes(.{ .face_id = 9, .generation = 1 });
+    const duplicate = [_]protocol.ResourceSnapshotEntry{
+        .{ .kind = .face, .status = .live, .resource_id = 9, .generation = 1, .payload = &face_wire },
+        .{ .kind = .face, .status = .deleted, .resource_id = 9, .generation = 2, .payload = &.{} },
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try std.testing.expectError(Error.InvalidTable, protocol.encodeResourceSnapshot(a, .{ .entries = &duplicate }, &payload));
+
+    const valid = [_]protocol.ResourceSnapshotEntry{
+        .{ .kind = .string, .status = .live, .resource_id = 10, .generation = 1, .payload = "new" },
+    };
+    const message = try snapshotMessage(a, 2, &valid);
+    defer a.free(message);
+    try std.testing.expectError(Error.InvalidEnvelope, scene.apply(message[0 .. message.len - 1]));
+    try std.testing.expectEqual(@as(u64, 2), scene.next_sequence.?);
+    try std.testing.expectEqualStrings("kept", scene.strings.lookup(8).?.bytes);
+    try std.testing.expectEqual(@as(usize, 0), scene.faces.len);
+
+    const accepted = try snapshotMessage(a, 2, &valid);
+    defer a.free(accepted);
+    try scene.apply(accepted);
+    try std.testing.expectEqualStrings("new", scene.strings.lookup(10).?.bytes);
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+}
+
+test "snapshot resources clear on resync and scene deinit" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+    const string = [_]protocol.ResourceSnapshotEntry{
+        .{ .kind = .string, .status = .live, .resource_id = 10, .generation = 1, .payload = "owned" },
+    };
+    const message = try snapshotMessage(a, 2, &string);
+    defer a.free(message);
+    try scene.apply(message);
+    try std.testing.expectEqual(@as(usize, 1), scene.strings.len);
+    scene.resetForResync();
+    try std.testing.expectEqual(@as(usize, 0), scene.strings.len);
+    try std.testing.expectEqual(@as(usize, 0), scene.resources.len);
     scene.deinit();
 }

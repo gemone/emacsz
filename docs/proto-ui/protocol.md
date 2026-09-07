@@ -396,7 +396,7 @@ These messages are reserved for tools, debug, and explicitly negotiated fallback
 | `0x050f` | `STRING_DELETE` | C→F | ID/generation | Invalidate string |
 | `0x0510` | `RESOURCE_REQUEST` | F→C | Missing IDs | Request retransmission |
 | `0x0511` | `RESOURCE_EVICT` | C→F | ID/reason | Eviction |
-| `0x0512` | `RESOURCE_SNAPSHOT` | C→F | Resource set | Resync |
+| `0x0512` | `RESOURCE_SNAPSHOT` | C→F | Atomic concrete resource snapshot (v1) | Replace adapter resource state |
 | `0x0513` | `ATLAS_DEFINE` | C/F | Atlas descriptor | Define glyph atlas |
 | `0x0514` | `ATLAS_PAGE_UPDATE` | C/F | Page pixels | Update page |
 | `0x0515` | `ATLAS_GLYPH_ADD` | C/F | Glyph entry | Add cache entry |
@@ -577,6 +577,41 @@ incomplete payloads, frees owned bytes, and marks the shared registry deleted.
 Images are protocol-global: frame destroy retains them, while resync and scene
 teardown clear them.  At most 8 images are active, and the sum of their
 declared pixel-byte totals is at most 4 MiB.
+
+### Resource snapshot v1 (implemented bounded adapter contract)
+
+`RESOURCE_SNAPSHOT` begins with two little-endian `u32` values:
+`snapshot_format_version` (exactly `1`) and `entry_count` (`0..64`).  It is
+followed by ordered entries.  An entry has a fixed little-endian 16-byte header
+and an exact payload:
+
+```text
+u8  kind             face=1, font=2, image=3, fringe_bitmap=4, icon=5, string=6
+u8  status           live=1, deleted=2
+u16 reserved        zero
+u32 resource_id      nonzero
+u32 generation       nonzero
+u32 payload_length   exact remaining bytes for this entry
+u8  payload[length]
+```
+
+Entries are unique by `(kind, resource_id)`.  A deleted tombstone has a
+zero-length payload and may name any known resource family.  A live record is
+allowed only for the concrete v1 encodings: exact 96-byte `FACE_DEFINE` bytes,
+exact 224-byte `FONT_DEFINE` bytes, 1..4096 bytes of strict UTF-8 for a string,
+or an image payload consisting of exact `IMAGE_DEFINE` metadata followed by the
+metadata's exact declared RGBA8 bytes.  Face/font/image payload identities must
+equal the entry identity.  Live image payloads together use at most 4 MiB of
+pixel bytes.  Wrong boundaries, mismatched identities, reserved bytes, invalid
+UTF-8, duplicate IDs, oversized budgets, and trailing bytes are rejected.
+
+The frontend parses and constructs an entire replacement state before mutating
+the scene.  A successful snapshot atomically replaces string, face, font, and
+image tables plus the shared resource registry; deleted records become registry
+tombstones.  Incomplete image state is cleared or replaced.  Any decode,
+allocation, capacity, or payload error leaves the prior resources and message
+sequence unchanged.  Decoded snapshots own their entry array and payload bytes;
+callers free them with the explicit snapshot-free API.
 
 ### Face resource (full model, pending)
 

@@ -17,6 +17,7 @@ pub const Error = error{
     InvalidStyle,
     InvalidBoolean,
     InvalidReserved,
+    ResourcePayloadBudgetExceeded,
     TrailingBytes,
     Unsupported,
 };
@@ -51,6 +52,7 @@ pub const Message = struct {
     pub const frame_focus: u16 = 0x0210;
     pub const resource_request: u16 = 0x0510;
     pub const resource_evict: u16 = 0x0511;
+    pub const resource_snapshot: u16 = 0x0512;
     pub const face_define: u16 = 0x0500;
     pub const face_delete: u16 = 0x0502;
     pub const font_define: u16 = 0x0503;
@@ -399,6 +401,176 @@ fn validateImageDefine(payload: ImageDefine) Error!void {
     const required: u64 = @as(u64, payload.width) * @as(u64, payload.height) * 4;
     if (required > max_image_bytes or payload.total_byte_count != required) return Error.InvalidMessage;
     if (payload.animation_frame_count != 1 or payload.animation_duration_ns != 0) return Error.InvalidMessage;
+}
+
+pub const SnapshotStatus = enum(u8) {
+    live = 1,
+    deleted = 2,
+};
+
+pub const snapshot_entry_size: usize = 16;
+pub const max_snapshot_entries: usize = 64;
+
+/// A snapshot entry borrows `payload` when supplied by the caller.  Decoded
+/// snapshots own both the entry array and every non-zero-length payload; use
+/// `freeResourceSnapshot` to release that representation.
+pub const ResourceSnapshotEntry = struct {
+    kind: ResourceKind,
+    status: SnapshotStatus,
+    resource_id: u32,
+    generation: u32,
+    payload: []const u8 = &.{},
+};
+
+pub const ResourceSnapshot = struct {
+    format_version: u32 = 1,
+    entries: []const ResourceSnapshotEntry,
+};
+
+fn snapshotEntryDuplicate(entry: ResourceSnapshotEntry, prior: []const ResourceSnapshotEntry) bool {
+    for (prior) |other| {
+        if (other.kind == entry.kind and other.resource_id == entry.resource_id) return true;
+    }
+    return false;
+}
+
+fn validateSnapshotEntryPayload(entry: ResourceSnapshotEntry) Error!void {
+    if (entry.resource_id == 0 or entry.generation == 0) return Error.InvalidMessage;
+    if (entry.status == .deleted) {
+        if (entry.payload.len != 0) return Error.InvalidMessage;
+        return;
+    }
+    switch (entry.kind) {
+        .face => {
+            const payload = try decodeFaceDefine(entry.payload);
+            if (payload.face_id != entry.resource_id or payload.generation != entry.generation)
+                return Error.InvalidResource;
+        },
+        .font => {
+            const payload = try decodeFontDefine(entry.payload);
+            if (payload.font_id != entry.resource_id or payload.generation != entry.generation)
+                return Error.InvalidResource;
+        },
+        .image => {
+            if (entry.payload.len < image_record_size) return Error.InvalidTable;
+            const metadata = try decodeImageDefine(entry.payload[0..image_record_size]);
+            if (metadata.image_id != entry.resource_id or metadata.generation != entry.generation)
+                return Error.InvalidResource;
+            if (entry.payload.len != image_record_size + metadata.total_byte_count)
+                return Error.InvalidMessage;
+        },
+        .string => try validateStringBytes(entry.payload),
+        // Snapshot tombstones may name reserved families, but live state is
+        // limited to the concrete encodings implemented by EUP v1.
+        .fringe_bitmap, .icon => return Error.Unsupported,
+    }
+}
+
+fn validateSnapshot(snapshot: ResourceSnapshot) Error!void {
+    if (snapshot.format_version != 1) return Error.InvalidVersion;
+    if (snapshot.entries.len > max_snapshot_entries) return Error.InvalidTable;
+    var image_bytes: u64 = 0;
+    for (snapshot.entries, 0..) |entry, index| {
+        if (snapshotEntryDuplicate(entry, snapshot.entries[0..index])) return Error.InvalidTable;
+        try validateSnapshotEntryPayload(entry);
+        if (entry.status == .live and entry.kind == .image) {
+            const metadata = try decodeImageDefine(entry.payload[0..image_record_size]);
+            image_bytes += metadata.total_byte_count;
+            if (image_bytes > max_image_bytes) return Error.ResourcePayloadBudgetExceeded;
+        }
+    }
+}
+
+pub fn encodeResourceSnapshot(
+    a: std.mem.Allocator,
+    snapshot: ResourceSnapshot,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateSnapshot(snapshot);
+    try putU32(out, a, snapshot.format_version);
+    try putU32(out, a, @intCast(snapshot.entries.len));
+    for (snapshot.entries) |entry| {
+        try out.append(a, @intFromEnum(entry.kind));
+        try out.append(a, @intFromEnum(entry.status));
+        try out.appendSlice(a, &.{ 0, 0 });
+        try putU32(out, a, entry.resource_id);
+        try putU32(out, a, entry.generation);
+        try putU32(out, a, @intCast(entry.payload.len));
+        try out.appendSlice(a, entry.payload);
+    }
+}
+
+/// The result owns its entry array and payload bytes.  `data` is only read.
+pub fn decodeResourceSnapshot(
+    a: std.mem.Allocator,
+    data: []const u8,
+) (Error || std.mem.Allocator.Error)!ResourceSnapshot {
+    var reader = Reader{ .data = data };
+    if (try reader.readU32() != 1) return Error.InvalidVersion;
+    const entry_count = try reader.readU32();
+    if (entry_count > max_snapshot_entries) return Error.InvalidTable;
+
+    const entries = try a.alloc(ResourceSnapshotEntry, entry_count);
+    errdefer a.free(entries);
+    var image_bytes: u64 = 0;
+    for (entries) |*entry| {
+        const kind_byte = try reader.bytes(1);
+        const status_byte = try reader.bytes(1);
+        const reserved = try reader.bytes(2);
+        if (reserved[0] != 0 or reserved[1] != 0) return Error.InvalidReserved;
+        entry.* = .{
+            .kind = switch (kind_byte[0]) {
+                1 => .face,
+                2 => .font,
+                3 => .image,
+                4 => .fringe_bitmap,
+                5 => .icon,
+                6 => .string,
+                else => return Error.InvalidResource,
+            },
+            .status = switch (status_byte[0]) {
+                1 => .live,
+                2 => .deleted,
+                else => return Error.InvalidResource,
+            },
+            .resource_id = try reader.readU32(),
+            .generation = try reader.readU32(),
+            .payload = &.{},
+        };
+        const payload_length = try reader.readU32();
+        if (payload_length > data.len) return Error.InvalidTable;
+        const payload = try reader.bytes(payload_length);
+        entry.payload = payload;
+        try validateSnapshotEntryPayload(entry.*);
+        if (entry.status == .live and entry.kind == .image) {
+            const metadata = try decodeImageDefine(payload[0..image_record_size]);
+            image_bytes += metadata.total_byte_count;
+            if (image_bytes > max_image_bytes) return Error.ResourcePayloadBudgetExceeded;
+        }
+    }
+    if (reader.offset != data.len) return Error.TrailingBytes;
+
+    // Copy validated payloads so callers can free the input immediately.
+    // Failed copies unwind all preceding payload ownership.
+    var initialized: usize = 0;
+    errdefer for (entries[0..initialized]) |entry| {
+        if (entry.payload.len != 0) a.free(entry.payload);
+    };
+    for (entries) |*entry| {
+        if (entry.payload.len != 0) entry.payload = try a.dupe(u8, entry.payload);
+        initialized += 1;
+    }
+    return .{ .format_version = 1, .entries = entries };
+}
+
+pub fn freeResourceSnapshot(a: std.mem.Allocator, snapshot: *ResourceSnapshot) void {
+    for (snapshot.entries) |entry| {
+        if (entry.payload.len != 0) a.free(entry.payload);
+    }
+    // Decoded snapshots own memory allocated as mutable entries; the public
+    // type is const so callers cannot mutate the validated table in place.
+    a.free(@constCast(snapshot.entries));
+    snapshot.* = .{ .entries = &.{} };
 }
 
 fn validateFontMetadata(
@@ -2157,4 +2329,114 @@ test "image codecs validate fixed metadata, fragments, and deletes" {
     try encodeImageDelete(std.testing.allocator, .{ .image_id = 7, .generation = 2 }, &bytes);
     try std.testing.expectEqual(@as(u32, 7), (try decodeImageDelete(bytes.items)).image_id);
     try std.testing.expectError(Error.InvalidTable, decodeImageDelete(bytes.items[0..7]));
+}
+
+fn snapshotEntry(
+    kind: ResourceKind,
+    status: SnapshotStatus,
+    id: u32,
+    generation: u32,
+    payload: []const u8,
+) ResourceSnapshotEntry {
+    return .{ .kind = kind, .status = status, .resource_id = id, .generation = generation, .payload = payload };
+}
+
+test "resource snapshot round trips empty and owns decoded payload" {
+    const a = std.testing.allocator;
+    const empty = [_]ResourceSnapshotEntry{};
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeResourceSnapshot(a, .{ .entries = &empty }, &bytes);
+    var snapshot = try decodeResourceSnapshot(a, bytes.items);
+    defer freeResourceSnapshot(a, &snapshot);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.entries.len);
+    try std.testing.expectEqual(@as(u32, 1), snapshot.format_version);
+}
+
+test "resource snapshot preserves every concrete kind and tombstone" {
+    const a = std.testing.allocator;
+    const face_wire = try encodeFaceDefineBytes(.{ .face_id = 11, .generation = 2 });
+    var font_payload = fontFixture();
+    font_payload.font_id = 12;
+    font_payload.generation = 5;
+    const font_wire = try encodeFontDefineBytes(font_payload);
+    const image_metadata = try encodeImageDefineBytes(imageFixture(14, 3));
+    var image_wire: [image_record_size + 16]u8 = undefined;
+    @memcpy(image_wire[0..image_record_size], &image_metadata);
+    @memcpy(image_wire[image_record_size..], "sixteen_pixels!!");
+
+    const entries = [_]ResourceSnapshotEntry{
+        snapshotEntry(.face, .live, 11, 2, &face_wire),
+        snapshotEntry(.font, .live, 12, 5, &font_wire),
+        snapshotEntry(.image, .live, 14, 3, &image_wire),
+        snapshotEntry(.string, .live, 16, 7, "snapshot"),
+        snapshotEntry(.fringe_bitmap, .deleted, 20, 2, &.{}),
+        snapshotEntry(.icon, .deleted, 21, 3, &.{}),
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeResourceSnapshot(a, .{ .entries = &entries }, &bytes);
+
+    var snapshot = try decodeResourceSnapshot(a, bytes.items);
+    defer freeResourceSnapshot(a, &snapshot);
+    try std.testing.expectEqual(entries.len, snapshot.entries.len);
+    try std.testing.expectEqualStrings("snapshot", snapshot.entries[3].payload);
+    _ = try decodeFaceDefine(snapshot.entries[0].payload);
+    _ = try decodeFontDefine(snapshot.entries[1].payload);
+    _ = try decodeImageDefine(snapshot.entries[2].payload[0..image_record_size]);
+    try std.testing.expectEqualSlices(u8, "sixteen_pixels!!", snapshot.entries[2].payload[image_record_size..]);
+    try std.testing.expectEqual(SnapshotStatus.deleted, snapshot.entries[4].status);
+
+    // The decoded payload is a validated copy, including the exact image tail.
+}
+
+test "resource snapshot rejects malformed boundaries identity and duplicates" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    const bad_version = [_]u8{ 2, 0, 0, 0, 0, 0, 0, 0 };
+    try std.testing.expectError(Error.InvalidVersion, decodeResourceSnapshot(a, &bad_version));
+
+    const face_wire = try encodeFaceDefineBytes(.{ .face_id = 1, .generation = 1 });
+    const base = [_]ResourceSnapshotEntry{
+        snapshotEntry(.face, .live, 1, 1, &face_wire),
+        snapshotEntry(.face, .deleted, 1, 2, &.{}),
+    };
+    try std.testing.expectError(Error.InvalidTable, encodeResourceSnapshot(a, .{ .entries = &base }, &bytes));
+
+    const zero_id = [_]ResourceSnapshotEntry{snapshotEntry(.face, .live, 0, 1, &face_wire)};
+    try std.testing.expectError(Error.InvalidMessage, encodeResourceSnapshot(a, .{ .entries = &zero_id }, &bytes));
+
+    const bad_deleted = [_]ResourceSnapshotEntry{snapshotEntry(.face, .deleted, 2, 1, &face_wire)};
+    try std.testing.expectError(Error.InvalidMessage, encodeResourceSnapshot(a, .{ .entries = &bad_deleted }, &bytes));
+
+    const bad_live = [_]ResourceSnapshotEntry{snapshotEntry(.face, .live, 2, 1, face_wire[0..95])};
+    try std.testing.expectError(Error.InvalidTable, encodeResourceSnapshot(a, .{ .entries = &bad_live }, &bytes));
+
+    const mismatched = [_]ResourceSnapshotEntry{snapshotEntry(.face, .live, 2, 1, &face_wire)};
+    try std.testing.expectError(Error.InvalidResource, encodeResourceSnapshot(a, .{ .entries = &mismatched }, &bytes));
+
+    const metadata = try encodeImageDefineBytes(imageFixture(3, 1));
+    var short_image: [image_record_size + 1]u8 = undefined;
+    @memcpy(short_image[0..image_record_size], &metadata);
+    short_image[image_record_size] = 0;
+    const incomplete = [_]ResourceSnapshotEntry{snapshotEntry(.image, .live, 3, 1, &short_image)};
+    try std.testing.expectError(Error.InvalidMessage, encodeResourceSnapshot(a, .{ .entries = &incomplete }, &bytes));
+
+    const mismatched_image = [_]ResourceSnapshotEntry{snapshotEntry(.image, .live, 4, 1, &short_image)};
+    try std.testing.expectError(Error.InvalidResource, encodeResourceSnapshot(a, .{ .entries = &mismatched_image }, &bytes));
+
+    const empty = [_]ResourceSnapshotEntry{};
+    bytes.clearRetainingCapacity();
+    try encodeResourceSnapshot(a, .{ .entries = &empty }, &bytes);
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.TrailingBytes, decodeResourceSnapshot(a, bytes.items));
+
+    var reserved = bytes.items;
+    reserved[bytes.items.len - 1] = 0;
+    var malformed = [_]u8{ 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0 };
+    malformed[8] = 0;
+    malformed[10] = 0;
+    try std.testing.expectError(Error.InvalidResource, decodeResourceSnapshot(a, &malformed));
 }

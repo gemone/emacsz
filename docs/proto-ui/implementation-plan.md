@@ -709,6 +709,32 @@ Limits: no actual image decoding, color management, texture upload, scaling,
 animation, rendering, redisplay image capture, Emacs image parity,
 `resource.v1`, host registration, or `output_proto` runtime is claimed.
 
+#### W6-e status
+
+Status: W6-e complete as an atomic concrete-resource snapshot/restore contract.
+
+`RESOURCE_SNAPSHOT` (`0x0512`) v1 has an exact format/version header, 0..64
+ordered entries, and a fixed entry header containing kind, live/deleted status,
+nonzero identity/generation, payload length, and zero reserved bytes.  Entry
+IDs are unique by kind.  Deleted records are zero-length tombstones.  Live
+payloads use the existing exact concrete encodings: 96-byte face records,
+224-byte font records, 1..4096 bytes of strict UTF-8 for strings, or complete
+`IMAGE_DEFINE` metadata plus the exact declared RGBA8 bytes.  Payload identity
+must agree with entry identity; aggregate live image bytes are capped at 4 MiB;
+invalid boundaries, reserved bytes, duplicates, unsupported live families, and
+trailing bytes reject.
+
+The frontend builds an entire replacement state before mutation.  A successful
+snapshot atomically replaces string/face/font/image tables and the shared
+registry, records tombstones, and clears incomplete image state.  Any error
+leaves prior resources and the contiguous sequence untouched; resync and scene
+deinit release owned state.  `resource.snapshot_v1` is degraded and
+non-negotiable with `proto-ui-unit` evidence; `resource.v1` remains pending.
+
+Limits: no resource capture, runtime registration, transport activation,
+rendering, image decoding, complete Emacs resource parity, or `output_proto`
+runtime is claimed.
+
 ### W7 — Transport and recovery
 
 Goal: support real frontend IPC and deterministic recovery.

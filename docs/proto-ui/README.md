@@ -117,6 +117,15 @@ deletion, and resync/teardown cleanup.  It is not image decoding, color
 management, texture upload, scaling, rendering, redisplay image capture, Emacs
 image parity, or runtime enablement; `resource.v1` remains pending.
 
+W6-e adds an atomic `RESOURCE_SNAPSHOT` v1 restore for the concrete adapter
+resource model.  A bounded snapshot carries up to 64 unique live/deleted
+records, validates exact face/font/string/image payload encodings and identity
+agreement, caps live image bytes at 4 MiB, and replaces the frontend's
+string/face/font/image tables and shared registry only after a complete
+replacement state is built.  This is protocol/frontend restore evidence, not
+runtime enablement, rendering, full resource parity, or a claim that
+`frame.output_proto` is available.
+
 W4c-b1-p0 adds the executable EUP v1 codec, including envelope, capability, message-ID, and FRAME_UPDATE section conformance.  W4c-b1-t0 adds bounded memory-sink sequencing and ERP1 replay-file conformance.  W4c-b1-b0 adds the versioned adapter ABI, a fake-host conformance harness, and generated ABI artifacts under `zig-out/include/proto-ui`; none introduces runtime integration.  Inherited C/Lisp changes in the rollback patch are restoration-only and return Proto-UI runtime files to their pre-Proto-UI state.  The adapter source is the authoritative ownership manifest; generated JSON is only a non-normative ABI summary.
 
 The documentation in this directory is the source of truth for the implementation workstreams.
