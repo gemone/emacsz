@@ -1,0 +1,249 @@
+# Pure SDL3 Emacs Frontend and PGTK Parity
+
+Status: **normative target architecture**
+Runtime status: **not implemented**; R7 remains fail-closed
+Protocol: EUP v1
+Reference backend: PGTK, used only for behavior and capability comparison
+UI backend: SDL3 owns the final visible surface
+
+## 1. Target statement
+
+Proto-UI's end state is a real Emacs terminal, `output_proto`, whose visible
+frames are rendered entirely by an independent SDL3 frontend.  PGTK is not part
+of that runtime path.  PGTK is retained only as a reference implementation for
+comparing behavior, capability coverage, and visual semantics.
+
+The corrected architecture is:
+
+```text
+GNU Emacs core
+  buffer, command, window-layout, face, font, image, redisplay, and
+  input-interpretation truth
+        |
+        | host terminal/frame/redisplay/input seam
+        v
+output_proto adapter
+  terminal identity, frame identity, capture translation, resources,
+  damage, transport lifecycle, recovery, and protocol encoding
+        |
+        | EUP v1
+        v
+SDL3 frontend
+  real OS window, GPU/software renderer, input capture, IME surface,
+  desktop integration, damage presentation, and frontend-side caches
+```
+
+A diagnostic path may observe a PGTK Emacs and render bounded facts in SDL3.
+That path is useful evidence, but it is **not** `output_proto`, not a pure SDL3
+frame, and not PGTK parity.  In particular, W10d/W10e/W10f glyph-run smokes are
+protocol/renderer diagnostics, not production redisplay.
+
+## 2. Pure-runtime rule
+
+A final Proto-UI frame must satisfy all of the following:
+
+1. `frame-parameter FRAME 'window-system` is `proto`.
+2. The visible surface is created and owned by the SDL3 frontend.
+3. Keyboard, pointer, wheel, IME geometry, drag-and-drop, clipboard, selection,
+   and desktop events return through `output_proto`.
+4. GTK/GDK is not initialized for the frame and no GTK widget is part of the
+   frame's implementation.
+5. If SDL3 disconnects, the frame survives or fails deterministically; it must
+   not silently become a PGTK or TTY frame.
+6. TTY may remain a separate Emacs backend, but it is not a Proto-UI runtime
+   fallback.
+7. A frontend crash is contained and recoverable without corrupting Emacs state.
+
+The reference PGTK build and the pure SDL3 runtime build must remain separate:
+
+| Profile | Purpose | Required shape |
+|---|---|---|
+| PGTK reference | Source of behavioral and visual comparisons | `-Dpgtk=true -Dproto-ui=false` |
+| Pure SDL3 target | Final `output_proto` runtime | `-Dpgtk=false -Dproto-ui=true -Dproto-ui-runtime=true -Dsdl3-frontend=true` |
+| Diagnostic bridge | Current bounded public-fact and protocol evidence | Opt-in only; never described as the final runtime |
+
+The pure SDL3 profile must not require GTK3 development files solely to open a
+Proto frame.  Existing unrelated dependencies may remain in the broader Emacs
+build, but the Proto frame path must not initialize GDK/GTK.
+
+## 3. Ownership model
+
+| Concern | Owner | Rationale |
+|---|---|---|
+| Buffer text, undo, commands, keymaps, minibuffer | Emacs core | Emacs semantics are authoritative. |
+| Window layout, selected window, point, mark, region, scrolling model | Emacs core | The frontend must not reflow or invent editor state. |
+| Face merging, font selection, shaping, glyph metrics, image decoding policy | Emacs core / core-support libraries | PGTK-compatible rendering requires core-authoritative metrics and visual order. |
+| Redisplay generation, rows, runs, cursor, damage, and update cause | Emacs redisplay, observed by adapter | SDL must present what Emacs decided to display. |
+| Terminal and frame identity | Emacs terminal truth + adapter ID mapping | `output_proto` is a real terminal; protocol IDs must be stable and generation-qualified. |
+| Face/font/image/string resource identity and transport | output_proto adapter | The frontend receives versioned resources; it does not query Emacs objects directly. |
+| EUP sequencing, capability negotiation, replay, and recovery | adapter + frontend protocol layers | Protocol correctness must not depend on UI code. |
+| OS window, renderer, input queue, presentation, GPU recovery | SDL3 frontend | This is the final UI backend. |
+| Frontend glyph/image caches | SDL3 frontend | Caches may only hold versioned backend-owned data. |
+| Layout, command execution, buffer mutation | Never SDL3 | Frontend input is intent; Emacs decides the result. |
+
+## 4. PGTK-to-SDL3 responsibility matrix
+
+Status meanings:
+
+* **Target**: required for PGTK parity.
+* **Current**: bounded diagnostic or groundwork only.
+* **Gate**: evidence required before claiming parity.
+
+### 4.1 Frame and platform
+
+| Capability | Emacs / adapter / EUP / SDL3 split | PGTK parity gate | Current status |
+|---|---|---|---|
+| Frame create/delete | Emacs creates/destroys terminal frame; adapter maps generation-qualified IDs; EUP carries frame lifecycle; SDL creates/destroys surface | Create, resize, iconify, raise, focus, delete, and exit cleanly on X11/Wayland | Pending; diagnostic PGTK frame smoke only |
+| Visibility, iconification, maximization, fullscreen | Emacs owns requested and reported state; adapter translates state; SDL applies and reports platform truth | PGTK-equivalent state transitions and events | Pending |
+| Monitor move, DPI, scale | Emacs owns logical geometry; EUP carries logical/physical geometry and scale; SDL reports monitor/scale events | No text relayout drift after move/scale | Pending |
+| WM hints, app icon, taskbar, urgency | Adapter carries host requests; SDL applies supported hints | PGTK-equivalent visible hints with documented OS limits | Pending |
+| System theme and font preference | Emacs owns settings; adapter publishes change events; frontend forwards platform changes | Face refresh and theme-sensitive frames match PGTK semantics | Pending |
+
+### 4.2 Editor display
+
+| Capability | Emacs / adapter / EUP / SDL3 split | PGTK parity gate | Current status |
+|---|---|---|---|
+| Window tree and splits | Emacs owns tree/layout; adapter observes window records; EUP carries rectangles; SDL positions scenes | Horizontal/vertical splits, resize, deletion, and selected-window behavior match | Pending |
+| Redisplay glyph rows | Emacs redisplay owns rows; adapter captures authoritative rows; EUP carries row/run records; SDL renders them | Fresh dump, byte-compile, scroll, truncation, continuation, variable-width text | Pending; current rows are bounded public facts |
+| Cursor | Emacs owns point and cursor style; EUP carries shape/state; SDL draws cursor | Box, bar, hollow, underline, blink state, inactive cursor | Pending |
+| Faces and colors | Emacs merges faces; EUP carries generation-qualified face resources; SDL uses them for drawing | Foreground/background, inverse video, underline, overline, strike, box | Pending; resource codecs exist, presentation absent |
+| Fonts and shaping | Emacs/font stack selects and shapes; EUP carries runs/metrics/atlas data; SDL never reshapes or reorders | ASCII, CJK, BiDi, ligatures, variable pitch, missing glyph | Pending |
+| Images | Emacs decodes/places images; adapter sends versioned payload; SDL creates textures | PNG/JPEG/SVG/XPM where PGTK supports them, scaling, masking, animation where applicable | Pending; static bounded resource contract exists |
+| Fringe, margin, scrollbar | Emacs defines visuals and hit-test semantics; EUP carries widgets/runs; SDL renders and returns input | Continuation/wrap/truncation indicators and draggable scrollbars | Pending |
+| Mode line, header line, tab line, tool bar | Emacs owns model and layout; EUP carries items and faces; SDL renders and routes clicks | Visual refresh and mouse action mapping match PGTK | Pending |
+
+### 4.3 Input and desktop integration
+
+| Capability | Emacs / adapter / EUP / SDL3 split | PGTK parity gate | Current status |
+|---|---|---|---|
+| Keyboard and keymap | SDL captures physical/text events; adapter delivers intent; Emacs keymap/command loop decides result | modifiers, function keys, `C-x`-style prefix commands, keyboard macros, localized keys | Pending; bounded subset only |
+| Pointer and wheel | SDL translates motion/buttons/wheel; Emacs maps to position/command | click counts, drag, right/middle behavior, modifiers, scroll units | Degraded; bounded left/middle subset |
+| Touch and gestures | SDL captures supported gestures; adapter normalizes intents; Emacs maps commands | PGTK-equivalent touch behavior where platform exposes it | Pending |
+| IME | SDL owns candidate UI/platform connection; EUP carries preedit/candidate geometry; Emacs commits text and supplies cursor rectangle | CJK input, candidate placement, commit, preedit movement | Pending |
+| Clipboard and selection | SDL talks to platform clipboard; Emacs owns kill-ring/yank semantics; EUP carries targets/content | clipboard, PRIMARY, SECONDARY, targets, Unicode, images where supported | Degraded for bounded text |
+| Drag and drop | SDL/platform captures DND; adapter forwards protocol events; Emacs decides action | text/file/image drops, copy/move/link, position feedback | Pending |
+| Menus and popup menus | Emacs owns menu model; EUP carries model; SDL renders or invokes native menu and returns selection | menubar, popup, keymap-backed menus, separators, checkboxes/radio items | Pending |
+| Dialogs and prompts | Emacs owns questions/models; EUP carries dialog spec; SDL presents and returns result | yes/no, prompt, file, color, font dialogs | Pending |
+| Tooltips | Emacs owns help text/position; EUP carries tooltip model; SDL presents | delay, placement, multiline text, hide behavior | Pending |
+| Accessibility | Emacs retains semantic model; adapter exposes accessible display state; SDL/platform integrates where possible | screen-reader parity on supported desktops | Pending and explicitly platform-dependent |
+| Shutdown and recovery | Emacs terminates frame; adapter drains sessions; SDL closes deterministically | disconnect, GPU reset, frontend crash, restart, frame deletion | Pending; bounded containment gates exist |
+
+### 4.4 Performance
+
+| Capability | Emacs / adapter / EUP / SDL3 split | PGTK parity gate | Current status |
+|---|---|---|---|
+| Interactive latency, frame scheduling, and recovery cost | Emacs owns update cause; adapter owns capture/damage coalescing and transport diagnostics; EUP carries sequence/timing facts; SDL owns input-to-intent and present timing | Meet the documented frame/input/resize/recovery budgets on the same fixtures as PGTK without semantic divergence | Pending; current benchmark and smoke counters are diagnostics only |
+
+## 5. Protocol gaps that block parity
+
+EUP v1 already defines many message IDs, but the following require complete,
+implemented, fuzzed, and recovery-aware contracts before pure SDL3 parity:
+
+1. Authoritative window-tree snapshots and patches.
+2. Redisplay-owned row records, glyph runs, glyphless/composition runs, image
+   runs, stretch runs, rectangles, fringe, divider, and cursor records.
+3. Generation-qualified face, font, image, string, fringe, and icon resources.
+4. Glyph atlas publication or backend-pixel fallback.
+5. Conservative and exact damage, clear-area, scroll-copy, flush, and present
+   hints.
+6. Complete cursor styles, blink state, IME rectangle, and preedit geometry.
+7. Menu, menu item, tool bar, dialog, tooltip, scrollbar, and fringe widget
+   models.
+8. Clipboard targets, PRIMARY/SECONDARY ownership, DND operations, and file URI
+   policy.
+9. Platform visibility, monitor, scale, theme, WM hint, and accessibility events.
+10. Frontend resource requests, eviction, resync, replay, and crash recovery.
+11. Diagnostics correlating Emacs redisplay generation with frontend frames.
+
+Unknown optional capabilities may be ignored.  Missing required parity
+capabilities must keep the relevant capability pending and block W16.
+
+## 6. Milestones from current bridge to pure runtime
+
+| Milestone | Outcome | Completion evidence |
+|---|---|---|
+| P0. Freeze this target | Documents and gates agree that PGTK is reference-only | This file plus consistent status manifests/docs |
+| P1. PGTK semantic inventory | Every PGTK capability row maps to an owner, EUP record, SDL action, fallback, and gate | Updated capability matrix with no unspecified rows |
+| P2. R7 host contract decision | A reviewed adapter-owned terminal registration seam is approved or explicitly denied | Signed-off host registration contract and review metadata |
+| P3. Terminal registration | `output_proto` can exist as a real terminal without PGTK initialization | Fake-host plus live terminal lifecycle tests |
+| P4. First pure frame | Emacs creates `window-system = proto`; SDL creates the visible surface | One local command creates, focuses, resizes, deletes the frame |
+| P5. Redisplay-owned display | Rows/runs/cursor/damage come from Emacs redisplay | ASCII/CJK/BiDi/face fixtures compare against PGTK baselines |
+| P6. Resources | Faces/fonts/images/strings are versioned, requested, evicted, and recovered | Snapshot/replay/eviction/resource-request suites pass |
+| P7. Complete input | Keyboard, pointer, wheel, IME, selection, and DND reach Emacs and results render | PGTK/SDL differential input scenarios pass |
+| P8. Desktop widgets | Menus, dialogs, tooltips, tool bars, scrollbars, and WM integration work | PGTK semantic matrix plus platform-specific checks |
+| P9. Recovery/performance | Frontend failure is contained and performance targets are met | replay, fuzz, disconnect, GPU-reset, latency, throughput evidence |
+| P10. W16 acceptance | Final user scenario is fully green | W16 checklist plus machine-readable artifacts |
+
+P2 is the policy gate.  Until it is approved, no code path may register
+`output_proto` or present PGTK evidence as a pure SDL3 runtime.
+
+## 7. PGTK differential gates
+
+A capability is PGTK-parity green only when the same Emacs state produces the
+same authoritative semantics in both reference and Proto builds.  Pixel equality
+is not required because renderers differ, but semantics and visible content are
+compared.
+
+Required differential classes:
+
+1. Frame creation, geometry, title, visibility, focus, iconification, fullscreen,
+   monitor move, DPI change, and deletion.
+2. Window split, resize, delete, balance, selected window, minibuffer, echo area.
+3. Buffer text, point, mark, region, scroll, recenter, truncation, continuation,
+   horizontal scrolling, tabs, overlays, and display properties.
+4. ASCII, CJK, BiDi, ligature, variable-pitch, missing glyph, underline, box,
+   inverse video, face remapping, theme change, and image display.
+5. Keyboard, modifiers, prefixes, macros, pointer click/drag, wheel, touch where
+   available, IME commit, and preedit placement.
+6. Clipboard, PRIMARY selection, targets, encoding, DND text/files, and menus.
+7. Tooltips, dialogs, mode/header/tab lines, tool bar, fringe, margin, and
+   scrollbar behavior.
+8. Reconnect, replay, malformed input, frontend crash, GPU loss, resource
+   eviction, and clean shutdown.
+
+Each scenario must record PASS/FAIL/SKIP with reason, PGTK digest or semantic
+fingerprint, Proto digest or fingerprint, protocol counters, and screenshots
+where visual behavior is relevant.
+
+## 8. Final acceptance
+
+The target is complete only when all of the following are true:
+
+```sh
+# Reference comparison build
+zig build -Dpgtk=true -Dproto-ui=false
+
+# Pure runtime build
+zig build -Dpgtk=false -Dproto-ui=true -Dproto-ui-runtime=true \
+  -Dsdl3-frontend=true
+
+# Required suites
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true proto-ui-boundary --summary all
+zig build -Dproto-ui=true proto-ui-fuzz
+zig build -Dproto-ui=true proto-ui-recovery-diff
+zig build -Dproto-ui=true proto-ui-crash-isolation
+zig build -Dpgtk=false -Dproto-ui=true -Dproto-ui-runtime=true \
+  -Dsdl3-frontend=true sdl3-pgtk-parity
+zig build check
+```
+
+These are target-state acceptance commands, not a statement that every step
+currently exists.  In particular, `sdl3-pgtk-parity` is the future aggregate
+gate.  Step names may be introduced for missing suites, but the evidence must
+be real.
+A green result requires:
+
+1. A user-created Emacs frame reports `window-system` `proto`.
+2. The visible surface is SDL3-owned and PGTK is not initialized on that path.
+3. Redisplay-owned rows, resources, cursor, input, and desktop integration pass
+   the differential gates.
+4. The inherited-C boundary audit remains clean according to the approved
+   adapter contract.
+5. Replay, fuzz, recovery, crash-isolation, and default-isolation suites pass.
+6. Performance evidence meets the targets in [`performance.md`](performance.md).
+7. Capability status, protocol table, ABI manifest, runtime manifest, and docs
+   describe exactly the same implementation state.
+
+Until every gate is green, the status remains: **pure SDL3 target designed;
+runtime and PGTK parity not implemented.**

@@ -63,6 +63,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | SDL3 frontend | Partial: EUP replay/live rendering, renderer tiers, damage classes, bounded facts, ASCII/key/pointer/wheel/clipboard bridges, and EPXL recovery; no redisplay streaming, full keyboard/keymap/IME input, faces, fonts, images, widgets, or production frame ownership |
 | Bounded real-frame lifecycle bridge | Implemented by W12c: one real PGTK observation frame and one EUP/SDL3 frame are created, rendered, and deleted |
 | Final real `output_proto` SDL3 Emacs frame | Not achieved |
+| Pure SDL3 PGTK-parity target | Normative target documented; runtime and parity not implemented |
 | Adapter-first C boundary | Required; no new inherited-C Proto-UI edits |
 | W9a independent SDL3 lifecycle smoke | Approved |
 | W9b SDL3 EUP replay scene renderer | Approved |
@@ -3052,6 +3053,33 @@ The final evidence must also include the adapter-boundary audit from
 [`adapter-boundary.md`](adapter-boundary.md): no new inherited-C Proto-UI
 edits, default-build isolation, and a documented rollback path.
 
+## W17 — Pure SDL3 PGTK parity
+
+Status: normative target documented; runtime and parity not implemented.
+
+W17 corrects the end-state interpretation.  SDL3 is the final UI backend for
+`output_proto`; PGTK is only the offline reference implementation used for
+semantic and visual comparison.  A Proto frame must never silently fall back to
+PGTK or TTY.  Emacs remains authoritative for buffer, command, window-layout,
+redisplay, face, font, image, and input-interpretation state; the adapter
+translates terminal/frame/input/resource facts across EUP.  The normative
+ownership model, responsibility matrix, protocol gaps, milestone sequence,
+differential gates, and final acceptance rules are in
+[`sdl3-pgtk-parity.md`](sdl3-pgtk-parity.md).
+
+Non-goals:
+
+1. Expanding PGTK-backed diagnostic smokes and calling them pure SDL3 parity.
+2. Letting SDL evaluate Elisp or own buffer/window/redisplay truth.
+3. Adding scattered Proto-UI branches to inherited Emacs C/H/Lisp.
+4. Registering `output_proto` before the R7 host contract is explicitly approved.
+
+Acceptance is defined by the P0-P10 milestones in the parity document and by the
+W16 final scenario.  The distinguishing R8 evidence is a real frame whose
+`window-system` is `proto`, whose visible surface is SDL3-owned, and whose
+frame, redisplay, resource, input, and desktop-integration paths require no
+GDK/GTK initialization.
+
 ## 4. Build/test surface
 
 Build options:
@@ -3102,6 +3130,7 @@ Step names may be adjusted during W1/W2, but each listed verification must have 
 | EUP envelope and message table | Done |
 | Capability tables | Done |
 | PGTK parity matrix | Done |
+| Pure SDL3 PGTK-parity architecture | Done as normative target; implementation pending |
 | SDL3 frontend architecture | Done |
 | Performance baseline | Done |
 | Workstream plan | Done |

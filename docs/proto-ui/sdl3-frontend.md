@@ -6,6 +6,16 @@ Renderer requirement: software fallback required; GPU acceleration optional
 
 ## 1. Purpose
 
+The final SDL3 frontend is the complete UI backend for a pure `output_proto`
+Emacs terminal: it owns the real OS window, presentation, platform input, and
+frontend caches, while Emacs retains buffer, layout, redisplay, face, font, and
+command authority.  PGTK is the parity reference, not a runtime fallback.  See
+[`sdl3-pgtk-parity.md`](sdl3-pgtk-parity.md).
+
+This file also describes current independent-process implementation states.  Some
+current smokes render bounded Emacs public facts or debug fixtures; they are
+explicitly not final `output_proto` runtime evidence.
+
 The SDL3 frontend is an independent process that receives EUP state, opens real operating-system windows, renders Emacs frames, captures platform input, and returns user intent to Emacs.
 
 It must be possible to start it as a real UI for Emacs without going through emacsclient.

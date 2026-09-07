@@ -13,12 +13,16 @@ Adapter-first is a hard constraint.  New Proto-UI behavior is implemented in the
 The completed system must:
 
 1. Open a real Emacs frame with a real SDL3 frontend.
-2. Preserve Emacs as the authoritative owner of buffers, windows, frames, faces, fonts, and redisplay.
+2. Preserve Emacs as the authoritative owner of buffers, commands, window layout, frames, faces, fonts, images, redisplay, and input interpretation.
 3. Support an optional GPU-accelerated frontend while retaining a software fallback.
 4. Provide a complete EUP interface and protocol table.
 5. Preserve existing Emacs behavior when proto-ui is disabled.
 6. Improve interactive display latency and frame scheduling relative to a non-accelerated fallback.
 7. Reach PGTK-level Emacs UI capability over time, with every gap explicitly tracked.
+
+The normative end state is a **pure SDL3 `output_proto` UI backend**.  PGTK is a
+reference backend for semantic and visual parity, never a runtime fallback for a
+Proto frame.  See [`sdl3-pgtk-parity.md`](sdl3-pgtk-parity.md).
 
 ## 2. Current status
 

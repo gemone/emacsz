@@ -488,10 +488,17 @@ verified bounded subset and the parity gap that remains.
 
 ### 12.3 Minimum next milestone
 
-R7 host-registration decision infrastructure is complete.  The source decision
-remains `pending` with `host_registration_contract_missing`, so no terminal can
-be registered and runtime remains fail closed.
-The authoritative task split and fail-closed runtime contract are defined in
+The normative target is a **pure SDL3 `output_proto` UI backend** with PGTK used
+only as a reference/parity backend.  PGTK must not be a runtime fallback for a
+Proto frame.  The target ownership model, PGTK responsibility matrix, protocol
+gaps, differential gates, and final acceptance rules are defined in
+[`sdl3-pgtk-parity.md`](sdl3-pgtk-parity.md).
+
+R7 host-registration decision infrastructure is implemented, and the source
+decision remains `pending` with `host_registration_contract_missing`, so no terminal can
+be registered and runtime remains fail closed.  Current PGTK/SDL diagnostic
+bridges therefore remain non-final compatibility evidence.
+The task split and fail-closed runtime contract are defined in
 [`output-proto-runtime.md`](output-proto-runtime.md).
 
 ## 13. Initial explicit limitations

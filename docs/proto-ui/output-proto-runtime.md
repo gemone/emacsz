@@ -19,7 +19,9 @@ GNU Emacs terminal/frame/redisplay truth
 It separates the work that can proceed today in Proto-UI-owned code from the
 integration points that require an explicit host extension decision.  It does
 not declare `output_proto` implemented and does not treat the existing PGTK
-frame smoke as production frame ownership.
+frame smoke as production frame ownership.  The normative pure-SDL3 target and
+PGTK responsibility/parity matrix are defined in
+[`sdl3-pgtk-parity.md`](sdl3-pgtk-parity.md).
 
 ## 2. Feasibility decision
 
