@@ -2549,6 +2549,57 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (scene.cursor == null or scene.cursor.?.x != 16)
         return error.RuntimeBridgeCursorUpdateInvalid;
 
+    const frame_header = scene.frame_header orelse return error.RuntimeBridgeFrameHeaderInvalid;
+    var flush_payload: std.ArrayList(u8) = .empty;
+    defer flush_payload.deinit(gpa);
+    try protocol.encodeFrameFlush(gpa, .{
+        .flags = protocol.FrameFlushFlags.present_required,
+        .frame_generation = bridge.eup_frame_generation,
+        .redisplay_generation = frame_header.redisplay_generation,
+        .frame_sequence = frame_header.sequence,
+        .deadline_ns = 1,
+        .damage_kind = .partial,
+    }, &flush_payload);
+    var flush: std.ArrayList(u8) = .empty;
+    defer flush.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.flush,
+        .sequence = 24,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, flush_payload.items, &flush);
+    try scene.apply(flush.items);
+    if (scene.flush == null or scene.flush.?.damage_kind != .partial)
+        return error.RuntimeBridgeFlushInvalid;
+
+    var render_hint_payload: std.ArrayList(u8) = .empty;
+    defer render_hint_payload.deinit(gpa);
+    try protocol.encodeRenderHint(gpa, .{
+        .flags = protocol.RenderHintFlags.damage_only_allowed |
+            protocol.RenderHintFlags.deadline_present,
+        .preferred_mode = .mailbox,
+        .workload = .typing,
+        .frame_generation = bridge.eup_frame_generation,
+        .deadline_ns = 2,
+    }, &render_hint_payload);
+    var render_hint: std.ArrayList(u8) = .empty;
+    defer render_hint.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.render_hint,
+        .sequence = 25,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, render_hint_payload.items, &render_hint);
+    try scene.apply(render_hint.items);
+    if (scene.render_hint == null or scene.render_hint.?.preferred_mode != .mailbox)
+        return error.RuntimeBridgeRenderHintInvalid;
+
     if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
         scene.glyph_runs.items.len != 1 or scene.cursor == null)
         return error.RuntimeBridgeSceneInvalid;
@@ -2877,7 +2928,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,
@@ -2885,6 +2936,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
             z_order_supported,
             parent_unparented,
             cursor_update_rendered,
+            scene.flush != null,
+            scene.render_hint != null,
             opacity_supported,
             decorations_supported,
             scale_supported,

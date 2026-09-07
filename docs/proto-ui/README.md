@@ -191,6 +191,13 @@ The JSON report records the fail-closed runtime state and the source-owned
 exclusions.  A marker, config finding, or oversized unreviewed text file fails
 the gate.
 
+P13 render-control preparation adds exact 40-byte `FLUSH` and 32-byte
+`RENDER_HINT` EUP v1 payloads.  `Scene` validates the fixed wire form and
+active frame generation, retains the present boundary and renderer preference,
+and the SDL runtime-bridge smoke proves acceptance after a frame update.  This
+is adapter protocol state; core redisplay emission and renderer pacing remain
+pending.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and
@@ -337,7 +344,11 @@ zig build -Dproto-ui=true
 
 must not alter existing TTY, PGTK, Windows, macOS, Haiku, or Android behavior in the current adapter-only slice.  The eventual runtime-integration goal is to expose `output_proto` only after a separately owned stable seam and review.
 
-PGTK remains the reference full-capability graphic backend. Proto-UI is compared against PGTK semantics but does not replace PGTK.
+PGTK is the reference for full-capability graphic behavior.  In the current
+adapter-only slice Proto-UI does not replace PGTK.  The completed target is a
+separate pure SDL3 `output_proto` runtime whose Proto frames do not initialize
+or fall back to GDK/GTK; PGTK remains an independent reference build used for
+semantic and visual differential acceptance.
 
 ## 8. Minimal target Lisp behavior
 
@@ -369,7 +380,7 @@ EUP does not:
 * Require GPU acceleration.
 * Expose raw GPU command buffers.
 * Make SDL3 a dependency of Emacs core.
-* Replace emacsclient or PGTK.
+* Use emacsclient as the transport or command channel.
 * Allow the frontend to evaluate Elisp.
 * Intrusively modify inherited GNU Emacs C source.
 

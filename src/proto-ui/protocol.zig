@@ -96,6 +96,8 @@ pub const Message = struct {
     pub const glyph_run: u16 = 0x0405;
     pub const glyph_run_delete: u16 = 0x0406;
     pub const cursor_update: u16 = 0x0407;
+    pub const flush: u16 = 0x040e;
+    pub const render_hint: u16 = 0x040f;
     pub const font_define: u16 = 0x0503;
     pub const font_delete: u16 = 0x0506;
     pub const image_define: u16 = 0x0507;
@@ -1276,6 +1278,69 @@ pub const FrameParentPayload = struct {
     parent_frame_generation: u32 = 0,
     child_frame_generation: u32,
     reserved_tail: [8]u8 = .{ 0, 0, 0, 0, 0, 0, 0, 0 },
+};
+
+pub const FrameFlushFlags = struct {
+    pub const present_required: u8 = 1 << 0;
+    pub const visible_only: u8 = 1 << 1;
+    pub const known: u8 = present_required | visible_only;
+};
+
+pub const FrameFlushDamageKind = enum(u8) {
+    none = 0,
+    partial = 1,
+    full = 2,
+    state_only = 3,
+    resource_only = 4,
+};
+
+pub const FrameFlushPayload = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    frame_generation: u32,
+    redisplay_generation: u64,
+    frame_sequence: u64,
+    deadline_ns: u64 = 0,
+    damage_kind: FrameFlushDamageKind,
+    reserved_tail: [7]u8 = .{ 0, 0, 0, 0, 0, 0, 0 },
+};
+
+pub const RenderHintMode = enum(u8) {
+    auto = 0,
+    vsync = 1,
+    adaptive_vsync = 2,
+    mailbox = 3,
+    immediate = 4,
+};
+
+pub const RenderHintWorkload = enum(u8) {
+    unspecified = 0,
+    typing = 1,
+    scroll = 2,
+    animation = 3,
+    resize = 4,
+    idle = 5,
+};
+
+pub const RenderHintFlags = struct {
+    pub const damage_only_allowed: u8 = 1 << 0;
+    pub const deadline_present: u8 = 1 << 1;
+    pub const refresh_interval_present: u8 = 1 << 2;
+    pub const known: u8 = damage_only_allowed | deadline_present | refresh_interval_present;
+};
+
+pub const RenderHintPayload = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    preferred_mode: RenderHintMode,
+    workload: RenderHintWorkload,
+    reserved_after_workload: [2]u8 = .{ 0, 0 },
+    frame_generation: u32,
+    refresh_interval_ns: u64 = 0,
+    deadline_ns: u64 = 0,
+    reserved_tail: [4]u8 = .{ 0, 0, 0, 0 },
 };
 
 pub const PresentDamageKind = enum(u8) {
@@ -2584,6 +2649,143 @@ pub fn decodeFrameParent(data: []const u8) Error!FrameParentPayload {
 
 pub fn validateFrameParentEnvelope(payload: FrameParentPayload, envelope: Envelope) Error!void {
     try validateFrameParent(payload);
+    if (envelope.frame_id == 0) return Error.InvalidMessage;
+}
+
+fn validateFrameFlush(payload: FrameFlushPayload) Error!void {
+    if (payload.schema != 1 or payload.flags & ~@as(u8, FrameFlushFlags.known) != 0 or
+        payload.reserved != 0 or !std.mem.allEqual(u8, &payload.reserved_tail, 0))
+        return Error.InvalidMessage;
+    if (payload.frame_generation == 0 or payload.redisplay_generation == 0 or
+        payload.frame_sequence == 0)
+        return Error.InvalidMessage;
+}
+
+pub fn encodeFrameFlush(
+    a: std.mem.Allocator,
+    payload: FrameFlushPayload,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameFlush(payload);
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &bytes, payload.schema, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, payload.flags);
+    try out.append(a, payload.reserved);
+    var word: [4]u8 = undefined;
+    std.mem.writeInt(u32, &word, payload.frame_generation, .little);
+    try out.appendSlice(a, &word);
+    var long: [8]u8 = undefined;
+    inline for (.{ payload.redisplay_generation, payload.frame_sequence, payload.deadline_ns }) |value| {
+        std.mem.writeInt(u64, &long, value, .little);
+        try out.appendSlice(a, &long);
+    }
+    try out.append(a, @intFromEnum(payload.damage_kind));
+    try out.appendSlice(a, &payload.reserved_tail);
+}
+
+pub fn decodeFrameFlush(data: []const u8) Error!FrameFlushPayload {
+    if (data.len != 40) return Error.InvalidTable;
+    const payload = FrameFlushPayload{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .frame_generation = std.mem.readInt(u32, data[4..8], .little),
+        .redisplay_generation = std.mem.readInt(u64, data[8..16], .little),
+        .frame_sequence = std.mem.readInt(u64, data[16..24], .little),
+        .deadline_ns = std.mem.readInt(u64, data[24..32], .little),
+        .damage_kind = switch (data[32]) {
+            0 => .none,
+            1 => .partial,
+            2 => .full,
+            3 => .state_only,
+            4 => .resource_only,
+            else => return Error.InvalidMessage,
+        },
+        .reserved_tail = data[33..40][0..7].*,
+    };
+    try validateFrameFlush(payload);
+    return payload;
+}
+
+pub fn validateFrameFlushEnvelope(payload: FrameFlushPayload, envelope: Envelope) Error!void {
+    try validateFrameFlush(payload);
+    if (envelope.frame_id == 0) return Error.InvalidMessage;
+}
+
+fn validateRenderHint(payload: RenderHintPayload) Error!void {
+    if (payload.schema != 1 or payload.flags & ~@as(u8, RenderHintFlags.known) != 0 or
+        payload.reserved != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_after_workload, 0) or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0))
+        return Error.InvalidMessage;
+    if (payload.frame_generation == 0) return Error.InvalidMessage;
+    if ((payload.flags & RenderHintFlags.deadline_present != 0) != (payload.deadline_ns != 0) or
+        (payload.flags & RenderHintFlags.refresh_interval_present != 0) !=
+            (payload.refresh_interval_ns != 0))
+        return Error.InvalidMessage;
+}
+
+pub fn encodeRenderHint(
+    a: std.mem.Allocator,
+    payload: RenderHintPayload,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateRenderHint(payload);
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &bytes, payload.schema, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, payload.flags);
+    try out.append(a, payload.reserved);
+    try out.append(a, @intFromEnum(payload.preferred_mode));
+    try out.append(a, @intFromEnum(payload.workload));
+    try out.appendSlice(a, &payload.reserved_after_workload);
+    var word: [4]u8 = undefined;
+    std.mem.writeInt(u32, &word, payload.frame_generation, .little);
+    try out.appendSlice(a, &word);
+    var long: [8]u8 = undefined;
+    inline for (.{ payload.refresh_interval_ns, payload.deadline_ns }) |value| {
+        std.mem.writeInt(u64, &long, value, .little);
+        try out.appendSlice(a, &long);
+    }
+    try out.appendSlice(a, &payload.reserved_tail);
+}
+
+pub fn decodeRenderHint(data: []const u8) Error!RenderHintPayload {
+    if (data.len != 32) return Error.InvalidTable;
+    const payload = RenderHintPayload{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .preferred_mode = switch (data[4]) {
+            0 => .auto,
+            1 => .vsync,
+            2 => .adaptive_vsync,
+            3 => .mailbox,
+            4 => .immediate,
+            else => return Error.InvalidMessage,
+        },
+        .workload = switch (data[5]) {
+            0 => .unspecified,
+            1 => .typing,
+            2 => .scroll,
+            3 => .animation,
+            4 => .resize,
+            5 => .idle,
+            else => return Error.InvalidMessage,
+        },
+        .reserved_after_workload = data[6..8][0..2].*,
+        .frame_generation = std.mem.readInt(u32, data[8..12], .little),
+        .refresh_interval_ns = std.mem.readInt(u64, data[12..20], .little),
+        .deadline_ns = std.mem.readInt(u64, data[20..28], .little),
+        .reserved_tail = data[28..32][0..4].*,
+    };
+    try validateRenderHint(payload);
+    return payload;
+}
+
+pub fn validateRenderHintEnvelope(payload: RenderHintPayload, envelope: Envelope) Error!void {
+    try validateRenderHint(payload);
     if (envelope.frame_id == 0) return Error.InvalidMessage;
 }
 
@@ -3930,6 +4132,100 @@ test "frame icon payload enforces strict present/absent form" {
     try std.testing.expectEqual(absent, try decodeFrameIcon(bytes.items));
     bytes.items[4] = 1;
     try std.testing.expectError(Error.InvalidMessage, decodeFrameIcon(bytes.items));
+}
+
+test "frame flush payload has a strict fixed wire form" {
+    const a = std.testing.allocator;
+    const payload = FrameFlushPayload{
+        .flags = FrameFlushFlags.present_required | FrameFlushFlags.visible_only,
+        .frame_generation = 2,
+        .redisplay_generation = 0x0102030405060708,
+        .frame_sequence = 0x0102030405060709,
+        .deadline_ns = 0x010203040506070a,
+        .damage_kind = .partial,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFrameFlush(a, payload, &bytes);
+    try std.testing.expectEqual(@as(usize, 40), bytes.items.len);
+    try std.testing.expectEqual(payload, try decodeFrameFlush(bytes.items));
+    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, bytes.items[0..2], .little));
+    try std.testing.expectEqual(payload.frame_generation, std.mem.readInt(u32, bytes.items[4..8], .little));
+    try std.testing.expectEqual(payload.redisplay_generation, std.mem.readInt(u64, bytes.items[8..16], .little));
+    try std.testing.expectEqual(payload.frame_sequence, std.mem.readInt(u64, bytes.items[16..24], .little));
+    try std.testing.expectEqual(@as(u8, @intFromEnum(FrameFlushDamageKind.partial)), bytes.items[32]);
+
+    bytes.items[2] = 0x80;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameFlush(bytes.items));
+    bytes.items[2] = payload.flags;
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameFlush(bytes.items));
+    bytes.items[3] = 0;
+    bytes.items[32] = 9;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameFlush(bytes.items));
+    bytes.items[32] = @intFromEnum(FrameFlushDamageKind.partial);
+    bytes.items[33] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameFlush(bytes.items));
+    bytes.items[33] = 0;
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFrameFlush(bytes.items));
+    inline for (.{ "frame_generation", "redisplay_generation", "frame_sequence" }) |field| {
+        var invalid = payload;
+        @field(invalid, field) = 0;
+        try std.testing.expectError(Error.InvalidMessage, encodeFrameFlush(a, invalid, &bytes));
+    }
+}
+
+test "render hint payload pairs flags with optional values" {
+    const a = std.testing.allocator;
+    const payload = RenderHintPayload{
+        .flags = RenderHintFlags.damage_only_allowed |
+            RenderHintFlags.deadline_present | RenderHintFlags.refresh_interval_present,
+        .preferred_mode = .adaptive_vsync,
+        .workload = .scroll,
+        .frame_generation = 2,
+        .refresh_interval_ns = 16_666_667,
+        .deadline_ns = 1_000_000,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeRenderHint(a, payload, &bytes);
+    try std.testing.expectEqual(@as(usize, 32), bytes.items.len);
+    try std.testing.expectEqual(payload, try decodeRenderHint(bytes.items));
+    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, bytes.items[0..2], .little));
+    try std.testing.expectEqual(@as(u8, @intFromEnum(RenderHintMode.adaptive_vsync)), bytes.items[4]);
+    try std.testing.expectEqual(@as(u8, @intFromEnum(RenderHintWorkload.scroll)), bytes.items[5]);
+    try std.testing.expectEqual(payload.frame_generation, std.mem.readInt(u32, bytes.items[8..12], .little));
+    try std.testing.expectEqual(payload.refresh_interval_ns, std.mem.readInt(u64, bytes.items[12..20], .little));
+    try std.testing.expectEqual(payload.deadline_ns, std.mem.readInt(u64, bytes.items[20..28], .little));
+
+    bytes.items[2] = 0x80;
+    try std.testing.expectError(Error.InvalidMessage, decodeRenderHint(bytes.items));
+    bytes.items[2] = payload.flags;
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeRenderHint(bytes.items));
+    bytes.items[3] = 0;
+    bytes.items[4] = 9;
+    try std.testing.expectError(Error.InvalidMessage, decodeRenderHint(bytes.items));
+    bytes.items[4] = @intFromEnum(RenderHintMode.adaptive_vsync);
+    bytes.items[5] = 9;
+    try std.testing.expectError(Error.InvalidMessage, decodeRenderHint(bytes.items));
+    bytes.items[5] = @intFromEnum(RenderHintWorkload.scroll);
+    bytes.items[6] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeRenderHint(bytes.items));
+    bytes.items[6] = 0;
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeRenderHint(bytes.items));
+
+    var unpaired = payload;
+    unpaired.flags = RenderHintFlags.deadline_present;
+    try std.testing.expectError(Error.InvalidMessage, encodeRenderHint(a, unpaired, &bytes));
+    unpaired = payload;
+    unpaired.flags = RenderHintFlags.refresh_interval_present;
+    try std.testing.expectError(Error.InvalidMessage, encodeRenderHint(a, unpaired, &bytes));
+    unpaired = payload;
+    unpaired.deadline_ns = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeRenderHint(a, unpaired, &bytes));
 }
 
 test "frame presented payload enforces strict wire form" {

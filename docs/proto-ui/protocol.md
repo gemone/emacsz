@@ -764,6 +764,58 @@ advance the expected sequence.  This message has no redisplay ownership,
 shaping, BiDi, face/font, atlas, image, widget, Emacs capture, or
 `output_proto` semantics.
 
+### 13.3 `FLUSH` v1 (implemented bounded adapter contract)
+
+`FLUSH = 0x040e` is an exact 40-byte little-endian present boundary.  It marks
+the Scene state that a frontend may treat as one render/present epoch; it does
+not by itself make Emacs own a real `output_proto` terminal.
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 2 | `schema` | `u16`, little-endian, must be `1` |
+| 2 | 1 | `flags` | bit 0 `present_required`, bit 1 `visible_only`; all other bits invalid |
+| 3 | 1 | reserved | zero |
+| 4 | 4 | `frame_generation` | nonzero, active-frame generation |
+| 8 | 8 | `redisplay_generation` | nonzero |
+| 16 | 8 | `frame_sequence` | nonzero |
+| 24 | 8 | `deadline_ns` | monotonic nanoseconds; zero means advisory/no deadline |
+| 32 | 1 | `damage_kind` | 0 none, 1 partial, 2 full, 3 state-only, 4 resource-only |
+| 33 | 7 | reserved | zero |
+
+The envelope frame ID must be nonzero and match the active Scene frame.
+`redisplay_generation` and `frame_sequence` must exactly match the current
+accepted `FRAME_UPDATE` header; otherwise the boundary is stale.  Accepting a
+new `FRAME_UPDATE` invalidates the prior boundary.  The codec validates the
+fixed form, reserved bytes, flags, identity, enum value, and length atomically.
+Unknown flags, unknown damage kinds, truncation, and trailing bytes are protocol
+errors.  Current smoke evidence proves Scene state and SDL acceptance; core
+redisplay emission and adaptive present scheduling remain pending.
+
+### 13.4 `RENDER_HINT` v1 (implemented bounded adapter contract)
+
+`RENDER_HINT = 0x040f` is an exact 32-byte little-endian, non-authoritative
+renderer preference.  A conformant frontend may honor it only when the selected
+SDL renderer supports the mode and must otherwise continue rendering.
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 2 | `schema` | `u16`, little-endian, must be `1` |
+| 2 | 1 | `flags` | bit 0 damage-only, bit 1 deadline present, bit 2 refresh interval present |
+| 3 | 1 | reserved | zero |
+| 4 | 1 | `preferred_mode` | 0 auto, 1 vsync, 2 adaptive vsync, 3 mailbox, 4 immediate |
+| 5 | 1 | `workload` | 0 unspecified, 1 typing, 2 scroll, 3 animation, 4 resize, 5 idle |
+| 6 | 2 | reserved | zero |
+| 8 | 4 | `frame_generation` | nonzero, active-frame generation |
+| 12 | 8 | `refresh_interval_ns` | nonzero iff flag bit 2 is set |
+| 20 | 8 | `deadline_ns` | nonzero iff flag bit 1 is set |
+| 28 | 4 | reserved | zero |
+
+Unknown flags/modes/workloads, nonzero reserved bytes, missing paired values,
+flag/value mismatch, truncation, and trailing bytes are protocol errors.  The
+hint never changes buffer, layout, or input semantics.  Current smoke evidence
+proves strict Scene acceptance, not guaranteed GPU throughput or actual
+renderer-mode switching.
+
 ## 14. Resource messages
 
 | ID | Name | Direction | Payload | Semantics |
@@ -1269,9 +1321,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 39 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 60 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 122 | Assigned for the target protocol but not implemented |
+| `planned` | 101 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

@@ -1326,6 +1326,8 @@ pub const Scene = struct {
     z_order: ?protocol.FrameZOrderPayload = null,
     parent: ?protocol.FrameParentPayload = null,
     present: ?PresentHint = null,
+    flush: ?protocol.FrameFlushPayload = null,
+    render_hint: ?protocol.RenderHintPayload = null,
     viewport: ?Viewport = null,
     window_tree: ?protocol.WindowTreeSnapshot = null,
     control: session.Control = .{},
@@ -1374,6 +1376,8 @@ pub const Scene = struct {
         self.frame_header = null;
         self.cursor = null;
         self.present = null;
+        self.flush = null;
+        self.render_hint = null;
         self.viewport = null;
         if (self.window_tree) |*tree| protocol.freeWindowTreeSnapshot(self.allocator, tree);
         self.window_tree = null;
@@ -1459,6 +1463,8 @@ pub const Scene = struct {
             protocol.Message.window_delete => try self.applyWindowDelete(payload),
             protocol.Message.window_patch => try self.applyWindowPatch(payload),
             protocol.Message.cursor_update => try self.applyCursorUpdate(payload),
+            protocol.Message.flush => try self.applyFlush(payload),
+            protocol.Message.render_hint => try self.applyRenderHint(payload),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.font_define => try self.applyFontDefine(payload),
@@ -1502,6 +1508,8 @@ pub const Scene = struct {
         self.frame_header = null;
         self.cursor = null;
         self.present = null;
+        self.flush = null;
+        self.render_hint = null;
         self.viewport = null;
         if (self.window_tree) |*tree| protocol.freeWindowTreeSnapshot(self.allocator, tree);
         self.window_tree = null;
@@ -1976,6 +1984,33 @@ pub const Scene = struct {
         self.stats.control_messages += 1;
     }
 
+    fn applyFlush(self: *Scene, payload: protocol.Payload) Error!void {
+        const flush = try protocol.decodeFrameFlush(payload.bytes);
+        try protocol.validateFrameFlushEnvelope(flush, payload.envelope);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != flush.frame_generation or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation or
+            header.redisplay_generation != flush.redisplay_generation or
+            header.sequence != flush.frame_sequence)
+            return Error.InvalidMessage;
+        self.flush = flush;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyRenderHint(self: *Scene, payload: protocol.Payload) Error!void {
+        const hint = try protocol.decodeRenderHint(payload.bytes);
+        try protocol.validateRenderHintEnvelope(hint, payload.envelope);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != hint.frame_generation)
+            return Error.InvalidMessage;
+        self.render_hint = hint;
+        self.stats.control_messages += 1;
+    }
+
     pub fn placeImage(self: *Scene, placement: ImagePlacement) Error!void {
         _ = self.frame_header orelse return Error.FrameNotActive;
         const owner = findWindow(self.windows.items, placement.window_id) orelse
@@ -2381,6 +2416,7 @@ pub const Scene = struct {
         self.frame_header = update.header;
         self.cursor = cursor;
         self.present = present;
+        self.flush = null;
         self.viewport = viewport;
         self.stats.frame_updates += 1;
     }
@@ -2509,6 +2545,75 @@ test "scene validates cursor update against active frame and owner" {
     try protocol.encodeEnvelope(a, .{ .flags = 0, .message_type = protocol.Message.cursor_update, .sequence = 4, .ack_sequence = 0, .session_id = 9, .frame_id = 8, .timestamp_ns = 4 }, payload.items, &wrong_envelope);
     try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_envelope.items));
     try std.testing.expectEqual(valid, scene.cursor.?);
+}
+
+test "scene stores flush and render hints only for the active frame" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    const flush: protocol.FrameFlushPayload = .{
+        .flags = protocol.FrameFlushFlags.present_required,
+        .frame_generation = 1,
+        .redisplay_generation = 1,
+        .frame_sequence = 2,
+        .deadline_ns = 8,
+        .damage_kind = .partial,
+    };
+    var flush_payload: std.ArrayList(u8) = .empty;
+    defer flush_payload.deinit(a);
+    try protocol.encodeFrameFlush(a, flush, &flush_payload);
+    const flush_message = try windowLifecycleMessage(a, protocol.Message.flush, 3, 7, flush_payload.items);
+    defer a.free(flush_message);
+    try scene.apply(flush_message);
+    try std.testing.expectEqual(flush, scene.flush.?);
+
+    const hint: protocol.RenderHintPayload = .{
+        .flags = protocol.RenderHintFlags.damage_only_allowed |
+            protocol.RenderHintFlags.deadline_present,
+        .preferred_mode = .mailbox,
+        .workload = .typing,
+        .frame_generation = 1,
+        .deadline_ns = 9,
+    };
+    var hint_payload: std.ArrayList(u8) = .empty;
+    defer hint_payload.deinit(a);
+    try protocol.encodeRenderHint(a, hint, &hint_payload);
+    const hint_message = try windowLifecycleMessage(a, protocol.Message.render_hint, 4, 7, hint_payload.items);
+    defer a.free(hint_message);
+    try scene.apply(hint_message);
+    try std.testing.expectEqual(hint, scene.render_hint.?);
+
+    var stale_payload: std.ArrayList(u8) = .empty;
+    defer stale_payload.deinit(a);
+    try protocol.encodeFrameFlush(a, .{
+        .flags = protocol.FrameFlushFlags.present_required,
+        .frame_generation = 2,
+        .redisplay_generation = 1,
+        .frame_sequence = 2,
+        .deadline_ns = 8,
+        .damage_kind = .partial,
+    }, &stale_payload);
+    const stale = try windowLifecycleMessage(a, protocol.Message.flush, 5, 7, stale_payload.items);
+    defer a.free(stale);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(stale));
+    const wrong_envelope = try windowLifecycleMessage(a, protocol.Message.render_hint, 5, 8, hint_payload.items);
+    defer a.free(wrong_envelope);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_envelope));
+    try std.testing.expectEqual(flush, scene.flush.?);
+    try std.testing.expectEqual(hint, scene.render_hint.?);
+
+    const next_update = try updateMessage(a, 5, 7, 7, 80, 0);
+    defer a.free(next_update);
+    try scene.apply(next_update);
+    try std.testing.expect(scene.flush == null);
+    try std.testing.expectEqual(hint, scene.render_hint.?);
 }
 
 test "window patch rejects a shrink that would orphan the cursor" {
