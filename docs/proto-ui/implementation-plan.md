@@ -72,6 +72,8 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P5-prep SDL bridge presentation | Implemented as a fake-host SDL3 smoke; not `output_proto`, Emacs registration, production redisplay, or parity evidence |
 | P6-prep reverse input bridge | Implemented for bounded SDL key/text intents through PureRuntimeHostV1 delivery/result/completion; not keymap/command parity |
 | P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
+| P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
+
 
 
 
@@ -3092,6 +3094,9 @@ Non-goals:
 3. Adding scattered Proto-UI branches to inherited Emacs C/H/Lisp.
 4. Registering `output_proto` before the R7 host contract is explicitly approved.
 
+P8 lifecycle preparation binds heartbeat, flush, diagnostics, and
+cancel-all-pending-work into `runtime_bridge`, with safe cancellation of
+accepted but incomplete input transactions.
 P7 lifecycle-state preparation adds host-driven visibility/focus caching and
 deterministic EUP state encoders to `runtime_bridge`; no real host or platform
 source is attached.

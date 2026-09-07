@@ -47,6 +47,14 @@ pub const InputState = struct {
     accepted: bool = false,
     result_reported: bool = false,
     completed: bool = false,
+    cancelled: bool = false,
+};
+
+pub const LifecycleCounters = struct {
+    heartbeats: usize = 0,
+    flushes: usize = 0,
+    diagnostics: usize = 0,
+    cancellations: usize = 0,
 };
 
 pub const State = enum {
@@ -96,6 +104,7 @@ pub const Bridge = struct {
     input_ids: [max_tracked_inputs]u64 = undefined,
     input_states: [max_tracked_inputs]InputState = undefined,
     input_count: usize = 0,
+    lifecycle: LifecycleCounters = .{},
     frame_state: ?FrameRuntimeState = null,
 
     pub fn init(table: runtime_host.PureRuntimeHostV1) Error!Bridge {
@@ -623,7 +632,7 @@ pub const Bridge = struct {
         }
         try runtime_host.validateInputResult(&result);
         const tracker = try self.inputTracker(result.event_id);
-        if (!tracker.accepted or tracker.result_reported) return error.InvalidState;
+        if (!tracker.accepted or tracker.cancelled or tracker.result_reported) return error.InvalidState;
 
         const group = self.table.input orelse return error.InvalidRuntimeHost;
         const context = group.context orelse return error.InvalidRuntimeHost;
@@ -642,7 +651,8 @@ pub const Bridge = struct {
         }
         try runtime_host.validateCompletion(&completion);
         const tracker = try self.inputTracker(completion.transaction_id);
-        if (!tracker.accepted or !tracker.result_reported or tracker.completed)
+        if (!tracker.accepted or tracker.cancelled or
+            !tracker.result_reported or tracker.completed)
             return error.InvalidState;
 
         const group = self.table.input orelse return error.InvalidRuntimeHost;
@@ -655,6 +665,76 @@ pub const Bridge = struct {
     pub fn inputSnapshot(self: *const Bridge, event_id: u64) ?InputState {
         const index = self.findInput(event_id) orelse return null;
         return self.input_states[index];
+    }
+
+    fn requireActiveSession(self: *const Bridge) Error!void {
+        switch (self.state) {
+            .terminal_active, .frame_registered, .capturing, .captured => {},
+            else => return error.InvalidState,
+        }
+    }
+
+    fn lifecycleGroup(self: *const Bridge) Error!*const runtime_host.LifecycleGroupV1 {
+        return self.table.lifecycle orelse error.InvalidRuntimeHost;
+    }
+
+    pub fn heartbeat(self: *Bridge) Error!runtime_host.HeartbeatResult {
+        try self.requireActiveSession();
+        const group = try self.lifecycleGroup();
+        const context = group.context orelse return error.InvalidRuntimeHost;
+        const callback = group.heartbeat orelse return error.InvalidRuntimeHost;
+        var result: runtime_host.HeartbeatResult = .{};
+        try runtime_host.ensureOk(callback(context, &result));
+        if (!result.healthy) return error.HostCallbackFailed;
+        self.lifecycle.heartbeats += 1;
+        return result;
+    }
+
+    pub fn flush(self: *Bridge) Error!void {
+        try self.requireActiveSession();
+        const group = try self.lifecycleGroup();
+        const context = group.context orelse return error.InvalidRuntimeHost;
+        const callback = group.flush orelse return error.InvalidRuntimeHost;
+        try runtime_host.ensureOk(callback(context));
+        self.lifecycle.flushes += 1;
+    }
+
+    pub fn diagnostic(
+        self: *Bridge,
+        record: runtime_host.DiagnosticRecord,
+    ) Error!void {
+        try self.requireActiveSession();
+        try runtime_host.validateDiagnostic(&record);
+        const group = try self.lifecycleGroup();
+        const context = group.context orelse return error.InvalidRuntimeHost;
+        const callback = group.diagnostic orelse return error.InvalidRuntimeHost;
+        try runtime_host.ensureOk(callback(context, &record));
+        self.lifecycle.diagnostics += 1;
+    }
+
+    pub fn pendingInputCount(self: *const Bridge) usize {
+        var pending: usize = 0;
+        for (self.input_states[0..self.input_count]) |state| {
+            if (state.accepted and !state.cancelled and !state.completed) pending += 1;
+        }
+        return pending;
+    }
+
+    pub fn cancelAllPendingWork(self: *Bridge) Error!void {
+        try self.requireActiveSession();
+        const group = try self.lifecycleGroup();
+        const context = group.context orelse return error.InvalidRuntimeHost;
+        const callback = group.cancel_all_pending_work orelse return error.InvalidRuntimeHost;
+        try runtime_host.ensureOk(callback(context));
+        for (self.input_states[0..self.input_count]) |*state| {
+            if (state.accepted and !state.cancelled and !state.completed)
+                state.cancelled = true;
+        }
+        self.lifecycle.cancellations += 1;
+    }
+
+    pub fn lifecycleSnapshot(self: *const Bridge) LifecycleCounters {
+        return self.lifecycle;
     }
 
     pub fn destroy(self: *Bridge) Error!void {
@@ -844,6 +924,46 @@ test "bridge rejects duplicate input and completion before result" {
     _ = try bridge.deliverInput(event);
     try std.testing.expectError(error.DuplicateInput, bridge.deliverInput(event));
     try std.testing.expectError(error.InvalidState, bridge.deliverCompletion(.{ .transaction_id = event.event_id, .completed = true }));
+}
+
+test "bridge lifecycle operations and cancellation track bounded input state" {
+    var host: runtime_host.FakeHost = undefined;
+    const table = runtime_host.fakeTable(&host);
+    var bridge = try Bridge.init(table);
+    try bridge.createTerminal(.{ .requested_generation = 1 });
+    try bridge.registerFrame(.{ .id = 22, .generation = 1 });
+
+    const heartbeat = try bridge.heartbeat();
+    try std.testing.expect(heartbeat.healthy);
+    try bridge.flush();
+    var diagnostic: runtime_host.DiagnosticRecord = .{ .code = 7 };
+    diagnostic.message_length = 5;
+    @memcpy(diagnostic.message[0..5], "ready");
+    try bridge.diagnostic(diagnostic);
+
+    const event: runtime_host.InputEvent = .{
+        .event_id = 30,
+        .kind = input_kind_key,
+        .code = 4,
+    };
+    _ = try bridge.deliverInput(event);
+    try std.testing.expectEqual(@as(usize, 1), bridge.pendingInputCount());
+    try bridge.cancelAllPendingWork();
+    try std.testing.expectEqual(@as(usize, 0), bridge.pendingInputCount());
+    try std.testing.expectError(error.InvalidState, bridge.deliverResult(.{
+        .event_id = event.event_id,
+        .command_status = @intFromEnum(runtime_host.CommandStatus.ok),
+    }));
+    try std.testing.expectError(error.InvalidState, bridge.deliverCompletion(.{
+        .transaction_id = event.event_id,
+        .completed = true,
+    }));
+
+    const counts = bridge.lifecycleSnapshot();
+    try std.testing.expectEqual(@as(usize, 1), counts.heartbeats);
+    try std.testing.expectEqual(@as(usize, 1), counts.flushes);
+    try std.testing.expectEqual(@as(usize, 1), counts.diagnostics);
+    try std.testing.expectEqual(@as(usize, 1), counts.cancellations);
 }
 
 test "bridge rejects observations outside capturing state without mutation" {

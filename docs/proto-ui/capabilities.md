@@ -494,6 +494,8 @@ Proto frame.  The target ownership model, PGTK responsibility matrix, protocol
 gaps, differential gates, and final acceptance rules are defined in
 [`sdl3-pgtk-parity.md`](sdl3-pgtk-parity.md).
 
+`runtime_bridge` also exposes bounded lifecycle operations and marks accepted
+input transactions cancelled after host-wide cancellation.
 `runtime_bridge` also refreshes host frame visibility/focus and projects changes
 to existing EUP state messages in unit conformance.  Real platform events and
 Emacs visibility still require R8.

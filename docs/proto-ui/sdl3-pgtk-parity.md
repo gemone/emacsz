@@ -170,6 +170,7 @@ capabilities must keep the relevant capability pending and block W16.
 | P5-prep. Run payload bridge | Host text runs become bounded EUP debug glyph runs and are rendered as fallback text | `runtime_bridge` unit suite and `sdl3-runtime-bridge-smoke`; still not redisplay capture or shaped text |
 | P6-prep. Reverse input bridge | SDL key/text intents reach `PureRuntimeHostV1` deliver/result/completion callbacks with bounded tracking | `sdl3-runtime-bridge-smoke`; still not keymap/command parity |
 | P7-prep. Visibility/focus bridge | Host frame-state observations project to EUP `FRAME_VISIBILITY` and `FRAME_FOCUS` | `runtime_bridge` unit suite; real platform visibility/focus still requires R8 |
+| P8-prep. Lifecycle bridge | Heartbeat, flush, diagnostic, cancel-all, and input cancellation are bound to `PureRuntimeHostV1` | `runtime_bridge` unit suite; real host lifecycle still requires R8 |
 | P4. Terminal registration | `output_proto` can exist as a real terminal without PGTK initialization | Fake-host plus live terminal lifecycle tests after explicit R7 approval |
 | P4. First pure frame | Emacs creates `window-system = proto`; SDL creates the visible surface | One local command creates, focuses, resizes, deletes the frame |
 | P5. Redisplay-owned display | Rows/runs/cursor/damage come from Emacs redisplay | ASCII/CJK/BiDi/face fixtures compare against PGTK baselines |
@@ -183,6 +184,11 @@ P1 preparation adds `proto-ui-pgtk-parity-plan`.  The generated manifest is a
 planned differential suite, not parity evidence; all cases remain `planned` and
 the aggregate result remains `not_implemented`.  It is distinct from the future
 `sdl3-pgtk-parity` runtime acceptance gate.
+
+P8 preparation adds adapter-owned lifecycle operations to the bridge:
+heartbeat, flush, diagnostic, and cancel-all-pending-work.  Cancelled SDL input
+transactions can no longer report results or completions, preventing stale work
+from re-entering the future host seam.
 
 P7 preparation adds visibility/focus synchronization: `runtime_bridge` reads the
 authoritative frame state, caches generation and values, validates legal focus
