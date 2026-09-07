@@ -10,6 +10,7 @@ const protocol = @import("protocol.zig");
 pub const Error = protocol.Error || error{
     FrameAlreadyExists,
     FrameNotActive,
+    FrameNotVisible,
     ResourceTableFull,
     ResourceNotLive,
     StaleGeneration,
@@ -23,10 +24,14 @@ pub const FrameStatus = enum(u8) {
     destroyed = 2,
 };
 
+pub const FrameVisibility = protocol.FrameVisibilityState;
+
 pub const Frame = struct {
     id: u32,
     generation: u32,
     status: FrameStatus,
+    visibility: FrameVisibility = .visible,
+    focused: bool = false,
 };
 
 pub const FrameRegistry = struct {
@@ -44,6 +49,11 @@ pub const FrameRegistry = struct {
         return null;
     }
 
+    pub fn lookup(self: FrameRegistry, id: u32) ?Frame {
+        const frame = self.find(id) orelse return null;
+        return frame.*;
+    }
+
     /// A frame ID is never recycled. A destroy keeps the highest generation so
     /// a later stale create cannot resurrect it.
     pub fn create(self: *FrameRegistry, id: u32, generation: u32) Error!void {
@@ -57,6 +67,20 @@ pub const FrameRegistry = struct {
         self.len += 1;
     }
 
+    pub fn setVisibility(self: *FrameRegistry, id: u32, generation: u32, visibility: FrameVisibility) Error!void {
+        const frame = self.find(id) orelse return Error.FrameNotActive;
+        if (frame.status != .active or frame.generation != generation) return Error.FrameNotActive;
+        self.frames[self.frameIndex(id)].visibility = visibility;
+        if (visibility != .visible) self.frames[self.frameIndex(id)].focused = false;
+    }
+
+    pub fn setFocus(self: *FrameRegistry, id: u32, generation: u32, focused: bool) Error!void {
+        const frame = self.find(id) orelse return Error.FrameNotActive;
+        if (frame.status != .active or frame.generation != generation) return Error.FrameNotActive;
+        if (focused and frame.visibility != .visible) return Error.FrameNotVisible;
+        self.frames[self.frameIndex(id)].focused = focused;
+    }
+
     pub fn update(self: *FrameRegistry, id: u32, generation: u32) Error!void {
         const frame = self.find(id) orelse return Error.FrameNotActive;
         if (frame.status != .active or frame.generation != generation) return Error.FrameNotActive;
@@ -65,7 +89,10 @@ pub const FrameRegistry = struct {
     pub fn destroy(self: *FrameRegistry, id: u32, generation: u32) Error!void {
         const frame = self.find(id) orelse return Error.FrameNotActive;
         if (frame.status != .active or frame.generation != generation) return Error.FrameNotActive;
-        self.frames[self.frameIndex(id)].status = .destroyed;
+        const index = self.frameIndex(id);
+        self.frames[index].status = .destroyed;
+        self.frames[index].visibility = .hidden;
+        self.frames[index].focused = false;
     }
 
     fn frameIndex(self: *FrameRegistry, id: u32) usize {
@@ -234,4 +261,26 @@ test "bounded frame and resource tables reject overflow" {
     };
     try std.testing.expectError(Error.ResourceTableFull, almost_full.declareAll(&two_new));
     try std.testing.expectEqual(@as(usize, max_resources - 1), almost_full.len);
+}
+
+test "frame visibility and focus follow live visibility semantics" {
+    var registry: FrameRegistry = .{};
+    try registry.create(7, 1);
+    try std.testing.expectEqual(FrameVisibility.visible, registry.lookup(7).?.visibility);
+    try std.testing.expectEqual(false, registry.lookup(7).?.focused);
+
+    try registry.setFocus(7, 1, true);
+    try std.testing.expectEqual(true, registry.lookup(7).?.focused);
+    try registry.setVisibility(7, 1, .hidden);
+    try std.testing.expectEqual(FrameVisibility.hidden, registry.lookup(7).?.visibility);
+    try std.testing.expectEqual(false, registry.lookup(7).?.focused);
+    try std.testing.expectError(Error.FrameNotVisible, registry.setFocus(7, 1, true));
+
+    try registry.setVisibility(7, 1, .visible);
+    try registry.setFocus(7, 1, true);
+    try std.testing.expectError(Error.FrameNotActive, registry.setVisibility(7, 2, .visible));
+    try std.testing.expectEqual(@as(u32, 1), registry.lookup(7).?.generation);
+    try registry.destroy(7, 1);
+    try std.testing.expectEqual(FrameVisibility.hidden, registry.lookup(7).?.visibility);
+    try std.testing.expectEqual(false, registry.lookup(7).?.focused);
 }

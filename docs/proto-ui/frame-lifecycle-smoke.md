@@ -206,7 +206,8 @@ Required assertions:
 
 ## 9. Non-goals after W12c
 
-This smoke is a lifecycle bridge, not production frame ownership.  W12d or later
-must add real frame topology, redisplay-owned rows, resource payloads, focus and
-visibility events, and differential compatibility tests before claiming PGTK
-parity.
+This smoke is a lifecycle bridge, not production frame ownership.  W12d adds
+strict visibility/focus wire state only.  A later `output_proto` milestone must
+add real frame topology, redisplay-owned rows, resource payloads, runtime focus
+and visibility events, and differential compatibility tests before claiming
+PGTK parity.

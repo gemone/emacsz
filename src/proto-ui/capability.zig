@@ -50,6 +50,7 @@ pub const Feature = enum {
     renderer_sdl3,
     frame_output_proto,
     frame_lifecycle,
+    frame_visibility_focus_contract,
     resource_generation_contract,
     redisplay_glyph_rows,
     resource_v1,
@@ -71,6 +72,7 @@ pub const Feature = enum {
             .renderer_sdl3 => "renderer.sdl3",
             .frame_output_proto => "frame.output_proto",
             .frame_lifecycle => "frame.lifecycle",
+            .frame_visibility_focus_contract => "frame.visibility_focus_contract",
             .resource_generation_contract => "resource.generation_contract",
             .redisplay_glyph_rows => "redisplay.glyph_rows",
             .resource_v1 => "resource.v1",
@@ -86,7 +88,7 @@ pub const Feature = enum {
 
     pub fn negotiable(self: Feature) bool {
         return switch (self) {
-            .frame_output_proto, .frame_lifecycle, .resource_generation_contract, .redisplay_glyph_rows, .resource_v1 => false,
+            .frame_output_proto, .frame_lifecycle, .frame_visibility_focus_contract, .resource_generation_contract, .redisplay_glyph_rows, .resource_v1 => false,
             else => true,
         };
     }
@@ -114,6 +116,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .renderer_sdl3, .status = .degraded, .evidence = "sdl3-renderer-smoke" },
     .{ .feature = .frame_output_proto, .status = .pending, .evidence = "W12/W16 real proto frame acceptance pending" },
     .{ .feature = .frame_lifecycle, .status = .degraded, .evidence = "proto-ui-unit frame lifecycle contract and sdl3-frame-smoke" },
+    .{ .feature = .frame_visibility_focus_contract, .status = .degraded, .evidence = "proto-ui-unit" },
     .{ .feature = .resource_generation_contract, .status = .degraded, .evidence = "proto-ui-unit resource generation contract" },
     .{ .feature = .redisplay_glyph_rows, .status = .pending, .evidence = "W12 redisplay capture pending" },
     .{ .feature = .resource_v1, .status = .pending, .evidence = "W12 resource model pending" },

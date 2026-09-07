@@ -34,6 +34,12 @@ renders the created/active states, and an atomic delete marker tears down the
 exact Emacs frame followed by EUP `FRAME_DESTROY`.  This is not `output_proto`
 frame ownership and does not stream redisplay-owned glyphs or full input.
 
+W12d adds strict adapter-owned EUP state contracts for `FRAME_VISIBILITY`
+(`hidden`/`visible`/`iconified`) and `FRAME_FOCUS`.  The frontend scene applies
+these messages only to the active frame generation; focusing requires a visible
+frame, and hiding/iconifying clears focus.  This is wire/lifecycle state, not
+yet an Emacs-to-SDL3 focus or visibility runtime round trip.
+
 W4c-b1-p0 adds the executable EUP v1 codec, including envelope, capability, message-ID, and FRAME_UPDATE section conformance.  W4c-b1-t0 adds bounded memory-sink sequencing and ERP1 replay-file conformance.  W4c-b1-b0 adds the versioned adapter ABI, a fake-host conformance harness, and generated ABI artifacts under `zig-out/include/proto-ui`; none introduces runtime integration.  Inherited C/Lisp changes in the rollback patch are restoration-only and return Proto-UI runtime files to their pre-Proto-UI state.  The adapter source is the authoritative ownership manifest; generated JSON is only a non-normative ABI summary.
 
 The documentation in this directory is the source of truth for the implementation workstreams.

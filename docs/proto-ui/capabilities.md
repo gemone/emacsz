@@ -143,11 +143,11 @@ Priority and requirement columns define the specification target. The Status and
 
 The base snapshot below records `23da8d92855`; the current revision adds W12a
 bounded capability/status negotiation, W12b bounded frame/resource generation
-contracts, and W12c real-frame lifecycle bridge smoke. 113 PGTK rows are
-audited: 19 Degraded, 94 Pending, 0 Blocked, and 0 fully Implemented. Pending
-rows are not failures of the protocol design; they are requirements still
-separating the bounded facts bridge from W12 PGTK parity and the W16 real-frame
-acceptance test.
+contracts, W12c real-frame lifecycle bridge smoke, and W12d frame
+visibility/focus state contracts. 113 PGTK rows are audited: 21 Degraded,
+92 Pending, 0 Blocked, and 0 fully Implemented. Pending rows are not failures
+of the protocol design; they are requirements still separating the bounded
+facts bridge from W12 PGTK parity and the W16 real-frame acceptance test.
 
 Priorities:
 
@@ -165,7 +165,7 @@ Priorities:
 | Terminal creation | `create_terminal(output_pgtk)` | `create_terminal(output_proto)` | P0 | Pending | Existing-frame observation is not terminal creation; no `output_proto` terminal |
 | Terminal deletion | PGTK terminal hooks | EUP session/frame teardown | P0 | Pending | Smoke process cleanup is not terminal deletion; no teardown contract |
 | Graphic frame predicate | `output_pgtk` frame | `output_proto` frame | P0 | Pending | No `output_proto`; W12/W16 P0 gap |
-| Focus frame | GDK focus | Frontend focus + core state | P0 | Pending | No frame-focus event round trip |
+| Focus frame | GDK focus | Frontend focus + core state | P0 | Degraded | W12d strict EUP focus state contract; no frame-focus event round trip |
 | Multi-frame | GTK windows | Multiple SDL windows | P1 | Pending | Single SDL facts window and one EUP frame profile |
 | Monitor attributes | GDK monitor | SDL monitor events | P1 | Pending | No monitor observation or protocol event bridge |
 | Scale factor | GDK scale | SDL display scale | P1 | Degraded | EUP header accepts scale; facts profile remains scale 1 |
@@ -177,7 +177,7 @@ Priorities:
 | Capability | Priority | Status | Evidence |
 |---|---|---|---|
 | Create/delete frame | P0 | Degraded | W12c creates/deletes one real PGTK observation frame and one EUP/SDL3 frame in a bounded smoke; no `output_proto`-owned frame predicate or general lifecycle |
-| Visible/invisible | P0 | Pending | No visibility intent or frame event round trip |
+| Visible/invisible | P0 | Degraded | W12d strict EUP hidden/visible state contract and scene registry; no Emacs/SDL3 runtime round trip |
 | Iconify/deiconify | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Raise/lower | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Restack | P1 | Pending | W12/W16 PGTK parity gate not met |
@@ -418,22 +418,22 @@ A capability row is complete only when:
 
 ## 12. Current implementation evidence
 
-Base snapshot: `zig-build-step-4` through `f216cb1f6a6` plus the W12c bridge
-implementation. This summary is scope-sensitive; "implemented" never implies
-PGTK parity.
+Base snapshot: `zig-build-step-4` through `8bebccada16` plus the W12d state
+contract. This summary is scope-sensitive; "implemented" never implies PGTK
+parity.
 
 ### 12.1 Layer status
 
 | Layer | Working now | Still required for parity | Evidence |
 |---|---|---|---|
-| Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry, bounded EPXL capability negotiation/status manifest | General resource/widget capability coverage, arbitrary recovery, remote safety | `proto-ui-conformance`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
-| Emacs observation | Real Emacs process publishes public frame/window geometry, bounded printable-ASCII text, point/cursor, and viewport facts; W12c creates/deletes one real display-backed frame and synchronizes one EUP/SDL3 frame lifecycle | Redisplay-owned rows/glyphs/faces/fonts, full window tree, `output_proto`-owned frame creation/deletion, visibility/focus events | `proto-ui-module-smoke`, `sdl3-emacs-smoke`, `sdl3-epxl-facts-smoke`, `sdl3-frame-smoke` |
+| Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry, bounded EPXL capability negotiation/status manifest, frame visibility/focus state codec | General resource/widget capability coverage, arbitrary recovery, remote safety | `proto-ui-conformance`, `proto-ui-unit`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
+| Emacs observation | Real Emacs process publishes public frame/window geometry, bounded printable-ASCII text, point/cursor, and viewport facts; W12c creates/deletes one real display-backed frame and synchronizes one EUP/SDL3 frame lifecycle | Redisplay-owned rows/glyphs/faces/fonts, full window tree, `output_proto`-owned frame creation/deletion, runtime visibility/focus events | `proto-ui-module-smoke`, `sdl3-emacs-smoke`, `sdl3-epxl-facts-smoke`, `sdl3-frame-smoke` |
 | SDL3 rendering | Real SDL window, frame/window/row/cursor scene, software/GPU selection, clear/fill/debug-text list, retained cursor/text clips | Glyph atlas/runs, faces, images, widgets, true partial present, GPU timestamps | `sdl3-ui-smoke`, `sdl3-renderer-smoke`, `sdl3-pointer-smoke`, `sdl3-epxl-interactive-smoke` |
 | Input | Bounded ASCII insert/delete, arrows, Ctrl+C/Ctrl+V, left pointer sessions, vertical wheel | Full keymaps, Unicode/IME, focus, selection drag, pixel/horizontal scroll | `sdl3-input-translate-smoke`, `sdl3-epxl-input-smoke`, `sdl3-epxl-edit-smoke`, `sdl3-pointer-smoke`, `sdl3-wheel-smoke` |
 | Desktop | Bounded ASCII clipboard paste/copy | Unicode, MIME, PRIMARY/SECONDARY selection, DND, dialogs, menus, scrollbars | `sdl3-clipboard-smoke`, `sdl3-emacs-copy-smoke` |
 | Performance | Change-aware present/skip, damage-class counters, clip counters, renderer tier reporting | Machine-readable benchmark, latency percentiles, bandwidth/GPU evidence | Renderer/interactive smoke diagnostics; W14 harness remains pending |
 
-The status audit contains 113 PGTK capability rows: 19 Degraded, 94 Pending,
+The status audit contains 113 PGTK capability rows: 21 Degraded, 92 Pending,
 0 Blocked, and 0 fully Implemented. A Degraded row always identifies both the
 verified bounded subset and the parity gap that remains.
 
@@ -441,7 +441,7 @@ verified bounded subset and the parity gap that remains.
 
 1. **Graphic frame ownership.** The dynamic-module bridge observes a real Emacs process, but there is no `output_proto` terminal or graphic frame predicate.
 2. **Redisplay-owned rendering.** EUP carries bounded facts rows, not authoritative glyph rows, runs, faces, fonts, or redisplay damage.
-3. **Frame lifecycle and focus.** W12c proves one bounded real-frame create/update/delete bridge, but `output_proto` frame ownership, visibility, and focus still have no runtime round trip.
+3. **Frame lifecycle and focus.** W12c proves one bounded real-frame create/update/delete bridge and W12d defines strict visibility/focus scene state, but `output_proto` frame ownership and runtime focus/visibility round trips remain absent.
 4. **Capability coverage.** The bounded EPXL profile now negotiates, but resources, widgets, and the full EUP feature table are outside that set.
 5. **Resource model.** Generation declaration/commit semantics exist, but resource payloads, deletion transport, snapshots, eviction, and faces/fonts/images remain pending.
 

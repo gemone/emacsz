@@ -43,6 +43,8 @@ pub const Message = struct {
     pub const frame_destroy: u16 = 0x0206;
     pub const frame_update: u16 = 0x0203;
     pub const frame_presented: u16 = 0x0204;
+    pub const frame_visibility: u16 = 0x0208;
+    pub const frame_focus: u16 = 0x0210;
     pub const resource_request: u16 = 0x0510;
     pub const key_event: u16 = 0x0600;
     pub const text_input: u16 = 0x0601;
@@ -130,6 +132,93 @@ pub const Capability = struct {
     name: []const u8,
     value: []const u8,
 };
+
+pub const FrameVisibilityState = enum(u8) {
+    hidden = 0,
+    visible = 1,
+    iconified = 2,
+};
+
+pub const FrameVisibilityPayload = struct {
+    frame_id: u32,
+    frame_generation: u32,
+    state: FrameVisibilityState,
+};
+
+pub const FrameFocusPayload = struct {
+    frame_id: u32,
+    frame_generation: u32,
+    focused: bool,
+};
+
+fn validateFrameStateIdentity(frame_id: u32, frame_generation: u32) Error!void {
+    if (frame_id == 0 or frame_generation == 0) return Error.InvalidMessage;
+}
+
+pub fn encodeFrameVisibility(a: std.mem.Allocator, payload: FrameVisibilityPayload, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameStateIdentity(payload.frame_id, payload.frame_generation);
+    var bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, &bytes, payload.frame_id, .little);
+    try out.appendSlice(a, &bytes);
+    std.mem.writeInt(u32, &bytes, payload.frame_generation, .little);
+    out.appendSliceAssumeCapacity(&bytes);
+    try out.append(a, @intFromEnum(payload.state));
+    try out.appendSlice(a, &.{ 0, 0, 0 });
+}
+
+pub fn decodeFrameVisibility(data: []const u8) Error!FrameVisibilityPayload {
+    if (data.len != 12) return Error.InvalidTable;
+    const payload = FrameVisibilityPayload{
+        .frame_id = std.mem.readInt(u32, data[0..4], .little),
+        .frame_generation = std.mem.readInt(u32, data[4..8], .little),
+        .state = switch (data[8]) {
+            0 => .hidden,
+            1 => .visible,
+            2 => .iconified,
+            else => return Error.InvalidTable,
+        },
+    };
+    if (data[9] != 0 or data[10] != 0 or data[11] != 0) return Error.InvalidTable;
+    try validateFrameStateIdentity(payload.frame_id, payload.frame_generation);
+    return payload;
+}
+
+pub fn encodeFrameFocus(a: std.mem.Allocator, payload: FrameFocusPayload, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameStateIdentity(payload.frame_id, payload.frame_generation);
+    var bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, &bytes, payload.frame_id, .little);
+    try out.appendSlice(a, &bytes);
+    std.mem.writeInt(u32, &bytes, payload.frame_generation, .little);
+    out.appendSliceAssumeCapacity(&bytes);
+    try out.append(a, @intFromBool(payload.focused));
+    try out.appendSlice(a, &.{ 0, 0, 0 });
+}
+
+pub fn decodeFrameFocus(data: []const u8) Error!FrameFocusPayload {
+    if (data.len != 12) return Error.InvalidTable;
+    const payload = FrameFocusPayload{
+        .frame_id = std.mem.readInt(u32, data[0..4], .little),
+        .frame_generation = std.mem.readInt(u32, data[4..8], .little),
+        .focused = switch (data[8]) {
+            0 => false,
+            1 => true,
+            else => return Error.InvalidTable,
+        },
+    };
+    if (data[9] != 0 or data[10] != 0 or data[11] != 0) return Error.InvalidTable;
+    try validateFrameStateIdentity(payload.frame_id, payload.frame_generation);
+    return payload;
+}
+
+pub fn validateFrameVisibilityEnvelope(payload: FrameVisibilityPayload, envelope: Envelope) Error!void {
+    try validateFrameStateIdentity(payload.frame_id, payload.frame_generation);
+    if (envelope.frame_id != payload.frame_id) return Error.InvalidMessage;
+}
+
+pub fn validateFrameFocusEnvelope(payload: FrameFocusPayload, envelope: Envelope) Error!void {
+    try validateFrameStateIdentity(payload.frame_id, payload.frame_generation);
+    if (envelope.frame_id != payload.frame_id) return Error.InvalidMessage;
+}
 
 fn knownSectionKind(kind: u32) bool {
     return kind >= SectionKind.frame_patch and kind <= SectionKind.commit_token;
@@ -633,6 +722,34 @@ test "capability table rejects empty duplicate and truncated entries" {
     // A declared entry needs four bytes even when both strings are empty.
     try std.testing.expectError(Error.InvalidTable, decodeCapabilities(a, &[_]u8{ 1, 0, 0, 0 }));
     try std.testing.expectError(Error.InvalidTable, decodeCapabilities(a, &[_]u8{ 1, 0, 0, 0, 4 }));
+}
+
+test "frame visibility and focus payloads enforce strict wire form" {
+    const a = std.testing.allocator;
+    const visibility = FrameVisibilityPayload{ .frame_id = 7, .frame_generation = 2, .state = .iconified };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(std.testing.allocator);
+    try encodeFrameVisibility(a, visibility, &bytes);
+    try std.testing.expectEqual(@as(usize, 12), bytes.items.len);
+    try std.testing.expectEqual(visibility, try decodeFrameVisibility(bytes.items));
+
+    bytes.items[8] = 3;
+    try std.testing.expectError(Error.InvalidTable, decodeFrameVisibility(bytes.items));
+    bytes.items[8] = 1;
+    bytes.items[9] = 1;
+    try std.testing.expectError(Error.InvalidTable, decodeFrameVisibility(bytes.items));
+
+    bytes.clearRetainingCapacity();
+    const focus = FrameFocusPayload{ .frame_id = 7, .frame_generation = 2, .focused = true };
+    try encodeFrameFocus(a, focus, &bytes);
+    try std.testing.expectEqual(focus, try decodeFrameFocus(bytes.items));
+    bytes.items[8] = 2;
+    try std.testing.expectError(Error.InvalidTable, decodeFrameFocus(bytes.items));
+    bytes.items[8] = 1;
+    bytes.items[11] = 1;
+    try std.testing.expectError(Error.InvalidTable, decodeFrameFocus(bytes.items));
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameVisibility(a, .{ .frame_id = 0, .frame_generation = 1, .state = .visible }, &bytes));
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameFocus(a, .{ .frame_id = 7, .frame_generation = 0, .focused = false }, &bytes));
 }
 
 test "optional and required message policy follows EUP classes" {

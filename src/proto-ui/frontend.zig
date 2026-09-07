@@ -590,6 +590,8 @@ pub const Scene = struct {
         switch (payload.envelope.message_type) {
             protocol.Message.frame_create => try self.applyFrameCreate(payload.envelope, payload.bytes),
             protocol.Message.frame_update => try self.applyFrameUpdate(payload),
+            protocol.Message.frame_visibility => try self.applyFrameVisibility(payload),
+            protocol.Message.frame_focus => try self.applyFrameFocus(payload),
             protocol.Message.frame_destroy => try self.applyFrameDestroy(payload.envelope, payload.bytes),
             else => self.stats.control_messages += 1,
         }
@@ -623,6 +625,20 @@ pub const Scene = struct {
             if (frame.frame_id == frame_id and frame.generation == generation) self.frame = null;
         }
         self.clearVisualState();
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFrameVisibility(self: *Scene, payload: protocol.Payload) Error!void {
+        const state = try protocol.decodeFrameVisibility(payload.bytes);
+        try protocol.validateFrameVisibilityEnvelope(state, payload.envelope);
+        try self.frames.setVisibility(state.frame_id, state.frame_generation, state.state);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFrameFocus(self: *Scene, payload: protocol.Payload) Error!void {
+        const focus = try protocol.decodeFrameFocus(payload.bytes);
+        try protocol.validateFrameFocusEnvelope(focus, payload.envelope);
+        try self.frames.setFocus(focus.frame_id, focus.frame_generation, focus.focused);
         self.stats.control_messages += 1;
     }
 
@@ -996,6 +1012,34 @@ fn updateMessage(
     return message.toOwnedSlice(a);
 }
 
+fn frameStateMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    message_type: u16,
+    envelope_frame: u32,
+    payload_frame: u32,
+    generation: u32,
+    state_byte: u8,
+) ![]u8 {
+    var payload: [12]u8 = undefined;
+    std.mem.writeInt(u32, payload[0..4], payload_frame, .little);
+    std.mem.writeInt(u32, payload[4..8], generation, .little);
+    payload[8] = state_byte;
+    @memset(payload[9..12], 0);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = message_type,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = envelope_frame,
+        .timestamp_ns = sequence,
+    }, &payload, &message);
+    return message.toOwnedSlice(a);
+}
+
 test "scene rejects frame ownership geometry and reserved bytes" {
     const a = std.testing.allocator;
     {
@@ -1250,6 +1294,59 @@ test "scene rejects second active frame and noninitial generation" {
     try std.testing.expectError(Error.FrameAlreadyExists, scene.apply(second));
     try std.testing.expectEqual(@as(u32, 7), scene.frame.?.frame_id);
     try std.testing.expectEqual(@as(u64, 2), scene.next_sequence.?);
+}
+
+test "scene applies visibility and focus against the active frame" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+    const update = try updateMessage(a, 2, 7, 7, 10, 0);
+    defer a.free(update);
+    try scene.apply(update);
+    try std.testing.expectEqual(lifecycle.FrameVisibility.visible, scene.frames.frames[0].visibility);
+
+    const hidden = try frameStateMessage(a, 3, protocol.Message.frame_visibility, 7, 7, 1, 0);
+    defer a.free(hidden);
+    try scene.apply(hidden);
+    try std.testing.expectEqual(lifecycle.FrameVisibility.hidden, scene.frames.frames[0].visibility);
+    try std.testing.expectEqual(false, scene.frames.frames[0].focused);
+
+    const hidden_focus = try frameStateMessage(a, 4, protocol.Message.frame_focus, 7, 7, 1, 1);
+    defer a.free(hidden_focus);
+    try std.testing.expectError(Error.FrameNotVisible, scene.apply(hidden_focus));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const visible = try frameStateMessage(a, 4, protocol.Message.frame_visibility, 7, 7, 1, 1);
+    defer a.free(visible);
+    try scene.apply(visible);
+    const focus = try frameStateMessage(a, 5, protocol.Message.frame_focus, 7, 7, 1, 1);
+    defer a.free(focus);
+    try scene.apply(focus);
+    try std.testing.expectEqual(true, scene.frames.frames[0].focused);
+    try std.testing.expectEqual(@as(u64, 4), scene.stats.control_messages);
+
+    const stale = try frameStateMessage(a, 6, protocol.Message.frame_visibility, 7, 7, 2, 0);
+    defer a.free(stale);
+    try std.testing.expectError(Error.FrameNotActive, scene.apply(stale));
+
+    const mismatched = try frameStateMessage(a, 6, protocol.Message.frame_visibility, 8, 7, 1, 0);
+    defer a.free(mismatched);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(mismatched));
+
+    var destroy_payload: [8]u8 = undefined;
+    std.mem.writeInt(u32, destroy_payload[0..4], 7, .little);
+    std.mem.writeInt(u32, destroy_payload[4..8], 1, .little);
+    var destroy: std.ArrayList(u8) = .empty;
+    defer destroy.deinit(a);
+    try protocol.encodeEnvelope(a, .{ .flags = 0, .message_type = protocol.Message.frame_destroy, .sequence = 6, .ack_sequence = 0, .session_id = 9, .frame_id = 7, .timestamp_ns = 6 }, &destroy_payload, &destroy);
+    try scene.apply(destroy.items);
+    try std.testing.expectEqual(lifecycle.FrameVisibility.hidden, scene.frames.frames[0].visibility);
+    try std.testing.expectEqual(false, scene.frames.frames[0].focused);
+    try std.testing.expectEqual(lifecycle.FrameStatus.destroyed, scene.frames.frames[0].status);
 }
 
 test "scene atomically validates resource generation declarations" {

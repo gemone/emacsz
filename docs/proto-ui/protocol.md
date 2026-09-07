@@ -1004,6 +1004,30 @@ equal generations are stale and reject the update atomically. Payload delivery,
 deletion messages, snapshots, eviction, missing-resource requests, and actual
 face/font/image content remain future resource-model work.
 
+#### Frame visibility and focus state
+
+W12d defines the first strict state payloads for two already-assigned frame
+messages. Both are core-to-frontend authority about one active frame
+generation:
+
+```text
+frame_id          u32 (nonzero, equal to envelope frame_id)
+generation        u32 (nonzero)
+state             u8
+reserved          u24 (zero)
+```
+
+For `FRAME_VISIBILITY`, state is `0=hidden`, `1=visible`, or `2=iconified`.
+For `FRAME_FOCUS`, state is a Boolean: `0=unfocused` and `1=focused`.
+Truncated or oversized payloads are invalid. Receivers must reject unknown
+state values and any nonzero reserved byte.
+
+A new frame starts visible and unfocused. Changing to hidden or iconified
+clears focus. Setting focus requires visibility; clearing focus is valid in
+every visibility state. A stale or destroyed generation is invalid. These
+contracts currently stop at the adapter/frontend scene; no runtime Emacs focus
+or visibility round trip is claimed.
+
 The facts profile also defines a deliberately bounded `KEY_EVENT` payload for
 `0x0600`: `u16 action` (`1=backspace`, `2=cursor-left`, `3=cursor-right`,
 `4=cursor-up`, `5=cursor-down`, `6=copy`), `u8 state` (`1=pressed`), and

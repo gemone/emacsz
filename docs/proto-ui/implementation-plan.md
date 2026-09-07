@@ -102,6 +102,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W12a EPXL capability/status manifest | Approved |
 | W12b frame lifecycle/resource generation contract | Approved |
 | W12c real-frame lifecycle bridge smoke | Approved |
+| W12d frame visibility/focus state contract | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
@@ -2137,6 +2138,42 @@ separated producer and frontend scene sequence state. Local Linux validation
 covered 89/89 adapter unit tests, three successful frame-smoke runs before the
 final cleanup pass, the post-cleanup frame smoke, live smoke, and the built-in
 check before cleanup.
+
+#### W12d — Frame visibility/focus state contract (approved)
+
+Goal: define strict core-to-frontend state transitions for visibility and
+focus before an `output_proto` runtime seam can own real Emacs frame state.
+
+1. Implement EUP `FRAME_VISIBILITY` (`0x0208`) with `hidden=0`, `visible=1`,
+   and `iconified=2`.
+2. Implement EUP `FRAME_FOCUS` (`0x0210`) with a strict Boolean focus byte.
+3. Use exact 12-byte little-endian payloads: frame ID, frame generation, state
+   byte, and three reserved zero bytes.
+4. Reject zero identity/generation values, envelope/payload frame mismatch,
+   invalid state bytes, and nonzero reserved bytes.
+5. Store visibility and focus with the adapter-owned active-frame generation.
+   New frames start visible and unfocused; hiding or iconifying clears focus.
+6. Permit focus only on a visible frame; permit unfocus in any visibility
+   state; reject stale, destroyed, or non-active state changes.
+7. Apply both messages in `frontend.Scene`, count them as control messages,
+   and preserve sequence continuity when validation fails.
+
+Implemented limits: this is a strict protocol/lifecycle contract and frontend
+scene state only.  It does not transport a real SDL platform-focus event into
+Emacs, create an `output_proto` frame, or observe Emacs visibility changes.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true proto-ui-boundary
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-frame-smoke
+```
+
+Status: approved. The dedicated reviewer completed protocol, lifecycle/state,
+and regression/boundary passes; approved fixes added allocator-consistent codec
+tests and complete malformed/reserved-byte coverage. Local validation passed
+92/92 adapter unit tests, the boundary audit, and the W12c frame smoke.
 
 Tasks:
 
