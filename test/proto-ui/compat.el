@@ -28,18 +28,18 @@
   (or load-file-name buffer-file-name)
   "Path to this tracked compatibility program.")
 
-(defun proto-ui-compat--json-string (value)
-  "Return VALUE encoded as a JSON string by json.el."
-  (json-encode (if (stringp value) value (format "%s" value))))
-
 (defun proto-ui-compat--pass (details)
   "Record a successful scenario result with DETAILS."
   (setq proto-ui-compat--details details)
-  t)
+  details)
 
 (defun proto-ui-compat--environment-display-p ()
   "Return non-nil when the environment names an available graphical display."
   (or (getenv "DISPLAY") (getenv "WAYLAND_DISPLAY")))
+
+(defun proto-ui-compat--canonical (parts)
+  "Join semantic PARTS into one deterministic canonical string."
+  (mapconcat #'identity parts "\x1f"))
 
 (defun proto-ui-compat--identity ()
   (proto-ui-compat--pass
@@ -208,6 +208,98 @@
          (default_value . ,default-value-value)
          (cleanup_value . ,proto-ui-compat-local-default))))))
 
+(defun proto-ui-compat--semantic-signature (name &optional frame)
+  "Return canonical semantic signature parts for scenario NAME on FRAME.
+Only backend-independent facts are included.  In particular, pixel
+sizes, fonts, frame identities, frame types, and timing are excluded."
+  (pcase name
+    ('buffer_undo
+     (let ((result (proto-ui-compat--buffer-undo)))
+       (list (format "deleted=%s" (cdr (assq 'deleted_text result)))
+             (format "restored=%S" (cdr (assq 'undo_restored result)))
+             (format "cleanup=%S" (cdr (assq 'undo_cleanup result))))))
+    ('point_mark_narrowing
+     (let ((result (proto-ui-compat--point-mark-narrowing)))
+       (list (format "point=%s" (cdr (assq 'point result)))
+             (format "exchanged=%s" (cdr (assq 'exchanged_point result)))
+             (format "mark=%s" (cdr (assq 'mark result)))
+             (format "min=%s" (cdr (assq 'narrow_min result)))
+             (format "max=%s" (cdr (assq 'narrow_max result)))
+             (format "widen=%s" (cdr (assq 'widen_max result))))))
+    ('text_overlay_properties
+     (let ((result (proto-ui-compat--text-overlays)))
+       (list (format "text=%S" (cdr (assq 'text_face result)))
+             (format "overlay=%S" (cdr (assq 'overlay_face result)))
+             (format "deleted=%S" (cdr (assq 'overlay_deleted result))))))
+    ('face_definition_readback
+     (let ((result (proto-ui-compat--face-readback frame)))
+       (list (format "underline=%S" (cdr (assq 'underline result))))))
+    ('window_split_select_delete
+     (let ((result (proto-ui-compat--window-management)))
+       (list (format "new=%s" (cdr (assq 'new_window_point result)))
+             (format "old=%s" (cdr (assq 'old_window_point result)))
+             (format "marker=%s" (cdr (assq 'old_marker_position result)))
+             (format "live=%S" (cdr (assq 'buffer_live result))))))
+    ('window_resize_scroll_recenter
+     (let ((result (proto-ui-compat--window-scroll frame)))
+       (list (format "state_changed=%S"
+                     (/= (cdr (assq 'recenter_start result))
+                         (cdr (assq 'scrolled_start result))))
+             (format "resized=%S" (cdr (assq 'resize result))))))
+    ('buffer_local_variables
+     (let ((result (proto-ui-compat--buffer-local)))
+       (list (format "local=%S" (cdr (assq 'local_value result)))
+             (format "default=%S" (cdr (assq 'default_value result)))
+             (format "cleanup=%S" (cdr (assq 'cleanup_value result))))))
+    (_ (error "unknown semantic scenario %S" name))))
+
+(defvar proto-ui-compat--semantic-scenarios
+  '(buffer_undo
+    point_mark_narrowing
+    text_overlay_properties
+    face_definition_readback
+    window_split_select_delete
+    window_resize_scroll_recenter
+    buffer_local_variables)
+  "Backend-independent scenarios compared across TTY and PGTK.")
+
+(defun proto-ui-compat--semantic-results (&optional frame)
+  "Run the semantic matrix once on FRAME and return canonical records."
+  (let ((records nil))
+    (dolist (name proto-ui-compat--semantic-scenarios)
+      (let ((status "pass")
+            (signature nil))
+        (condition-case error-data
+            (setq signature
+                  (proto-ui-compat--canonical
+                   (proto-ui-compat--semantic-signature name frame)))
+          (error
+           (setq status "fail" signature (format "error=%s"
+                                                 (error-message-string error-data)))))
+        (push `((name . ,(symbol-name name))
+                (status . ,status)
+                (signature . ,signature)
+                (digest . ,(secure-hash 'sha256 signature)))
+              records)))
+    (nreverse records)))
+
+(defun proto-ui-compat--combined-digest (records)
+  "Return the ordered SHA-256 combined digest of semantic RECORDS."
+  (let ((parts nil))
+    (dolist (record records)
+      (push (cdr (assq 'name record)) parts)
+      (push (cdr (assq 'digest record)) parts))
+    (secure-hash 'sha256 (string-join (nreverse parts) "\x1f"))))
+
+(defun proto-ui-compat--semantic-metadata (context)
+  "Return backend metadata for CONTEXT without digesting display values."
+  (let ((window (symbol-name window-system))
+        (frame-type (format "%S" (framep (selected-frame)))))
+    `((context . ,context)
+      (display_present . ,(proto-ui-compat--environment-display-p))
+      (window_system . ,window)
+      (selected_frame_type . ,frame-type))))
+
 (defun proto-ui-compat--pgtk-frame (&optional run-scenarios)
   "Run one real PGTK frame in a clean GUI child of this batch gate.
 Batch-mode Emacs intentionally keeps its initial terminal on the TTY;
@@ -275,6 +367,80 @@ reporter."
         (select-frame original-frame)
         (delete-frame frame nil)))))
 
+(defun proto-ui-compat--pgtk-matrix-child (report-file)
+  "Run the matrix on one real PGTK frame and write JSON to REPORT-FILE."
+  (let ((frame nil)
+        (original-frame (selected-frame)))
+    (unwind-protect
+        (progn
+          (setq frame (make-frame
+                       '((name . "proto-ui-compat-matrix")
+                         (width . 80)
+                         (height . 24)
+                         (visibility . t)
+                         (undecorated . t))))
+          (unless (and (frame-live-p frame) (eq (framep frame) 'pgtk))
+            (error "created matrix frame is not a live PGTK frame"))
+          (select-frame frame)
+          (redisplay t)
+          (let ((records (proto-ui-compat--semantic-results frame)))
+            (with-temp-file report-file
+              (insert
+               (json-encode-alist
+                `((schema . "proto-ui-compat-matrix-child/v1")
+                  (kind . "proto-ui-compat-matrix-child")
+                  (version . 1)
+                  (backend . "pgtk")
+                  (metadata . ,(proto-ui-compat--semantic-metadata
+                                "real_pgtk_child"))
+                  (scenarios . ,(apply #'vector records))))))
+            (select-frame original-frame)
+            (delete-frame frame nil)
+            (setq frame nil)
+            (kill-emacs 0)))
+      (when (frame-live-p frame)
+        (select-frame original-frame)
+        (delete-frame frame nil)))))
+
+(defun proto-ui-compat--pgtk-semantic-records ()
+  "Run a clean PGTK child and return its semantic records."
+  (let ((result nil)
+        (report (make-temp-file "proto-ui-compat-matrix-"))
+        (emacs (expand-file-name "emacs" invocation-directory))
+        (source (or (and (stringp proto-ui-compat--load-file)
+                         (expand-file-name proto-ui-compat--load-file))
+                    (expand-file-name "test/proto-ui/compat.el"))))
+    (with-temp-buffer
+      (let ((exit-code
+             (apply #'call-process emacs nil nil nil
+                    (list "-Q"
+                          "-d" (or (getenv "DISPLAY")
+                                   (getenv "WAYLAND_DISPLAY"))
+                          "-l" source
+                          "--eval"
+                          (format "(proto-ui-compat--pgtk-matrix-child %S)"
+                                  report)))))
+        (unless (eq exit-code 0)
+          (error "PGTK matrix child failed with exit status %S" exit-code))
+        (with-temp-buffer
+          (insert-file-contents report)
+          (let ((child (json-read-from-string
+                        (buffer-substring-no-properties
+                         (point-min) (point-max)))))
+            (unless (and (equal (cdr (assq 'schema child))
+                                "proto-ui-compat-matrix-child/v1")
+                         (equal (cdr (assq 'kind child))
+                                "proto-ui-compat-matrix-child")
+                         (equal (cdr (assq 'version child)) 1)
+                         (equal (cdr (assq 'backend child)) "pgtk"))
+              (error "invalid PGTK matrix child report"))
+            (unless (and (assq 'scenarios child)
+                         (= (length (cdr (assq 'scenarios child))) 7))
+              (error "PGTK matrix child scenario count mismatch"))
+            (setq result (cdr (assq 'scenarios child)))))
+        (delete-file report))
+      result)))
+
 (defvar proto-ui-compat--scenarios
   '((identity . proto-ui-compat--identity)
     (buffer_undo . proto-ui-compat--buffer-undo)
@@ -296,8 +462,81 @@ reporter."
 
 (defun proto-ui-compat-run ()
   "Run all compatibility scenarios and print one JSON report."
-  (let ((scenario-json nil)
-        (failed nil))
+  (let* ((scenario-json nil)
+         (failed nil)
+         (tty (proto-ui-compat--semantic-results nil))
+         (display (proto-ui-compat--environment-display-p))
+         (pgtk-result
+          (if (not display)
+              (list
+               (cons 'status "skip")
+               (cons 'metadata nil)
+               (cons 'scenarios [])
+               (cons 'combined_digest
+                     (secure-hash 'sha256 "proto-ui-matrix-skipped"))
+               (cons 'reason "no_graphical_display"))
+            (condition-case error-data
+                (let ((records (append
+                                (proto-ui-compat--pgtk-semantic-records) nil)))
+                  `((status . ,(if (seq-every-p
+                                    (lambda (record)
+                                      (equal (cdr (assq 'status record)) "pass"))
+                                    records)
+                                   "pass" "fail"))
+                    (metadata
+                     . ((context . real_pgtk_child)
+                        (display_present . t)
+                        (window_system . pgtk)
+                        (selected_frame_type . pgtk)))
+                    (scenarios . ,(apply #'vector records))
+                    (combined_digest
+                     . ,(proto-ui-compat--combined-digest records))))
+              (error
+               `((status . "fail")
+                 (metadata . nil)
+                 (scenarios . [])
+                 (combined_digest
+                  . ,(secure-hash 'sha256 "proto-ui-matrix-unavailable"))
+                 (reason . ,(error-message-string error-data)))))))
+         (pgtk-status (cdr (assq 'status pgtk-result)))
+         (pgtk-scenarios (cdr (assq 'scenarios pgtk-result)))
+         (pairs nil)
+         (pairs-failed nil))
+    (dolist (record tty)
+      (let* ((name (cdr (assq 'name record)))
+             (tty-status (cdr (assq 'status record)))
+             (tty-digest (cdr (assq 'digest record)))
+             (pgtk-record
+              (seq-find (lambda (item)
+                          (equal (cdr (assq 'name item)) name))
+                        pgtk-scenarios))
+             (pgtk-digest (and pgtk-record (cdr (assq 'digest pgtk-record))))
+             (pair-status
+              (cond
+               ((equal pgtk-status "skip") "skip")
+               ((or (not (equal tty-status "pass")) (not pgtk-record)
+                    (not (equal (cdr (assq 'status pgtk-record)) "pass")))
+                "fail")
+               ((equal tty-digest pgtk-digest) "match")
+               (t "mismatch"))))
+        (when (or (member pair-status '("fail" "mismatch"))
+                  (not (equal tty-status "pass")))
+          (setq pairs-failed t))
+        (push `((name . ,name)
+                (status . ,pair-status)
+                (pair_digest
+                 . ,(secure-hash
+                     'sha256
+                     (mapconcat #'identity
+                                (list name tty-digest
+                                      (or pgtk-digest "unavailable"))
+                                "\x1f")))
+                (tty_digest . ,tty-digest)
+                (pgtk_digest . ,(or pgtk-digest "unavailable")))
+              pairs)))
+    (setq pairs (nreverse pairs))
+    (when (and (not (equal pgtk-status "skip")) pairs-failed)
+      (setq failed t))
     (dolist (scenario proto-ui-compat--scenarios)
       (let ((name (car scenario))
             (function (cdr scenario)))
@@ -323,6 +562,30 @@ reporter."
                       (kind . "proto-ui-compat-report")
                       (version . 1)
                       (emacs . ,(proto-ui-compat--metadata))
+                      (matrix
+                       . ((schema . "proto-ui-compat-matrix/v1")
+                          (kind . "proto-ui-compat-matrix")
+                          (version . 1)
+                          (overall . ,(if (or pairs-failed
+                                              (equal pgtk-status "fail"))
+                                          "fail" "pass"))
+                          (backends
+                           . ((tty
+                               . ((status . "pass")
+                                  (metadata
+                                   . ,(proto-ui-compat--semantic-metadata
+                                       "batch_tty"))
+                                  (scenario_count . ,(length tty))
+                                  (combined_digest
+                                   . ,(proto-ui-compat--combined-digest tty))
+                                  (scenarios . ,(apply #'vector tty))))
+                              (pgtk
+                               . ,(append pgtk-result
+                                          (list
+                                           (cons
+                                            'scenario_count
+                                            (length pgtk-scenarios)))))))
+                          (scenario_pairs . ,(apply #'vector pairs))))
                       (scenarios . ,(apply #'vector (nreverse scenario-json)))
                       (overall . ,(if failed "fail" "pass"))))
                    "\n"))

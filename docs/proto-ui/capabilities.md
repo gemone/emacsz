@@ -429,6 +429,15 @@ the window/scroll/face checks there, deletes the frame, and verifies cleanup.
 Without a display the PGTK scenarios are explicit skips, never passes disguised
 as GUI evidence.
 
+The backend semantic matrix extends that gate with seven fixed
+backend-neutral scenarios.  It runs the same semantic scenarios in the
+isolated batch/TTY parent and, when a display is present, in a real PGTK
+child.  Each backend record has a canonical signature and SHA-256 digest, and
+the report includes ordered combined digests plus per-pair match/skip status.
+Digests exclude pixel dimensions, font names, frame identities/types, object
+IDs, and elapsed time.  The Zig gate validates exact scenario order and
+recomputes the combined and pair digests.  This is not proto-frame parity.
+
 ## 12. Current implementation evidence
 
 Base snapshot: `zig-build-step-4` through `8bebccada16` plus the W12d state
@@ -445,9 +454,9 @@ parity.
 | Input | Bounded ASCII insert/delete, arrows, Ctrl+C/Ctrl+V, left pointer sessions, vertical wheel | Full keymaps, Unicode/IME, focus, selection drag, pixel/horizontal scroll | `sdl3-input-translate-smoke`, `sdl3-epxl-input-smoke`, `sdl3-epxl-edit-smoke`, `sdl3-pointer-smoke`, `sdl3-wheel-smoke` |
 | Desktop | Bounded ASCII clipboard paste/copy | Unicode, MIME, PRIMARY/SECONDARY selection, DND, dialogs, menus, scrollbars | `sdl3-clipboard-smoke`, `sdl3-emacs-copy-smoke` |
 | Performance | Change-aware present/skip, damage-class counters, clip counters, renderer tier reporting, opt-in adapter hot-path baseline for EUP encode/decode, Scene application, atomic capture, and bounded memory send | Latency percentiles, bandwidth/allocation evidence, real redisplay/typing/scroll benchmarks, GPU-tier comparisons | `proto-ui-bench` (opt-in), renderer/interactive smoke diagnostics; W14 remains partial |
-| Base Emacs compatibility | Existing-buffer health gate for version, text/undo, narrowing, properties, faces, windows, scroll/recenter, buffer locals, and optional real PGTK frame lifecycle | Proto-frame compatibility and full PGTK parity | `proto-ui-compat` (opt-in); `compatibility.pgtk_base_gate` is degraded and non-negotiable |
+| Base Emacs compatibility | Existing-buffer health gate for version, text/undo, narrowing, properties, faces, windows, scroll/recenter, buffer locals, optional real PGTK frame lifecycle, and a seven-scenario deterministic TTY/PGTK semantic matrix | Proto-frame compatibility and full PGTK parity | `proto-ui-compat` (opt-in); `compatibility.pgtk_base_gate` and `compatibility.backend_semantic_matrix` are degraded and non-negotiable |
 
-The status audit contains 118 PGTK capability rows: 21 Degraded, 97 Pending,
+The status audit contains 119 PGTK capability rows: 22 Degraded, 97 Pending,
 0 Blocked, and 0 fully Implemented. A Degraded row always identifies both the
 verified bounded subset and the parity gap that remains.
 

@@ -77,6 +77,15 @@ host it creates and deletes one real PGTK frame.  The report is
 machine-readable and PGTK unavailable states are explicit skips.  This gate is
 not Proto-UI runtime enablement and does not claim proto-frame compatibility.
 
+W15-b extends that gate with a deterministic TTY/PGTK semantic matrix.  Seven
+backend-neutral scenarios are executed in the isolated batch/TTY parent and, on
+a graphical host, in a real PGTK child.  Each record carries a canonical
+semantic signature and SHA-256 digest; ordered per-backend and per-pair digests
+make a mismatch explicit.  Pixel sizes, fonts, frame identities/types, IDs, and
+timing are excluded from digest input.  The Zig gate validates the full matrix
+and recomputes every digest.  This remains evidence about existing Emacs
+semantics only, not `output_proto`, proto frames, or complete PGTK parity.
+
 W4c-b1-p0 adds the executable EUP v1 codec, including envelope, capability, message-ID, and FRAME_UPDATE section conformance.  W4c-b1-t0 adds bounded memory-sink sequencing and ERP1 replay-file conformance.  W4c-b1-b0 adds the versioned adapter ABI, a fake-host conformance harness, and generated ABI artifacts under `zig-out/include/proto-ui`; none introduces runtime integration.  Inherited C/Lisp changes in the rollback patch are restoration-only and return Proto-UI runtime files to their pre-Proto-UI state.  The adapter source is the authoritative ownership manifest; generated JSON is only a non-normative ABI summary.
 
 The documentation in this directory is the source of truth for the implementation workstreams.

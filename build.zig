@@ -585,6 +585,7 @@ pub fn build(b: *std.Build) void {
             "proto-ui-compat-run",
         });
         run_compat.setCwd(b.path("."));
+        run_compat.addFileInput(b.path("test/proto-ui/compat.el"));
         const compat_stdout = run_compat.captureStdOut(.{
             .basename = "proto-ui-compat-report.json",
             .trim_whitespace = .all,

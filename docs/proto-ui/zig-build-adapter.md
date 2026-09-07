@@ -384,6 +384,9 @@ The boundary report must show:
 9. `compatibility.pgtk_base_gate` reports degraded/non-negotiable with opt-in
    `proto-ui-compat` evidence; it validates existing Emacs health only and
    does not enable or claim `output_proto`.
+10. `compatibility.backend_semantic_matrix` reports degraded/non-negotiable
+   with opt-in `proto-ui-compat` evidence; its deterministic TTY/PGTK matrix is
+   signature-checked but does not enable or claim `output_proto`.
 
 ## 10. Definition of done
 

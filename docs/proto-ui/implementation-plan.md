@@ -2469,8 +2469,9 @@ Review gates:
 
 Goal: prove “fully compatible with existing Emacs capabilities” within the declared capability matrix.
 
-Status: W15-a complete as a bounded base/PGTK health gate.  It does **not**
-prove proto-frame compatibility, `output_proto`, or complete PGTK parity.
+Status: W15-a and W15-b complete as bounded base/PGTK health evidence with a
+deterministic TTY/PGTK semantic matrix.  They do **not** prove proto-frame
+compatibility, `output_proto`, or complete PGTK parity.
 
 Tasks:
 
@@ -2486,12 +2487,17 @@ Tasks:
    scenarios. *(W15-a.)*
 5. Emit one machine-readable report with per-scenario details and no writable
    repository files. *(W15-a.)*
-6. Run proto UI differential smoke suite.
-7. Compare TTY/PGTK/proto redisplay semantics for text, windows, faces,
+6. Run the seven fixed backend-neutral scenarios in both the batch/TTY parent
+   and a real PGTK child when a display is present; emit per-scenario/backend
+   signatures and SHA-256 digests, combined per-backend digests, per-pair
+   digests, and explicit match/skip/fail statuses. *(W15-b.)*
+7. Reject digest, scenario-order, mismatch, or fail-closed matrix violations in
+   the Zig report runner. *(W15-b.)*
+8. Compare TTY/PGTK/proto redisplay semantics for text, windows, faces,
    cursor, scroll, and frames.
-8. Verify existing Lisp APIs on proto frames.
-9. Verify proto removal/disabled state leaves no runtime trace.
-10. Document every deliberate degradation.
+9. Verify existing Lisp APIs on proto frames.
+10. Verify proto removal/disabled state leaves no runtime trace.
+11. Document every deliberate degradation.
 
 Acceptance:
 
@@ -2505,9 +2511,10 @@ zig build -Dproto-ui=true proto-ui-compat
 
 `proto-ui-compat` passes only when every non-skipped scenario passes.  It is
 bounded and deterministic; no elapsed time participates in pass/fail.  The
-source-authoritative capability descriptor is
-`compatibility.pgtk_base_gate`: degraded, non-negotiable, evidence
-`proto-ui-compat`.
+source-authoritative capability descriptors are
+`compatibility.pgtk_base_gate` and `compatibility.backend_semantic_matrix`:
+degraded, non-negotiable, evidence `proto-ui-compat`.  The semantic matrix
+covers existing TTY and PGTK behavior only and does not define a proto frame.
 
 Review gates:
 
