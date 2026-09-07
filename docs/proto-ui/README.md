@@ -199,6 +199,12 @@ and the SDL runtime-bridge smoke proves acceptance after a frame update.  This
 is adapter protocol state; core redisplay emission and renderer pacing remain
 pending.
 
+P14 continuous-capture preparation lets a committed fake-host bridge begin a
+strictly newer redisplay generation without rebuilding its terminal or frame.
+The bridge atomically resets bounded observations and prior flush state only
+after the host accepts the next capture.  This prepares a repeated host update
+cycle; it is not real redisplay capture or `output_proto` registration.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and

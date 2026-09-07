@@ -516,6 +516,10 @@ without Emacs registration.  `runtime_bridge` can also project bounded host ASCI
 debug `GLYPH_RUN` messages; this remains fallback diagnostic rendering.
 `runtime_bridge` proves the same host ABI can produce deterministic EUP frame
 create/update/destroy messages with a fake host.  It is not runtime registration.
+`runtime_bridge` can also begin a committed capture again with a strictly newer
+redisplay generation, atomically reset bounded observations, and bind the next
+`FRAME_UPDATE`/`FLUSH` pair to that generation.  This remains fake-host adapter
+preparation, not redisplay capture.
 `proto-ui-runtime-host-abi` projects that contract to a generated C header and
 compiles a conformance translation unit.  `proto-ui-runtime-host` defines and conformance-tests a versioned five-group
 PureRuntimeHostV1 ABI while keeping runtime unavailable.  It does not register a

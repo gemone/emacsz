@@ -178,8 +178,12 @@ pub const Bridge = struct {
     }
 
     pub fn beginCapture(self: *Bridge, redisplay_generation: u64) Error!void {
-        try self.requireState(.frame_registered);
-        if (redisplay_generation == 0 or redisplay_generation != self.frame.generation)
+        switch (self.state) {
+            .frame_registered, .captured => {},
+            else => return error.InvalidState,
+        }
+        if (redisplay_generation == 0 or
+            (self.state == .captured and redisplay_generation <= self.redisplay_generation))
             return error.InvalidFrameIdentity;
         const request: runtime_host.CaptureRequest = .{
             .frame = self.frame,
@@ -188,8 +192,13 @@ pub const Bridge = struct {
         const group = try self.redisplayGroup();
         const context = group.context orelse return error.InvalidRuntimeHost;
         const callback = group.begin_capture orelse return error.InvalidRuntimeHost;
-        try runtime_host.ensureOk(callback(context, &request, &self.capture));
+        var capture: runtime_host.Identity = .{};
+        try runtime_host.ensureOk(callback(context, &request, &capture));
+        self.capture = capture;
         self.redisplay_generation = redisplay_generation;
+        self.counts = .{};
+        self.last_frame_sequence = 0;
+        self.last_flushed_frame_sequence = 0;
         self.state = .capturing;
     }
 
@@ -462,6 +471,8 @@ pub const Bridge = struct {
         out: *std.ArrayList(u8),
     ) Error!void {
         try self.requireState(.captured);
+        if (sequence == 0 or sequence <= self.last_frame_sequence)
+            return error.InvalidState;
         const frame_id: u32 = @intCast(self.frame.id);
         const frame_generation: u32 = self.eup_frame_generation;
 
@@ -1010,6 +1021,66 @@ test "hidden focused host state is rejected without cache mutation" {
     host.frame_focused = true;
     try std.testing.expectError(error.InvalidFrameIdentity, bridge.refreshFrameState());
     try std.testing.expect(bridge.frame_state == null);
+}
+
+test "bridge advances bounded redisplay capture generations" {
+    const gpa = std.testing.allocator;
+    var host: runtime_host.FakeHost = undefined;
+    const table = runtime_host.fakeTable(&host);
+    var bridge = try Bridge.init(table);
+
+    try bridge.createTerminal(.{ .requested_generation = 1 });
+    try bridge.activateTerminal();
+    try bridge.registerFrame(.{ .id = 22, .generation = 8 });
+    _ = try bridge.refreshFrameGeometry();
+    try bridge.beginCapture(8);
+    try bridge.observeWindow(.{ .id = 10, .generation = 8, .width = 80, .height = 60 });
+    try bridge.observeRow(.{ .window_id = 10, .row_index = 0, .width = 80, .height = 10, .ascent = 7, .descent = 3, .baseline = 7, .visible_height = 10 });
+    try bridge.observeDamage(.{ .width = 800, .height = 600 });
+    try bridge.commitCapture();
+
+    var first: std.ArrayList(u8) = .empty;
+    defer first.deinit(gpa);
+    try bridge.encodeFrameUpdate(gpa, 1, 9, 2, &first);
+    try bridge.encodeFlush(gpa, 2, 9, 2, &first);
+    try std.testing.expectEqual(@as(u64, 1), bridge.last_flushed_frame_sequence);
+
+    try std.testing.expectError(error.InvalidFrameIdentity, bridge.beginCapture(8));
+    host.force_failure = true;
+    try std.testing.expectError(error.HostCallbackFailed, bridge.beginCapture(9));
+    try std.testing.expectEqual(State.captured, bridge.state);
+    try std.testing.expectEqual(@as(u64, 8), bridge.redisplay_generation);
+    try std.testing.expectEqual(@as(u64, 1), bridge.last_frame_sequence);
+    try std.testing.expectEqual(@as(u64, 1), bridge.last_flushed_frame_sequence);
+    host.force_failure = false;
+    try bridge.beginCapture(9);
+    try std.testing.expectEqual(State.capturing, bridge.state);
+    try std.testing.expectEqual(Counts{}, bridge.snapshotCounts());
+    try std.testing.expectEqual(@as(u64, 0), bridge.last_frame_sequence);
+    try std.testing.expectEqual(@as(u64, 0), bridge.last_flushed_frame_sequence);
+    try std.testing.expectEqual(@as(u64, 9), bridge.redisplay_generation);
+
+    try bridge.observeWindow(.{ .id = 10, .generation = 8, .width = 80, .height = 60 });
+    try bridge.observeRow(.{ .window_id = 10, .row_index = 0, .width = 80, .height = 10, .ascent = 7, .descent = 3, .baseline = 7, .visible_height = 10 });
+    try bridge.observeDamage(.{ .width = 800, .height = 600 });
+    try bridge.commitCapture();
+
+    var next: std.ArrayList(u8) = .empty;
+    defer next.deinit(gpa);
+    try bridge.encodeFrameUpdate(gpa, 3, 9, 3, &next);
+    const payload = try protocol.decodeEnvelope(next.items);
+    var update = try protocol.decodeFrameUpdate(gpa, payload.bytes);
+    defer protocol.freeFrameUpdate(gpa, &update);
+    try std.testing.expectEqual(@as(u64, 9), update.header.redisplay_generation);
+    try std.testing.expectEqual(@as(u64, 3), update.header.sequence);
+
+    var flushed: std.ArrayList(u8) = .empty;
+    defer flushed.deinit(gpa);
+    try bridge.encodeFlush(gpa, 4, 9, 3, &flushed);
+    const flush_payload = try protocol.decodeEnvelope(flushed.items);
+    const flush = try protocol.decodeFrameFlush(flush_payload.bytes);
+    try std.testing.expectEqual(@as(u64, 9), flush.redisplay_generation);
+    try std.testing.expectEqual(@as(u64, 3), flush.frame_sequence);
 }
 
 test "bridge delivers key and text intents with ordered lifecycle" {

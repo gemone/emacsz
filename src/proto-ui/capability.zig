@@ -295,7 +295,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .runtime_fail_closed_manifest, .status = .degraded, .evidence = "proto-ui-runtime-manifest" },
     .{ .feature = .adapter_generated_c_shim, .status = .degraded, .evidence = "proto-ui-shim-conformance" },
     .{ .feature = .adapter_host_shim_library, .status = .degraded, .evidence = "proto-ui-shim-library-conformance" },
-    .{ .feature = .capture_atomic_batches, .status = .degraded, .evidence = "proto-ui-unit" },
+    .{ .feature = .capture_atomic_batches, .status = .degraded, .evidence = "proto-ui-unit continuous capture-generation reset; redisplay capture pending" },
     .{ .feature = .policy_host_registration_contract, .status = .degraded, .evidence = "proto-ui-host-contract" },
     .{ .feature = .protocol_fuzz_hardening, .status = .degraded, .evidence = "proto-ui-fuzz" },
     .{ .feature = .protocol_frontend_crash_isolation, .status = .degraded, .evidence = "proto-ui-crash-isolation" },
