@@ -48,6 +48,7 @@ pub const Feature = enum {
     input_pointer_bounded,
     input_pointer_v2,
     input_pointer_selection_left,
+    input_pointer_middle_paste,
     input_wheel_line,
     platform_focus_window_events,
     clipboard_ascii_bounded,
@@ -98,6 +99,7 @@ pub const Feature = enum {
             .input_pointer_bounded => "input.pointer_bounded",
             .input_pointer_v2 => "input.pointer_v2",
             .input_pointer_selection_left => "input.pointer_selection_left",
+            .input_pointer_middle_paste => "input.pointer_middle_paste",
             .input_wheel_line => "input.wheel_line",
             .platform_focus_window_events => "platform.focus_window_events",
             .clipboard_ascii_bounded => "clipboard.ascii_bounded",
@@ -199,6 +201,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .input_pointer_bounded, .status = .degraded, .evidence = "sdl3-pointer-smoke" },
     .{ .feature = .input_pointer_v2, .status = .degraded, .evidence = "sdl3-pointer-v2-smoke" },
     .{ .feature = .input_pointer_selection_left, .status = .degraded, .evidence = "sdl3-pointer-selection-smoke" },
+    .{ .feature = .input_pointer_middle_paste, .status = .degraded, .evidence = "sdl3-pointer-middle-paste-smoke" },
     .{ .feature = .input_wheel_line, .status = .degraded, .evidence = "sdl3-wheel-smoke" },
     .{ .feature = .platform_focus_window_events, .status = .degraded, .evidence = "sdl3-focus-window-smoke" },
     .{ .feature = .clipboard_ascii_bounded, .status = .degraded, .evidence = "sdl3-clipboard-smoke" },
@@ -304,7 +307,16 @@ pub const Negotiated = struct {
 };
 
 pub fn negotiate(backend: Set, frontend: Set) Error!Negotiated {
-    const effective = backend.intersection(frontend);
+    var effective = backend.intersection(frontend);
+    // The pointer semantics are adapter phases over v2 transport, not
+    // independent wire capabilities. Keep intersection honest for peers that
+    // advertise the upper semantic without its prerequisite.
+    if (!effective.contains(.input_pointer_v2)) {
+        effective.bits[@intFromEnum(Feature.input_pointer_selection_left)] = false;
+        effective.bits[@intFromEnum(Feature.input_pointer_middle_paste)] = false;
+    }
+    if (!effective.contains(.input_pointer_selection_left))
+        effective.bits[@intFromEnum(Feature.input_pointer_middle_paste)] = false;
     for (feature_descriptors) |item| {
         if (item.feature.required() and !effective.contains(item.feature))
             return Error.MissingRequiredCapability;
@@ -547,4 +559,25 @@ test "left pointer selection remains optional for v2-only peers" {
     const effective = try negotiate(all, transport_only);
     try std.testing.expect(effective.effective.contains(.input_pointer_v2));
     try std.testing.expect(!effective.effective.contains(.input_pointer_selection_left));
+}
+
+test "middle paste remains optional and selection-gated" {
+    const all = backendSupported();
+    const negotiated = try negotiate(all, all);
+    try std.testing.expect(negotiated.effective.contains(.input_pointer_v2));
+    try std.testing.expect(negotiated.effective.contains(.input_pointer_selection_left));
+    try std.testing.expect(negotiated.effective.contains(.input_pointer_middle_paste));
+
+    var v2_only = all;
+    v2_only.bits[@intFromEnum(Feature.input_pointer_selection_left)] = false;
+    v2_only.bits[@intFromEnum(Feature.input_pointer_middle_paste)] = false;
+    const effective = try negotiate(all, v2_only);
+    try std.testing.expect(effective.effective.contains(.input_pointer_v2));
+    try std.testing.expect(!effective.effective.contains(.input_pointer_selection_left));
+    try std.testing.expect(!effective.effective.contains(.input_pointer_middle_paste));
+
+    var middle_only = all;
+    middle_only.bits[@intFromEnum(Feature.input_pointer_selection_left)] = false;
+    const selection_missing = try negotiate(all, middle_only);
+    try std.testing.expect(!selection_missing.effective.contains(.input_pointer_middle_paste));
 }

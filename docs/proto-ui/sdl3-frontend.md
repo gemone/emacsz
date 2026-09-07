@@ -471,8 +471,18 @@ opt-in `sdl3-pointer-selection-smoke` executes one additional bounded left-drag
 subset. Press sets an active mark at public `posn-at-x-y` point, drag moves
 point, and release moves point before `kill-ring-save` copies at most 120
 printable-ASCII characters to the existing validated clipboard artifact. This
-is not full mouse parity: no right-click menu, middle-click PRIMARY paste,
-touch/pen, multi-window hit testing, overlays, or variable-pitch hit testing.
+is not full mouse parity: no right-click menu, touch/pen, multi-window hit
+testing, overlays, or variable-pitch hit testing.
+
+With `input.pointer_middle_paste` also negotiated,
+`sdl3-pointer-middle-paste-smoke` reuses W9o selection first, then sends a
+deterministic zero-modifier middle press/release with one click. Only an ACKed
+middle release after a successful bounded left selection executes public `yank`
+at the public `posn-at-x-y` release point. The frontend fails the gate unless
+the left release precedes the middle release in the delivery journal and the
+first scene line is exactly `EmacsEmacs Proto-UI`. All other
+chord/touch/pen/multi-click cases remain transport-observed or no-op; X11
+PRIMARY, generic mouse yank, and full mouse behavior remain out of scope.
 
 The frontend classifies scene changes as initial, cursor-only, bounded
 text-only, mixed text/cursor region, viewport, or unchanged. It uses SHA-256

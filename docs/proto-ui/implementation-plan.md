@@ -1845,6 +1845,38 @@ zig build -Dproto-ui=true proto-ui-boundary --summary all
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-selection-smoke --summary all
 ```
 
+### W9p — Bounded middle-click paste (approved)
+
+Goal: add the smallest next Pointer Event v2 semantic without a protocol record
+or a claim of generic mouse / X11 selection parity.
+
+1. Add optional, negotiable, degraded `input.pointer_middle_paste`, evidenced by
+   `sdl3-pointer-middle-paste-smoke`; it requires both `input.pointer_v2` and
+   `input.pointer_selection_left`.
+2. Reuse the v2 codec, W9o left-selection execution, delivery journal, EPXL ACK
+   flow, public facts path, clipboard artifact, and capability machinery. Add no
+   wire record.
+3. The real-Emacs gate first runs the deterministic W9o left press/drag/release
+   subset. Only after that selection succeeds and copies `Emacs`, it sends a
+   deterministic zero-modifier middle press/release with clicks 1 at the release
+   point.
+4. Only an ACKed middle release (`buttons=2`, `clicks=1`, no modifiers) after the
+   successful bounded prior selection may map public `posn-at-x-y` /
+   `posn-point` and execute public `yank`. Other chords, clicks, phases, buttons,
+   touch/pen forms, or paste without prior selection are rejected or no-op.
+5. The gate fails unless left release precedes middle release and the first
+   scene line is exactly `EmacsEmacs Proto-UI`. No X11 PRIMARY, generic mouse
+   yank, multi-window hit testing, overlays, variable-pitch hit testing, or full
+   mouse behavior is claimed.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true proto-ui-boundary --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-middle-paste-smoke --summary all
+```
+
 ### W9l — Public point and dynamic cursor (approved)
 
 Goal: replace the fixed facts-profile cursor with public Emacs point observation

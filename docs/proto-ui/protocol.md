@@ -1362,6 +1362,16 @@ and copies an already selected printable-ASCII region of at most 120 characters
 with `kill-ring-save`.  No other button, phase, window, overlay, variable-pitch,
 touch, pen, or general selection semantic is implied.
 
+`input.pointer_middle_paste` is an optional, degraded adapter semantic over the
+same unchanged record.  It may be negotiated only by peers that also offer
+`input.pointer_v2` and `input.pointer_selection_left`.  The sole executable case
+is a zero-modifier middle release with `buttons=2` and `clicks=1` after that
+adapter observed a successful bounded left selection.  It maps the release
+position through public `posn-at-x-y` / `posn-point` and invokes public `yank`
+once.  A middle press, modified chord, double click, other button, active
+session, or paste without prior bounded selection is a no-op.  This is not X11
+PRIMARY, generic mouse yank, or multi-window hit testing.
+
 W9m defines two strict, negotiated platform observation payloads.
 
 `FOCUS_EVENT` (`0x0606`) is exactly 20 bytes:
