@@ -186,6 +186,9 @@ planned differential suite, not parity evidence; all cases remain `planned` and
 the aggregate result remains `not_implemented`.  It is distinct from the future
 `sdl3-pgtk-parity` runtime acceptance gate.
 
+P11 image presentation adds bounded RGBA8 resource rendering to the SDL bridge
+smoke.  The smoke uses adapter-owned fake resources, so it is not Emacs
+redisplay capture, production image policy, or PGTK parity.
 P10 preparation adds face-bound GLYPH_RUN v2 to the bridge and SDL fallback.
 The scene validates an exact live face generation and uses its bounded
 foreground/background colors for diagnostic ASCII text only.  This is not

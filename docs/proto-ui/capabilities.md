@@ -69,6 +69,7 @@ Unknown optional capabilities are ignored. Unknown required messages trigger con
 | `damage_coalescing` | Required | backend | Higher bandwidth/frame drops |
 | `render.glyph_run_debug_v1` | Optional/degraded | adapter/frontend | Facts text remains the safe baseline |
 | `render.glyph_face_debug_v2` | Optional/degraded | adapter/frontend | Facts text remains the safe baseline; no shaped-text or face parity |
+| `render.image_debug_v1` | Optional/degraded | adapter/frontend | Complete bounded RGBA8 resource rendering only |
 | `scroll_optimization` | Recommended | backend/frontend | Full redraw |
 | `scrollbars` | Required PGTK parity | negotiated | Scrollbar hidden |
 | `menu_model` | Required | core/backend | Menus unavailable |

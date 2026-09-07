@@ -77,6 +77,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
 | P9-prep authoritative geometry | Implemented in runtime bridge with host rectangle caching and frame/window/damage bounds; real monitor/DPI events pending |
 | P10-prep face-bound debug runs | Implemented with GLYPH_RUN v2, exact live-face validation, and colored SDL fallback; not production face/shaping parity |
+| P11-prep SDL image presentation | Implemented for complete bounded RGBA8 resources in fake-host bridge smoke; redisplay capture and PGTK parity pending |
 | P11-prep window tree snapshot | Implemented as bounded codec/Scene state for complete trees; window management commands and rendering parity remain pending |
 
 
@@ -3103,6 +3104,14 @@ Non-goals:
 3. Adding scattered Proto-UI branches to inherited Emacs C/H/Lisp.
 4. Registering `output_proto` before the R7 host contract is explicitly approved.
 
+P11 image presentation adds complete RGBA8 resource rendering to the SDL
+diagnostic bridge.  It uses nearest scaling, rejects incomplete resources, and
+does not implement production image decoding, animation, cache eviction, or
+redisplay-owned placement.
+P11 image presentation adds complete RGBA8 resource rendering to the SDL
+diagnostic bridge.  It uses nearest scaling, rejects incomplete resources, and
+does not implement production image decoding, animation, cache eviction, or
+redisplay-owned placement.
 P11 window-tree preparation adds a strict `WINDOW_TREE_SNAPSHOT` v1 codec and
 Scene-owned complete-tree validation for hierarchy, selected/visible state,
 depth, and bounds. Window-management commands and rendering parity remain

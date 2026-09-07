@@ -566,6 +566,7 @@ pub const DrawCommand = union(enum) {
     clear: Color,
     fill: struct { rect: LogicalRect, color: Color },
     text: struct { x: f32, y: f32, color: ?Color = null, bytes: []const u8 },
+    image: struct { rect: LogicalRect, pixels: []const u8, width: u32, height: u32 },
 };
 
 pub const DrawStats = struct {
@@ -573,6 +574,7 @@ pub const DrawStats = struct {
     clears: u64 = 0,
     fills: u64 = 0,
     texts: u64 = 0,
+    images: u64 = 0,
 };
 
 /// Backend-neutral immediate commands for the current smoke renderer. The
@@ -610,6 +612,27 @@ pub const DrawList = struct {
         try self.commands.append(self.allocator, .{ .fill = .{ .rect = rect, .color = color } });
         self.stats.commands += 1;
         self.stats.fills += 1;
+    }
+
+    pub fn drawImage(
+        self: *DrawList,
+        rect: LogicalRect,
+        pixels: []const u8,
+        width: u32,
+        height: u32,
+    ) !void {
+        if (rect.width <= 0 or rect.height <= 0 or width == 0 or height == 0)
+            return error.InvalidDrawImage;
+        if (pixels.len != @as(usize, width) * @as(usize, height) * 4)
+            return error.InvalidDrawImage;
+        try self.commands.append(self.allocator, .{ .image = .{
+            .rect = rect,
+            .pixels = pixels,
+            .width = width,
+            .height = height,
+        } });
+        self.stats.commands += 1;
+        self.stats.images += 1;
     }
 
     pub fn drawText(self: *DrawList, x: f32, y: f32, bytes: []const u8, color: ?Color) !void {

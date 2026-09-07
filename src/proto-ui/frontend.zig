@@ -74,6 +74,80 @@ pub const PresentHint = struct {
     deadline_ns: u64,
 };
 
+pub const ImagePlacement = struct {
+    placement_id: u32,
+    window_id: u64,
+    image_id: u32,
+    image_generation: u32,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    z_order: i16,
+};
+
+pub const ImagePlacementWire = struct {
+    placement_id: u32,
+    window_id: u64,
+    image_id: u32,
+    image_generation: u32,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    z_order: i16 = 0,
+};
+
+pub fn encodeImagePlacement(
+    a: std.mem.Allocator,
+    placement: ImagePlacementWire,
+    out: *std.ArrayList(u8),
+) !void {
+    if (placement.placement_id == 0 or placement.window_id == 0 or
+        placement.image_id == 0 or placement.image_generation == 0 or
+        placement.width <= 0 or placement.height <= 0 or
+        placement.x < 0 or placement.y < 0) return Error.InvalidMessage;
+    var bytes: [image_placement_record_size]u8 = [_]u8{0} ** image_placement_record_size;
+    std.mem.writeInt(u16, bytes[0..2], image_placement_schema, .little);
+    bytes[2] = image_placement_kind;
+    std.mem.writeInt(u32, bytes[4..8], placement.placement_id, .little);
+    std.mem.writeInt(u64, bytes[8..16], placement.window_id, .little);
+    std.mem.writeInt(u32, bytes[16..20], placement.image_id, .little);
+    std.mem.writeInt(u32, bytes[20..24], placement.image_generation, .little);
+    std.mem.writeInt(u32, bytes[24..28], @bitCast(placement.x), .little);
+    std.mem.writeInt(u32, bytes[28..32], @bitCast(placement.y), .little);
+    std.mem.writeInt(u32, bytes[32..36], @bitCast(placement.width), .little);
+    std.mem.writeInt(u32, bytes[36..40], @bitCast(placement.height), .little);
+    std.mem.writeInt(u16, bytes[40..42], @bitCast(placement.z_order), .little);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeImagePlacement(data: []const u8) Error!ImagePlacement {
+    if (data.len != image_placement_record_size) return Error.InvalidTable;
+    const schema = std.mem.readInt(u16, data[0..2], .little);
+    const kind = data[2];
+    const flags = data[3];
+    const placement: ImagePlacement = .{
+        .placement_id = std.mem.readInt(u32, data[4..8], .little),
+        .window_id = std.mem.readInt(u64, data[8..16], .little),
+        .image_id = std.mem.readInt(u32, data[16..20], .little),
+        .image_generation = std.mem.readInt(u32, data[20..24], .little),
+        .x = @bitCast(std.mem.readInt(u32, data[24..28], .little)),
+        .y = @bitCast(std.mem.readInt(u32, data[28..32], .little)),
+        .width = @bitCast(std.mem.readInt(u32, data[32..36], .little)),
+        .height = @bitCast(std.mem.readInt(u32, data[36..40], .little)),
+        .z_order = @bitCast(std.mem.readInt(u16, data[40..42], .little)),
+    };
+    if (schema != image_placement_schema or kind != image_placement_kind or flags != 0)
+        return Error.InvalidVersion;
+    if (!std.mem.allEqual(u8, data[42..64], 0)) return Error.InvalidReserved;
+    if (placement.placement_id == 0 or placement.window_id == 0 or
+        placement.image_id == 0 or placement.image_generation == 0 or
+        placement.x < 0 or placement.y < 0 or
+        placement.width <= 0 or placement.height <= 0) return Error.InvalidMessage;
+    return placement;
+}
+
 pub const TextLine = struct {
     row_index: u32,
     bytes: [:0]const u8,
@@ -335,6 +409,10 @@ pub const max_string_resources: usize = 64;
 pub const max_face_resources: usize = 64;
 pub const max_font_resources: usize = 64;
 pub const max_image_resources: usize = 8;
+pub const max_image_placements: usize = 16;
+pub const image_placement_record_size: usize = 64;
+pub const image_placement_schema: u16 = 1;
+pub const image_placement_kind: u8 = 3;
 
 pub const FaceResource = struct {
     face_id: u32,
@@ -1182,6 +1260,8 @@ pub const Scene = struct {
     faces: FaceResources = .{},
     fonts: FontResources = .{},
     images: ImageResources = .{},
+    image_placements: [max_image_placements]ImagePlacement = undefined,
+    image_placement_count: usize = 0,
     cursor: ?Cursor = null,
     damage: std.ArrayList(Rect) = .empty,
     text: std.ArrayList(TextLine) = .empty,
@@ -1224,6 +1304,7 @@ pub const Scene = struct {
         self.viewport = null;
         if (self.window_tree) |*tree| protocol.freeWindowTreeSnapshot(self.allocator, tree);
         self.window_tree = null;
+        self.image_placement_count = 0;
         self.stats = .{};
     }
 
@@ -1415,6 +1496,28 @@ pub const Scene = struct {
         try protocol.validateFrameFocusEnvelope(focus, payload.envelope);
         try self.frames.setFocus(focus.frame_id, focus.frame_generation, focus.focused);
         self.stats.control_messages += 1;
+    }
+
+    pub fn placeImage(self: *Scene, placement: ImagePlacement) Error!void {
+        _ = self.frame_header orelse return Error.FrameNotActive;
+        const owner = findWindow(self.windows.items, placement.window_id) orelse
+            return Error.InvalidMessage;
+        if (!inside(placement.x, placement.width, owner.width) or
+            !inside(placement.y, placement.height, owner.height))
+            return Error.InvalidMessage;
+        const image = self.images.lookup(placement.image_id) orelse
+            return Error.ResourceNotLive;
+        if (image.generation != placement.image_generation or !image.complete or
+            image.bytes.len != image.metadata.total_byte_count)
+            return Error.ResourceNotLive;
+        for (self.image_placements[0..self.image_placement_count]) |old| {
+            if (old.placement_id == placement.placement_id)
+                return Error.InvalidTable;
+        }
+        if (self.image_placement_count == max_image_placements)
+            return Error.Unsupported;
+        self.image_placements[self.image_placement_count] = placement;
+        self.image_placement_count += 1;
     }
 
     fn removeGlyphRunsForFace(
@@ -1620,6 +1723,8 @@ pub const Scene = struct {
         defer damage.deinit(self.allocator);
         var text: std.ArrayList(TextLine) = .empty;
         defer text.deinit(self.allocator);
+        var image_placements: [max_image_placements]ImagePlacement = undefined;
+        var image_placement_count: usize = 0;
         var cursor: ?Cursor = null;
         var present: ?PresentHint = null;
         var viewport: ?Viewport = null;
@@ -1681,6 +1786,33 @@ pub const Scene = struct {
                         const rect = try decodeRect(section.records[offset..][0..damage_record_size]);
                         if (!rectInFrame(rect, update.header)) return Error.InvalidMessage;
                         try damage.append(self.allocator, rect);
+                    }
+                },
+                protocol.SectionKind.render_items => {
+                    if (section.records.len % image_placement_record_size != 0)
+                        return Error.InvalidTable;
+                    const count = section.records.len / image_placement_record_size;
+                    if (count > max_image_placements) return Error.Unsupported;
+                    var offset: usize = 0;
+                    while (offset < section.records.len) : (offset += image_placement_record_size) {
+                        const placement = try decodeImagePlacement(section.records[offset..][0..image_placement_record_size]);
+                        if (placement.width == 0 or placement.height == 0) return Error.InvalidMessage;
+                        const owner = findWindow(windows.items, placement.window_id) orelse
+                            return Error.InvalidMessage;
+                        if (!inside(placement.x, placement.width, owner.width) or
+                            !inside(placement.y, placement.height, owner.height))
+                            return Error.InvalidMessage;
+                        const image = self.images.lookup(placement.image_id) orelse
+                            return Error.ResourceNotLive;
+                        if (image.generation != placement.image_generation or
+                            !image.complete or image.bytes.len != image.metadata.total_byte_count)
+                            return Error.ResourceNotLive;
+                        for (image_placements[0..image_placement_count]) |old| {
+                            if (old.placement_id == placement.placement_id)
+                                return Error.InvalidTable;
+                        }
+                        image_placements[image_placement_count] = placement;
+                        image_placement_count += 1;
                     }
                 },
                 protocol.SectionKind.resources => {
@@ -1758,6 +1890,8 @@ pub const Scene = struct {
         self.glyph_runs = .empty;
         self.damage = damage;
         self.text = text;
+        self.image_placements = image_placements;
+        self.image_placement_count = image_placement_count;
         windows = old_windows;
         rows = old_rows;
         // FRAME_UPDATE is authoritative visual state.  Free the old owned

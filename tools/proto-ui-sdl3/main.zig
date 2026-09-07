@@ -72,13 +72,9 @@ extern fn SDL_CreateTexture(
 ) ?*SDL_Texture;
 extern fn SDL_DestroyTexture(texture: *SDL_Texture) void;
 extern fn SDL_SetTextureScaleMode(texture: *SDL_Texture, scale_mode: SDL_ScaleMode) bool;
+extern fn SDL_UpdateTexture(texture: *SDL_Texture, rect: ?*const SDL_Rect, pixels: *const anyopaque, pitch: c_int) bool;
+extern fn SDL_RenderTexture(renderer: *SDL_Renderer, texture: *SDL_Texture, source: ?*const SDL_FRect, destination: ?*const SDL_FRect) bool;
 extern fn SDL_SetRenderTarget(renderer: *SDL_Renderer, texture: ?*SDL_Texture) bool;
-extern fn SDL_RenderTexture(
-    renderer: *SDL_Renderer,
-    texture: *SDL_Texture,
-    source: ?*const SDL_FRect,
-    destination: ?*const SDL_FRect,
-) bool;
 extern fn SDL_PollEvent(event: *SDL_Event) bool;
 extern fn SDL_PushEvent(event: *SDL_Event) bool;
 extern fn SDL_GetWindowID(window: *SDL_Window) u32;
@@ -3125,6 +3121,18 @@ fn buildSceneDrawList(
         );
     }
 
+    for (scene.image_placements[0..scene.image_placement_count]) |placement| {
+        const image = scene.images.lookup(placement.image_id) orelse continue;
+        if (!image.complete or image.generation != placement.image_generation) continue;
+        const owner = findSceneWindow(scene, placement.window_id) orelse continue;
+        try list.drawImage(.{
+            .x = @floatFromInt(owner.x + placement.x),
+            .y = @floatFromInt(owner.y + placement.y),
+            .width = @floatFromInt(placement.width),
+            .height = @floatFromInt(placement.height),
+        }, image.bytes, image.metadata.width, image.metadata.height);
+    }
+
     for (scene.glyph_runs.items) |run| {
         const owner = findSceneWindow(scene, run.window_id) orelse continue;
         const face = if (run.face_id == 0) null else scene.faces.lookup(run.face_id);
@@ -3307,6 +3315,27 @@ fn executeDrawList(
                 if (!SDL_RenderFillRect(renderer, &rect)) return sdlFail("SDL_RenderFillRect");
                 executed.commands += 1;
                 executed.fills += 1;
+            },
+            .image => |draw| {
+                const texture = SDL_CreateTexture(
+                    renderer,
+                    SDL_PIXELFORMAT_RGBA8888,
+                    SDL_TEXTUREACCESS_TARGET,
+                    @intCast(draw.width),
+                    @intCast(draw.height),
+                ) orelse return sdlFail("SDL_CreateTexture");
+                defer SDL_DestroyTexture(texture);
+                if (!SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_NEAREST)) return sdlFail("SDL_SetTextureScaleMode");
+                if (!SDL_UpdateTexture(texture, null, draw.pixels.ptr, @intCast(draw.width * 4))) return sdlFail("SDL_UpdateTexture");
+                const destination = SDL_FRect{
+                    .x = draw.rect.x * @as(f32, @floatFromInt(output_width)) / list.logical_width,
+                    .y = draw.rect.y * @as(f32, @floatFromInt(output_height)) / list.logical_height,
+                    .w = draw.rect.width * @as(f32, @floatFromInt(output_width)) / list.logical_width,
+                    .h = draw.rect.height * @as(f32, @floatFromInt(output_height)) / list.logical_height,
+                };
+                if (!SDL_RenderTexture(renderer, texture, null, &destination)) return sdlFail("SDL_RenderTexture");
+                executed.commands += 1;
+                executed.images += 1;
             },
             .text => |draw| {
                 var text: [121]u8 = undefined;
