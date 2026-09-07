@@ -2503,7 +2503,7 @@ Review gates:
 
 Goal: prove protocol robustness.
 
-Status: W13-a, W13-b, and W13-c complete.  The deterministic protocol fuzz gate covers
+Status: W13-a, W13-b, W13-c, and W13-d complete.  The deterministic protocol fuzz gate covers
 envelope, frame-update, capability, visibility/focus, resource, input-codec,
 and frontend `Scene.apply` seeds.  The recovery differential gate compares
 ordered application, authenticated resync, ACK-loss retry, and ERP1 replay to
@@ -2511,6 +2511,12 @@ one canonical final `Scene` digest.  W13-c makes every route restore the same
 bounded face, font, string, and complete RGBA8 image state; authenticated
 resync restores them atomically from `RESOURCE_SNAPSHOT`.  It remains
 adapter-only and does not open a socket, start Emacs, or enable `output_proto`.
+W13-d adds `proto-ui-crash-isolation`: the parent spawns itself in bounded
+child mode, transfers a fixed corpus of valid and hostile EUP records, requires
+a machine-readable handled report from every malformed case, and proves that
+one controlled nonzero frontend child is detected while the parent remains
+healthy.  This is process-containment evidence, not evidence about inherited
+Emacs internals.
 
 Tasks:
 
@@ -2521,6 +2527,8 @@ Tasks:
 5. Add missing-resource tests.
 6. Add reconnect/replay tests. *(W13-b covers resync and ERP1 replay.)*
 7. Add frontend crash isolation tests.
+   *(W13-d covers 23 bounded decoder/Scene cases plus one controlled nonzero
+   frontend child.)*
 8. Add deterministic snapshot comparison. *(W13-b/W13-c cover canonical
    final-state and concrete-resource fingerprints, `RESOURCE_SNAPSHOT`
    recovery, payload-mutation mismatch, identity mismatch, and deliberate
@@ -2532,6 +2540,7 @@ Acceptance:
 zig build -Dproto-ui=true proto-ui-conformance
 zig build -Dproto-ui=true proto-ui-recovery-diff
 zig build -Dproto-ui=true proto-ui-fuzz
+zig build -Dproto-ui=true proto-ui-crash-isolation
 ```
 
 No malformed input may crash Emacs.
@@ -2541,6 +2550,8 @@ Review gates:
 1. Parser safety.
 2. Recovery correctness.
 3. Resource bounds.
+4. Process lifecycle, pipe/exit-code handling, corpus bounds, and deterministic
+   case order.
 
 ### W14 — Performance hardening
 

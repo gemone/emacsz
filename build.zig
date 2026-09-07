@@ -530,6 +530,24 @@ pub fn build(b: *std.Build) void {
         );
         fuzz_step.dependOn(&run_fuzz.step);
 
+        // W13-d: frontend crash isolation proves malformed EUP inputs and one
+        // controlled nonzero child cannot make the frontend parent unhealthy.
+        // It is a process gate only and does not activate a runtime.
+        const crash_isolation_tool = b.addExecutable(.{
+            .name = "proto-ui-crash-isolation",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/crash_isolation.zig"),
+            }),
+        });
+        const run_crash_isolation = b.addRunArtifact(crash_isolation_tool);
+        const crash_isolation_step = b.step(
+            "proto-ui-crash-isolation",
+            "Verify bounded frontend processes contain malformed EUP and controlled nonzero exits",
+        );
+        crash_isolation_step.dependOn(&run_crash_isolation.step);
+
         // W13-b: deterministic recovery replay/live differential gate.  It
         // exercises Scene convergence and control/idempotence policy only; no
         // socket, Emacs runtime, or output_proto activation is involved.
@@ -720,6 +738,7 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&run_shim_library_conformance.step);
         boundary_step.dependOn(&run_boundary_audit.step);
         boundary_step.dependOn(&run_fuzz.step);
+        boundary_step.dependOn(&run_crash_isolation.step);
         boundary_step.dependOn(&run_recovery_diff.step);
 
         // R7: the host registration decision is source-authoritative policy.

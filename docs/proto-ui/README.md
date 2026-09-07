@@ -70,6 +70,15 @@ It is evidence only: success does not depend on host timing, the runtime
 contract stays pending, and no SDL or inherited Emacs C/Lisp dependency is
 introduced.
 
+W13-d adds deterministic process-level frontend crash isolation. The parent
+passes a bounded, ordered corpus of valid and hostile EUP records to child
+images of the crash-isolation executable. Malformed envelope, frame-update,
+resource-snapshot, string/face/font/image, and `Scene.apply` cases must exit 0
+with a machine-readable handled result. One controlled child exits nonzero and
+the parent records it without becoming unhealthy. This proves frontend-process
+containment only; it neither exercises inherited Emacs internals nor enables
+`output_proto`.
+
 W15-a adds the opt-in `proto-ui-compat` health gate for the existing Emacs
 runtime.  It runs isolated batch checks for identity, text/undo, narrowing,
 properties, faces, windows, scroll/recenter, and buffer locals; on a graphical
@@ -195,6 +204,7 @@ zig build -Dproto-ui=true proto-ui-unit
 zig build -Dproto-ui=true proto-ui-boundary
 zig build -Dproto-ui=true proto-ui-fuzz
 zig build -Dproto-ui=true proto-ui-recovery-diff
+zig build -Dproto-ui=true proto-ui-crash-isolation
 
 # Build the independent SDL3 frontend.
 zig build -Dproto-ui=true -Dsdl3-frontend=true
