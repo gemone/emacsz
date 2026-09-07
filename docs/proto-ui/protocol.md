@@ -1511,6 +1511,29 @@ Production redisplay still receives scale and DPI through the `FRAME_UPDATE`
 header; this message does not yet implement monitor migration, live scale
 events, or core-driven resize/layout.
 
+#### Frame fullscreen state
+
+`FRAME_FULLSCREEN` (`0x020b`) carries Emacs's `fullscreen` frame parameter in
+a fixed 12-byte payload:
+
+```text
+schema               u16 = 1
+flags                u8  = 0
+reserved             u8  = 0
+mode                 u8
+reserved             u24 = 0
+frame_generation     u32 (nonzero)
+```
+
+Mode is `0=none`, `1=fullboth` (both width and height), `2=fullwidth`,
+`3=fullheight`, or `4=maximized`. The envelope frame ID, active frame identity,
+and `frame_generation` must agree. Scene stores the authoritative mode and
+clears it on frame destruction, authenticated resync, or scene teardown. The
+diagnostic SDL bridge maps `fullboth` to SDL's desktop-fullscreen request,
+verifies the platform flag, and immediately restores windowed mode. SDL
+mapping for width-only, height-only, and maximized modes remains pending;
+these are state codec support only, not redisplay resize/layout parity.
+
 The facts profile also defines a deliberately bounded `KEY_EVENT` payload for
 `0x0600`: `u16 action` (`1=backspace`, `2=cursor-left`, `3=cursor-right`,
 `4=cursor-up`, `5=cursor-down`, `6=copy`), `u8 state` (`1=pressed`), and

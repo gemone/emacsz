@@ -64,6 +64,11 @@ W12d-s adds `FRAME_SCALE` v1 for generation-qualified scale and X/Y DPI state.
 The diagnostic SDL bridge reads SDL's per-window display scale for comparison.
 Live monitor migration and redisplay-owned scaling remain pending.
 
+W12d-f adds `FRAME_FULLSCREEN` v1 for Emacs's none, fullboth, fullwidth,
+fullheight, and maximized modes.  The diagnostic SDL bridge applies and
+restores `fullboth`; the other modes remain Scene-only until platform mapping
+and redisplay geometry adaptation land.
+
 W12e adds a bounded adapter-owned resource payload cache with LRU eviction and
 strict wire contracts for `RESOURCE_REQUEST` and `RESOURCE_EVICT`.  The cache
 accepts at most 32 entries, 4096 bytes per payload, and 16 KiB total; existing

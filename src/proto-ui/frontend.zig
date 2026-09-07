@@ -1269,6 +1269,7 @@ pub const Scene = struct {
     alpha: ?protocol.FrameAlphaPayload = null,
     decorations: ?protocol.FrameDecorationsPayload = null,
     scale: ?protocol.FrameScalePayload = null,
+    fullscreen: ?protocol.FrameFullscreenPayload = null,
     present: ?PresentHint = null,
     viewport: ?Viewport = null,
     window_tree: ?protocol.WindowTreeSnapshot = null,
@@ -1293,6 +1294,7 @@ pub const Scene = struct {
         self.alpha = null;
         self.decorations = null;
         self.scale = null;
+        self.fullscreen = null;
         self.windows = .empty;
         self.rows = .empty;
         self.glyph_runs = .empty;
@@ -1346,6 +1348,7 @@ pub const Scene = struct {
             protocol.Message.frame_destroy => try self.applyFrameDestroy(payload.envelope, payload.bytes),
             protocol.Message.frame_decorations => try self.applyFrameDecorations(payload),
             protocol.Message.frame_scale => try self.applyFrameScale(payload),
+            protocol.Message.frame_fullscreen => try self.applyFrameFullscreen(payload),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.font_define => try self.applyFontDefine(payload),
@@ -1367,6 +1370,7 @@ pub const Scene = struct {
         self.alpha = null;
         self.decorations = null;
         self.scale = null;
+        self.fullscreen = null;
         self.clearGlyphRuns();
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
@@ -1569,6 +1573,17 @@ pub const Scene = struct {
             frame.generation != scale.frame_generation)
             return Error.InvalidMessage;
         self.scale = scale;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFrameFullscreen(self: *Scene, payload: protocol.Payload) Error!void {
+        const fullscreen = try protocol.decodeFrameFullscreen(payload.bytes);
+        try protocol.validateFrameFullscreenEnvelope(fullscreen, payload.envelope);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != fullscreen.frame_generation)
+            return Error.InvalidMessage;
+        self.fullscreen = fullscreen;
         self.stats.control_messages += 1;
     }
 
@@ -2292,6 +2307,29 @@ fn frameScaleMessage(
         .frame_id = envelope_frame,
         .timestamp_ns = sequence,
     }, scale_payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
+fn frameFullscreenMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    envelope_frame: u32,
+    payload: protocol.FrameFullscreenPayload,
+) ![]u8 {
+    var fullscreen_payload: std.ArrayList(u8) = .empty;
+    defer fullscreen_payload.deinit(a);
+    try protocol.encodeFrameFullscreen(a, payload, &fullscreen_payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_fullscreen,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = envelope_frame,
+        .timestamp_ns = sequence,
+    }, fullscreen_payload.items, &message);
     return message.toOwnedSlice(a);
 }
 
@@ -3155,6 +3193,67 @@ test "scene applies scale only to the active frame generation" {
 
     scene.resetForResync();
     try std.testing.expect(scene.scale == null);
+}
+
+test "scene applies fullscreen only to the active frame generation" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    const fullboth = try frameFullscreenMessage(a, 2, 7, .{
+        .mode = .fullboth,
+        .frame_generation = 1,
+    });
+    defer a.free(fullboth);
+    try scene.apply(fullboth);
+    try std.testing.expectEqual(protocol.FrameFullscreenMode.fullboth, scene.fullscreen.?.mode);
+
+    const fullwidth = try frameFullscreenMessage(a, 3, 7, .{
+        .mode = .fullwidth,
+        .frame_generation = 1,
+    });
+    defer a.free(fullwidth);
+    try scene.apply(fullwidth);
+    try std.testing.expectEqual(protocol.FrameFullscreenMode.fullwidth, scene.fullscreen.?.mode);
+
+    const stale = try frameFullscreenMessage(a, 4, 7, .{
+        .mode = .none,
+        .frame_generation = 2,
+    });
+    defer a.free(stale);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(stale));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const wrong_frame = try frameFullscreenMessage(a, 4, 8, .{
+        .mode = .none,
+        .frame_generation = 1,
+    });
+    defer a.free(wrong_frame);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_frame));
+
+    var destroy_payload: [8]u8 = undefined;
+    std.mem.writeInt(u32, destroy_payload[0..4], 7, .little);
+    std.mem.writeInt(u32, destroy_payload[4..8], 1, .little);
+    var destroy: std.ArrayList(u8) = .empty;
+    defer destroy.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_destroy,
+        .sequence = 4,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 7,
+        .timestamp_ns = 4,
+    }, &destroy_payload, &destroy);
+    try scene.apply(destroy.items);
+    try std.testing.expect(scene.fullscreen == null);
+
+    scene.resetForResync();
+    try std.testing.expect(scene.fullscreen == null);
 }
 
 test "scene atomically validates resource generation declarations" {

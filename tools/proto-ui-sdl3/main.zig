@@ -48,6 +48,7 @@ const SDL_SCALEMODE_NEAREST: SDL_ScaleMode = 1;
 const SDLInitFlags = c_uint;
 const SDLWindowFlags = c_ulonglong;
 const SDL_WINDOW_BORDERLESS: SDLWindowFlags = 0x10;
+const SDL_WINDOW_FULLSCREEN: SDLWindowFlags = 0x01;
 
 extern fn SDL_Init(flags: SDLInitFlags) bool;
 extern fn SDL_Quit() void;
@@ -59,6 +60,8 @@ extern fn SDL_GetWindowOpacity(window: *SDL_Window) f32;
 extern fn SDL_SetWindowBordered(window: *SDL_Window, bordered: bool) bool;
 extern fn SDL_GetWindowFlags(window: *SDL_Window) SDLWindowFlags;
 extern fn SDL_GetWindowDisplayScale(window: *SDL_Window) f32;
+extern fn SDL_SetWindowFullscreen(window: *SDL_Window, fullscreen: bool) bool;
+extern fn SDL_SyncWindow(window: *SDL_Window) bool;
 extern fn SDL_CreateRenderer(window: *SDL_Window, name: ?[*:0]const u8) ?*SDL_Renderer;
 extern fn SDL_DestroyRenderer(renderer: *SDL_Renderer) void;
 extern fn SDL_GetRendererName(renderer: *SDL_Renderer) [*:0]const u8;
@@ -1991,14 +1994,33 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     }, scale_payload.items, &scale);
     try scene.apply(scale.items);
 
+    var fullscreen_payload: std.ArrayList(u8) = .empty;
+    defer fullscreen_payload.deinit(gpa);
+    try protocol.encodeFrameFullscreen(gpa, .{
+        .mode = .fullboth,
+        .frame_generation = bridge.eup_frame_generation,
+    }, &fullscreen_payload);
+    var fullscreen: std.ArrayList(u8) = .empty;
+    defer fullscreen.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_fullscreen,
+        .sequence = 8,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, fullscreen_payload.items, &fullscreen);
+    try scene.apply(fullscreen.items);
+
     var update: std.ArrayList(u8) = .empty;
     defer update.deinit(gpa);
-    try bridge.encodeFrameUpdate(gpa, 8, capability.session_id, 2, &update);
+    try bridge.encodeFrameUpdate(gpa, 9, capability.session_id, 2, &update);
     try scene.apply(update.items);
 
     var run: std.ArrayList(u8) = .empty;
     defer run.deinit(gpa);
-    try bridge.encodeRun(gpa, 0, 9, capability.session_id, 3, &run);
+    try bridge.encodeRun(gpa, 0, 10, capability.session_id, 3, &run);
     try scene.apply(run.items);
 
     if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
@@ -2014,6 +2036,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         return error.RuntimeBridgeDecorationsInvalid;
     if (scene.scale == null or scene.scale.?.scale != 1)
         return error.RuntimeBridgeScaleInvalid;
+    if (scene.fullscreen == null or scene.fullscreen.?.mode != .fullboth)
+        return error.RuntimeBridgeFullscreenInvalid;
 
     if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
     defer SDL_Quit();
@@ -2054,6 +2078,19 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
                 scale_supported = true;
                 platform_scale_milli = @intFromFloat(scale_milli);
             }
+        }
+    }
+    var fullscreen_supported = false;
+    if (scene.fullscreen != null) {
+        fullscreen_supported = SDL_SetWindowFullscreen(window, true);
+        if (fullscreen_supported) fullscreen_supported = SDL_SyncWindow(window);
+        if (fullscreen_supported and (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) == 0)
+            fullscreen_supported = false;
+        if (fullscreen_supported) {
+            const restored = SDL_SetWindowFullscreen(window, false) and
+                SDL_SyncWindow(window) and
+                (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) == 0;
+            if (!restored) return error.RuntimeBridgeFullscreenRestoreFailed;
         }
     }
     const selected_renderer = try createRenderer(gpa, window, config.renderer_request, config.present_mode);
@@ -2150,8 +2187,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
-        .{ opacity_supported, decorations_supported, scale_supported, platform_scale_milli },
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        .{ opacity_supported, decorations_supported, scale_supported, platform_scale_milli, fullscreen_supported },
     );
 }
 

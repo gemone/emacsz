@@ -174,6 +174,7 @@ capabilities must keep the relevant capability pending and block W16.
 | P7-prep. Alpha bridge | EUP `FRAME_ALPHA` carries active/inactive/background opacity; the diagnostic SDL bridge probes active opacity with opaque fallback | `proto-ui-unit` and `sdl3-runtime-bridge-smoke`; focus transitions and PGTK visual parity require R8 |
 | P7-prep. Decoration bridge | EUP `FRAME_DECORATIONS` maps decorated/undecorated policy to the SDL border flag | `proto-ui-unit` and `sdl3-runtime-bridge-smoke`; parent/tooltip and complete WM policy require R8 |
 | P7-prep. Scale bridge | EUP `FRAME_SCALE` owns scale/DPI state and SDL reports per-window display scale | `proto-ui-unit` and `sdl3-runtime-bridge-smoke`; live migration and redisplay adaptation require R8 |
+| P7-prep. Fullscreen bridge | EUP `FRAME_FULLSCREEN` models Emacs modes and SDL probes/restores `fullboth` | `proto-ui-unit` and `sdl3-runtime-bridge-smoke`; width/height/maximized mapping and geometry parity require R8 |
 | P8-prep. Lifecycle bridge | Heartbeat, flush, diagnostic, cancel-all, and input cancellation are bound to `PureRuntimeHostV1` | `runtime_bridge` unit suite; real host lifecycle still requires R8 |
 | P9-prep. Authoritative geometry | Host geometry refresh bounds observed windows/damage and `FRAME_UPDATE` headers | `runtime_bridge` unit suite and SDL bridge smoke; real monitor/DPI still requires R8 |
 | P4. Terminal registration | `output_proto` can exist as a real terminal without PGTK initialization | Fake-host plus live terminal lifecycle tests after explicit R7 approval |

@@ -58,6 +58,7 @@ pub const Message = struct {
     pub const frame_focus: u16 = 0x0210;
     pub const frame_decorations: u16 = 0x0214;
     pub const frame_scale: u16 = 0x020f;
+    pub const frame_fullscreen: u16 = 0x020b;
     pub const resource_request: u16 = 0x0510;
     pub const resource_evict: u16 = 0x0511;
     pub const resource_snapshot: u16 = 0x0512;
@@ -1111,6 +1112,23 @@ pub const FrameScalePayload = struct {
     reserved_tail: u32 = 0,
 };
 
+pub const FrameFullscreenMode = enum(u8) {
+    none = 0,
+    fullboth = 1,
+    fullwidth = 2,
+    fullheight = 3,
+    maximized = 4,
+};
+
+pub const FrameFullscreenPayload = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    mode: FrameFullscreenMode,
+    reserved_after_mode: [3]u8 = .{ 0, 0, 0 },
+    frame_generation: u32,
+};
+
 pub const FrameFocusPayload = struct {
     frame_id: u32,
     frame_generation: u32,
@@ -1704,6 +1722,57 @@ pub fn decodeFrameScale(data: []const u8) Error!FrameScalePayload {
 
 pub fn validateFrameScaleEnvelope(payload: FrameScalePayload, envelope: Envelope) Error!void {
     try validateFrameScale(payload);
+    if (envelope.frame_id == 0) return Error.InvalidMessage;
+}
+
+fn validateFrameFullscreen(payload: FrameFullscreenPayload) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or payload.reserved != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_after_mode, 0))
+        return Error.InvalidMessage;
+    if (payload.frame_generation == 0) return Error.InvalidMessage;
+}
+
+pub fn encodeFrameFullscreen(
+    a: std.mem.Allocator,
+    payload: FrameFullscreenPayload,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameFullscreen(payload);
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &bytes, payload.schema, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, payload.flags);
+    try out.append(a, payload.reserved);
+    try out.append(a, @intFromEnum(payload.mode));
+    try out.appendSlice(a, &payload.reserved_after_mode);
+    var word: [4]u8 = undefined;
+    std.mem.writeInt(u32, &word, payload.frame_generation, .little);
+    try out.appendSlice(a, &word);
+}
+
+pub fn decodeFrameFullscreen(data: []const u8) Error!FrameFullscreenPayload {
+    if (data.len != 12) return Error.InvalidTable;
+    const payload = FrameFullscreenPayload{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .mode = switch (data[4]) {
+            0 => .none,
+            1 => .fullboth,
+            2 => .fullwidth,
+            3 => .fullheight,
+            4 => .maximized,
+            else => return Error.InvalidMessage,
+        },
+        .reserved_after_mode = data[5..8][0..3].*,
+        .frame_generation = std.mem.readInt(u32, data[8..12], .little),
+    };
+    try validateFrameFullscreen(payload);
+    return payload;
+}
+
+pub fn validateFrameFullscreenEnvelope(payload: FrameFullscreenPayload, envelope: Envelope) Error!void {
+    try validateFrameFullscreen(payload);
     if (envelope.frame_id == 0) return Error.InvalidMessage;
 }
 
@@ -2492,6 +2561,39 @@ test "frame scale payload enforces strict wire form" {
         .scale = 1,
         .dpi_x = 96,
         .dpi_y = 96,
+        .frame_generation = 0,
+    }, &bytes));
+}
+
+test "frame fullscreen payload enforces strict wire form" {
+    const a = std.testing.allocator;
+    const payload = FrameFullscreenPayload{ .mode = .fullboth, .frame_generation = 2 };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFrameFullscreen(a, payload, &bytes);
+    try std.testing.expectEqual(@as(usize, 12), bytes.items.len);
+    try std.testing.expectEqual(payload, try decodeFrameFullscreen(bytes.items));
+
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameFullscreen(bytes.items));
+    bytes.items[0] = 1;
+    bytes.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameFullscreen(bytes.items));
+    bytes.items[2] = 0;
+    bytes.items[4] = 5;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameFullscreen(bytes.items));
+    for ([_]FrameFullscreenMode{ .none, .fullboth, .fullwidth, .fullheight, .maximized }) |mode| {
+        bytes.items[4] = @intFromEnum(mode);
+        try std.testing.expectEqual(mode, (try decodeFrameFullscreen(bytes.items)).mode);
+    }
+    bytes.items[4] = 1;
+    bytes.items[5] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameFullscreen(bytes.items));
+    bytes.items[5] = 0;
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFrameFullscreen(bytes.items));
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameFullscreen(a, .{
+        .mode = .none,
         .frame_generation = 0,
     }, &bytes));
 }
