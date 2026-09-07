@@ -188,8 +188,8 @@ Priorities:
 | Focus frame | GDK focus | Frontend focus + core state | P0 | Degraded | W12d strict EUP focus state contract; no frame-focus event round trip |
 | Multi-frame | GTK windows | Multiple SDL windows | P1 | Pending | Single SDL facts window and one EUP frame profile |
 | Monitor attributes | GDK monitor | SDL monitor events | P1 | Pending | No monitor observation or protocol event bridge |
-| Scale factor | GDK scale | SDL display scale | P1 | Degraded | EUP header accepts scale; facts profile remains scale 1 |
-| DPI | GTK/GDK | SDL display data | P1 | Degraded | EUP header accepts DPI values; facts profile remains 96 DPI |
+| Scale factor | GDK scale | SDL display scale | P1 | Degraded | `FRAME_SCALE` v1 owns generation-qualified scale state and SDL reports per-window scale; redisplay still consumes fixed `FRAME_UPDATE` values |
+| DPI | GTK/GDK | SDL display data | P1 | Degraded | `FRAME_SCALE` v1 owns generation-qualified X/Y DPI state and SDL reports per-window scale; redisplay still consumes fixed `FRAME_UPDATE` values |
 | Monitor change | GDK signal | Frontend event/redisplay | P1 | Pending | No monitor event or live redisplay bridge |
 
 ### 6.2 Frame lifecycle
@@ -467,7 +467,7 @@ parity.
 
 | Layer | Working now | Still required for parity | Evidence |
 |---|---|---|---|
-| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 35 implemented codecs, 3 partial, and 126 planned; no unassigned or unclassified ID | Production implementation of the 129 planned IDs |
+| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 36 implemented codecs, 3 partial, and 125 planned; no unassigned or unclassified ID | Production implementation of the 128 planned IDs |
 | Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry, deterministic ordered/resync/ACK-loss/ERP1 convergence differential with
 `RESOURCE_SNAPSHOT`-aware concrete face/font/string/image fingerprints, bounded EPXL capability negotiation/status manifest, frame visibility/focus state codec, bounded resource payload cache/eviction policy, request/evict codecs, bounded string define/delete, fixed-layout face/font/image define/data/delete, and atomic concrete `RESOURCE_SNAPSHOT` v1 restore with frontend ownership, optional host frame-state ABI seam, terminal-lifecycle core, generated read-only C adapter, dynamically linkable observation library, bounded host-frame to EUP-frame service mapping, deterministic atomic capture batches, deterministic protocol fuzz hardening, and bounded process-level frontend crash isolation, and negotiated strict focus/window observation | General resource/widget capability coverage, arbitrary recovery, remote safety, runtime terminal registration | `proto-ui-conformance`, `proto-ui-unit`, `proto-ui-fuzz`, `proto-ui-recovery-diff`, `proto-ui-crash-isolation`, `proto-ui-shim-conformance`, `proto-ui-shim-library-conformance`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
 | Emacs observation | Real Emacs process publishes public frame/window geometry, bounded printable-ASCII text, point/cursor, and viewport facts; W12c creates/deletes one real display-backed frame and synchronizes one EUP/SDL3 frame lifecycle; W10e renders that public-facts marker through the bounded glyph-run debug fallback | Redisplay-owned rows/glyphs/faces/fonts, full window tree, `output_proto`-owned frame creation/deletion, runtime visibility/focus events | `proto-ui-module-smoke`, `sdl3-emacs-smoke`, `sdl3-epxl-facts-smoke`, `sdl3-frame-smoke` |

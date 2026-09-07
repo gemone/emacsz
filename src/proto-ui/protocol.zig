@@ -6,6 +6,8 @@ pub const header_size: u16 = 62;
 pub const max_rows: usize = 256;
 pub const max_damage: usize = 256;
 pub const max_opacity: u16 = 10000;
+pub const max_frame_scale: f32 = 64.0;
+pub const max_frame_dpi: f32 = 4096.0;
 
 pub const Error = error{
     InvalidEnvelope,
@@ -55,6 +57,7 @@ pub const Message = struct {
     pub const frame_alpha: u16 = 0x020d;
     pub const frame_focus: u16 = 0x0210;
     pub const frame_decorations: u16 = 0x0214;
+    pub const frame_scale: u16 = 0x020f;
     pub const resource_request: u16 = 0x0510;
     pub const resource_evict: u16 = 0x0511;
     pub const resource_snapshot: u16 = 0x0512;
@@ -1097,6 +1100,17 @@ pub const FrameDecorationsPayload = struct {
     frame_generation: u32,
 };
 
+pub const FrameScalePayload = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    scale: f32,
+    dpi_x: f32,
+    dpi_y: f32,
+    frame_generation: u32,
+    reserved_tail: u32 = 0,
+};
+
 pub const FrameFocusPayload = struct {
     frame_id: u32,
     frame_generation: u32,
@@ -1635,6 +1649,61 @@ pub fn decodeFrameDecorations(data: []const u8) Error!FrameDecorationsPayload {
 
 pub fn validateFrameDecorationsEnvelope(payload: FrameDecorationsPayload, envelope: Envelope) Error!void {
     try validateFrameDecorations(payload);
+    if (envelope.frame_id == 0) return Error.InvalidMessage;
+}
+
+fn validateFrameScale(payload: FrameScalePayload) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or payload.reserved != 0 or
+        payload.reserved_tail != 0) return Error.InvalidMessage;
+    if (!std.math.isFinite(payload.scale) or payload.scale <= 0 or
+        payload.scale > max_frame_scale) return Error.InvalidMessage;
+    if (!std.math.isFinite(payload.dpi_x) or payload.dpi_x <= 0 or
+        payload.dpi_x > max_frame_dpi) return Error.InvalidMessage;
+    if (!std.math.isFinite(payload.dpi_y) or payload.dpi_y <= 0 or
+        payload.dpi_y > max_frame_dpi) return Error.InvalidMessage;
+    if (payload.frame_generation == 0) return Error.InvalidMessage;
+}
+
+pub fn encodeFrameScale(
+    a: std.mem.Allocator,
+    payload: FrameScalePayload,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameScale(payload);
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &bytes, payload.schema, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, payload.flags);
+    try out.append(a, payload.reserved);
+    var word: [4]u8 = undefined;
+    inline for (.{ payload.scale, payload.dpi_x, payload.dpi_y }) |value| {
+        std.mem.writeInt(u32, &word, @bitCast(value), .little);
+        try out.appendSlice(a, &word);
+    }
+    std.mem.writeInt(u32, &word, payload.frame_generation, .little);
+    try out.appendSlice(a, &word);
+    std.mem.writeInt(u32, &word, payload.reserved_tail, .little);
+    try out.appendSlice(a, &word);
+}
+
+pub fn decodeFrameScale(data: []const u8) Error!FrameScalePayload {
+    if (data.len != 24) return Error.InvalidTable;
+    const payload = FrameScalePayload{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .scale = @bitCast(std.mem.readInt(u32, data[4..8], .little)),
+        .dpi_x = @bitCast(std.mem.readInt(u32, data[8..12], .little)),
+        .dpi_y = @bitCast(std.mem.readInt(u32, data[12..16], .little)),
+        .frame_generation = std.mem.readInt(u32, data[16..20], .little),
+        .reserved_tail = std.mem.readInt(u32, data[20..24], .little),
+    };
+    try validateFrameScale(payload);
+    return payload;
+}
+
+pub fn validateFrameScaleEnvelope(payload: FrameScalePayload, envelope: Envelope) Error!void {
+    try validateFrameScale(payload);
     if (envelope.frame_id == 0) return Error.InvalidMessage;
 }
 
@@ -2389,6 +2458,40 @@ test "frame decorations payload enforces strict wire form" {
     try std.testing.expectError(Error.InvalidTable, decodeFrameDecorations(bytes.items));
     try std.testing.expectError(Error.InvalidMessage, encodeFrameDecorations(a, .{
         .decorated = true,
+        .frame_generation = 0,
+    }, &bytes));
+}
+
+test "frame scale payload enforces strict wire form" {
+    const a = std.testing.allocator;
+    const payload = FrameScalePayload{
+        .scale = 1.5,
+        .dpi_x = 96,
+        .dpi_y = 192,
+        .frame_generation = 2,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFrameScale(a, payload, &bytes);
+    try std.testing.expectEqual(@as(usize, 24), bytes.items.len);
+    try std.testing.expectEqual(payload, try decodeFrameScale(bytes.items));
+
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameScale(bytes.items));
+    bytes.items[0] = 1;
+    bytes.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameScale(bytes.items));
+    bytes.items[2] = 0;
+    std.mem.writeInt(u32, bytes.items[4..8], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameScale(bytes.items));
+    std.mem.writeInt(u32, bytes.items[4..8], 0x7fc0_0000, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameScale(bytes.items));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFrameScale(bytes.items));
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameScale(a, .{
+        .scale = 1,
+        .dpi_x = 96,
+        .dpi_y = 96,
         .frame_generation = 0,
     }, &bytes));
 }

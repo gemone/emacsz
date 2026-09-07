@@ -73,7 +73,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P6-prep reverse input bridge | Implemented for bounded SDL key/text intents through PureRuntimeHostV1 delivery/result/completion; not keymap/command parity |
 | P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
 | P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
-| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 35 implemented codecs, 3 partial, 126 planned; prevents an unclassified or overclaimed protocol table |
+| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 36 implemented codecs, 3 partial, 125 planned; prevents an unclassified or overclaimed protocol table |
 | Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
 | P12-prep EUP session setup | Implemented standard HELLO/HELLO_ACK/SESSION_READY/READY_ACK codecs and bounded state machine; not yet wired to EPXL transport |
 
@@ -3127,7 +3127,7 @@ bounds, and observation validation in `runtime_bridge`; real monitor and scale
 events remain pending.
 Protocol coverage preparation adds `proto-ui-protocol-coverage`: every assigned
 EUP ID now has one honest status and evidence/gap classification.  The current
-counts are 35 implemented codecs, 3 partial, and 126 planned.
+counts are 36 implemented codecs, 3 partial, and 125 planned.
 P12 session-setup preparation adds concrete standard EUP HELLO, HELLO_ACK,
 SESSION_READY, and READY_ACK codecs with a bounded frontend state machine.  The
 authenticated EPXL handshake remains the current transport path.
@@ -3143,6 +3143,9 @@ P12 decoration preparation adds `FRAME_DECORATIONS` v1.  The Scene stores the
 decorated/undecorated policy and the diagnostic SDL bridge verifies the
 border flag with a restore; parent, tooltip, override-redirect, and full WM
 policy parity remain pending.
+P12 scale preparation adds `FRAME_SCALE` v1 for generation-qualified scale and
+X/Y DPI state.  The diagnostic SDL bridge reads per-window display scale;
+monitor migration, live scale events, and redisplay adaptation remain pending.
 P8 lifecycle preparation binds heartbeat, flush, diagnostics, and
 cancel-all-pending-work into `runtime_bridge`, with safe cancellation of
 accepted but incomplete input transactions.

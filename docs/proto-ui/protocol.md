@@ -1487,6 +1487,30 @@ platform borderless flag, then restores its normal smoke window. This does not
 imply parent-frame, tooltip-frame, override-redirect, size-hint, or full WM
 policy parity.
 
+#### Frame scale state
+
+`FRAME_SCALE` (`0x020f`) carries one frame's authoritative UI scale and DPI in
+a fixed 24-byte payload:
+
+```text
+schema               u16 = 1
+flags                u8  = 0
+reserved             u8  = 0
+scale                f32 (finite, > 0, <= 64)
+dpi_x                f32 (finite, > 0, <= 4096)
+dpi_y                f32 (finite, > 0, <= 4096)
+frame_generation     u32 (nonzero)
+reserved             u32 = 0
+```
+
+The envelope frame ID, active frame identity, and `frame_generation` must
+agree. Scene replaces the complete scale/DPI triple only after validation and
+clears it on frame destruction, authenticated resync, or scene teardown. The
+diagnostic SDL bridge reads SDL's per-window display scale for comparison.
+Production redisplay still receives scale and DPI through the `FRAME_UPDATE`
+header; this message does not yet implement monitor migration, live scale
+events, or core-driven resize/layout.
+
 The facts profile also defines a deliberately bounded `KEY_EVENT` payload for
 `0x0600`: `u16 action` (`1=backspace`, `2=cursor-left`, `3=cursor-right`,
 `4=cursor-up`, `5=cursor-down`, `6=copy`), `u8 state` (`1=pressed`), and
