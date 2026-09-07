@@ -71,7 +71,7 @@ const ranges = [_]Range{
     .{ .low = 0x0207, .high = 0x0207, .status = .implemented_codec, .domain = .frame, .family = "frame-geometry", .note = "outer/content/text/window/body rectangles, Scene state, SDL border query" },
     .{ .low = 0x0208, .high = 0x0208, .status = .implemented_codec, .domain = .frame, .family = "frame-visibility", .note = "state codec, Scene registry, bridge conformance" },
     .{ .low = 0x0209, .high = 0x0209, .status = .implemented_codec, .domain = .frame, .family = "frame-title", .note = "generation-qualified title codec, Scene state, SDL smoke" },
-    .{ .low = 0x020a, .high = 0x020a, .status = .planned, .domain = .frame, .family = "frame-icon", .note = "icon resource payload pending" },
+    .{ .low = 0x020a, .high = 0x020a, .status = .implemented_codec, .domain = .frame, .family = "frame-icon", .note = "nullable generation-qualified icon resource codec, Scene validation, SDL surface icon" },
     .{ .low = 0x020b, .high = 0x020b, .status = .implemented_codec, .domain = .frame, .family = "frame-fullscreen", .note = "Emacs fullscreen-mode codec, Scene state, SDL fullboth probe" },
     .{ .low = 0x020c, .high = 0x020c, .status = .implemented_codec, .domain = .frame, .family = "frame-maximize", .note = "horizontal/vertical maximize codec, Scene state, SDL both-axis probe" },
     .{ .low = 0x020d, .high = 0x020d, .status = .implemented_codec, .domain = .frame, .family = "frame-alpha", .note = "active/inactive/background opacity codec, Scene state, SDL probe" },

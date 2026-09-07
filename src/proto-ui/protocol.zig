@@ -73,6 +73,7 @@ pub const Message = struct {
     pub const frame_dropped: u16 = 0x0205;
     pub const frame_visibility: u16 = 0x0208;
     pub const frame_title: u16 = 0x0209;
+    pub const frame_icon: u16 = 0x020a;
     pub const frame_alpha: u16 = 0x020d;
     pub const frame_focus: u16 = 0x0210;
     pub const frame_decorations: u16 = 0x0214;
@@ -1192,6 +1193,22 @@ pub const FrameGeometryPayload = struct {
     reserved_tail: [8]u8 = .{ 0, 0, 0, 0, 0, 0, 0, 0 },
 };
 
+pub const FrameIconFlags = struct {
+    pub const present: u8 = 1 << 0;
+};
+
+pub const FrameIconPayload = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    image_id: u32 = 0,
+    image_generation: u32 = 0,
+    hotspot_x: i32 = 0,
+    hotspot_y: i32 = 0,
+    frame_generation: u32,
+    reserved_tail: u32 = 0,
+};
+
 pub const PresentDamageKind = enum(u8) {
     none = 0,
     initial = 1,
@@ -2227,6 +2244,62 @@ pub fn validateFrameGeometryEnvelope(payload: FrameGeometryPayload, envelope: En
     if (envelope.frame_id == 0) return Error.InvalidMessage;
 }
 
+fn validateFrameIcon(payload: FrameIconPayload) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or
+        payload.flags & ~FrameIconFlags.present != 0 or
+        payload.reserved_tail != 0) return Error.InvalidMessage;
+    if (payload.frame_generation == 0) return Error.InvalidMessage;
+    if (payload.flags & FrameIconFlags.present != 0) {
+        if (payload.image_id == 0 or payload.image_generation == 0 or
+            payload.hotspot_x < 0 or payload.hotspot_y < 0)
+            return Error.InvalidMessage;
+    } else {
+        if (payload.image_id != 0 or payload.image_generation != 0 or
+            payload.hotspot_x != 0 or payload.hotspot_y != 0)
+            return Error.InvalidMessage;
+    }
+}
+
+pub fn encodeFrameIcon(
+    a: std.mem.Allocator,
+    payload: FrameIconPayload,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameIcon(payload);
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &bytes, payload.schema, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, payload.flags);
+    try out.append(a, payload.reserved);
+    var word: [4]u8 = undefined;
+    inline for (.{ payload.image_id, payload.image_generation, @as(u32, @bitCast(payload.hotspot_x)), @as(u32, @bitCast(payload.hotspot_y)), payload.frame_generation, payload.reserved_tail }) |value| {
+        std.mem.writeInt(u32, &word, value, .little);
+        try out.appendSlice(a, &word);
+    }
+}
+
+pub fn decodeFrameIcon(data: []const u8) Error!FrameIconPayload {
+    if (data.len != 28) return Error.InvalidTable;
+    const payload = FrameIconPayload{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .image_id = std.mem.readInt(u32, data[4..8], .little),
+        .image_generation = std.mem.readInt(u32, data[8..12], .little),
+        .hotspot_x = @bitCast(std.mem.readInt(u32, data[12..16], .little)),
+        .hotspot_y = @bitCast(std.mem.readInt(u32, data[16..20], .little)),
+        .frame_generation = std.mem.readInt(u32, data[20..24], .little),
+        .reserved_tail = std.mem.readInt(u32, data[24..28], .little),
+    };
+    try validateFrameIcon(payload);
+    return payload;
+}
+
+pub fn validateFrameIconEnvelope(payload: FrameIconPayload, envelope: Envelope) Error!void {
+    try validateFrameIcon(payload);
+    if (envelope.frame_id == 0) return Error.InvalidMessage;
+}
+
 pub fn encodeResourceRequests(a: std.mem.Allocator, requests: []const ResourceRequest, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
     if (requests.len > max_resource_requests) return Error.Unsupported;
     try putU32(out, a, @intCast(requests.len));
@@ -3198,6 +3271,46 @@ test "frame geometry payload enforces nested rectangles" {
     invalid = payload;
     invalid.body.width = std.math.maxInt(i32);
     try std.testing.expectError(Error.InvalidMessage, encodeFrameGeometry(a, invalid, &bytes));
+}
+
+test "frame icon payload enforces strict present/absent form" {
+    const a = std.testing.allocator;
+    const present = FrameIconPayload{
+        .flags = FrameIconFlags.present,
+        .image_id = 20,
+        .image_generation = 4,
+        .hotspot_x = 1,
+        .hotspot_y = 2,
+        .frame_generation = 3,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFrameIcon(a, present, &bytes);
+    try std.testing.expectEqual(@as(usize, 28), bytes.items.len);
+    try std.testing.expectEqual(present, try decodeFrameIcon(bytes.items));
+
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameIcon(bytes.items));
+    bytes.items[0] = 1;
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameIcon(bytes.items));
+    bytes.items[3] = 0;
+    bytes.items[20] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameIcon(bytes.items));
+    bytes.items[20] = 3;
+    bytes.items[4] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameIcon(bytes.items));
+    bytes.items[4] = 20;
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFrameIcon(bytes.items));
+    bytes.shrinkRetainingCapacity(bytes.items.len - 1);
+
+    const absent = FrameIconPayload{ .frame_generation = 3 };
+    bytes.clearRetainingCapacity();
+    try encodeFrameIcon(a, absent, &bytes);
+    try std.testing.expectEqual(absent, try decodeFrameIcon(bytes.items));
+    bytes.items[4] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameIcon(bytes.items));
 }
 
 test "frame presented payload enforces strict wire form" {

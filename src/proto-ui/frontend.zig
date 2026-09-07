@@ -1277,6 +1277,7 @@ pub const Scene = struct {
     monitor: ?protocol.FrameMonitorPayload = null,
     maximize: ?protocol.FrameMaximizePayload = null,
     geometry: ?protocol.FrameGeometryPayload = null,
+    icon: ?protocol.FrameIconPayload = null,
     present: ?PresentHint = null,
     viewport: ?Viewport = null,
     window_tree: ?protocol.WindowTreeSnapshot = null,
@@ -1306,6 +1307,7 @@ pub const Scene = struct {
         self.monitor = null;
         self.maximize = null;
         self.geometry = null;
+        self.icon = null;
         self.windows = .empty;
         self.rows = .empty;
         self.glyph_runs = .empty;
@@ -1397,6 +1399,7 @@ pub const Scene = struct {
             protocol.Message.frame_monitor => try self.applyFrameMonitor(payload),
             protocol.Message.frame_maximize => try self.applyFrameMaximize(payload),
             protocol.Message.frame_geometry => try self.applyFrameGeometry(payload),
+            protocol.Message.frame_icon => try self.applyFrameIcon(payload),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.font_define => try self.applyFontDefine(payload),
@@ -1422,6 +1425,7 @@ pub const Scene = struct {
         self.monitor = null;
         self.maximize = null;
         self.geometry = null;
+        self.icon = null;
         self.clearGlyphRuns();
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
@@ -1668,6 +1672,27 @@ pub const Scene = struct {
             frame.generation != geometry.frame_generation)
             return Error.InvalidMessage;
         self.geometry = geometry;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFrameIcon(self: *Scene, payload: protocol.Payload) Error!void {
+        const icon = try protocol.decodeFrameIcon(payload.bytes);
+        try protocol.validateFrameIconEnvelope(icon, payload.envelope);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != icon.frame_generation)
+            return Error.InvalidMessage;
+
+        if (icon.flags & protocol.FrameIconFlags.present != 0) {
+            const image = self.images.lookup(icon.image_id) orelse
+                return Error.ResourceNotLive;
+            if (image.generation != icon.image_generation or !image.complete)
+                return Error.ResourceNotLive;
+            if (icon.hotspot_x >= image.metadata.width or
+                icon.hotspot_y >= image.metadata.height)
+                return Error.InvalidMessage;
+        }
+        self.icon = if (icon.flags & protocol.FrameIconFlags.present != 0) icon else null;
         self.stats.control_messages += 1;
     }
 
@@ -4723,6 +4748,154 @@ test "image fragment order totals malformed records and limits fail closed" {
     defer a.free(truncated);
     try std.testing.expectError(Error.InvalidTable, scene.apply(truncated));
     scene.deinit();
+}
+
+test "frame icon validates live resources and clears across scene cleanup" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeImageDefine(a, frontendImageFixture(31, 1), &payload);
+    const defined = try imageMessage(a, protocol.Message.image_define, 2, payload.items);
+    defer a.free(defined);
+    try scene.apply(defined);
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageData(a, .{
+        .image_id = 31,
+        .generation = 1,
+        .fragment_index = 0,
+        .fragment_count = 1,
+        .bytes = "ABCDEFGHIJKLMNOP",
+    }, &payload);
+    const data = try imageMessage(a, protocol.Message.image_data, 3, payload.items);
+    defer a.free(data);
+    try scene.apply(data);
+
+    const iconMessage = struct {
+        fn call(
+            allocator: std.mem.Allocator,
+            message_type: u16,
+            sequence: u64,
+            frame_id: u32,
+            icon: protocol.FrameIconPayload,
+        ) ![]u8 {
+            var bytes: std.ArrayList(u8) = .empty;
+            errdefer bytes.deinit(allocator);
+            try protocol.encodeFrameIcon(allocator, icon, &bytes);
+            defer bytes.deinit(allocator);
+            var message: std.ArrayList(u8) = .empty;
+            errdefer message.deinit(allocator);
+            try protocol.encodeEnvelope(allocator, .{
+                .flags = 0,
+                .message_type = message_type,
+                .sequence = sequence,
+                .ack_sequence = 0,
+                .session_id = 9,
+                .frame_id = frame_id,
+                .timestamp_ns = sequence,
+            }, bytes.items, &message);
+            return message.toOwnedSlice(allocator);
+        }
+    }.call;
+
+    const present = try iconMessage(a, protocol.Message.frame_icon, 4, 7, .{
+        .flags = protocol.FrameIconFlags.present,
+        .image_id = 31,
+        .image_generation = 1,
+        .hotspot_x = 1,
+        .hotspot_y = 1,
+        .frame_generation = 1,
+    });
+    defer a.free(present);
+    try scene.apply(present);
+    try std.testing.expectEqual(protocol.FrameIconFlags.present, scene.icon.?.flags);
+    try std.testing.expectEqual(@as(u32, 31), scene.icon.?.image_id);
+
+    const stale = try iconMessage(a, protocol.Message.frame_icon, 5, 7, .{
+        .flags = protocol.FrameIconFlags.present,
+        .image_id = 31,
+        .image_generation = 2,
+        .hotspot_x = 1,
+        .hotspot_y = 1,
+        .frame_generation = 1,
+    });
+    defer a.free(stale);
+    try std.testing.expectError(Error.ResourceNotLive, scene.apply(stale));
+    try std.testing.expectEqual(@as(u64, 5), scene.next_sequence.?);
+    try std.testing.expectEqual(@as(u32, 1), scene.icon.?.image_generation);
+
+    const absent = try iconMessage(a, protocol.Message.frame_icon, 5, 7, .{ .frame_generation = 1 });
+    defer a.free(absent);
+    try scene.apply(absent);
+    try std.testing.expect(scene.icon == null);
+
+    const restore = try iconMessage(a, protocol.Message.frame_icon, 6, 7, .{
+        .flags = protocol.FrameIconFlags.present,
+        .image_id = 31,
+        .image_generation = 1,
+        .hotspot_x = 1,
+        .hotspot_y = 1,
+        .frame_generation = 1,
+    });
+    defer a.free(restore);
+    try scene.apply(restore);
+    scene.resetForResync();
+    try std.testing.expect(scene.icon == null);
+    try std.testing.expect(scene.images.lookup(31) == null);
+
+    const recreate = try createMessage(a, 2, 8, 8);
+    defer a.free(recreate);
+    try scene.apply(recreate);
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageDefine(a, frontendImageFixture(32, 1), &payload);
+    const redefined = try imageMessage(a, protocol.Message.image_define, 3, payload.items);
+    defer a.free(redefined);
+    try scene.apply(redefined);
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageData(a, .{
+        .image_id = 32,
+        .generation = 1,
+        .fragment_index = 0,
+        .fragment_count = 1,
+        .bytes = "ABCDEFGHIJKLMNOP",
+    }, &payload);
+    const redata = try imageMessage(a, protocol.Message.image_data, 4, payload.items);
+    defer a.free(redata);
+    try scene.apply(redata);
+
+    const restored = try iconMessage(a, protocol.Message.frame_icon, 5, 8, .{
+        .flags = protocol.FrameIconFlags.present,
+        .image_id = 32,
+        .image_generation = 1,
+        .hotspot_x = 1,
+        .hotspot_y = 1,
+        .frame_generation = 1,
+    });
+    defer a.free(restored);
+    try scene.apply(restored);
+    try std.testing.expectEqual(@as(u32, 32), scene.icon.?.image_id);
+
+    var destroy_payload: [8]u8 = undefined;
+    std.mem.writeInt(u32, destroy_payload[0..4], 8, .little);
+    std.mem.writeInt(u32, destroy_payload[4..8], 1, .little);
+    var destroyed: std.ArrayList(u8) = .empty;
+    defer destroyed.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_destroy,
+        .sequence = 6,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 8,
+        .timestamp_ns = 6,
+    }, &destroy_payload, &destroyed);
+    try scene.apply(destroyed.items);
+    try std.testing.expect(scene.icon == null);
 }
 
 fn snapshotFontFixture(id: u32, generation: u32) protocol.FontDefine {

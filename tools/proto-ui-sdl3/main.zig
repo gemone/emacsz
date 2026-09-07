@@ -41,6 +41,7 @@ const frontend_pong_sequence_start: u64 = 5;
 const SDL_Window = opaque {};
 const SDL_Renderer = opaque {};
 const SDL_Texture = opaque {};
+const SDL_Surface = opaque {};
 
 const SDL_PixelFormat = c_uint;
 const SDL_TextureAccess = c_int;
@@ -67,6 +68,9 @@ extern fn SDL_SetWindowBordered(window: *SDL_Window, bordered: bool) bool;
 extern fn SDL_GetWindowFlags(window: *SDL_Window) SDLWindowFlags;
 extern fn SDL_GetWindowDisplayScale(window: *SDL_Window) f32;
 extern fn SDL_GetWindowBordersSize(window: *SDL_Window, top: *c_int, left: *c_int, bottom: *c_int, right: *c_int) bool;
+extern fn SDL_SetWindowIcon(window: *SDL_Window, icon: *SDL_Surface) bool;
+extern fn SDL_CreateSurfaceFrom(width: c_int, height: c_int, format: SDL_PixelFormat, pixels: ?*anyopaque, pitch: c_int) ?*SDL_Surface;
+extern fn SDL_DestroySurface(surface: *SDL_Surface) void;
 extern fn SDL_SetWindowFullscreen(window: *SDL_Window, fullscreen: bool) bool;
 extern fn SDL_SyncWindow(window: *SDL_Window) bool;
 extern fn SDL_GetDisplayForWindow(window: *SDL_Window) SDL_DisplayID;
@@ -2337,6 +2341,78 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (scene.control.stage != .active or scene.next_sequence.? != 16)
         return error.RuntimeBridgeControlSequenceInvalid;
 
+    var image_define_payload: std.ArrayList(u8) = .empty;
+    defer image_define_payload.deinit(gpa);
+    try protocol.encodeImageDefine(gpa, .{
+        .image_id = 31,
+        .generation = 1,
+        .width = 4,
+        .height = 4,
+        .total_byte_count = 64,
+        .cache_policy = .pinned,
+    }, &image_define_payload);
+    var image_define: std.ArrayList(u8) = .empty;
+    defer image_define.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.image_define,
+        .sequence = 16,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, image_define_payload.items, &image_define);
+    try scene.apply(image_define.items);
+
+    var icon_pixels: [64]u8 = undefined;
+    for (&icon_pixels, 0..) |*byte, index| byte.* = @truncate(index * 7 + 9);
+    var image_data_payload: std.ArrayList(u8) = .empty;
+    defer image_data_payload.deinit(gpa);
+    try protocol.encodeImageData(gpa, .{
+        .image_id = 31,
+        .generation = 1,
+        .fragment_index = 0,
+        .fragment_count = 1,
+        .bytes = &icon_pixels,
+    }, &image_data_payload);
+    var image_data: std.ArrayList(u8) = .empty;
+    defer image_data.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.image_data,
+        .sequence = 17,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, image_data_payload.items, &image_data);
+    try scene.apply(image_data.items);
+
+    var icon_payload: std.ArrayList(u8) = .empty;
+    defer icon_payload.deinit(gpa);
+    try protocol.encodeFrameIcon(gpa, .{
+        .flags = protocol.FrameIconFlags.present,
+        .image_id = 31,
+        .image_generation = 1,
+        .hotspot_x = 1,
+        .hotspot_y = 1,
+        .frame_generation = bridge.eup_frame_generation,
+    }, &icon_payload);
+    var icon: std.ArrayList(u8) = .empty;
+    defer icon.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_icon,
+        .sequence = 18,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, icon_payload.items, &icon);
+    try scene.apply(icon.items);
+    if (scene.icon == null or scene.icon.?.image_id != 31)
+        return error.RuntimeBridgeIconInvalid;
+
     var geometry_payload: std.ArrayList(u8) = .empty;
     defer geometry_payload.deinit(gpa);
     try protocol.encodeFrameGeometry(gpa, .{
@@ -2352,7 +2428,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     try protocol.encodeEnvelope(gpa, .{
         .flags = 0,
         .message_type = protocol.Message.frame_geometry,
-        .sequence = 16,
+        .sequence = 19,
         .ack_sequence = 0,
         .session_id = capability.session_id,
         .frame_id = @intCast(bridge.frame.id),
@@ -2388,6 +2464,27 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         return sdlFail("SDL_CreateWindow");
     defer SDL_DestroyWindow(window);
     SDL_SetWindowTitle(window, scene.title.?.ptr);
+    var icon_applied = false;
+    if (scene.icon) |icon_state| {
+        if (icon_state.flags & protocol.FrameIconFlags.present != 0) {
+            const image = scene.images.lookup(icon_state.image_id) orelse
+                return error.RuntimeBridgeIconInvalid;
+            if (!image.complete or image.generation != icon_state.image_generation or
+                image.bytes.len != image.metadata.total_byte_count)
+                return error.RuntimeBridgeIconInvalid;
+            const surface = SDL_CreateSurfaceFrom(
+                @intCast(image.metadata.width),
+                @intCast(image.metadata.height),
+                SDL_PIXELFORMAT_RGBA8888,
+                image.bytes.ptr,
+                @intCast(image.metadata.width * 4),
+            ) orelse return sdlFail("SDL_CreateSurfaceFrom");
+            defer SDL_DestroySurface(surface);
+            icon_applied = SDL_SetWindowIcon(window, surface);
+            if (!icon_applied) return sdlFail("SDL_SetWindowIcon");
+        }
+    }
+    if (!icon_applied) return error.RuntimeBridgeIconInvalid;
     var border_top: c_int = 0;
     var border_left: c_int = 0;
     var border_bottom: c_int = 0;
@@ -2605,9 +2702,10 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
+            icon_applied,
             opacity_supported,
             decorations_supported,
             scale_supported,

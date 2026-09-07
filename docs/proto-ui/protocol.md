@@ -273,6 +273,31 @@ none, initial, cursor, text, region, viewport, and unchanged presents. These
 codecs and SDL counter conformance are implemented; core consumption, adaptive
 pacing decisions, and GPU timestamps remain pending.
 
+#### Frame icon state
+
+`FRAME_ICON` (`0x020a`) references a generation-qualified complete RGBA8 image,
+or clears the icon with `present=0`. The fixed 28-byte payload is:
+
+```text
+schema               u16 = 1
+flags                u8  (bit 0=present; bits 1..7 reserved)
+reserved             u8  = 0
+image_id             u32 (nonzero when present)
+image_generation     u32 (nonzero when present)
+hotspot_x            i32 (zero when absent)
+hotspot_y            i32 (zero when absent)
+frame_generation     u32 (nonzero)
+reserved             u32 = 0
+```
+
+The envelope frame ID and active frame generation must match. When present,
+`Scene` requires the referenced image to be live, complete, and at least one
+pixel wide/high; the hotspot must fall inside the image. `Scene` stores the
+complete icon reference and clears it on frame destruction, authenticated
+resync, or scene teardown. The SDL bridge creates an SDL surface from the
+complete RGBA bytes and applies it to the diagnostic window. Multi-resolution
+icon bundles, OS taskbar guarantees, and animated icons remain pending.
+
 #### Frame geometry state
 
 `FRAME_GEOMETRY` (`0x0207`) carries the complete frame geometry model in a

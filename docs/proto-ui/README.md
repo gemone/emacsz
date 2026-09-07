@@ -99,6 +99,11 @@ rectangles with containment validation.  The SDL bridge consumes Scene geometry
 and queries real window border sizes; core-owned platform placement and resize
 migration remain pending.
 
+W12f-icon adds `FRAME_ICON` v1 for a nullable, generation-qualified RGBA icon
+reference.  `Scene` validates the live image and hotspot, and the SDL bridge
+creates a surface and applies the icon; multi-resolution and animated icons
+remain pending.
+
 W12e adds a bounded adapter-owned resource payload cache with LRU eviction and
 strict wire contracts for `RESOURCE_REQUEST` and `RESOURCE_EVICT`.  The cache
 accepts at most 32 entries, 4096 bytes per payload, and 16 KiB total; existing
