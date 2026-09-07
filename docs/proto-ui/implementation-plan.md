@@ -633,8 +633,27 @@ at most 64 string payloads, synchronizes identity/generation through the
 existing resource registry, allocates before mutation, rejects equal/stale
 generations atomically, releases exact-generation deletes, and clears strings
 on destroy/resync/deinit. `resource.string_v1` is degraded and non-negotiable
-with `proto-ui-unit` evidence. `resource.v1` and face/font/image resources
-remain pending; no renderer claim is made.
+with `proto-ui-unit` evidence. `resource.v1` and full face/font/image resource
+parity remain pending; no renderer claim is made.
+
+#### W6-b status
+
+Status: W6-b complete as a bounded adapter/frontend face resource contract.
+
+`FACE_DEFINE` (`0x0500`) is a fixed little-endian 96-byte record with identity,
+generation, optional font/stipple references, RGBA8 colors, decoration and box
+style tags, box width, inverse/extend booleans, and line spacing. All reserved
+bytes are zero and optional references are either both zero or both nonzero.
+Style/color presence is internally consistent by construction.
+
+`FACE_DELETE` (`0x0502`) uses exact nonzero identity/generation. The frontend
+owns at most 64 active faces, synchronizes through the face resource registry,
+rejects equal/stale generations without sequence drift, performs exact deletes,
+and permits replacement at capacity. Faces survive frame destroy intentionally;
+resync and scene teardown clear them. `resource.face_v1` is degraded and
+non-negotiable with `proto-ui-unit` evidence. This is a face wire subset, not
+redisplay capture or Emacs face parity; `resource.v1`, fonts, images, rendering,
+and `output_proto` remain pending.
 
 ### W7 — Transport and recovery
 

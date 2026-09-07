@@ -164,6 +164,97 @@ const resource_record_size: usize = 16;
 pub const ResourceDeclaration = lifecycle.Resource;
 pub const max_resources = lifecycle.max_resources;
 pub const max_string_resources: usize = 64;
+pub const max_face_resources: usize = 64;
+
+pub const FaceResource = struct {
+    face_id: u32,
+    generation: u32,
+    payload: protocol.FaceDefine,
+};
+
+pub const FaceResourceCounters = struct {
+    defines: u64 = 0,
+    replacements: u64 = 0,
+    deletes: u64 = 0,
+    rejections: u64 = 0,
+};
+
+/// Faces are protocol-global bounded resources.  Unlike strings, they remain
+/// available after a frame destroy so a new frame can reference the same face
+/// generation; explicit deletion, session resync, or scene deinit removes them.
+pub const FaceResources = struct {
+    faces: [max_face_resources]FaceResource = undefined,
+    len: usize = 0,
+    counters: FaceResourceCounters = .{},
+
+    fn find(self: FaceResources, face_id: u32) ?usize {
+        for (self.faces[0..self.len], 0..) |resource, index| {
+            if (resource.face_id == face_id) return index;
+        }
+        return null;
+    }
+
+    pub fn lookup(self: FaceResources, face_id: u32) ?FaceResource {
+        const index = self.find(face_id) orelse return null;
+        return self.faces[index];
+    }
+
+    fn define(
+        self: *FaceResources,
+        resources: *lifecycle.ResourceRegistry,
+        payload: protocol.FaceDefine,
+    ) Error!void {
+        const existing_index = self.find(payload.face_id);
+        if (existing_index) |index| {
+            if (payload.generation <= self.faces[index].generation) {
+                self.counters.rejections += 1;
+                return Error.StaleGeneration;
+            }
+        } else if (self.len == max_face_resources or resources.len == lifecycle.max_resources) {
+            self.counters.rejections += 1;
+            return Error.ResourceTableFull;
+        }
+
+        // The wire record and scene value are allocation-free.  Registry
+        // validation is the only fallible step; table replacement cannot fail.
+        try resources.declareAll(&[_]lifecycle.Resource{.{
+            .kind = .face,
+            .id = payload.face_id,
+            .generation = payload.generation,
+            .status = .live,
+        }});
+
+        if (existing_index) |index| {
+            self.faces[index] = .{ .face_id = payload.face_id, .generation = payload.generation, .payload = payload };
+            self.counters.replacements += 1;
+        } else {
+            self.faces[self.len] = .{ .face_id = payload.face_id, .generation = payload.generation, .payload = payload };
+            self.len += 1;
+            self.counters.defines += 1;
+        }
+    }
+
+    fn delete(
+        self: *FaceResources,
+        resources: *lifecycle.ResourceRegistry,
+        payload: protocol.FaceDelete,
+    ) Error!void {
+        const index = self.find(payload.face_id) orelse {
+            self.counters.rejections += 1;
+            return Error.ResourceNotLive;
+        };
+        if (self.faces[index].generation != payload.generation) {
+            self.counters.rejections += 1;
+            return Error.StaleGeneration;
+        }
+        try resources.delete(.face, payload.face_id, payload.generation);
+        if (index + 1 < self.len) {
+            std.mem.copyForwards(FaceResource, self.faces[index .. self.len - 1], self.faces[index + 1 .. self.len]);
+        }
+        self.len -= 1;
+        self.counters.deletes += 1;
+    }
+};
 
 pub const StringResource = struct {
     resource_id: u32,
@@ -649,6 +740,7 @@ pub const Scene = struct {
     windows: std.ArrayList(Window) = .empty,
     rows: std.ArrayList(Row) = .empty,
     strings: StringResources = .{},
+    faces: FaceResources = .{},
     cursor: ?Cursor = null,
     damage: std.ArrayList(Rect) = .empty,
     text: std.ArrayList(TextLine) = .empty,
@@ -665,12 +757,14 @@ pub const Scene = struct {
         self.rows.deinit(self.allocator);
         self.damage.deinit(self.allocator);
         self.strings.deinit(self.allocator);
+        self.faces = .{};
         for (self.text.items) |line| self.allocator.free(line.bytes);
         self.text.deinit(self.allocator);
         self.windows = .empty;
         self.rows = .empty;
         self.damage = .empty;
         self.strings = .{};
+        self.faces = .{};
         self.text = .empty;
         self.session_id = null;
         self.next_sequence = null;
@@ -707,6 +801,8 @@ pub const Scene = struct {
             protocol.Message.frame_visibility => try self.applyFrameVisibility(payload),
             protocol.Message.frame_focus => try self.applyFrameFocus(payload),
             protocol.Message.frame_destroy => try self.applyFrameDestroy(payload.envelope, payload.bytes),
+            protocol.Message.face_define => try self.applyFaceDefine(payload),
+            protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.string_define => try self.applyStringDefine(payload),
             protocol.Message.string_delete => try self.applyStringDelete(payload),
             else => self.stats.control_messages += 1,
@@ -756,6 +852,18 @@ pub const Scene = struct {
         const focus = try protocol.decodeFrameFocus(payload.bytes);
         try protocol.validateFrameFocusEnvelope(focus, payload.envelope);
         try self.frames.setFocus(focus.frame_id, focus.frame_generation, focus.focused);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFaceDefine(self: *Scene, payload: protocol.Payload) Error!void {
+        const face = try protocol.decodeFaceDefine(payload.bytes);
+        try self.faces.define(&self.resources, face);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFaceDelete(self: *Scene, payload: protocol.Payload) Error!void {
+        const face = try protocol.decodeFaceDelete(payload.bytes);
+        try self.faces.delete(&self.resources, face);
         self.stats.control_messages += 1;
     }
 
@@ -1757,4 +1865,166 @@ fn updateWithResources(a: std.mem.Allocator, sequence: u64, resource_records: []
     errdefer message.deinit(a);
     try protocol.encodeEnvelope(a, .{ .flags = protocol.Flags.delta, .message_type = protocol.Message.frame_update, .sequence = sequence, .ack_sequence = 0, .session_id = 9, .frame_id = 7, .timestamp_ns = sequence }, payload.items, &message);
     return message.toOwnedSlice(a);
+}
+
+fn faceMessage(
+    a: std.mem.Allocator,
+    message_type: u16,
+    sequence: u64,
+    payload: []const u8,
+) ![]u8 {
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = message_type,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .timestamp_ns = sequence,
+    }, payload, &message);
+    return message.toOwnedSlice(a);
+}
+
+test "scene owns replaces looks up and deletes bounded face resources" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    var face = protocol.FaceDefine{ .face_id = 12, .generation = 1 };
+    face.presence.font = true;
+    face.presence.stipple = true;
+    face.font_id = 50;
+    face.font_generation = 51;
+    face.stipple_id = 52;
+    face.stipple_generation = 53;
+    try protocol.encodeFaceDefine(a, face, &payload);
+    const defined = try faceMessage(a, protocol.Message.face_define, 2, payload.items);
+    defer a.free(defined);
+    try scene.apply(defined);
+    try std.testing.expectEqual(face, scene.faces.lookup(12).?.payload);
+    try std.testing.expectEqual(lifecycle.ResourceStatus.live, scene.resources.lookup(.face, 12).?.status);
+
+    face.generation = 1;
+    payload.clearRetainingCapacity();
+    try protocol.encodeFaceDefine(a, face, &payload);
+    const equal = try faceMessage(a, protocol.Message.face_define, 3, payload.items);
+    defer a.free(equal);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(equal));
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeFaceDelete(a, .{ .face_id = 12, .generation = 9 }, &payload);
+    const wrong_delete = try faceMessage(a, protocol.Message.face_delete, 3, payload.items);
+    defer a.free(wrong_delete);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(wrong_delete));
+
+    var malformed: [97]u8 = undefined;
+    @memset(&malformed, 0);
+    std.mem.writeInt(u32, malformed[0..4], 13, .little);
+    std.mem.writeInt(u32, malformed[4..8], 1, .little);
+    const wrong_size = try faceMessage(a, protocol.Message.face_define, 3, &malformed);
+    defer a.free(wrong_size);
+    try std.testing.expectError(Error.InvalidTable, scene.apply(wrong_size));
+
+    face.generation = 2;
+    payload.clearRetainingCapacity();
+    try protocol.encodeFaceDefine(a, face, &payload);
+    const replacement = try faceMessage(a, protocol.Message.face_define, 3, payload.items);
+    defer a.free(replacement);
+    try scene.apply(replacement);
+    try std.testing.expectEqual(@as(u32, 2), scene.faces.lookup(12).?.generation);
+    try std.testing.expectEqual(@as(u64, 1), scene.faces.counters.replacements);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeFaceDelete(a, .{ .face_id = 12, .generation = 2 }, &payload);
+    const deletion = try faceMessage(a, protocol.Message.face_delete, 4, payload.items);
+    defer a.free(deletion);
+    try scene.apply(deletion);
+    try std.testing.expect(scene.faces.lookup(12) == null);
+    try std.testing.expectEqual(lifecycle.ResourceStatus.deleted, scene.resources.lookup(.face, 12).?.status);
+
+    const duplicate = try faceMessage(a, protocol.Message.face_delete, 5, payload.items);
+    defer a.free(duplicate);
+    try std.testing.expectError(Error.ResourceNotLive, scene.apply(duplicate));
+    try std.testing.expectEqual(@as(u64, 5), scene.next_sequence.?);
+    try std.testing.expectEqual(@as(u64, 3), scene.faces.counters.rejections);
+}
+
+test "face table remains bounded and permits in-place generation replacement" {
+    var resources = lifecycle.ResourceRegistry{};
+    var faces = FaceResources{};
+    for (0..max_face_resources) |index| {
+        const id: u32 = @intCast(100 + index);
+        try faces.define(&resources, .{ .face_id = id, .generation = 1 });
+    }
+    try std.testing.expectEqual(max_face_resources, faces.len);
+    try std.testing.expectEqual(max_face_resources, resources.len);
+    try std.testing.expectError(
+        Error.ResourceTableFull,
+        faces.define(&resources, .{ .face_id = 999, .generation = 1 }),
+    );
+
+    try faces.define(&resources, .{ .face_id = 100, .generation = 65 });
+    try std.testing.expectEqual(max_face_resources, faces.len);
+    try std.testing.expectEqual(@as(u32, 65), faces.lookup(100).?.generation);
+    try std.testing.expectEqual(@as(u64, 1), faces.counters.replacements);
+}
+
+test "face resources survive frame destroy and clear on resync and deinit" {
+    const a = std.testing.allocator;
+    {
+        var scene = Scene.init(a);
+        const create = try createMessage(a, 1, 7, 7);
+        defer a.free(create);
+        try scene.apply(create);
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(a);
+        try protocol.encodeFaceDefine(a, .{ .face_id = 20, .generation = 1 }, &payload);
+        const defined = try faceMessage(a, protocol.Message.face_define, 2, payload.items);
+        defer a.free(defined);
+        try scene.apply(defined);
+
+        var destroy_payload: [8]u8 = undefined;
+        std.mem.writeInt(u32, destroy_payload[0..4], 7, .little);
+        std.mem.writeInt(u32, destroy_payload[4..8], 1, .little);
+        var destroy: std.ArrayList(u8) = .empty;
+        defer destroy.deinit(a);
+        try protocol.encodeEnvelope(a, .{
+            .flags = 0,
+            .message_type = protocol.Message.frame_destroy,
+            .sequence = 3,
+            .ack_sequence = 0,
+            .session_id = 9,
+            .frame_id = 7,
+            .timestamp_ns = 3,
+        }, &destroy_payload, &destroy);
+        const destroyed = try a.dupe(u8, destroy.items);
+        defer a.free(destroyed);
+        try scene.apply(destroyed);
+        try std.testing.expect(scene.faces.lookup(20) != null);
+        scene.deinit();
+    }
+
+    {
+        var scene = Scene.init(a);
+        const create = try createMessage(a, 1, 7, 7);
+        defer a.free(create);
+        try scene.apply(create);
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(a);
+        try protocol.encodeFaceDefine(a, .{ .face_id = 21, .generation = 1 }, &payload);
+        const defined = try faceMessage(a, protocol.Message.face_define, 2, payload.items);
+        defer a.free(defined);
+        try scene.apply(defined);
+        scene.resetForResync();
+        try std.testing.expectEqual(@as(usize, 0), scene.faces.len);
+        try std.testing.expect(scene.resources.lookup(.face, 21) == null);
+        scene.deinit();
+    }
 }

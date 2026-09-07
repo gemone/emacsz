@@ -92,6 +92,13 @@ the scene retains at most 64 with strict generation replacement/deletion and
 atomic cleanup.  This is adapter protocol evidence only: `resource.v1`,
 faces, fonts, images, `output_proto`, and rendering parity remain pending.
 
+W6-b adds the bounded fixed-layout `FACE_DEFINE`/`FACE_DELETE` v1 contract and
+its frontend-owned face table.  It covers a strict 96-byte subset of face
+attributes with optional font/stipple references, exact generation replacement
+and deletion, bounded capacity, and explicit resync/teardown cleanup.  It is not
+redisplay face capture, rendering, full Emacs face parity, or runtime
+enablement; `resource.v1` remains pending.
+
 W4c-b1-p0 adds the executable EUP v1 codec, including envelope, capability, message-ID, and FRAME_UPDATE section conformance.  W4c-b1-t0 adds bounded memory-sink sequencing and ERP1 replay-file conformance.  W4c-b1-b0 adds the versioned adapter ABI, a fake-host conformance harness, and generated ABI artifacts under `zig-out/include/proto-ui`; none introduces runtime integration.  Inherited C/Lisp changes in the rollback patch are restoration-only and return Proto-UI runtime files to their pre-Proto-UI state.  The adapter source is the authoritative ownership manifest; generated JSON is only a non-normative ABI summary.
 
 The documentation in this directory is the source of truth for the implementation workstreams.

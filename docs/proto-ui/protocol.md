@@ -378,9 +378,9 @@ These messages are reserved for tools, debug, and explicitly negotiated fallback
 
 | ID | Name | Direction | Payload | Semantics |
 |---|---|---|---|---|
-| `0x0500` | `FACE_DEFINE` | C→F | Complete face | Create face |
+| `0x0500` | `FACE_DEFINE` | C→F | Fixed 96-byte face subset (v1) | Create/replace face |
 | `0x0501` | `FACE_PATCH` | C→F | Attribute patch | Update face |
-| `0x0502` | `FACE_DELETE` | C→F | ID/generation | Invalidate face |
+| `0x0502` | `FACE_DELETE` | C→F | ID/generation | Invalidate bounded v1 face |
 | `0x0503` | `FONT_DEFINE` | C→F | Descriptor/metrics | Create font |
 | `0x0504` | `FONT_PATCH` | C→F | Descriptor patch | Update font |
 | `0x0505` | `FONT_METRICS` | C→F | Metric update | Authoritative metrics |
@@ -403,6 +403,44 @@ These messages are reserved for tools, debug, and explicitly negotiated fallback
 | `0x0516` | `ATLAS_INVALIDATE` | C/F | Page/glyph range | Invalidate cache |
 
 Resource payload requirements:
+
+### Face resource v1 (implemented bounded adapter contract)
+
+`FACE_DEFINE` is a fixed, little-endian 96-byte record.  This is a bounded
+protocol subset and **not** full Emacs face parity.  Payload layout:
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 4 | `face_id` | nonzero |
+| 4 | 4 | `generation` | nonzero |
+| 8 | 1 | presence bits | font, stipple, foreground, background, underline color, overline color, strike color, box color |
+| 9 | 3 | reserved | zero |
+| 12 | 24 | RGBA8 foreground/background/underline/overline/strike/box | foreground and background alpha must agree with their presence bit; other colors are checked by style rules |
+| 36 | 1 | underline style | unspecified=0, off=1, single=2, color=3 |
+| 37 | 1 | overline style | same tag space |
+| 38 | 1 | strike-through style | same tag space |
+| 39 | 1 | box style | none=0, simple=1, released=2, pressed=3 |
+| 40 | 4 | `i32` box line width | zero unless box color is present |
+| 44 | 1 | inverse video | boolean byte, 0 or 1 |
+| 45 | 1 | extend | boolean byte, 0 or 1 |
+| 46 | 4 | `i32` line spacing | signed |
+| 50 | 8 | font id/generation | both zero when absent, both nonzero when present |
+| 58 | 8 | stipple id/generation | both zero when absent, both nonzero when present |
+| 66 | 30 | reserved | all zero |
+
+A color-bearing decoration style (`color=3`) requires its corresponding color
+presence bit.  `unspecified`, `off`, and `single` reject that bit.  Box style
+`none` rejects box color and a nonzero width; every other box style requires a
+present box color.  Decoders reject wrong size, invalid identity, malformed
+optional references, invalid tags/booleans, contradictory presence, and nonzero
+reserved bytes.
+
+`FACE_DELETE` is exactly two nonzero little-endian `u32` values: `face_id` then
+`generation`.  The frontend requires the next contiguous session sequence.  A
+define needs a new face ID or strictly newer generation; equal/stale defines do
+not mutate state.  Delete requires the exact live generation, removes the
+active value, and marks the registry record deleted.  Faces are protocol-global:
+frame destroy retains them, while resync and scene teardown clear them.
 
 ### String resource v1 (implemented adapter contract)
 

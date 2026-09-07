@@ -14,6 +14,9 @@ pub const Error = error{
     InvalidTable,
     InvalidUtf8,
     InvalidSequence,
+    InvalidStyle,
+    InvalidBoolean,
+    InvalidReserved,
     TrailingBytes,
     Unsupported,
 };
@@ -48,6 +51,8 @@ pub const Message = struct {
     pub const frame_focus: u16 = 0x0210;
     pub const resource_request: u16 = 0x0510;
     pub const resource_evict: u16 = 0x0511;
+    pub const face_define: u16 = 0x0500;
+    pub const face_delete: u16 = 0x0502;
     pub const string_define: u16 = 0x050e;
     pub const string_delete: u16 = 0x050f;
     pub const key_event: u16 = 0x0600;
@@ -161,6 +166,90 @@ pub const ResourceEvict = struct {
 
 pub const max_resource_requests: usize = 64;
 pub const max_string_bytes: usize = 4096;
+pub const face_record_size: usize = 96;
+
+pub const FaceStyle = enum(u8) {
+    unspecified = 0,
+    off = 1,
+    single = 2,
+    color = 3,
+};
+
+pub const BoxStyle = enum(u8) {
+    none = 0,
+    simple = 1,
+    released = 2,
+    pressed = 3,
+};
+
+pub const FacePresence = packed struct(u8) {
+    font: bool = false,
+    stipple: bool = false,
+    foreground: bool = false,
+    background: bool = false,
+    underline_color: bool = false,
+    overline_color: bool = false,
+    strike_color: bool = false,
+    box_color: bool = false,
+};
+
+/// Fixed-layout FACE_DEFINE v1.  This is a bounded subset, not Emacs face
+/// parity.  Wire offsets are normative and the trailing bytes are reserved.
+pub const FaceDefine = struct {
+    face_id: u32,
+    generation: u32,
+    presence: FacePresence = .{},
+    foreground: [4]u8 = .{ 0, 0, 0, 0 },
+    background: [4]u8 = .{ 0, 0, 0, 0 },
+    underline_color: [4]u8 = .{ 0, 0, 0, 0 },
+    overline_color: [4]u8 = .{ 0, 0, 0, 0 },
+    strike_color: [4]u8 = .{ 0, 0, 0, 0 },
+    box_color: [4]u8 = .{ 0, 0, 0, 0 },
+    underline: FaceStyle = .unspecified,
+    overline: FaceStyle = .unspecified,
+    strike_through: FaceStyle = .unspecified,
+    box: BoxStyle = .none,
+    box_line_width: i32 = 0,
+    inverse_video: bool = false,
+    extend: bool = false,
+    line_spacing: i32 = 0,
+    font_id: u32 = 0,
+    font_generation: u32 = 0,
+    stipple_id: u32 = 0,
+    stipple_generation: u32 = 0,
+};
+
+pub const FaceDelete = struct {
+    face_id: u32,
+    generation: u32,
+};
+
+fn optionalReferenceValid(id: u32, generation: u32, present: bool) bool {
+    return if (present) (id != 0 and generation != 0) else (id == 0 and generation == 0);
+}
+
+fn validateFaceStyle(style: FaceStyle, color_present: bool) Error!void {
+    if ((style == .color) != color_present) return Error.InvalidStyle;
+}
+
+fn validateFaceDefine(payload: FaceDefine) Error!void {
+    if (payload.face_id == 0 or payload.generation == 0) return Error.InvalidMessage;
+    if (!optionalReferenceValid(payload.font_id, payload.font_generation, payload.presence.font))
+        return Error.InvalidResource;
+    if (!optionalReferenceValid(payload.stipple_id, payload.stipple_generation, payload.presence.stipple))
+        return Error.InvalidResource;
+    if ((payload.presence.foreground and payload.foreground[3] == 0) or
+        (!payload.presence.foreground and payload.foreground[3] != 0))
+        return Error.InvalidMessage;
+    if ((payload.presence.background and payload.background[3] == 0) or
+        (!payload.presence.background and payload.background[3] != 0))
+        return Error.InvalidMessage;
+    try validateFaceStyle(payload.underline, payload.presence.underline_color);
+    try validateFaceStyle(payload.overline, payload.presence.overline_color);
+    try validateFaceStyle(payload.strike_through, payload.presence.strike_color);
+    if ((payload.box != .none) != payload.presence.box_color) return Error.InvalidStyle;
+    if (!payload.presence.box_color and payload.box_line_width != 0) return Error.InvalidStyle;
+}
 
 pub const StringDefine = struct {
     resource_id: u32,
@@ -231,6 +320,121 @@ pub fn decodeStringDelete(data: []const u8) Error!StringDelete {
         .generation = std.mem.readInt(u32, data[4..8], .little),
     };
     try validateStringIdentity(payload.resource_id, payload.generation);
+    return payload;
+}
+
+/// Builds the fixed wire record without heap allocation.
+pub fn encodeFaceDefineBytes(payload: FaceDefine) Error![face_record_size]u8 {
+    try validateFaceDefine(payload);
+    var bytes: [face_record_size]u8 = @splat(0);
+    std.mem.writeInt(u32, bytes[0..4], payload.face_id, .little);
+    std.mem.writeInt(u32, bytes[4..8], payload.generation, .little);
+    bytes[8] = @bitCast(payload.presence);
+    @memcpy(bytes[12..16], &payload.foreground);
+    @memcpy(bytes[16..20], &payload.background);
+    @memcpy(bytes[20..24], &payload.underline_color);
+    @memcpy(bytes[24..28], &payload.overline_color);
+    @memcpy(bytes[28..32], &payload.strike_color);
+    @memcpy(bytes[32..36], &payload.box_color);
+    bytes[36] = @intFromEnum(payload.underline);
+    bytes[37] = @intFromEnum(payload.overline);
+    bytes[38] = @intFromEnum(payload.strike_through);
+    bytes[39] = @intFromEnum(payload.box);
+    std.mem.writeInt(i32, bytes[40..44], payload.box_line_width, .little);
+    bytes[44] = @intFromBool(payload.inverse_video);
+    bytes[45] = @intFromBool(payload.extend);
+    std.mem.writeInt(i32, bytes[46..50], payload.line_spacing, .little);
+    std.mem.writeInt(u32, bytes[50..54], payload.font_id, .little);
+    std.mem.writeInt(u32, bytes[54..58], payload.font_generation, .little);
+    std.mem.writeInt(u32, bytes[58..62], payload.stipple_id, .little);
+    std.mem.writeInt(u32, bytes[62..66], payload.stipple_generation, .little);
+    return bytes;
+}
+
+pub fn encodeFaceDefine(a: std.mem.Allocator, payload: FaceDefine, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    const bytes = try encodeFaceDefineBytes(payload);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeFaceDefine(data: []const u8) Error!FaceDefine {
+    if (data.len != face_record_size) return Error.InvalidTable;
+    if (data[9] != 0 or data[10] != 0 or data[11] != 0) return Error.InvalidReserved;
+    for (data[66..face_record_size]) |byte| {
+        if (byte != 0) return Error.InvalidReserved;
+    }
+    if (data[44] > 1 or data[45] > 1) return Error.InvalidBoolean;
+    const payload = FaceDefine{
+        .face_id = std.mem.readInt(u32, data[0..4], .little),
+        .generation = std.mem.readInt(u32, data[4..8], .little),
+        .presence = @bitCast(data[8]),
+        .foreground = data[12..16][0..4].*,
+        .background = data[16..20][0..4].*,
+        .underline_color = data[20..24][0..4].*,
+        .overline_color = data[24..28][0..4].*,
+        .strike_color = data[28..32][0..4].*,
+        .box_color = data[32..36][0..4].*,
+        .underline = switch (data[36]) {
+            0 => .unspecified,
+            1 => .off,
+            2 => .single,
+            3 => .color,
+            else => return Error.InvalidStyle,
+        },
+        .overline = switch (data[37]) {
+            0 => .unspecified,
+            1 => .off,
+            2 => .single,
+            3 => .color,
+            else => return Error.InvalidStyle,
+        },
+        .strike_through = switch (data[38]) {
+            0 => .unspecified,
+            1 => .off,
+            2 => .single,
+            3 => .color,
+            else => return Error.InvalidStyle,
+        },
+        .box = switch (data[39]) {
+            0 => .none,
+            1 => .simple,
+            2 => .released,
+            3 => .pressed,
+            else => return Error.InvalidStyle,
+        },
+        .box_line_width = std.mem.readInt(i32, data[40..44], .little),
+        .inverse_video = data[44] == 1,
+        .extend = data[45] == 1,
+        .line_spacing = std.mem.readInt(i32, data[46..50], .little),
+        .font_id = std.mem.readInt(u32, data[50..54], .little),
+        .font_generation = std.mem.readInt(u32, data[54..58], .little),
+        .stipple_id = std.mem.readInt(u32, data[58..62], .little),
+        .stipple_generation = std.mem.readInt(u32, data[62..66], .little),
+    };
+    try validateFaceDefine(payload);
+    return payload;
+}
+
+/// Builds the fixed delete payload without heap allocation.
+pub fn encodeFaceDeleteBytes(payload: FaceDelete) Error![8]u8 {
+    if (payload.face_id == 0 or payload.generation == 0) return Error.InvalidMessage;
+    var bytes: [8]u8 = undefined;
+    std.mem.writeInt(u32, bytes[0..4], payload.face_id, .little);
+    std.mem.writeInt(u32, bytes[4..8], payload.generation, .little);
+    return bytes;
+}
+
+pub fn encodeFaceDelete(a: std.mem.Allocator, payload: FaceDelete, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    const bytes = try encodeFaceDeleteBytes(payload);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeFaceDelete(data: []const u8) Error!FaceDelete {
+    if (data.len != 8) return Error.InvalidTable;
+    const payload = FaceDelete{
+        .face_id = std.mem.readInt(u32, data[0..4], .little),
+        .generation = std.mem.readInt(u32, data[4..8], .little),
+    };
+    if (payload.face_id == 0 or payload.generation == 0) return Error.InvalidMessage;
     return payload;
 }
 
@@ -1185,4 +1389,135 @@ test "frame update section tables round trip" {
     var mismatched = envelope;
     mismatched.frame_id = 4;
     try std.testing.expectError(Error.InvalidMessage, validateFrameEnvelope(decoded.header, mismatched));
+}
+
+test "face codecs preserve the fixed v1 wire subset" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    const minimal = FaceDefine{ .face_id = 12, .generation = 3 };
+    try encodeFaceDefine(a, minimal, &bytes);
+    const fixed = try encodeFaceDefineBytes(minimal);
+    try std.testing.expectEqualSlices(u8, &fixed, bytes.items);
+    try std.testing.expectEqual(face_record_size, bytes.items.len);
+    try std.testing.expectEqual(minimal, try decodeFaceDefine(bytes.items));
+
+    bytes.clearRetainingCapacity();
+    const complete = FaceDefine{
+        .face_id = 30,
+        .generation = 7,
+        .presence = .{
+            .font = true,
+            .stipple = true,
+            .foreground = true,
+            .background = true,
+            .underline_color = true,
+            .overline_color = true,
+            .strike_color = true,
+            .box_color = true,
+        },
+        .foreground = .{ 1, 2, 3, 4 },
+        .background = .{ 5, 6, 7, 8 },
+        .underline_color = .{ 9, 10, 11, 12 },
+        .overline_color = .{ 13, 14, 15, 16 },
+        .strike_color = .{ 17, 18, 19, 20 },
+        .box_color = .{ 21, 22, 23, 24 },
+        .underline = .color,
+        .overline = .color,
+        .strike_through = .color,
+        .box = .pressed,
+        .box_line_width = -2,
+        .inverse_video = true,
+        .extend = true,
+        .line_spacing = -3,
+        .font_id = 41,
+        .font_generation = 42,
+        .stipple_id = 43,
+        .stipple_generation = 44,
+    };
+    try encodeFaceDefine(a, complete, &bytes);
+    try std.testing.expectEqual(@as(usize, 96), bytes.items.len);
+    try std.testing.expectEqual(complete, try decodeFaceDefine(bytes.items));
+
+    std.mem.writeInt(u32, bytes.items[50..54], 0, .little);
+    std.mem.writeInt(u32, bytes.items[54..58], 0, .little);
+    bytes.items[8] &= ~@as(u8, 1);
+    bytes.items[8] |= 1; // font is explicitly present with a zero reference
+    try std.testing.expectError(Error.InvalidResource, decodeFaceDefine(bytes.items));
+    bytes.items[8] &= ~@as(u8, 1);
+    bytes.items[8] &= ~@as(u8, 1 << 4);
+
+    bytes.items[36] = 3; // color underline without an underline-color bit
+    try std.testing.expectError(Error.InvalidStyle, decodeFaceDefine(bytes.items));
+    bytes.items[36] = 2;
+
+    bytes.items[39] = 4;
+    try std.testing.expectError(Error.InvalidStyle, decodeFaceDefine(bytes.items));
+    bytes.items[39] = 0;
+
+    bytes.items[44] = 2;
+    try std.testing.expectError(Error.InvalidBoolean, decodeFaceDefine(bytes.items));
+    bytes.items[44] = 1;
+    bytes.items[45] = 2;
+    try std.testing.expectError(Error.InvalidBoolean, decodeFaceDefine(bytes.items));
+    bytes.items[45] = 1;
+
+    bytes.items[70] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeFaceDefine(bytes.items));
+    bytes.items[70] = 0;
+    bytes.items[10] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeFaceDefine(bytes.items));
+    bytes.items[10] = 0;
+
+    try std.testing.expectError(Error.InvalidTable, decodeFaceDefine(bytes.items[0..95]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFaceDefine(bytes.items));
+
+    var invalid = minimal;
+    invalid.presence.foreground = true;
+    invalid.foreground = .{ 0, 0, 0, 0 };
+    try std.testing.expectError(Error.InvalidMessage, encodeFaceDefine(a, invalid, &bytes));
+    invalid.presence.foreground = false;
+    invalid.presence.font = true;
+    try std.testing.expectError(Error.InvalidResource, encodeFaceDefine(a, invalid, &bytes));
+    invalid.presence.font = false;
+    invalid.presence.stipple = true;
+    try std.testing.expectError(Error.InvalidResource, encodeFaceDefine(a, invalid, &bytes));
+    invalid.presence.stipple = false;
+    invalid.presence.underline_color = true;
+    invalid.underline = .single;
+    try std.testing.expectError(Error.InvalidStyle, encodeFaceDefine(a, invalid, &bytes));
+    invalid.presence.underline_color = false;
+    invalid.underline = .color;
+    try std.testing.expectError(Error.InvalidStyle, encodeFaceDefine(a, invalid, &bytes));
+    invalid.underline = .off;
+    invalid.presence.box_color = true;
+    invalid.box_color = .{ 0, 0, 0, 1 };
+    try std.testing.expectError(Error.InvalidStyle, encodeFaceDefine(a, invalid, &bytes));
+    invalid.presence.box_color = false;
+    invalid.box = .simple;
+    try std.testing.expectError(Error.InvalidStyle, encodeFaceDefine(a, invalid, &bytes));
+    invalid.box = .none;
+    invalid.box_line_width = 1;
+    try std.testing.expectError(Error.InvalidStyle, encodeFaceDefine(a, invalid, &bytes));
+    invalid.box_line_width = 0;
+    invalid.overline = .color;
+    try std.testing.expectError(Error.InvalidStyle, encodeFaceDefine(a, invalid, &bytes));
+    invalid.overline = .off;
+    invalid.strike_through = .color;
+    try std.testing.expectError(Error.InvalidStyle, encodeFaceDefine(a, invalid, &bytes));
+
+    bytes.clearRetainingCapacity();
+    try encodeFaceDelete(a, .{ .face_id = 31, .generation = 8 }, &bytes);
+    try std.testing.expectEqualSlices(u8, &(try encodeFaceDeleteBytes(.{ .face_id = 31, .generation = 8 })), bytes.items);
+    try std.testing.expectEqual(@as(usize, 8), bytes.items.len);
+    try std.testing.expectEqual(FaceDelete{ .face_id = 31, .generation = 8 }, try decodeFaceDelete(bytes.items));
+    bytes.items[0] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeFaceDelete(bytes.items));
+    bytes.items[0] = 31;
+    bytes.items[4] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeFaceDelete(bytes.items));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFaceDelete(bytes.items));
 }

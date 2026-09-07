@@ -466,7 +466,7 @@ verified bounded subset and the parity gap that remains.
 2. **Redisplay-owned rendering.** EUP carries bounded facts rows, not authoritative glyph rows, runs, faces, fonts, or redisplay damage.
 3. **Frame lifecycle and focus.** W12c proves one bounded real-frame create/update/delete bridge and W12d defines strict visibility/focus scene state, but `output_proto` frame ownership and runtime focus/visibility round trips remain absent.
 4. **Capability coverage.** The bounded EPXL profile now negotiates, but resources, widgets, and the full EUP feature table are outside that set.
-5. **Resource model.** Generation declarations, a bounded payload cache/eviction policy, request/evict wire contracts, and bounded `STRING_DEFINE`/`STRING_DELETE` exist. Actual face/font/image payload definitions, snapshots, recovery, rendering, and full resource parity remain pending.
+5. **Resource model.** Generation declarations, a bounded payload cache/eviction policy, request/evict wire contracts, bounded `STRING_DEFINE`/`STRING_DELETE`, and bounded fixed-layout `FACE_DEFINE`/`FACE_DELETE` v1 exist. Actual font/image payload definitions, snapshots, recovery, rendering, redisplay face capture, and full resource parity remain pending.
 
 ### 12.3 Minimum next milestone
 
