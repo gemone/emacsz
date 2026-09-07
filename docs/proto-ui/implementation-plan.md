@@ -105,6 +105,8 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W12d frame visibility/focus state contract | Approved |
 | W12e resource payload/eviction contract | Approved |
 | W12f optional host frame-state ABI seam | Approved |
+| W12g output-proto runtime design and R1 terminal lifecycle | Approved |
+| W12h fail-closed runtime manifest/gate | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
@@ -2284,9 +2286,20 @@ Acceptance:
 zig build -Dproto-ui=true proto-ui-boundary --summary all
 ```
 
-Status: normative design.  Runtime task R1 is implemented as the adapter-owned
-`TerminalRegistry`; R2-R9 remain unimplemented.  The boundary gate and
-documentation links remain green.
+Status: normative design.  Runtime tasks R1 and R2 are implemented as the
+adapter-owned `TerminalRegistry` and fail-closed runtime manifest/gate;
+R3-R9 remain unimplemented.  The boundary gate and documentation links remain
+green.
+
+##### R2 evidence
+
+R2 adds `src/proto-ui/runtime.zig` as the source-authoritative state,
+`proto-ui-runtime-manifest` as the deterministic manifest step, and a required
+nonzero boundary gate with reason
+`host_registration_contract_missing`.  The generated manifest records all five
+required callback groups, R1 groundwork, ownership boundaries, and the exact
+failure command.  It never enables terminal registration or falls back to
+PGTK/TTY.
 
 Tasks:
 

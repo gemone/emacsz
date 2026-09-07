@@ -1,6 +1,6 @@
 # `output_proto` Runtime Bridge Design
 
-Status: normative design; R1 terminal lifecycle core implemented, runtime not implemented
+Status: normative design; R1 terminal lifecycle core and R2 fail-closed runtime manifest implemented, runtime not implemented
 Protocol: EUP v1
 Boundary rule: no intrusive edits to inherited GNU Emacs C files
 
@@ -182,7 +182,7 @@ Current and target options:
 |---|---|---|
 | `-Dproto-ui=true` | Adapter protocol/ABI, conformance, replay, and optional frontend smokes | Implemented in bounded slices |
 | `-Dmodules=true` | Public dynamic-module observation bridge | Implemented in bounded slices |
-| `-Dproto-ui-runtime=true` | Build the future host adapter and require a valid runtime extension contract | Design only; fail closed today |
+| `-Dproto-ui-runtime=true` | Require the future host extension contract; without it the boundary fails with `host_registration_contract_missing` | Fail-closed audit/gate implemented; runtime absent |
 | `-Dproto-ui-frontend=true` | Install and smoke the independent SDL3 frontend | Design for final name; current SDL option remains opt-in |
 
 Build artifacts must live in `zig-out` or cache output.  Generated adapters and
@@ -214,11 +214,13 @@ R7 is the policy gate.  It must not be bypassed by hidden binary patching,
 symbol interposition, generated replacement of tracked C files, or runtime
 mutation of Emacs data structures.
 
-Implemented progress: **R1 is implemented** in
-`src/proto-ui/terminal.zig` and covered by the adapter unit suite.  R2-R9
-remain designed but not implemented; in particular, no runtime manifest, host
-adapter library, real host registration contract, or real `output_proto` frame
-exists.
+Implemented progress: **R1 and R2 are implemented**.  R1 is the adapter-owned
+terminal lifecycle in `src/proto-ui/terminal.zig`; R2 is
+`src/proto-ui/runtime.zig`, the generated
+`zig-out/proto-ui/runtime_manifest.json`, and the nonzero
+`-Dproto-ui-runtime=true` boundary gate.  R3-R9 remain designed but not
+implemented; in particular, no host adapter library, real host registration
+contract, or real `output_proto` frame exists.
 
 ## 11. Acceptance for the first real SDL3 frame
 

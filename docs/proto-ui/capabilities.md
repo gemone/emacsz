@@ -145,8 +145,8 @@ The base snapshot below records `23da8d92855`; the current revision adds W12a
 bounded capability/status negotiation, W12b bounded frame/resource generation
 contracts, W12c real-frame lifecycle bridge smoke, W12d frame
 visibility/focus state contracts, W12e bounded resource payload/eviction
-policy, W12f optional host frame-state ABI seam, and W12g terminal-lifecycle
-core. 118 PGTK rows are audited: 21 Degraded,
+policy, W12f optional host frame-state ABI seam, W12g terminal-lifecycle core,
+and W12h fail-closed runtime manifest/gate. 118 PGTK rows are audited: 21 Degraded,
 97 Pending, 0 Blocked, and 0 fully Implemented. Pending rows are not failures
 of the protocol design; they are requirements still separating the bounded
 facts bridge from W12 PGTK parity and the W16 real-frame acceptance test.

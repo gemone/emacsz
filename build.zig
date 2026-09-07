@@ -394,6 +394,12 @@ pub fn build(b: *std.Build) void {
     // integration.
     const enable_proto_ui = b.option(bool, "proto-ui", "Build adapter-only EUP codec/ABI and run conformance plus boundary tests") orelse false;
     const enable_sdl3_frontend = b.option(bool, "sdl3-frontend", "Build independent SDL3 EUP replay/local-live renderer and smoke it") orelse false;
+    // R2 is deliberately fail-closed: this option audits the runtime contract;
+    // it never enables terminal registration or output_proto.
+    const enable_proto_ui_runtime = b.option(bool, "proto-ui-runtime", "Audit the host registration runtime contract; fails closed without -Dproto-ui") orelse false;
+    if (enable_proto_ui_runtime and !enable_proto_ui) {
+        @panic("host_registration_contract_missing: -Dproto-ui-runtime=true requires -Dproto-ui=true; runtime remains unavailable");
+    }
 
     // Target-derived flags.  `target` is resolved at line 64, so target.result
     // is in scope here; computing these early lets the make-docfile / doc-scan
@@ -529,6 +535,59 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&install_status_manifest.step);
         boundary_step.dependOn(&run_conformance.step);
         boundary_step.dependOn(&run_boundary_audit.step);
+
+        // R2: source-authoritative runtime manifest plus an independent
+        // machine-readable gate.  Audit mode succeeds only by reporting
+        // unavailability; require mode is deliberately nonzero.
+        const runtime_gen_tool = b.addExecutable(.{
+            .name = "proto-ui-runtime-gen",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/runtime_gen.zig"),
+            }),
+        });
+        runtime_gen_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_runtime_gen = b.addRunArtifact(runtime_gen_tool);
+        const runtime_manifest = run_runtime_gen.addOutputFileArg("runtime_manifest.json");
+        const install_runtime_manifest = b.addInstallFile(
+            runtime_manifest,
+            "proto-ui/runtime_manifest.json",
+        );
+
+        const runtime_gate_tool = b.addExecutable(.{
+            .name = "proto-ui-runtime-gate",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/runtime_gate.zig"),
+            }),
+        });
+        runtime_gate_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_runtime_gate_audit = b.addRunArtifact(runtime_gate_tool);
+        run_runtime_gate_audit.addFileArg(runtime_manifest);
+        run_runtime_gate_audit.addArg("audit");
+
+        const runtime_manifest_step = b.step(
+            "proto-ui-runtime-manifest",
+            "Generate and audit the fail-closed Proto-UI runtime manifest",
+        );
+        runtime_manifest_step.dependOn(&run_runtime_gen.step);
+        runtime_manifest_step.dependOn(&install_runtime_manifest.step);
+        runtime_manifest_step.dependOn(&run_runtime_gate_audit.step);
+
+        boundary_step.dependOn(&run_runtime_gen.step);
+        boundary_step.dependOn(&install_runtime_manifest.step);
+        boundary_step.dependOn(&run_runtime_gate_audit.step);
+
+        if (enable_proto_ui_runtime) {
+            const run_runtime_gate_require = b.addRunArtifact(runtime_gate_tool);
+            run_runtime_gate_require.addFileArg(runtime_manifest);
+            run_runtime_gate_require.addArg("require");
+            // Force the fail-closed contract onto the adapter boundary.  This
+            // nonzero dependency is the R2 contract; it never adds a runtime.
+            boundary_step.dependOn(&run_runtime_gate_require.step);
+        }
     }
     var proto_frame_smoke_dep: ?*std.Build.Step = null;
     var proto_sdl_fixture_dep: ?*std.Build.Step = null;
@@ -5447,6 +5506,7 @@ pub fn build(b: *std.Build) void {
         \\Proto-UI path (opt-in: -Dproto-ui=true):
         \\  zig build -Dproto-ui=true proto-ui-unit - adapter, EUP protocol, and transport tests
         \\
+        \\  zig build -Dproto-ui=true proto-ui-runtime-manifest - fail-closed runtime manifest audit
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module - Emacs dynamic-module seam
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke - verify module seam in batch Emacs
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-frame-fact-smoke - public frame facts on a display

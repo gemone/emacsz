@@ -56,6 +56,8 @@ pub const Feature = enum {
     host_frame_state_seam,
     redisplay_glyph_rows,
     resource_v1,
+    runtime_host_registration_contract,
+    runtime_fail_closed_manifest,
 
     pub fn name(self: Feature) []const u8 {
         return switch (self) {
@@ -80,6 +82,8 @@ pub const Feature = enum {
             .host_frame_state_seam => "adapter.host_frame_state_seam",
             .redisplay_glyph_rows => "redisplay.glyph_rows",
             .resource_v1 => "resource.v1",
+            .runtime_host_registration_contract => "runtime.host_registration_contract",
+            .runtime_fail_closed_manifest => "runtime.fail_closed_manifest",
         };
     }
 
@@ -93,6 +97,7 @@ pub const Feature = enum {
     pub fn negotiable(self: Feature) bool {
         return switch (self) {
             .frame_output_proto, .frame_lifecycle, .frame_visibility_focus_contract, .resource_generation_contract, .resource_payload_eviction_contract, .redisplay_glyph_rows, .resource_v1 => false,
+            .runtime_host_registration_contract, .runtime_fail_closed_manifest => false,
             .host_frame_state_seam => false,
             else => true,
         };
@@ -127,6 +132,8 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .host_frame_state_seam, .status = .degraded, .evidence = "proto-ui-unit" },
     .{ .feature = .redisplay_glyph_rows, .status = .pending, .evidence = "W12 redisplay capture pending" },
     .{ .feature = .resource_v1, .status = .pending, .evidence = "W12 resource model pending" },
+    .{ .feature = .runtime_host_registration_contract, .status = .pending, .evidence = "runtime manifest reports host_registration_contract_missing" },
+    .{ .feature = .runtime_fail_closed_manifest, .status = .degraded, .evidence = "proto-ui-runtime-manifest" },
 };
 
 pub const feature_count = @typeInfo(Feature).@"enum".fields.len;

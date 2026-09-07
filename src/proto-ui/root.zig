@@ -9,6 +9,7 @@ pub const adapter = @import("adapter.zig");
 pub const transport = @import("transport.zig");
 pub const live = @import("live.zig");
 pub const terminal = @import("terminal.zig");
+pub const runtime = @import("runtime.zig");
 
 test {
     _ = protocol;
@@ -22,4 +23,5 @@ test {
     _ = transport;
     _ = live;
     _ = terminal;
+    _ = runtime;
 }
