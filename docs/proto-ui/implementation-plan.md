@@ -2260,6 +2260,34 @@ included explicit host-size gating, reserved-byte validation, and rejection of
 focused hidden/iconified host state. Local validation passed 100/100 adapter
 unit tests, the boundary audit, and the W12c frame smoke.
 
+#### W12g — Output-proto runtime bridge design (normative)
+
+Goal: split the remaining path to a real `output_proto` terminal into safe,
+testable work while keeping runtime registration fail closed.
+
+1. Publish the authoritative host-adapter bridge design in
+   [`output-proto-runtime.md`](output-proto-runtime.md).
+2. Define terminal lifecycle states, generation rules, cleanup, and failure
+   containment.
+3. Define the host extension-callback groups required for terminal, frame,
+   redisplay, input, and lifecycle operation.
+4. State explicitly that no public Emacs dynamic-module API can register
+   `output_proto`; runtime must remain unavailable without that contract.
+5. Split implementation into R1-R9 tasks, from terminal lifecycle core through
+   the first real SDL3 frame and PGTK differential compatibility.
+6. Prohibit binary patching, symbol interposition, and generated replacement of
+   tracked inherited C files as substitutes for an approved extension point.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-boundary --summary all
+```
+
+Status: normative design.  Runtime task R1 is implemented as the adapter-owned
+`TerminalRegistry`; R2-R9 remain unimplemented.  The boundary gate and
+documentation links remain green.
+
 Tasks:
 
 1. Implement child and tooltip frame protocol.
@@ -2481,6 +2509,7 @@ Step names may be adjusted during W1/W2, but each listed verification must have 
 | Workstream plan | Done |
 | Protocol schema examples | Done (adapter-only) |
 | User runbook | Done for current bounded smoke scope; update with each runtime milestone |
+| Output-proto runtime bridge and first-frame task split | Done as normative design; implementation gated by the host extension contract |
 | Troubleshooting guide | Pending W13 |
 | Final capability status report | Pending W12/W16 |
 

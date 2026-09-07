@@ -8,6 +8,7 @@ pub const input = @import("input.zig");
 pub const adapter = @import("adapter.zig");
 pub const transport = @import("transport.zig");
 pub const live = @import("live.zig");
+pub const terminal = @import("terminal.zig");
 
 test {
     _ = protocol;
@@ -20,4 +21,5 @@ test {
     _ = adapter;
     _ = transport;
     _ = live;
+    _ = terminal;
 }

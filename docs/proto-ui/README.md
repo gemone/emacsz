@@ -51,6 +51,10 @@ frame's generation, visibility, and focus.  A future `output_proto` host seam
 can implement this callback without changing frontend scene semantics.  This
 is fail-closed ABI groundwork, not Emacs runtime integration.
 
+W12g publishes the final `output_proto` runtime bridge design and implements
+its R1 terminal-lifecycle core.  Runtime registration, the real host adapter
+library, and a real `output_proto` frame remain explicitly unavailable.
+
 W4c-b1-p0 adds the executable EUP v1 codec, including envelope, capability, message-ID, and FRAME_UPDATE section conformance.  W4c-b1-t0 adds bounded memory-sink sequencing and ERP1 replay-file conformance.  W4c-b1-b0 adds the versioned adapter ABI, a fake-host conformance harness, and generated ABI artifacts under `zig-out/include/proto-ui`; none introduces runtime integration.  Inherited C/Lisp changes in the rollback patch are restoration-only and return Proto-UI runtime files to their pre-Proto-UI state.  The adapter source is the authoritative ownership manifest; generated JSON is only a non-normative ABI summary.
 
 The documentation in this directory is the source of truth for the implementation workstreams.
@@ -64,6 +68,7 @@ Available:
 | [`architecture.md`](architecture.md) | System components, ownership model, backend integration, state model, failure rules, and compatibility contract |
 | [`adapter-boundary.md`](adapter-boundary.md) | Normative adapter-first boundary, C-file restrictions, review gates, and rollback requirements |
 | [`zig-build-adapter.md`](zig-build-adapter.md) | Normative Zig-build adapter runtime, versioned ABI, generated shim rules, and streaming redesign |
+| [`output-proto-runtime.md`](output-proto-runtime.md) | Final `output_proto` host-adapter bridge, terminal lifecycle, recovery, build model, and first-frame task split |
 | [`protocol.md`](protocol.md) | Complete EUP v1 wire protocol, envelope, message IDs, payload semantics, and state machines |
 | [`capabilities.md`](capabilities.md) | Backend, frontend, renderer, widget, and PGTK parity capability matrices |
 | [`frame-lifecycle-smoke.md`](frame-lifecycle-smoke.md) | Current real-frame lifecycle bridge smoke, scope, environment, and acceptance |

@@ -23,6 +23,11 @@ glue—not in inherited Emacs C source.  See
 [`adapter-boundary.md`](adapter-boundary.md) and
 [`zig-build-adapter.md`](zig-build-adapter.md).
 
+The final terminal bridge is specified in
+[`output-proto-runtime.md`](output-proto-runtime.md).  It keeps runtime
+registration fail closed until a versioned host extension contract can supply
+the required callbacks without scattered inherited-core changes.
+
 ## 2. Component map
 
 ```text

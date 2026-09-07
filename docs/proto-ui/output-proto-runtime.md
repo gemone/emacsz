@@ -1,0 +1,255 @@
+# `output_proto` Runtime Bridge Design
+
+Status: normative design; R1 terminal lifecycle core implemented, runtime not implemented
+Protocol: EUP v1
+Boundary rule: no intrusive edits to inherited GNU Emacs C files
+
+## 1. Purpose
+
+This document defines how Proto-UI reaches the final runtime shape:
+
+```text
+GNU Emacs terminal/frame/redisplay truth
+  -> Proto-UI-owned output_proto host adapter
+  -> versioned host/adapter seam
+  -> EUP transport
+  -> SDL3 frontend
+```
+
+It separates the work that can proceed today in Proto-UI-owned code from the
+integration points that require an explicit host extension decision.  It does
+not declare `output_proto` implemented and does not treat the existing PGTK
+frame smoke as production frame ownership.
+
+## 2. Feasibility decision
+
+GNU Emacs has no public dynamic-module API to register a new terminal type,
+install a graphic terminal, or replace a terminal's redisplay interface.  A
+real `output_proto` terminal therefore cannot be created by protocol code
+alone.
+
+The project consequently uses a three-part rule:
+
+1. **Build the adapter without inheriting core policy.**  Terminal lifecycle,
+   frame mapping, capture translation, damage policy, protocol encoding,
+   recovery, transport, and diagnostics live in Proto-UI-owned Zig or generated
+   adapter artifacts.
+2. **Keep the runtime option fail closed.**  Until a versioned host extension
+   contract supplies the required callbacks, `-Dproto-ui-runtime=true` builds
+   only the adapter and explicitly reports that runtime registration is
+   unavailable.  It must not silently fall back to PGTK or TTY frames.
+3. **Do not scatter edits through inherited core files.**  If upstream-style
+   registration is later approved, it must be represented by a reviewed
+   integration manifest, a separate Proto-UI-owned C adapter, generated thin
+   glue, and a compatibility gate.  Logic must remain outside inherited Emacs
+   C files.
+
+The existing dynamic-module bridge and PGTK frame smoke are compatibility
+evidence and diagnostic fixtures.  They are not `output_proto`.
+
+## 3. Runtime components
+
+| Component | Owner | Responsibility | Explicitly excluded |
+|---|---|---|---|
+| Host extension adapter | Proto-UI-owned C/ABI adapter | Convert opaque host objects and events to adapter records; enforce ABI size/version | Redisplay policy, buffer mutation, protocol encoding |
+| Terminal lifecycle | Zig adapter | Terminal create/activate/destroy generations and failure cleanup | Buffer, window, or frame semantics |
+| Frame manager | Zig adapter | Stable frame IDs, generations, visibility/focus, geometry facts | Window-tree layout |
+| Window/row capture | Zig adapter | Translate authoritative host observations into atomic EUP updates | Reflow, glyph shaping, face merging |
+| Resource manager | Zig adapter | Face/font/image/string identity, payload versions, eviction, requests | Font fallback policy or image decoding policy |
+| Damage/pacing | Zig adapter | Conservative and exact damage, coalescing, update cause, backpressure | Presentation scheduling |
+| EUP codec/session | Zig protocol | Canonical envelope, payload tables, sequencing, resync | Frontend scene policy |
+| Transport | Adapter/frontend endpoints | Local authenticated framing, ACK, recovery | Untrusted remote transport in v1 |
+| SDL3 frontend | Separate process | Window, input, GPU/software render, IME/desktop integration | Emacs state authority |
+
+## 4. Host extension contract
+
+The host adapter must be registered through one versioned table, not global
+scattered symbols.  The current `HostV1` observation seam is retained.  The
+runtime contract adds these callback groups:
+
+| Group | Required operations | Ownership rule |
+|---|---|---|
+| Terminal | create terminal, activate terminal, delete terminal | Emacs owns terminal truth; adapter owns protocol identity |
+| Frame | register frame, unregister frame, read frame state, read geometry | Emacs owns frame truth; adapter maps identity/generation |
+| Window/redisplay | begin capture, observe window/row/run/cursor/damage, commit/cancel | Emacs owns display truth; adapter owns EUP translation |
+| Input | deliver decoded event/result and completion status | Emacs owns command interpretation |
+| Lifecycle | heartbeat, flush, diagnostic, cancel all pending work | Adapter owns protocol/session state |
+
+Every callback contract has:
+
+1. A stable ABI major version and table size.
+2. Generation-qualified opaque IDs; raw internal pointers never cross the seam.
+3. A bounded result/status code.
+4. Explicit allocation and borrow lifetimes.
+5. A documented nonblocking guarantee.
+6. A fake-host conformance test and a negative malformed-table test.
+
+Missing optional callbacks degrade only capabilities that can be represented
+correctly without them.  Missing required callbacks disable Proto-UI runtime.
+
+## 5. Terminal lifecycle
+
+### States
+
+```text
+registering
+  -> active
+  -> draining
+  -> deleted
+
+registering | active | draining
+  -> failed
+  -> deleted
+```
+
+### Transition rules
+
+| Transition | Requirement | Failure behavior |
+|---|---|---|
+| `detached -> registering` | Host accepts terminal registration and supplies terminal generation | Remain detached |
+| `registering -> active` | Required callbacks validated; frontend session authenticated and ready | Cancel frontend and destroy partial terminal |
+| `active -> draining` | Last EUP sequence and resource state committed; no partial frame in flight | Continue draining, then report cleanup result |
+| `draining -> deleted` | Terminal deleted, adapter session closed, frontend socket drained | Kill frontend endpoint without killing Emacs |
+| any `-> failed` | ABI mismatch, callback failure, protocol resource exhaustion, or internal adapter error | Quarantine terminal, preserve Emacs process, emit diagnostics |
+
+`deleted` is the retained record that represents the externally detached
+terminal.  The registry retains deleted and failed records so their IDs and
+latest generations can never be reused.
+
+Terminal and frame IDs are never reused.  Terminal deletion invalidates all
+frame mappings and wakes or closes every owned transport endpoint.
+
+## 6. Frame and redisplay path
+
+### Frame creation
+
+1. Host asks for a `proto` graphic frame.
+2. Host adapter registers a nonzero frame ID and first generation.
+3. Adapter emits `FRAME_CREATE`.
+4. Host reports geometry and visibility.
+5. Adapter emits a coherent initial `FRAME_UPDATE`.
+6. SDL3 acknowledges presentation and platform state.
+7. Only a fully initialized frame enters the active map.
+
+### Redisplay update
+
+1. Host begins an atomic capture generation.
+2. Adapter records window, row, run, cursor, damage, and flush observations.
+3. Host commits only when its display state is coherent.
+4. Adapter resolves resources and validates every reference before encoding.
+5. Adapter emits one composite `FRAME_UPDATE`.
+6. A failure after encoding cancels the update and never publishes partial
+   scene state.
+
+### Frame state changes
+
+Visibility, focus, geometry, title, icon, monitor, scale, and z-order are host
+observations or frontend requests translated by the adapter.  The frontend
+never changes Emacs state directly.
+
+## 7. Input path
+
+1. SDL translates a platform event into a bounded EUP intent.
+2. The adapter validates class, frame/window identity, modifiers, text, and
+   sequence.
+3. The host adapter converts the intent into host input primitives.
+4. Emacs performs all command, keymap, selection, scrolling, and focus
+   decisions.
+5. The next redisplay observation becomes authoritative feedback.
+
+The frontend may cache key names and device IDs, but it never invents commands,
+mutates buffers, selects frames, or assumes command results.
+
+## 8. Session, recovery, and failure containment
+
+* Frontend disconnect marks the session disconnected but must not terminate
+  Emacs.
+* Adapter failure disables the terminal and cleans up through host callbacks.
+* Protocol sequence loss triggers `RESYNC_REQUEST` and a coherent snapshot.
+* Missing resources are requested by identity/generation; rendering waits or
+  falls back according to negotiated policy.
+* Transport pressure may coalesce frame updates but never control, input, or
+  required resource messages.
+* All owned endpoints and temporaries have bounded cleanup deadlines.
+* A crash of SDL, the transport thread, or a frontend renderer cannot corrupt
+  Emacs Lisp objects.
+
+## 9. Build model
+
+Current and target options:
+
+| Option | Meaning | Status |
+|---|---|---|
+| `-Dproto-ui=true` | Adapter protocol/ABI, conformance, replay, and optional frontend smokes | Implemented in bounded slices |
+| `-Dmodules=true` | Public dynamic-module observation bridge | Implemented in bounded slices |
+| `-Dproto-ui-runtime=true` | Build the future host adapter and require a valid runtime extension contract | Design only; fail closed today |
+| `-Dproto-ui-frontend=true` | Install and smoke the independent SDL3 frontend | Design for final name; current SDL option remains opt-in |
+
+Build artifacts must live in `zig-out` or cache output.  Generated adapters and
+shims are never written into tracked inherited source paths.  A runtime build
+manifest must record:
+
+1. ABI version and table sizes.
+2. Required versus optional callbacks.
+3. Adapter source and generated artifacts.
+4. Terminal registration contract and its owner.
+5. Feature status and evidence gates.
+6. A machine-readable reason when runtime registration is unavailable.
+
+## 10. Work split to the first real frame
+
+| Task | Output | Complete when |
+|---|---|---|
+| R1. Terminal lifecycle core | Zig terminal state machine, IDs, generations, failure cleanup | Fake-host tests cover every transition and cleanup path |
+| R2. Runtime manifest | Machine-readable runtime contract and unavailable reason | Build fails closed with an explicit diagnostic without host callbacks |
+| R3. Generated thin C adapter | Minimal conversion shim, no policy | ABI/layout tests and negative malformed-table tests pass |
+| R4. Host adapter library | Linkable Proto-UI-owned adapter artifact | Exported ABI conformance and symbol isolation pass |
+| R5. Frame service | Frame create/state/delete mapping | Fake host validates generation, visibility, focus, and teardown |
+| R6. Capture service | Window/row/cursor/damage atomic batches | Fake and replay differential tests produce byte-stable EUP |
+| R7. Host registration contract | Explicit reviewed extension decision | Required callbacks can be supplied without inherited-core policy changes |
+| R8. First terminal smoke | Real `window-system . proto` frame | Emacs creates, displays, operates, and deletes one SDL3 frame |
+| R9. Differential compatibility | PGTK vs Proto-UI behavior suite | Frame, text, cursor, input, scroll, resize, and lifecycle baselines pass |
+
+R7 is the policy gate.  It must not be bypassed by hidden binary patching,
+symbol interposition, generated replacement of tracked C files, or runtime
+mutation of Emacs data structures.
+
+Implemented progress: **R1 is implemented** in
+`src/proto-ui/terminal.zig` and covered by the adapter unit suite.  R2-R9
+remain designed but not implemented; in particular, no runtime manifest, host
+adapter library, real host registration contract, or real `output_proto` frame
+exists.
+
+## 11. Acceptance for the first real SDL3 frame
+
+The milestone is complete only when all of the following are true from one
+local command sequence:
+
+1. Default builds without Proto-UI remain byte-for-byte behavior-compatible at
+   the user-visible level.
+2. `output_proto` appears as a real terminal type and creates a real Emacs
+   graphic frame.
+3. SDL3 opens the visible surface for that frame.
+4. Buffer text, point, cursor, resize, visibility, focus, keyboard, mouse,
+   wheel, clipboard, and frame deletion work through the documented protocol.
+5. No command path lets the frontend evaluate Elisp or own layout.
+6. Session replay, malformed protocol input, frontend disconnect, GPU loss, and
+   adapter restart tests pass without crashing Emacs.
+7. Capability status, protocol table, ABI manifest, and implementation evidence
+   agree.
+8. Frame creation, typing, scrolling, and resize meet the performance baselines
+   in [`performance.md`](performance.md).
+
+Until R8, all status documents must continue to describe this work as adapter
+groundwork rather than a real `output_proto` runtime.
+
+## 12. Non-goals
+
+This design does not:
+
+* make SDL3 a core Emacs dependency;
+* move buffers, windows, faces, fonts, redisplay, or commands to the frontend;
+* replace PGTK or TTY;
+* expose raw GPU command buffers or untrusted remote transport in v1;
+* use the PGTK bridge as fake evidence of `output_proto` ownership;
+* permit scattered or hidden modifications to inherited Emacs source.
