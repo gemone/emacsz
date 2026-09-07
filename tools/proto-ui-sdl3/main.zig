@@ -15,6 +15,8 @@ const protocol = proto_ui.protocol;
 const capability = proto_ui.capability;
 const transport = proto_ui.transport;
 const live = proto_ui.live;
+const runtime_bridge = proto_ui.runtime_bridge;
+const runtime_host = proto_ui.runtime_host;
 
 const SDL_INIT_VIDEO: c_uint = 0x0000_0020;
 const SDL_WINDOW_RESIZABLE: c_ulonglong = 0x0000_0020;
@@ -333,7 +335,7 @@ const SDL_FRect = extern struct {
     h: f32,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, emacs_clipboard_unicode, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, emacs_clipboard_unicode, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -1793,6 +1795,128 @@ fn runGlyphRunSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (frame_counters.text_commands_total == 0) return error.GlyphRunNotRendered;
     std.debug.print(
         "sdl3-glyph-run-smoke: {{\"kind\":\"sdl3-glyph-run-smoke\",\"active_runs\":0,\"text\":\"Emacs\",\"delete\":\"exact\",\"facts_fallback\":true,\"rendered\":true,\"auto_closed\":true,\"result\":\"pass\"}}\n",
+        .{},
+    );
+}
+
+fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
+    var host: runtime_host.FakeHost = undefined;
+    const table = runtime_host.fakeTable(&host);
+    var bridge = try runtime_bridge.Bridge.init(table);
+
+    try bridge.createTerminal(.{ .requested_generation = 1 });
+    try bridge.activateTerminal();
+    try bridge.registerFrame(.{ .id = 22, .generation = 1 });
+    try bridge.beginCapture(1);
+
+    try bridge.observeWindow(.{
+        .id = 10,
+        .generation = 1,
+        .x = 8,
+        .y = 8,
+        .width = 200,
+        .height = 40,
+    });
+    try bridge.observeRow(.{
+        .window_id = 10,
+        .row_index = 0,
+        .x = 4,
+        .y = 4,
+        .width = 192,
+        .height = 24,
+        .ascent = 8,
+        .descent = 2,
+        .baseline = 8,
+        .visible_height = 24,
+    });
+    var run_text = [_]u8{0} ** 120;
+    @memcpy(run_text[0..5], "Emacs");
+    try bridge.observeRun(.{
+        .run_id = 1,
+        .window_id = 10,
+        .row_index = 0,
+        .x = 12,
+        .y = 8,
+        .width = 40,
+        .height = 8,
+        .text_length = 5,
+        .text = run_text,
+    });
+    try bridge.observeCursor(.{
+        .window_id = 10,
+        .row_index = 0,
+        .x = 12,
+        .y = 8,
+        .width = 2,
+        .height = 8,
+        .visible = true,
+        .active = true,
+    });
+    try bridge.observeDamage(.{ .width = 208, .height = 48 });
+    try bridge.commitCapture();
+
+    var scene = frontend.Scene.init(gpa);
+    defer scene.deinit();
+    var create: std.ArrayList(u8) = .empty;
+    defer create.deinit(gpa);
+    try bridge.encodeFrameCreate(gpa, 1, capability.session_id, 1, &create);
+    try scene.apply(create.items);
+
+    var update: std.ArrayList(u8) = .empty;
+    defer update.deinit(gpa);
+    try bridge.encodeFrameUpdate(gpa, 2, capability.session_id, 2, &update);
+    try scene.apply(update.items);
+
+    var run: std.ArrayList(u8) = .empty;
+    defer run.deinit(gpa);
+    try bridge.encodeRun(gpa, 0, 3, capability.session_id, 3, &run);
+    try scene.apply(run.items);
+
+    if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
+        scene.glyph_runs.items.len != 1 or scene.cursor == null)
+        return error.RuntimeBridgeSceneInvalid;
+    if (!std.mem.eql(u8, scene.glyph_runs.items[0].text, "Emacs"))
+        return error.RuntimeBridgeRunInvalid;
+
+    if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
+    defer SDL_Quit();
+    const window = SDL_CreateWindow("Emacs Proto-UI Runtime Bridge", 240, 96, 0) orelse
+        return sdlFail("SDL_CreateWindow");
+    defer SDL_DestroyWindow(window);
+    const selected_renderer = try createRenderer(gpa, window, config.renderer_request, config.present_mode);
+    defer destroyRenderer(selected_renderer);
+
+    var draw_list: renderer_policy.DrawList = .{ .allocator = gpa };
+    defer draw_list.deinit();
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    var run_rendered = false;
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .text => |text| {
+                if (text.x == 20 and text.y == 16 and std.mem.eql(u8, text.bytes, "Emacs"))
+                    run_rendered = true;
+            },
+            else => {},
+        }
+    }
+    if (!run_rendered) return error.RuntimeBridgeNotRendered;
+
+    var frame_gate: renderer_policy.FrameGate = .{};
+    var frame_counters: renderer_policy.FrameCounters = .{};
+    try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+    var quit = false;
+    const started = SDL_GetTicks();
+    while (!quit and SDL_GetTicks() - started < config.auto_quit_ms) {
+        var event: SDL_Event = undefined;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_QUIT) quit = true;
+        }
+        try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+        SDL_Delay(10);
+    }
+    if (frame_counters.text_commands_total == 0) return error.RuntimeBridgeNotRendered;
+    std.debug.print(
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{},
     );
 }
@@ -3536,6 +3660,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         } else if (std.mem.eql(u8, arg, "--glyph-run-smoke")) {
             config.mode = .glyph_run_smoke;
             config.auto_quit_ms = 180;
+        } else if (std.mem.eql(u8, arg, "--runtime-bridge-smoke")) {
+            config.mode = .runtime_bridge_smoke;
+            config.auto_quit_ms = 180;
         } else if (std.mem.eql(u8, arg, "--focus-window-smoke")) {
             config.mode = .focus_window_translation;
         } else if (std.mem.eql(u8, arg, "--facts")) {
@@ -3568,6 +3695,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     }
     if (config.mode == .glyph_run_smoke) {
         try runGlyphRunSmoke(gpa, &config);
+        return;
+    }
+    if (config.mode == .runtime_bridge_smoke) {
+        try runRuntimeBridgeSmoke(gpa, &config);
         return;
     }
     if (config.mode == .focus_window_translation) {
@@ -3759,6 +3890,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             return;
         },
         .glyph_run_smoke => unreachable,
+        .runtime_bridge_smoke => unreachable,
         .facts_publisher => unreachable,
     };
     defer scene.deinit();

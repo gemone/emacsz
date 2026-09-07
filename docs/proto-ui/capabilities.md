@@ -494,7 +494,8 @@ Proto frame.  The target ownership model, PGTK responsibility matrix, protocol
 gaps, differential gates, and final acceptance rules are defined in
 [`sdl3-pgtk-parity.md`](sdl3-pgtk-parity.md).
 
-`runtime_bridge` can also project bounded host ASCII run payloads into existing
+`sdl3-runtime-bridge-smoke` presents that fake-host bridge scene through SDL3
+without Emacs registration.  `runtime_bridge` can also project bounded host ASCII run payloads into existing
 debug `GLYPH_RUN` messages; this remains fallback diagnostic rendering.
 `runtime_bridge` proves the same host ABI can produce deterministic EUP frame
 create/update/destroy messages with a fake host.  It is not runtime registration.

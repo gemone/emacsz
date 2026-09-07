@@ -222,6 +222,16 @@ pub const Bridge = struct {
     pub fn observeDamage(self: *Bridge, record: runtime_host.DamageRecord) Error!void {
         try self.requireState(.capturing);
         try runtime_host.validateDamageRecord(&record);
+        if (self.counts.windows == 0) return error.UnknownWindow;
+        var right: i64 = 0;
+        var bottom: i64 = 0;
+        for (self.windows[0..self.counts.windows]) |window| {
+            right = @max(right, @as(i64, window.x) + window.width);
+            bottom = @max(bottom, @as(i64, window.y) + window.height);
+        }
+        if (@as(i64, record.x) + record.width > right or
+            @as(i64, record.y) + record.height > bottom)
+            return error.InvalidState;
         if (self.counts.damage == max_damage) return error.TooManyDamage;
         const group = try self.redisplayGroup();
         const context = group.context orelse return error.InvalidRuntimeHost;
@@ -340,6 +350,16 @@ pub const Bridge = struct {
             }, &damage_bytes);
         }
 
+        var logical_width: i64 = 0;
+        var logical_height: i64 = 0;
+        for (self.windows[0..self.counts.windows]) |window| {
+            const right: i64 = @as(i64, window.x) + window.width;
+            const bottom: i64 = @as(i64, window.y) + window.height;
+            logical_width = @max(logical_width, right);
+            logical_height = @max(logical_height, bottom);
+        }
+        const header_width: i32 = @intCast(logical_width);
+        const header_height: i32 = @intCast(logical_height);
         const sections = [_]protocol.Section{
             .{ .kind = protocol.SectionKind.windows, .records = window_bytes.items },
             .{ .kind = protocol.SectionKind.rows, .records = row_bytes.items },
@@ -356,12 +376,12 @@ pub const Bridge = struct {
                 .redisplay_generation = self.redisplay_generation,
                 .logical_x = 0,
                 .logical_y = 0,
-                .logical_width = @intCast(self.windows[0].width),
-                .logical_height = @intCast(self.windows[0].height),
+                .logical_width = header_width,
+                .logical_height = header_height,
                 .physical_x = 0,
                 .physical_y = 0,
-                .physical_width = @intCast(self.windows[0].width),
-                .physical_height = @intCast(self.windows[0].height),
+                .physical_width = header_width,
+                .physical_height = header_height,
                 .scale = 1.0,
                 .dpi_x = 96.0,
                 .dpi_y = 96.0,

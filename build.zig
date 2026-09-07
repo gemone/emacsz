@@ -1152,6 +1152,16 @@ pub fn build(b: *std.Build) void {
         run_sdl3_software_renderer_smoke.addArg("--auto-quit-ms=100");
         sdl3_renderer_smoke_step.dependOn(&run_sdl3_software_renderer_smoke.step);
 
+        const run_sdl3_runtime_bridge_smoke = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_runtime_bridge_smoke.addArg("--runtime-bridge-smoke");
+        run_sdl3_runtime_bridge_smoke.addArg("--renderer=gpu");
+        run_sdl3_runtime_bridge_smoke.addArg("--present=off");
+        const sdl3_runtime_bridge_smoke_step = b.step(
+            "sdl3-runtime-bridge-smoke",
+            "Render a fake-host PureRuntimeBridge scene without Emacs registration",
+        );
+        sdl3_runtime_bridge_smoke_step.dependOn(&run_sdl3_runtime_bridge_smoke.step);
+
         const run_sdl3_input_translate_smoke = b.addRunArtifact(sdl3_frontend);
         run_sdl3_input_translate_smoke.addArg("--input-translate-smoke");
         const sdl3_input_translate_step = b.step(
