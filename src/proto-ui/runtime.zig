@@ -85,6 +85,13 @@ pub const implemented_groundwork = [_]Groundwork{
         .boundary = "identity/generation/cleanup state only; no Emacs terminal registration",
     },
     .{
+        .name = "terminal.runtime_service",
+        .status = "implemented",
+        .evidence = "proto-ui-unit PureRuntimeHostV1 fake-host create/activate/drain/delete service",
+        .owner = "proto-ui-adapter",
+        .boundary = "host-callback orchestration and rollback state only; no R7 approval, Emacs terminal registration, or runtime enablement",
+    },
+    .{
         .name = "frame.service_mapping",
         .status = "implemented",
         .evidence = "proto-ui-unit frame service mapping tests",
@@ -143,6 +150,7 @@ pub fn validateState() ?[]const u8 {
     }
     const expected_groundwork = [_][]const u8{
         "terminal.lifecycle_state_machine",
+        "terminal.runtime_service",
         "frame.service_mapping",
         "capture.atomic_batches",
     };

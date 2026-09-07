@@ -86,6 +86,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P12-prep window patch | Implemented bounded geometry/parent/visibility/face/depth patch with cycle and depth validation; zones/scroll pending |
 | P12-prep cursor update | Implemented dedicated cursor codec, Scene owner/geometry validation, and SDL render evidence; cursor styles/IME pending |
 | P14-prep continuous capture generations | Implemented monotonic host-capture reuse from `captured` to `capturing`, atomic observation reset, stale-generation rejection, monotonic encoded/accepted `FRAME_UPDATE` identity, host-flush-bound `FLUSH` emission, and frame-lifetime render hints; no real Emacs host |
+| P15-prep terminal runtime service | Implemented fake-host create/activate/drain/delete orchestration with no-reuse registry IDs, drain retry, rollback-pending cleanup, and strict identity validation; no R7 approval or Emacs terminal |
 
 | P9-prep authoritative geometry | Implemented in runtime bridge with host rectangle caching and frame/window/damage bounds; real monitor/DPI events pending |
 | P10-prep face-bound debug runs | Implemented with GLYPH_RUN v2, exact live-face validation, and colored SDL fallback; not production face/shaping parity |
@@ -3225,6 +3226,11 @@ successful `FLUSH` first invokes the host flush callback, then emits the EUP
 boundary.  A render hint remains policy for the EUP frame generation across
 capture generations.  This remains fake-host adapter preparation; redisplay
 capture and `output_proto` registration remain pending.
+P15 terminal-service preparation binds `PureRuntimeHostV1` terminal callbacks
+to the bounded no-reuse terminal registry.  The fake-host service covers
+create, activate, host-delete drain with retry, rollback-pending cleanup, and
+strict host identity validation.  This is orchestration readiness only; no R7
+approval, Emacs terminal selection, registration, or runtime enablement exists.
 P12 maximize preparation adds `FRAME_MAXIMIZE` v1 for horizontal and vertical
 axis flags.  The diagnostic SDL bridge applies and restores both-axis
 maximization; single-axis mapping and redisplay adaptation remain pending.

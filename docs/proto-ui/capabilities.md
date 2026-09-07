@@ -522,6 +522,10 @@ redisplay generation, atomically reset bounded observations, and bind the next
 accepted before flush, and flush invokes the host callback before EUP emission.
 Render hints remain frame-lifetime policy.  This remains fake-host adapter
 preparation, not redisplay capture.
+`terminal_service` can also orchestrate fake-host terminal create/activate/
+drain/delete callbacks against the bounded no-reuse registry.  It retries a
+failed drain safely and tracks rollback-pending cleanup, but cannot select or
+register an Emacs terminal until R7 is approved.
 `proto-ui-runtime-host-abi` projects that contract to a generated C header and
 compiles a conformance translation unit.  `proto-ui-runtime-host` defines and conformance-tests a versioned five-group
 PureRuntimeHostV1 ABI while keeping runtime unavailable.  It does not register a

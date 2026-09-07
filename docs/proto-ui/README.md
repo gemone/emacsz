@@ -208,6 +208,13 @@ remain frame-lifetime policy across capture generations.  This prepares a
 repeated host update cycle; it is not real redisplay capture or `output_proto`
 registration.
 
+P15 terminal-service preparation adds an adapter-owned orchestrator for
+`PureRuntimeHostV1` terminal create/activate/drain/delete callbacks and the
+existing no-reuse terminal registry.  Fake-host tests cover activation, safe
+drain retry after host deletion failure, and rollback-pending cleanup.  This
+remains fail-closed preparation; R7 approval and a real Emacs terminal are
+still absent.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and

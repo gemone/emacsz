@@ -259,6 +259,10 @@ require complete review metadata and every policy/evidence field before the
 gate passes.  R8-R9 remain not implemented; in particular, there is no terminal
 registration, redisplay-owned EUP generation, transport, or real
 `output_proto` frame.
+The newer terminal service additionally orchestrates fake-host
+create/activate/drain/delete callbacks with generation-safe registry state and
+drain retry/rollback handling; it still cannot select or register an Emacs
+terminal.
 
 ## 11. Acceptance for the first real SDL3 frame
 
