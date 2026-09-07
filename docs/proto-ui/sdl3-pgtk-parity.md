@@ -170,6 +170,7 @@ capabilities must keep the relevant capability pending and block W16.
 | P5-prep. Run payload bridge | Host text runs become bounded EUP debug glyph runs and are rendered as fallback text | `runtime_bridge` unit suite and `sdl3-runtime-bridge-smoke`; still not redisplay capture or shaped text |
 | P6-prep. Reverse input bridge | SDL key/text intents reach `PureRuntimeHostV1` deliver/result/completion callbacks with bounded tracking | `sdl3-runtime-bridge-smoke`; still not keymap/command parity |
 | P7-prep. Visibility/focus bridge | Host frame-state observations project to EUP `FRAME_VISIBILITY` and `FRAME_FOCUS` | `runtime_bridge` unit suite; real platform visibility/focus still requires R8 |
+| P7-prep. Title bridge | EUP `FRAME_TITLE` resolves a live string resource and the diagnostic SDL bridge applies the Scene-owned title | `proto-ui-unit` and `sdl3-runtime-bridge-smoke`; Emacs title publication still requires R8 |
 | P8-prep. Lifecycle bridge | Heartbeat, flush, diagnostic, cancel-all, and input cancellation are bound to `PureRuntimeHostV1` | `runtime_bridge` unit suite; real host lifecycle still requires R8 |
 | P9-prep. Authoritative geometry | Host geometry refresh bounds observed windows/damage and `FRAME_UPDATE` headers | `runtime_bridge` unit suite and SDL bridge smoke; real monitor/DPI still requires R8 |
 | P4. Terminal registration | `output_proto` can exist as a real terminal without PGTK initialization | Fake-host plus live terminal lifecycle tests after explicit R7 approval |

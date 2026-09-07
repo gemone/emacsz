@@ -44,6 +44,12 @@ these messages only to the active frame generation; focusing requires a visible
 frame, and hiding/iconifying clears focus.  This is wire/lifecycle state, not
 yet an Emacs-to-SDL3 focus or visibility runtime round trip.
 
+W12d-t adds `FRAME_TITLE` v1 as a strict generation-qualified reference to a
+live string resource.  `Scene` owns a zero-terminated resolved title and the
+diagnostic SDL bridge applies it to its real SDL window.  This is protocol and
+frontend state only, not Emacs title publication or `output_proto` frame
+ownership.
+
 W12e adds a bounded adapter-owned resource payload cache with LRU eviction and
 strict wire contracts for `RESOURCE_REQUEST` and `RESOURCE_EVICT`.  The cache
 accepts at most 32 entries, 4096 bytes per payload, and 16 KiB total; existing

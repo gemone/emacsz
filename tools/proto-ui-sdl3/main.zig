@@ -52,6 +52,7 @@ extern fn SDL_Init(flags: SDLInitFlags) bool;
 extern fn SDL_Quit() void;
 extern fn SDL_CreateWindow(title: [*:0]const u8, w: c_int, h: c_int, flags: SDLWindowFlags) ?*SDL_Window;
 extern fn SDL_DestroyWindow(window: *SDL_Window) void;
+extern fn SDL_SetWindowTitle(window: *SDL_Window, title: [*:0]const u8) void;
 extern fn SDL_CreateRenderer(window: *SDL_Window, name: ?[*:0]const u8) ?*SDL_Renderer;
 extern fn SDL_DestroyRenderer(renderer: *SDL_Renderer) void;
 extern fn SDL_GetRendererName(renderer: *SDL_Renderer) [*:0]const u8;
@@ -1878,19 +1879,59 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     }, face_payload.items, &face_define);
     try scene.apply(face_define.items);
 
+    var string_payload: std.ArrayList(u8) = .empty;
+    defer string_payload.deinit(gpa);
+    try protocol.encodeStringDefine(gpa, .{
+        .resource_id = 12,
+        .generation = 1,
+        .bytes = "Emacs Proto-UI",
+    }, &string_payload);
+    var string_define: std.ArrayList(u8) = .empty;
+    defer string_define.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.string_define,
+        .sequence = 2,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = 1,
+        .timestamp_ns = 1,
+    }, string_payload.items, &string_define);
+    try scene.apply(string_define.items);
+
     var create: std.ArrayList(u8) = .empty;
     defer create.deinit(gpa);
-    try bridge.encodeFrameCreate(gpa, 2, capability.session_id, 1, &create);
+    try bridge.encodeFrameCreate(gpa, 3, capability.session_id, 1, &create);
     try scene.apply(create.items);
+
+    var title_payload: std.ArrayList(u8) = .empty;
+    defer title_payload.deinit(gpa);
+    try protocol.encodeFrameTitle(gpa, .{
+        .string_resource_id = 12,
+        .string_generation = 1,
+        .frame_generation = bridge.eup_frame_generation,
+    }, &title_payload);
+    var title: std.ArrayList(u8) = .empty;
+    defer title.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_title,
+        .sequence = 4,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, title_payload.items, &title);
+    try scene.apply(title.items);
 
     var update: std.ArrayList(u8) = .empty;
     defer update.deinit(gpa);
-    try bridge.encodeFrameUpdate(gpa, 3, capability.session_id, 2, &update);
+    try bridge.encodeFrameUpdate(gpa, 5, capability.session_id, 2, &update);
     try scene.apply(update.items);
 
     var run: std.ArrayList(u8) = .empty;
     defer run.deinit(gpa);
-    try bridge.encodeRun(gpa, 0, 4, capability.session_id, 3, &run);
+    try bridge.encodeRun(gpa, 0, 6, capability.session_id, 3, &run);
     try scene.apply(run.items);
 
     if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
@@ -1898,12 +1939,15 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         return error.RuntimeBridgeSceneInvalid;
     if (!std.mem.eql(u8, scene.glyph_runs.items[0].text, "Emacs"))
         return error.RuntimeBridgeRunInvalid;
+    if (scene.title == null or !std.mem.eql(u8, scene.title.?, "Emacs Proto-UI"))
+        return error.RuntimeBridgeTitleInvalid;
 
     if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
     defer SDL_Quit();
     const window = SDL_CreateWindow("Emacs Proto-UI Runtime Bridge", 240, 96, 0) orelse
         return sdlFail("SDL_CreateWindow");
     defer SDL_DestroyWindow(window);
+    SDL_SetWindowTitle(window, scene.title.?.ptr);
     const selected_renderer = try createRenderer(gpa, window, config.renderer_request, config.present_mode);
     defer destroyRenderer(selected_renderer);
 
@@ -1998,7 +2042,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{},
     );
 }

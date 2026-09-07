@@ -1265,6 +1265,7 @@ pub const Scene = struct {
     cursor: ?Cursor = null,
     damage: std.ArrayList(Rect) = .empty,
     text: std.ArrayList(TextLine) = .empty,
+    title: ?[:0]u8 = null,
     present: ?PresentHint = null,
     viewport: ?Viewport = null,
     window_tree: ?protocol.WindowTreeSnapshot = null,
@@ -1285,6 +1286,7 @@ pub const Scene = struct {
         self.images.clear(self.allocator);
         for (self.text.items) |line| self.allocator.free(line.bytes);
         self.text.deinit(self.allocator);
+        self.clearTitle();
         self.windows = .empty;
         self.rows = .empty;
         self.glyph_runs = .empty;
@@ -1332,6 +1334,7 @@ pub const Scene = struct {
             protocol.Message.glyph_run => try self.applyGlyphRun(payload),
             protocol.Message.glyph_run_delete => try self.applyGlyphRunDelete(payload),
             protocol.Message.frame_visibility => try self.applyFrameVisibility(payload),
+            protocol.Message.frame_title => try self.applyFrameTitle(payload),
             protocol.Message.frame_focus => try self.applyFrameFocus(payload),
             protocol.Message.frame_destroy => try self.applyFrameDestroy(payload.envelope, payload.bytes),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
@@ -1351,6 +1354,7 @@ pub const Scene = struct {
     }
 
     fn clearVisualState(self: *Scene) void {
+        self.clearTitle();
         self.clearGlyphRuns();
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
@@ -1374,6 +1378,11 @@ pub const Scene = struct {
         for (self.glyph_runs.items) |run| self.allocator.free(run.text);
         self.glyph_runs.deinit(self.allocator);
         self.glyph_runs = .empty;
+    }
+
+    fn clearTitle(self: *Scene) void {
+        if (self.title) |title| self.allocator.free(title);
+        self.title = null;
     }
 
     fn applyGlyphRun(self: *Scene, payload: protocol.Payload) Error!void {
@@ -1495,6 +1504,26 @@ pub const Scene = struct {
         const focus = try protocol.decodeFrameFocus(payload.bytes);
         try protocol.validateFrameFocusEnvelope(focus, payload.envelope);
         try self.frames.setFocus(focus.frame_id, focus.frame_generation, focus.focused);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFrameTitle(self: *Scene, payload: protocol.Payload) Error!void {
+        const title = try protocol.decodeFrameTitle(payload.bytes);
+        try protocol.validateFrameTitleEnvelope(title, payload.envelope);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != title.frame_generation)
+            return Error.InvalidMessage;
+
+        const resource = self.strings.lookup(title.string_resource_id) orelse
+            return Error.ResourceNotLive;
+        if (resource.generation != title.string_generation)
+            return Error.ResourceNotLive;
+
+        const owned = try self.allocator.dupeZ(u8, resource.bytes);
+        errdefer self.allocator.free(owned);
+        self.clearTitle();
+        self.title = owned;
         self.stats.control_messages += 1;
     }
 
@@ -2126,6 +2155,29 @@ fn frameStateMessage(
         .frame_id = envelope_frame,
         .timestamp_ns = sequence,
     }, &payload, &message);
+    return message.toOwnedSlice(a);
+}
+
+fn frameTitleMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    envelope_frame: u32,
+    payload: protocol.FrameTitlePayload,
+) ![]u8 {
+    var title_payload: std.ArrayList(u8) = .empty;
+    defer title_payload.deinit(a);
+    try protocol.encodeFrameTitle(a, payload, &title_payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_title,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = envelope_frame,
+        .timestamp_ns = sequence,
+    }, title_payload.items, &message);
     return message.toOwnedSlice(a);
 }
 
@@ -2770,6 +2822,73 @@ test "scene applies visibility and focus against the active frame" {
     try std.testing.expectEqual(lifecycle.FrameVisibility.hidden, scene.frames.frames[0].visibility);
     try std.testing.expectEqual(false, scene.frames.frames[0].focused);
     try std.testing.expectEqual(lifecycle.FrameStatus.destroyed, scene.frames.frames[0].status);
+}
+
+test "scene applies title only for live active-generation strings" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    var string_payload: std.ArrayList(u8) = .empty;
+    defer string_payload.deinit(a);
+    try protocol.encodeStringDefine(a, .{
+        .resource_id = 12,
+        .generation = 1,
+        .bytes = "Emacs Proto-UI",
+    }, &string_payload);
+    const string = try stringMessage(a, protocol.Message.string_define, 2, string_payload.items);
+    defer a.free(string);
+    try scene.apply(string);
+
+    const missing = try frameTitleMessage(a, 3, 7, .{
+        .string_resource_id = 40,
+        .string_generation = 1,
+        .frame_generation = 1,
+    });
+    defer a.free(missing);
+    try std.testing.expectError(Error.ResourceNotLive, scene.apply(missing));
+
+    const title = try frameTitleMessage(a, 3, 7, .{
+        .string_resource_id = 12,
+        .string_generation = 1,
+        .frame_generation = 1,
+    });
+    defer a.free(title);
+    try scene.apply(title);
+    try std.testing.expectEqualStrings("Emacs Proto-UI", scene.title.?);
+    try std.testing.expectEqual(@as(u64, 3), scene.stats.control_messages);
+
+    const stale = try frameTitleMessage(a, 4, 7, .{
+        .string_resource_id = 12,
+        .string_generation = 2,
+        .frame_generation = 1,
+    });
+    defer a.free(stale);
+    try std.testing.expectError(Error.ResourceNotLive, scene.apply(stale));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const wrong_generation = try frameTitleMessage(a, 4, 7, .{
+        .string_resource_id = 12,
+        .string_generation = 1,
+        .frame_generation = 2,
+    });
+    defer a.free(wrong_generation);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_generation));
+
+    const wrong_frame = try frameTitleMessage(a, 4, 8, .{
+        .string_resource_id = 12,
+        .string_generation = 1,
+        .frame_generation = 1,
+    });
+    defer a.free(wrong_frame);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_frame));
+
+    scene.resetForResync();
+    try std.testing.expect(scene.title == null);
 }
 
 test "scene atomically validates resource generation declarations" {

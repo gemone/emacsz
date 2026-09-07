@@ -50,6 +50,7 @@ pub const Message = struct {
     pub const frame_update: u16 = 0x0203;
     pub const frame_presented: u16 = 0x0204;
     pub const frame_visibility: u16 = 0x0208;
+    pub const frame_title: u16 = 0x0209;
     pub const frame_focus: u16 = 0x0210;
     pub const resource_request: u16 = 0x0510;
     pub const resource_evict: u16 = 0x0511;
@@ -1063,6 +1064,15 @@ pub const FrameVisibilityPayload = struct {
     state: FrameVisibilityState,
 };
 
+pub const FrameTitlePayload = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    string_resource_id: u32,
+    string_generation: u32,
+    frame_generation: u32,
+};
+
 pub const FrameFocusPayload = struct {
     frame_id: u32,
     frame_generation: u32,
@@ -1451,6 +1461,49 @@ pub fn validateFrameVisibilityEnvelope(payload: FrameVisibilityPayload, envelope
 pub fn validateFrameFocusEnvelope(payload: FrameFocusPayload, envelope: Envelope) Error!void {
     try validateFrameStateIdentity(payload.frame_id, payload.frame_generation);
     if (envelope.frame_id != payload.frame_id) return Error.InvalidMessage;
+}
+
+fn validateFrameTitle(payload: FrameTitlePayload) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or payload.reserved != 0)
+        return Error.InvalidMessage;
+    if (payload.string_resource_id == 0 or payload.string_generation == 0 or
+        payload.frame_generation == 0)
+        return Error.InvalidMessage;
+}
+
+pub fn encodeFrameTitle(
+    a: std.mem.Allocator,
+    payload: FrameTitlePayload,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameTitle(payload);
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &bytes, payload.schema, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, payload.flags);
+    try out.append(a, payload.reserved);
+    try putU32(out, a, payload.string_resource_id);
+    try putU32(out, a, payload.string_generation);
+    try putU32(out, a, payload.frame_generation);
+}
+
+pub fn decodeFrameTitle(data: []const u8) Error!FrameTitlePayload {
+    if (data.len != 16) return Error.InvalidTable;
+    const payload = FrameTitlePayload{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .string_resource_id = std.mem.readInt(u32, data[4..8], .little),
+        .string_generation = std.mem.readInt(u32, data[8..12], .little),
+        .frame_generation = std.mem.readInt(u32, data[12..16], .little),
+    };
+    try validateFrameTitle(payload);
+    return payload;
+}
+
+pub fn validateFrameTitleEnvelope(payload: FrameTitlePayload, envelope: Envelope) Error!void {
+    try validateFrameTitle(payload);
+    if (envelope.frame_id == 0) return Error.InvalidMessage;
 }
 
 pub fn encodeResourceRequests(a: std.mem.Allocator, requests: []const ResourceRequest, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
@@ -2088,6 +2141,36 @@ test "frame visibility and focus payloads enforce strict wire form" {
     try std.testing.expectError(Error.InvalidTable, decodeFrameFocus(bytes.items));
     try std.testing.expectError(Error.InvalidMessage, encodeFrameVisibility(a, .{ .frame_id = 0, .frame_generation = 1, .state = .visible }, &bytes));
     try std.testing.expectError(Error.InvalidMessage, encodeFrameFocus(a, .{ .frame_id = 7, .frame_generation = 0, .focused = false }, &bytes));
+}
+
+test "frame title payload enforces strict wire form" {
+    const a = std.testing.allocator;
+    const payload = FrameTitlePayload{
+        .string_resource_id = 12,
+        .string_generation = 3,
+        .frame_generation = 2,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFrameTitle(a, payload, &bytes);
+    try std.testing.expectEqual(@as(usize, 16), bytes.items.len);
+    try std.testing.expectEqual(payload, try decodeFrameTitle(bytes.items));
+
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameTitle(bytes.items));
+    bytes.items[0] = 1;
+    bytes.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameTitle(bytes.items));
+    bytes.items[2] = 0;
+    bytes.items[4] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameTitle(bytes.items));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFrameTitle(bytes.items));
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameTitle(a, .{
+        .string_resource_id = 0,
+        .string_generation = 1,
+        .frame_generation = 1,
+    }, &bytes));
 }
 
 test "resource request and evict codecs enforce strict wire form" {

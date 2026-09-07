@@ -1414,6 +1414,29 @@ every visibility state. A stale or destroyed generation is invalid. These
 contracts currently stop at the adapter/frontend scene; no runtime Emacs focus
 or visibility round trip is claimed.
 
+#### Frame title state
+
+`FRAME_TITLE` (`0x0209`) is a core-to-frontend title reference, not an inline
+string payload. The frontend resolves the exact string resource before applying
+it.
+
+```text
+schema               u16 = 1
+flags                u8  = 0
+reserved             u8  = 0
+string_resource_id   u32 (nonzero)
+string_generation    u32 (nonzero)
+frame_generation     u32 (nonzero)
+```
+
+The payload is exactly 16 bytes. The envelope frame ID, active frame identity,
+and `frame_generation` must agree. The referenced string must be live with the
+exact generation. Scene owns a zero-terminated copy of the resolved title and
+clears it on frame destruction, authenticated resync, or scene teardown. The
+diagnostic SDL bridge applies this Scene-owned title to the SDL window. This
+does not claim Emacs runtime title publication, complete frame-parameter
+parity, or `output_proto` registration.
+
 The facts profile also defines a deliberately bounded `KEY_EVENT` payload for
 `0x0600`: `u16 action` (`1=backspace`, `2=cursor-left`, `3=cursor-right`,
 `4=cursor-up`, `5=cursor-down`, `6=copy`), `u8 state` (`1=pressed`), and
