@@ -1267,6 +1267,7 @@ pub const Scene = struct {
     text: std.ArrayList(TextLine) = .empty,
     title: ?[:0]u8 = null,
     alpha: ?protocol.FrameAlphaPayload = null,
+    decorations: ?protocol.FrameDecorationsPayload = null,
     present: ?PresentHint = null,
     viewport: ?Viewport = null,
     window_tree: ?protocol.WindowTreeSnapshot = null,
@@ -1289,6 +1290,7 @@ pub const Scene = struct {
         self.text.deinit(self.allocator);
         self.clearTitle();
         self.alpha = null;
+        self.decorations = null;
         self.windows = .empty;
         self.rows = .empty;
         self.glyph_runs = .empty;
@@ -1340,6 +1342,7 @@ pub const Scene = struct {
             protocol.Message.frame_alpha => try self.applyFrameAlpha(payload),
             protocol.Message.frame_focus => try self.applyFrameFocus(payload),
             protocol.Message.frame_destroy => try self.applyFrameDestroy(payload.envelope, payload.bytes),
+            protocol.Message.frame_decorations => try self.applyFrameDecorations(payload),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.font_define => try self.applyFontDefine(payload),
@@ -1359,6 +1362,7 @@ pub const Scene = struct {
     fn clearVisualState(self: *Scene) void {
         self.clearTitle();
         self.alpha = null;
+        self.decorations = null;
         self.clearGlyphRuns();
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
@@ -1539,6 +1543,17 @@ pub const Scene = struct {
             frame.generation != alpha.frame_generation)
             return Error.InvalidMessage;
         self.alpha = alpha;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFrameDecorations(self: *Scene, payload: protocol.Payload) Error!void {
+        const decorations = try protocol.decodeFrameDecorations(payload.bytes);
+        try protocol.validateFrameDecorationsEnvelope(decorations, payload.envelope);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != decorations.frame_generation)
+            return Error.InvalidMessage;
+        self.decorations = decorations;
         self.stats.control_messages += 1;
     }
 
@@ -2216,6 +2231,29 @@ fn frameAlphaMessage(
         .frame_id = envelope_frame,
         .timestamp_ns = sequence,
     }, alpha_payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
+fn frameDecorationsMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    envelope_frame: u32,
+    payload: protocol.FrameDecorationsPayload,
+) ![]u8 {
+    var decorations_payload: std.ArrayList(u8) = .empty;
+    defer decorations_payload.deinit(a);
+    try protocol.encodeFrameDecorations(a, payload, &decorations_payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_decorations,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = envelope_frame,
+        .timestamp_ns = sequence,
+    }, decorations_payload.items, &message);
     return message.toOwnedSlice(a);
 }
 
@@ -2981,6 +3019,50 @@ test "scene applies alpha only to the active frame generation" {
 
     scene.resetForResync();
     try std.testing.expect(scene.alpha == null);
+}
+
+test "scene applies decorations only to the active frame generation" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    const undecorated = try frameDecorationsMessage(a, 2, 7, .{
+        .decorated = false,
+        .frame_generation = 1,
+    });
+    defer a.free(undecorated);
+    try scene.apply(undecorated);
+    try std.testing.expectEqual(false, scene.decorations.?.decorated);
+
+    const decorated = try frameDecorationsMessage(a, 3, 7, .{
+        .decorated = true,
+        .frame_generation = 1,
+    });
+    defer a.free(decorated);
+    try scene.apply(decorated);
+    try std.testing.expectEqual(true, scene.decorations.?.decorated);
+
+    const stale = try frameDecorationsMessage(a, 4, 7, .{
+        .decorated = true,
+        .frame_generation = 2,
+    });
+    defer a.free(stale);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(stale));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const wrong_frame = try frameDecorationsMessage(a, 4, 8, .{
+        .decorated = true,
+        .frame_generation = 1,
+    });
+    defer a.free(wrong_frame);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_frame));
+
+    scene.resetForResync();
+    try std.testing.expect(scene.decorations == null);
 }
 
 test "scene atomically validates resource generation declarations" {

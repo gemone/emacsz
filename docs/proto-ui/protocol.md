@@ -1464,6 +1464,29 @@ opaque window when the platform or compositor does not support it. This is not
 redisplay blending policy, focus-runtime integration, or complete PGTK alpha
 parity.
 
+#### Frame decoration state
+
+`FRAME_DECORATIONS` (`0x0214`) carries the Emacs `undecorated` frame-policy
+inverse: `decorated=1` means normal window-manager decorations and
+`decorated=0` means undecorated.
+
+```text
+schema                    u16 = 1
+flags                     u8  = 0
+reserved                  u8  = 0
+decorated                 u8  (boolean)
+reserved                  u24 = 0
+frame_generation          u32 (nonzero)
+```
+
+The payload is exactly 12 bytes. The envelope frame ID, active frame identity,
+and `frame_generation` must agree. Scene stores the authoritative policy and
+clears it on frame destruction, authenticated resync, or scene teardown. The
+diagnostic SDL bridge maps this state to `SDL_SetWindowBordered`, verifies the
+platform borderless flag, then restores its normal smoke window. This does not
+imply parent-frame, tooltip-frame, override-redirect, size-hint, or full WM
+policy parity.
+
 The facts profile also defines a deliberately bounded `KEY_EVENT` payload for
 `0x0600`: `u16 action` (`1=backspace`, `2=cursor-left`, `3=cursor-right`,
 `4=cursor-up`, `5=cursor-down`, `6=copy`), `u8 state` (`1=pressed`), and

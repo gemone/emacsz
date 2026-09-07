@@ -47,6 +47,7 @@ const SDL_SCALEMODE_NEAREST: SDL_ScaleMode = 1;
 
 const SDLInitFlags = c_uint;
 const SDLWindowFlags = c_ulonglong;
+const SDL_WINDOW_BORDERLESS: SDLWindowFlags = 0x10;
 
 extern fn SDL_Init(flags: SDLInitFlags) bool;
 extern fn SDL_Quit() void;
@@ -55,6 +56,8 @@ extern fn SDL_DestroyWindow(window: *SDL_Window) void;
 extern fn SDL_SetWindowTitle(window: *SDL_Window, title: [*:0]const u8) void;
 extern fn SDL_SetWindowOpacity(window: *SDL_Window, opacity: f32) bool;
 extern fn SDL_GetWindowOpacity(window: *SDL_Window) f32;
+extern fn SDL_SetWindowBordered(window: *SDL_Window, bordered: bool) bool;
+extern fn SDL_GetWindowFlags(window: *SDL_Window) SDLWindowFlags;
 extern fn SDL_CreateRenderer(window: *SDL_Window, name: ?[*:0]const u8) ?*SDL_Renderer;
 extern fn SDL_DestroyRenderer(renderer: *SDL_Renderer) void;
 extern fn SDL_GetRendererName(renderer: *SDL_Renderer) [*:0]const u8;
@@ -1947,14 +1950,33 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     }, alpha_payload.items, &alpha);
     try scene.apply(alpha.items);
 
+    var decorations_payload: std.ArrayList(u8) = .empty;
+    defer decorations_payload.deinit(gpa);
+    try protocol.encodeFrameDecorations(gpa, .{
+        .decorated = false,
+        .frame_generation = bridge.eup_frame_generation,
+    }, &decorations_payload);
+    var decorations: std.ArrayList(u8) = .empty;
+    defer decorations.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_decorations,
+        .sequence = 6,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, decorations_payload.items, &decorations);
+    try scene.apply(decorations.items);
+
     var update: std.ArrayList(u8) = .empty;
     defer update.deinit(gpa);
-    try bridge.encodeFrameUpdate(gpa, 6, capability.session_id, 2, &update);
+    try bridge.encodeFrameUpdate(gpa, 7, capability.session_id, 2, &update);
     try scene.apply(update.items);
 
     var run: std.ArrayList(u8) = .empty;
     defer run.deinit(gpa);
-    try bridge.encodeRun(gpa, 0, 7, capability.session_id, 3, &run);
+    try bridge.encodeRun(gpa, 0, 8, capability.session_id, 3, &run);
     try scene.apply(run.items);
 
     if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
@@ -1966,6 +1988,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         return error.RuntimeBridgeTitleInvalid;
     if (scene.alpha == null or scene.alpha.?.active_opacity != 8000)
         return error.RuntimeBridgeAlphaInvalid;
+    if (scene.decorations == null or scene.decorations.?.decorated)
+        return error.RuntimeBridgeDecorationsInvalid;
 
     if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
     defer SDL_Quit();
@@ -1987,6 +2011,14 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         // Restore the diagnostic window even if the platform accepted fade;
         // alpha state remains authoritative in the Scene.
         _ = SDL_SetWindowOpacity(window, 1.0);
+    }
+    var decorations_supported = false;
+    if (scene.decorations) |decoration_state| {
+        decorations_supported = SDL_SetWindowBordered(window, decoration_state.decorated);
+        const undecorated = (SDL_GetWindowFlags(window) & SDL_WINDOW_BORDERLESS) != 0;
+        if (!undecorated) decorations_supported = false;
+        // Restore a decorated diagnostic window; Scene remains authoritative.
+        _ = SDL_SetWindowBordered(window, true);
     }
     const selected_renderer = try createRenderer(gpa, window, config.renderer_request, config.present_mode);
     defer destroyRenderer(selected_renderer);
@@ -2082,8 +2114,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"opacity_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
-        .{opacity_supported},
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"opacity_supported\":{},\"decorations_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        .{ opacity_supported, decorations_supported },
     );
 }
 

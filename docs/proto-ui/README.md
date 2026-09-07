@@ -55,6 +55,11 @@ hundredths of a percent.  `Scene` validates and owns the complete triple, and
 the diagnostic SDL bridge probes active-window opacity with explicit opaque
 fallback.  This is not focus-runtime or redisplay blending parity.
 
+W12d-d adds `FRAME_DECORATIONS` v1 for the decorated/undecorated frame policy.
+`Scene` validates and owns the policy, and the diagnostic SDL bridge verifies
+the platform border state before restoring its smoke window.  This is not
+parent-frame, tooltip-frame, or complete WM policy parity.
+
 W12e adds a bounded adapter-owned resource payload cache with LRU eviction and
 strict wire contracts for `RESOURCE_REQUEST` and `RESOURCE_EVICT`.  The cache
 accepts at most 32 entries, 4096 bytes per payload, and 16 KiB total; existing

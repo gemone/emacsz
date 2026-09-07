@@ -54,6 +54,7 @@ pub const Message = struct {
     pub const frame_title: u16 = 0x0209;
     pub const frame_alpha: u16 = 0x020d;
     pub const frame_focus: u16 = 0x0210;
+    pub const frame_decorations: u16 = 0x0214;
     pub const resource_request: u16 = 0x0510;
     pub const resource_evict: u16 = 0x0511;
     pub const resource_snapshot: u16 = 0x0512;
@@ -1087,6 +1088,15 @@ pub const FrameAlphaPayload = struct {
     reserved_tail: u32 = 0,
 };
 
+pub const FrameDecorationsPayload = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    decorated: bool,
+    reserved_after_decorated: [3]u8 = .{ 0, 0, 0 },
+    frame_generation: u32,
+};
+
 pub const FrameFocusPayload = struct {
     frame_id: u32,
     frame_generation: u32,
@@ -1577,6 +1587,54 @@ pub fn decodeFrameAlpha(data: []const u8) Error!FrameAlphaPayload {
 
 pub fn validateFrameAlphaEnvelope(payload: FrameAlphaPayload, envelope: Envelope) Error!void {
     try validateFrameAlpha(payload);
+    if (envelope.frame_id == 0) return Error.InvalidMessage;
+}
+
+fn validateFrameDecorations(payload: FrameDecorationsPayload) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or payload.reserved != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_after_decorated, 0))
+        return Error.InvalidMessage;
+    if (payload.frame_generation == 0) return Error.InvalidMessage;
+}
+
+pub fn encodeFrameDecorations(
+    a: std.mem.Allocator,
+    payload: FrameDecorationsPayload,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameDecorations(payload);
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &bytes, payload.schema, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, payload.flags);
+    try out.append(a, payload.reserved);
+    try out.append(a, @intFromBool(payload.decorated));
+    try out.appendSlice(a, &payload.reserved_after_decorated);
+    var word: [4]u8 = undefined;
+    std.mem.writeInt(u32, &word, payload.frame_generation, .little);
+    try out.appendSlice(a, &word);
+}
+
+pub fn decodeFrameDecorations(data: []const u8) Error!FrameDecorationsPayload {
+    if (data.len != 12) return Error.InvalidTable;
+    const payload = FrameDecorationsPayload{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .decorated = switch (data[4]) {
+            0 => false,
+            1 => true,
+            else => return Error.InvalidBoolean,
+        },
+        .reserved_after_decorated = data[5..8][0..3].*,
+        .frame_generation = std.mem.readInt(u32, data[8..12], .little),
+    };
+    try validateFrameDecorations(payload);
+    return payload;
+}
+
+pub fn validateFrameDecorationsEnvelope(payload: FrameDecorationsPayload, envelope: Envelope) Error!void {
+    try validateFrameDecorations(payload);
     if (envelope.frame_id == 0) return Error.InvalidMessage;
 }
 
@@ -2303,6 +2361,35 @@ test "frame alpha payload enforces strict wire form" {
         .inactive_opacity = max_opacity,
         .background_opacity = max_opacity + 1,
         .frame_generation = 1,
+    }, &bytes));
+}
+
+test "frame decorations payload enforces strict wire form" {
+    const a = std.testing.allocator;
+    const payload = FrameDecorationsPayload{ .decorated = false, .frame_generation = 2 };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFrameDecorations(a, payload, &bytes);
+    try std.testing.expectEqual(@as(usize, 12), bytes.items.len);
+    try std.testing.expectEqual(payload, try decodeFrameDecorations(bytes.items));
+
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameDecorations(bytes.items));
+    bytes.items[0] = 1;
+    bytes.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameDecorations(bytes.items));
+    bytes.items[2] = 0;
+    bytes.items[4] = 2;
+    try std.testing.expectError(Error.InvalidBoolean, decodeFrameDecorations(bytes.items));
+    bytes.items[4] = 0;
+    bytes.items[5] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameDecorations(bytes.items));
+    bytes.items[5] = 0;
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFrameDecorations(bytes.items));
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameDecorations(a, .{
+        .decorated = true,
+        .frame_generation = 0,
     }, &bytes));
 }
 
