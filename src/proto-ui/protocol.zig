@@ -69,6 +69,7 @@ pub const Message = struct {
     pub const window_tree_snapshot: u16 = 0x0300;
     pub const window_create: u16 = 0x0301;
     pub const window_delete: u16 = 0x0303;
+    pub const window_patch: u16 = 0x0302;
     pub const frame_destroy: u16 = 0x0206;
     pub const frame_update: u16 = 0x0203;
     pub const frame_presented: u16 = 0x0204;
@@ -2688,6 +2689,121 @@ pub fn decodeWindowDelete(data: []const u8) Error!WindowDelete {
     return delete;
 }
 
+pub const WindowPatchFlags = struct {
+    pub const x: u32 = 1 << 0;
+    pub const y: u32 = 1 << 1;
+    pub const width: u32 = 1 << 2;
+    pub const height: u32 = 1 << 3;
+    pub const parent: u32 = 1 << 4;
+    pub const visible: u32 = 1 << 5;
+    pub const default_face: u32 = 1 << 6;
+    pub const depth: u32 = 1 << 7;
+    pub const known: u32 = x | y | width | height | parent | visible | default_face | depth;
+};
+
+pub const WindowPatch = struct {
+    schema: u16 = 1,
+    flags: u32,
+    reserved: u32 = 0,
+    frame_id: u32,
+    frame_generation: u32,
+    window_id: u64,
+    x: i32 = 0,
+    y: i32 = 0,
+    width: i32 = 0,
+    height: i32 = 0,
+    parent_window_id: u64 = 0,
+    default_face_id: u32 = 0,
+    visible: bool = false,
+    depth: u8 = 0,
+};
+
+pub const window_patch_size: usize = 56;
+
+fn validateWindowPatch(payload: WindowPatch) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or
+        payload.flags & ~WindowPatchFlags.known != 0 or payload.flags == 0)
+        return Error.InvalidMessage;
+    if (payload.frame_id == 0 or payload.frame_generation == 0 or payload.window_id == 0)
+        return Error.InvalidMessage;
+    if (payload.flags & WindowPatchFlags.x != 0 and payload.x < 0) return Error.InvalidMessage;
+    if (payload.flags & WindowPatchFlags.y != 0 and payload.y < 0) return Error.InvalidMessage;
+    if (payload.flags & WindowPatchFlags.width != 0 and payload.width <= 0) return Error.InvalidMessage;
+    if (payload.flags & WindowPatchFlags.height != 0 and payload.height <= 0) return Error.InvalidMessage;
+    if (payload.flags & WindowPatchFlags.parent != 0 and payload.parent_window_id == 0)
+        return Error.InvalidMessage;
+    if (payload.flags & WindowPatchFlags.default_face != 0 and payload.default_face_id == 0)
+        return Error.InvalidMessage;
+    if (payload.flags & WindowPatchFlags.depth != 0 and payload.depth > max_window_tree_depth)
+        return Error.InvalidMessage;
+    const geometry_present = payload.flags &
+        (WindowPatchFlags.x | WindowPatchFlags.y |
+            WindowPatchFlags.width | WindowPatchFlags.height) != 0;
+    if (!geometry_present and (payload.x != 0 or payload.y != 0 or
+        payload.width != 0 or payload.height != 0))
+        return Error.InvalidMessage;
+    if (payload.flags & WindowPatchFlags.parent == 0 and payload.parent_window_id != 0)
+        return Error.InvalidMessage;
+    if (payload.flags & WindowPatchFlags.default_face == 0 and payload.default_face_id != 0)
+        return Error.InvalidMessage;
+    if (payload.flags & WindowPatchFlags.visible == 0 and payload.visible)
+        return Error.InvalidMessage;
+    if (payload.flags & WindowPatchFlags.depth == 0 and payload.depth != 0)
+        return Error.InvalidMessage;
+}
+
+pub fn encodeWindowPatch(a: std.mem.Allocator, payload: WindowPatch, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    try validateWindowPatch(payload);
+    var bytes: [window_patch_size]u8 = [_]u8{0} ** window_patch_size;
+    std.mem.writeInt(u16, bytes[0..2], payload.schema, .little);
+    std.mem.writeInt(u32, bytes[2..6], payload.flags, .little);
+    std.mem.writeInt(u32, bytes[6..10], payload.reserved, .little);
+    std.mem.writeInt(u32, bytes[10..14], payload.frame_id, .little);
+    std.mem.writeInt(u32, bytes[14..18], payload.frame_generation, .little);
+    std.mem.writeInt(u64, bytes[18..26], payload.window_id, .little);
+    std.mem.writeInt(u32, bytes[26..30], @bitCast(payload.x), .little);
+    std.mem.writeInt(u32, bytes[30..34], @bitCast(payload.y), .little);
+    std.mem.writeInt(u32, bytes[34..38], @bitCast(payload.width), .little);
+    std.mem.writeInt(u32, bytes[38..42], @bitCast(payload.height), .little);
+    std.mem.writeInt(u64, bytes[42..50], payload.parent_window_id, .little);
+    std.mem.writeInt(u32, bytes[50..54], payload.default_face_id, .little);
+    bytes[54] = @intFromBool(payload.visible);
+    bytes[55] = payload.depth;
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeWindowPatch(data: []const u8) Error!WindowPatch {
+    if (data.len != window_patch_size) return Error.InvalidTable;
+    var reader = Reader{ .data = data };
+    if (try reader.readU16() != window_tree_schema) return Error.InvalidTable;
+    const flags = try reader.readU32();
+    const reserved = try reader.readU32();
+    const frame_id = try reader.readU32();
+    const frame_generation = try reader.readU32();
+    const window_id = try reader.readU64();
+    const payload = WindowPatch{
+        .flags = flags,
+        .reserved = reserved,
+        .frame_id = frame_id,
+        .frame_generation = frame_generation,
+        .window_id = window_id,
+        .x = try reader.readI32(),
+        .y = try reader.readI32(),
+        .width = try reader.readI32(),
+        .height = try reader.readI32(),
+        .parent_window_id = try reader.readU64(),
+        .default_face_id = try reader.readU32(),
+        .visible = switch (try reader.readByte()) {
+            0 => false,
+            1 => true,
+            else => return Error.InvalidMessage,
+        },
+        .depth = try reader.readByte(),
+    };
+    try validateWindowPatch(payload);
+    return payload;
+}
+
 test "window lifecycle codecs have exact little-endian wire layout" {
     const a = std.testing.allocator;
     var wire: std.ArrayList(u8) = .empty;
@@ -2738,6 +2854,68 @@ test "window lifecycle codecs have exact little-endian wire layout" {
     wire.items[3] = 0;
     try std.testing.expectError(Error.InvalidMessage, encodeWindowDelete(a, .{ .frame_id = 7, .frame_generation = 0, .window_id = node.window_id }, &wire));
     try std.testing.expectError(Error.InvalidMessage, encodeWindowDelete(a, .{ .frame_id = 7, .frame_generation = 2, .window_id = 0 }, &wire));
+}
+
+test "window patch has exact canonical little-endian wire layout" {
+    const a = std.testing.allocator;
+    var wire: std.ArrayList(u8) = .empty;
+    defer wire.deinit(a);
+    const f = WindowPatchFlags;
+    const payload: WindowPatch = .{
+        .flags = f.known,
+        .frame_id = 7,
+        .frame_generation = 2,
+        .window_id = 0x0102030405060708,
+        .x = 1,
+        .y = 2,
+        .width = 30,
+        .height = 20,
+        .parent_window_id = 901,
+        .default_face_id = 4,
+        .visible = true,
+        .depth = 2,
+    };
+    try encodeWindowPatch(a, payload, &wire);
+    try std.testing.expectEqual(window_patch_size, wire.items.len);
+    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, wire.items[0..2], .little));
+    try std.testing.expectEqual(f.known, std.mem.readInt(u32, wire.items[2..6], .little));
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, wire.items[6..10], .little));
+    try std.testing.expectEqual(payload.frame_id, std.mem.readInt(u32, wire.items[10..14], .little));
+    try std.testing.expectEqual(payload.frame_generation, std.mem.readInt(u32, wire.items[14..18], .little));
+    try std.testing.expectEqual(payload.window_id, std.mem.readInt(u64, wire.items[18..26], .little));
+    try std.testing.expectEqual(payload.x, std.mem.readInt(i32, wire.items[26..30], .little));
+    try std.testing.expectEqual(payload.y, std.mem.readInt(i32, wire.items[30..34], .little));
+    try std.testing.expectEqual(payload.width, std.mem.readInt(i32, wire.items[34..38], .little));
+    try std.testing.expectEqual(payload.height, std.mem.readInt(i32, wire.items[38..42], .little));
+    try std.testing.expectEqual(payload.parent_window_id, std.mem.readInt(u64, wire.items[42..50], .little));
+    try std.testing.expectEqual(payload.default_face_id, std.mem.readInt(u32, wire.items[50..54], .little));
+    try std.testing.expectEqual(@as(u8, 1), wire.items[54]);
+    try std.testing.expectEqual(payload.depth, wire.items[55]);
+    try std.testing.expectEqual(payload, try decodeWindowPatch(wire.items));
+
+    wire.items[3] = 1; // unknown presence bit
+    try std.testing.expectError(Error.InvalidMessage, decodeWindowPatch(wire.items));
+    wire.items[3] = 0;
+    wire.items[6] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeWindowPatch(wire.items));
+    wire.items[6] = 0;
+    wire.items[54] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeWindowPatch(wire.items));
+
+    wire.clearRetainingCapacity();
+    var sparse = payload;
+    sparse.flags = f.visible;
+    sparse.x = 0;
+    sparse.y = 0;
+    sparse.width = 0;
+    sparse.height = 0;
+    sparse.parent_window_id = 0;
+    sparse.default_face_id = 0;
+    sparse.visible = false;
+    sparse.depth = 0;
+    try encodeWindowPatch(a, sparse, &wire);
+    try std.testing.expectEqual(@as(u8, 0), wire.items[54]);
+    try std.testing.expectEqual(sparse, try decodeWindowPatch(wire.items));
 }
 
 pub fn encodeResourceRequests(a: std.mem.Allocator, requests: []const ResourceRequest, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {

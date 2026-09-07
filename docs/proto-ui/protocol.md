@@ -436,6 +436,19 @@ modal propagation, and Emacs child-frame parity remain pending.
 
 `WINDOW_POSITION` is diagnostic. Frontend layout uses rows and glyph runs, not buffer content.
 
+#### Window patch v1 (implemented bounded adapter contract)
+
+`WINDOW_PATCH` (`0x0302`) is a fixed 56-byte little-endian record. It starts
+with `schema=1`, a `u32 presence mask`, and zero reserved words, followed by
+nonzero frame ID/generation and the target `u64 window_id`. Presence bits are
+`1=x`, `2=y`, `4=width`, `8=height`, `16=parent`, `32=visible`,
+`64=default-face`, and `128=depth`; unknown bits or an empty mask are invalid.
+Present geometry values must be nonnegative with positive width/height. A
+present parent must be another live window and must not create a cycle; depth
+must equal parent depth plus one and stay at most eight. The Scene applies the
+patch in place. Zones, faces, scroll state, and mouse-highlight records remain
+separate pending messages.
+
 #### Window create/delete lifecycle v1 (implemented bounded adapter contract)
 
 `WINDOW_CREATE` (`0x0301`) uses a 12-byte header (`schema=1`, zero flags/reserved,

@@ -22,6 +22,9 @@ pub const Window = struct {
     y: i32,
     width: i32,
     height: i32,
+    visible: bool = true,
+    default_face_id: u32 = 0,
+    depth: u8 = 0,
 
     fn valid(self: Window) bool {
         return self.id != 0 and self.frame_id != 0 and self.width >= 0 and self.height >= 0;
@@ -1414,6 +1417,7 @@ pub const Scene = struct {
             protocol.Message.frame_parent => try self.applyFrameParent(payload),
             protocol.Message.window_create => try self.applyWindowCreate(payload),
             protocol.Message.window_delete => try self.applyWindowDelete(payload),
+            protocol.Message.window_patch => try self.applyWindowPatch(payload),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.font_define => try self.applyFontDefine(payload),
@@ -1789,6 +1793,9 @@ pub const Scene = struct {
             .y = create.node.y,
             .width = create.node.width,
             .height = create.node.height,
+            .visible = create.node.visible(),
+            .default_face_id = create.node.default_face_id,
+            .depth = create.node.depth,
         });
         self.stats.control_messages += 1;
     }
@@ -1825,6 +1832,89 @@ pub const Scene = struct {
             if (cursor.window_id == window_id) return Error.ResourceNotLive;
         }
         _ = self.windows.orderedRemove(window_index);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyWindowPatch(self: *Scene, payload: protocol.Payload) Error!void {
+        const patch = try protocol.decodeWindowPatch(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != patch.frame_id or
+            frame.generation != patch.frame_generation or
+            payload.envelope.frame_id != patch.frame_id)
+            return Error.InvalidMessage;
+        var index: ?usize = null;
+        for (self.windows.items, 0..) |window, window_index| {
+            if (window.id == patch.window_id) {
+                index = window_index;
+                break;
+            }
+        }
+        const window_index = index orelse return Error.InvalidMessage;
+        if (self.windows.items[window_index].frame_id != patch.frame_id)
+            return Error.InvalidMessage;
+        var updated = self.windows.items[window_index];
+        const f = protocol.WindowPatchFlags;
+        if (patch.flags & f.x != 0) updated.x = patch.x;
+        if (patch.flags & f.y != 0) updated.y = patch.y;
+        if (patch.flags & f.width != 0) updated.width = patch.width;
+        if (patch.flags & f.height != 0) updated.height = patch.height;
+        if (patch.flags & f.visible != 0) updated.visible = patch.visible;
+        if (patch.flags & f.default_face != 0) updated.default_face_id = patch.default_face_id;
+        if (patch.flags & f.parent != 0) {
+            if (patch.parent_window_id == updated.id) return Error.InvalidMessage;
+            const parent_window = findWindow(self.windows.items, patch.parent_window_id) orelse
+                return Error.InvalidMessage;
+            var candidate = parent_window.parent_id;
+            while (candidate != 0) {
+                if (candidate == updated.id) return Error.InvalidMessage;
+                const owner = findWindow(self.windows.items, candidate) orelse
+                    return Error.InvalidMessage;
+                candidate = owner.parent_id;
+            }
+            updated.parent_id = patch.parent_window_id;
+            updated.depth = parent_window.depth + 1;
+        }
+        if (patch.flags & f.depth != 0) updated.depth = patch.depth;
+        if (updated.parent_id != 0) {
+            const parent_window = findWindow(self.windows.items, updated.parent_id) orelse
+                return Error.InvalidMessage;
+            if (updated.depth != parent_window.depth + 1 or
+                updated.depth > protocol.max_window_tree_depth)
+                return Error.InvalidMessage;
+        } else if (updated.depth != 0) return Error.InvalidMessage;
+        if (updated.width <= 0 or updated.height <= 0 or updated.x < 0 or updated.y < 0)
+            return Error.InvalidMessage;
+        for (self.windows.items, 0..) |window, check_index| {
+            const candidate = if (window.id == updated.id and check_index == window_index)
+                updated
+            else
+                window;
+            if (candidate.frame_id != patch.frame_id) return Error.InvalidMessage;
+            for (self.windows.items[0..check_index]) |prior| {
+                if (prior.id == candidate.id) return Error.InvalidMessage;
+            }
+            if (candidate.parent_id == candidate.id) return Error.InvalidMessage;
+            if (candidate.parent_id == 0) {
+                if (candidate.depth != 0) return Error.InvalidMessage;
+                continue;
+            }
+            const parent_window = findWindow(self.windows.items, candidate.parent_id) orelse
+                return Error.InvalidMessage;
+            if (candidate.depth != parent_window.depth + 1 or
+                candidate.depth > protocol.max_window_tree_depth)
+                return Error.InvalidMessage;
+            var hops: usize = 0;
+            var ancestor_id = parent_window.parent_id;
+            while (ancestor_id != 0) {
+                hops += 1;
+                if (hops > protocol.max_window_tree_depth or ancestor_id == candidate.id)
+                    return Error.InvalidMessage;
+                const ancestor = findWindow(self.windows.items, ancestor_id) orelse
+                    return Error.InvalidMessage;
+                ancestor_id = ancestor.parent_id;
+            }
+        }
+        self.windows.items[window_index] = updated;
         self.stats.control_messages += 1;
     }
 
@@ -3074,6 +3164,13 @@ const default_glyph_delete: GlyphRunDeleteWire = .{
     .row_index = 0,
 };
 
+fn windowLifecycleMessage(a: std.mem.Allocator, message_type: u16, sequence: u64, frame_id: u32, payload: []const u8) ![]u8 {
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{ .flags = 0, .message_type = message_type, .sequence = sequence, .ack_sequence = 0, .session_id = 9, .frame_id = frame_id, .timestamp_ns = sequence }, payload, &message);
+    return message.toOwnedSlice(a);
+}
+
 fn windowCreateMessage(a: std.mem.Allocator, sequence: u64, frame_id: u32, node: protocol.WindowTreeNode) ![]u8 {
     var payload: std.ArrayList(u8) = .empty;
     defer payload.deinit(a);
@@ -3163,6 +3260,58 @@ test "window lifecycle is rejected while session is suspended" {
     const create = try windowCreateMessage(a, 3, 7, .{ .window_id = 900, .parent_window_id = 0, .x = 0, .y = 0, .width = 40, .height = 20, .flags = 2, .default_face_id = 0, .depth = 0 });
     defer a.free(create);
     try std.testing.expectError(Error.SessionSuspended, scene.apply(create));
+}
+
+test "scene patches window geometry parent and visibility" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create_frame = try createMessage(a, 1, 7, 7);
+    defer a.free(create_frame);
+    try scene.apply(create_frame);
+
+    const root = try windowCreateMessage(a, 2, 7, .{ .window_id = 900, .parent_window_id = 0, .x = 0, .y = 0, .width = 40, .height = 20, .flags = 2, .default_face_id = 0, .depth = 0 });
+    defer a.free(root);
+    try scene.apply(root);
+    const child = try windowCreateMessage(a, 3, 7, .{ .window_id = 901, .parent_window_id = 900, .x = 0, .y = 0, .width = 30, .height = 20, .flags = 2, .default_face_id = 0, .depth = 1 });
+    defer a.free(child);
+    try scene.apply(child);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeWindowPatch(a, .{
+        .flags = protocol.WindowPatchFlags.x | protocol.WindowPatchFlags.y |
+            protocol.WindowPatchFlags.width | protocol.WindowPatchFlags.height |
+            protocol.WindowPatchFlags.visible | protocol.WindowPatchFlags.default_face,
+        .frame_id = 7,
+        .frame_generation = 1,
+        .window_id = 901,
+        .x = 2,
+        .y = 3,
+        .width = 20,
+        .height = 10,
+        .visible = false,
+        .default_face_id = 8,
+    }, &payload);
+    const patch = try windowLifecycleMessage(a, protocol.Message.window_patch, 4, 7, payload.items);
+    defer a.free(patch);
+    try scene.apply(patch);
+    try std.testing.expectEqual(@as(i32, 2), scene.windows.items[1].x);
+    try std.testing.expectEqual(false, scene.windows.items[1].visible);
+    try std.testing.expectEqual(@as(u32, 8), scene.windows.items[1].default_face_id);
+
+    payload.clearRetainingCapacity();
+    const cycle = try protocol.encodeWindowPatch(a, .{
+        .flags = protocol.WindowPatchFlags.parent,
+        .frame_id = 7,
+        .frame_generation = 1,
+        .window_id = 900,
+        .parent_window_id = 901,
+    }, &payload);
+    _ = cycle;
+    const invalid_patch = try windowLifecycleMessage(a, protocol.Message.window_patch, 5, 7, payload.items);
+    defer a.free(invalid_patch);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(invalid_patch));
 }
 
 test "scene applies and validates window tree snapshot" {
