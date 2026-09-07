@@ -1187,6 +1187,7 @@ pub const Scene = struct {
     text: std.ArrayList(TextLine) = .empty,
     present: ?PresentHint = null,
     viewport: ?Viewport = null,
+    window_tree: ?protocol.WindowTreeSnapshot = null,
     stats: ApplyStats = .{},
 
     pub fn init(allocator: std.mem.Allocator) Scene {
@@ -1221,6 +1222,8 @@ pub const Scene = struct {
         self.cursor = null;
         self.present = null;
         self.viewport = null;
+        if (self.window_tree) |*tree| protocol.freeWindowTreeSnapshot(self.allocator, tree);
+        self.window_tree = null;
         self.stats = .{};
     }
 
@@ -1244,6 +1247,7 @@ pub const Scene = struct {
         switch (payload.envelope.message_type) {
             protocol.Message.frame_create => try self.applyFrameCreate(payload.envelope, payload.bytes),
             protocol.Message.frame_update => try self.applyFrameUpdate(payload),
+            protocol.Message.window_tree_snapshot => try self.applyWindowTreeSnapshot(payload),
             protocol.Message.glyph_run => try self.applyGlyphRun(payload),
             protocol.Message.glyph_run_delete => try self.applyGlyphRunDelete(payload),
             protocol.Message.frame_visibility => try self.applyFrameVisibility(payload),
@@ -1281,6 +1285,8 @@ pub const Scene = struct {
         self.cursor = null;
         self.present = null;
         self.viewport = null;
+        if (self.window_tree) |*tree| protocol.freeWindowTreeSnapshot(self.allocator, tree);
+        self.window_tree = null;
     }
 
     fn clearGlyphRuns(self: *Scene) void {
@@ -1425,6 +1431,22 @@ pub const Scene = struct {
                 self.allocator.free(owned);
             } else index += 1;
         }
+    }
+
+    fn applyWindowTreeSnapshot(self: *Scene, payload: protocol.Payload) Error!void {
+        const frame = self.frame orelse return Error.FrameNotActive;
+        var tree = try protocol.decodeWindowTreeSnapshot(self.allocator, payload.bytes);
+        errdefer protocol.freeWindowTreeSnapshot(self.allocator, &tree);
+        if (payload.envelope.frame_id != frame.frame_id or
+            tree.header.frame_id != frame.frame_id or
+            tree.header.frame_generation != frame.generation)
+        {
+            protocol.freeWindowTreeSnapshot(self.allocator, &tree);
+            return Error.InvalidMessage;
+        }
+        if (self.window_tree) |*old| protocol.freeWindowTreeSnapshot(self.allocator, old);
+        self.window_tree = tree;
+        self.stats.control_messages += 1;
     }
 
     fn applyFaceDefine(self: *Scene, payload: protocol.Payload) Error!void {
@@ -2128,6 +2150,21 @@ fn glyphRunMessage(
     return message.toOwnedSlice(a);
 }
 
+fn windowTreeMessage(a: std.mem.Allocator, sequence: u64, payload: []const u8) ![]u8 {
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.window_tree_snapshot,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 7,
+        .timestamp_ns = sequence,
+    }, payload, &message);
+    return message.toOwnedSlice(a);
+}
+
 fn faceBoundGlyphRunMessage(
     a: std.mem.Allocator,
     sequence: u64,
@@ -2243,6 +2280,32 @@ const default_glyph_delete: GlyphRunDeleteWire = .{
     .window_id = 100,
     .row_index = 0,
 };
+
+test "scene applies and validates window tree snapshot" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    const nodes = [_]protocol.WindowTreeNode{
+        .{ .window_id = 10, .parent_window_id = 0, .x = 0, .y = 0, .width = 80, .height = 60, .flags = protocol.window_tree_flag_visible, .default_face_id = 0, .depth = 0 },
+        .{ .window_id = 11, .parent_window_id = 10, .x = 40, .y = 0, .width = 40, .height = 60, .flags = protocol.window_tree_flag_visible | protocol.window_tree_flag_selected, .default_face_id = 3, .depth = 1 },
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeWindowTreeSnapshot(a, .{
+        .header = .{ .frame_id = 7, .frame_generation = 1, .selected_window_id = 11, .root_window_id = 10 },
+        .nodes = &nodes,
+    }, &payload);
+    const snapshot = try windowTreeMessage(a, 2, payload.items);
+    defer a.free(snapshot);
+    try scene.apply(snapshot);
+    try std.testing.expect(scene.window_tree != null);
+    try std.testing.expectEqual(@as(u32, 11), scene.window_tree.?.header.selected_window_id);
+}
 
 test "face bound glyph run validates resource and face generation" {
     const a = std.testing.allocator;

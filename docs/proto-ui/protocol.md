@@ -216,6 +216,46 @@ See [`capabilities.md`](capabilities.md).
 
 `WINDOW_POSITION` is diagnostic. Frontend layout uses rows and glyph runs, not buffer content.
 
+### 11.1 `WINDOW_TREE_SNAPSHOT` v1 (implemented bounded adapter contract)
+
+`WINDOW_TREE_SNAPSHOT = 0x0300` is an authoritative complete-tree state message.
+Its little-endian payload is a 24-byte header followed by 1..32 fixed 48-byte
+nodes.
+
+Header:
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 2 | schema | `1` |
+| 2 | 1 | flags | zero |
+| 3 | 1 | reserved | zero |
+| 4 | 4 | frame_id | nonzero and equal to envelope frame_id |
+| 8 | 4 | frame_generation | nonzero |
+| 12 | 4 | node_count | `1..32` |
+| 16 | 4 | selected_window_id | nonzero and present |
+| 20 | 4 | root_window_id | nonzero, present, visible, depth zero |
+
+Node:
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 8 | window_id | nonzero, unique |
+| 8 | 8 | parent_window_id | zero only for root; every parent exists |
+| 16 | 4 | x | nonnegative |
+| 20 | 4 | y | nonnegative |
+| 24 | 4 | width | nonnegative |
+| 28 | 4 | height | nonnegative |
+| 32 | 4 | flags | bit0 selected, bit1 visible, bits2..31 zero |
+| 36 | 4 | default_face_id | may be zero |
+| 40 | 1 | depth | root is zero; child depth is parent depth + one; max eight |
+| 41 | 7 | reserved | zero |
+
+Validation requires exactly one root and exactly one selected visible node. All
+parent links must resolve and terminate at the root without cycles. The Scene
+replaces its complete tree only after all validation succeeds. This does not yet
+provide full window-management commands, buffer/bidi rows, widgets, or runtime
+registration.
+
 ## 12. Composite `FRAME_UPDATE`
 
 `FRAME_UPDATE` is the required production display message. It atomically carries all changes for one coherent frame state.

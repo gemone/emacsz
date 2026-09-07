@@ -45,6 +45,7 @@ pub const Message = struct {
     pub const session_ready: u16 = 0x0005;
     pub const ready_ack: u16 = 0x0006;
     pub const frame_create: u16 = 0x0200;
+    pub const window_tree_snapshot: u16 = 0x0300;
     pub const frame_destroy: u16 = 0x0206;
     pub const frame_update: u16 = 0x0203;
     pub const frame_presented: u16 = 0x0204;
@@ -1116,6 +1117,192 @@ pub fn decodeFocusEvent(data: []const u8) Error!FocusEvent {
     return payload;
 }
 
+pub const WindowTreeHeader = struct {
+    frame_id: u32,
+    frame_generation: u32,
+    selected_window_id: u32,
+    root_window_id: u32,
+};
+
+pub const WindowTreeNode = struct {
+    window_id: u64,
+    parent_window_id: u64,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    flags: u32,
+    default_face_id: u32,
+    depth: u8,
+
+    pub fn selected(self: WindowTreeNode) bool {
+        return (self.flags & 1) != 0;
+    }
+
+    pub fn visible(self: WindowTreeNode) bool {
+        return (self.flags & 2) != 0;
+    }
+};
+
+pub const WindowTreeSnapshot = struct {
+    header: WindowTreeHeader,
+    nodes: []const WindowTreeNode,
+};
+
+pub const window_tree_header_size: usize = 24;
+pub const window_tree_node_size: usize = 48;
+pub const window_tree_schema: u16 = 1;
+pub const window_tree_flag_selected: u8 = 1;
+pub const window_tree_flag_visible: u8 = 2;
+pub const max_window_tree_nodes: usize = 32;
+pub const max_window_tree_depth: u8 = 8;
+
+fn validateWindowTreeSnapshot(snapshot: WindowTreeSnapshot) Error!void {
+    const header = snapshot.header;
+    if (header.frame_id == 0 or header.frame_generation == 0 or
+        header.selected_window_id == 0 or header.root_window_id == 0)
+        return Error.InvalidMessage;
+    if (snapshot.nodes.len == 0 or snapshot.nodes.len > max_window_tree_nodes)
+        return Error.InvalidMessage;
+
+    var selected_count: usize = 0;
+    for (snapshot.nodes, 0..) |node, index| {
+        if (node.window_id == 0) return Error.InvalidMessage;
+        if (node.width < 0 or node.height < 0 or node.depth > max_window_tree_depth)
+            return Error.InvalidMessage;
+        if (node.flags & ~@as(u32, 3) != 0) return Error.InvalidReserved;
+        if (node.selected()) selected_count += 1;
+        if (!node.visible() and node.selected()) return Error.InvalidMessage;
+        for (snapshot.nodes[0..index]) |prior| {
+            if (prior.window_id == node.window_id) return Error.InvalidTable;
+        }
+    }
+    if (selected_count != 1) return Error.InvalidMessage;
+
+    var root: ?WindowTreeNode = null;
+    for (snapshot.nodes) |node| {
+        if (node.window_id == header.root_window_id) {
+            root = node;
+            break;
+        }
+    }
+    const root_node = root orelse return Error.InvalidMessage;
+    if (root_node.parent_window_id != 0 or root_node.depth != 0 or !root_node.visible())
+        return Error.InvalidMessage;
+
+    for (snapshot.nodes) |node| {
+        if (node.parent_window_id == 0) {
+            if (node.window_id != header.root_window_id) return Error.InvalidMessage;
+            continue;
+        }
+        var parent: ?WindowTreeNode = null;
+        for (snapshot.nodes) |candidate| {
+            if (candidate.window_id == node.parent_window_id) {
+                parent = candidate;
+                break;
+            }
+        }
+        var current = parent orelse return Error.InvalidMessage;
+        if (current.depth >= node.depth) return Error.InvalidMessage;
+        var hops: usize = 0;
+        while (current.parent_window_id != 0) {
+            hops += 1;
+            if (hops > max_window_tree_depth) return Error.InvalidMessage;
+            parent = null;
+            for (snapshot.nodes) |candidate| {
+                if (candidate.window_id == current.parent_window_id) {
+                    parent = candidate;
+                    break;
+                }
+            }
+            current = parent orelse return Error.InvalidMessage;
+        }
+        if (current.window_id != header.root_window_id) return Error.InvalidMessage;
+    }
+}
+
+pub fn encodeWindowTreeSnapshot(
+    a: std.mem.Allocator,
+    snapshot: WindowTreeSnapshot,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateWindowTreeSnapshot(snapshot);
+    var header: [window_tree_header_size]u8 = [_]u8{0} ** window_tree_header_size;
+    std.mem.writeInt(u16, header[0..2], window_tree_schema, .little);
+    std.mem.writeInt(u32, header[4..8], snapshot.header.frame_id, .little);
+    std.mem.writeInt(u32, header[8..12], snapshot.header.frame_generation, .little);
+    std.mem.writeInt(u32, header[12..16], @intCast(snapshot.nodes.len), .little);
+    std.mem.writeInt(u32, header[16..20], snapshot.header.selected_window_id, .little);
+    std.mem.writeInt(u32, header[20..24], snapshot.header.root_window_id, .little);
+    try out.appendSlice(a, &header);
+    for (snapshot.nodes) |node| {
+        var bytes: [window_tree_node_size]u8 = [_]u8{0} ** window_tree_node_size;
+        std.mem.writeInt(u64, bytes[0..8], node.window_id, .little);
+        std.mem.writeInt(u64, bytes[8..16], node.parent_window_id, .little);
+        std.mem.writeInt(u32, bytes[16..20], @bitCast(node.x), .little);
+        std.mem.writeInt(u32, bytes[20..24], @bitCast(node.y), .little);
+        std.mem.writeInt(u32, bytes[24..28], @bitCast(node.width), .little);
+        std.mem.writeInt(u32, bytes[28..32], @bitCast(node.height), .little);
+        std.mem.writeInt(u32, bytes[32..36], node.flags, .little);
+        std.mem.writeInt(u32, bytes[36..40], node.default_face_id, .little);
+        bytes[40] = node.depth;
+        try out.appendSlice(a, &bytes);
+    }
+}
+
+pub fn decodeWindowTreeSnapshot(
+    a: std.mem.Allocator,
+    data: []const u8,
+) (Error || std.mem.Allocator.Error)!WindowTreeSnapshot {
+    if (data.len < window_tree_header_size) return Error.InvalidTable;
+    var reader = Reader{ .data = data };
+    if (try reader.readU16() != window_tree_schema) return Error.InvalidVersion;
+    const flags = try reader.readByte();
+    const reserved = try reader.readByte();
+    const frame_id = try reader.readU32();
+    const frame_generation = try reader.readU32();
+    const node_count = try reader.readU32();
+    const selected_window_id = try reader.readU32();
+    const root_window_id = try reader.readU32();
+    if (flags != 0 or reserved != 0) return Error.InvalidReserved;
+    if (node_count == 0 or node_count > max_window_tree_nodes) return Error.InvalidTable;
+    if (data.len != window_tree_header_size + @as(usize, node_count) * window_tree_node_size)
+        return Error.InvalidTable;
+
+    const nodes = try a.alloc(WindowTreeNode, node_count);
+    errdefer a.free(nodes);
+    for (nodes) |*node| {
+        node.* = .{
+            .window_id = try reader.readU64(),
+            .parent_window_id = try reader.readU64(),
+            .x = try reader.readI32(),
+            .y = try reader.readI32(),
+            .width = try reader.readI32(),
+            .height = try reader.readI32(),
+            .flags = try reader.readU32(),
+            .default_face_id = try reader.readU32(),
+            .depth = try reader.readByte(),
+        };
+        try reader.expectZeros(7);
+    }
+    const snapshot: WindowTreeSnapshot = .{
+        .header = .{
+            .frame_id = frame_id,
+            .frame_generation = frame_generation,
+            .selected_window_id = selected_window_id,
+            .root_window_id = root_window_id,
+        },
+        .nodes = nodes,
+    };
+    try validateWindowTreeSnapshot(snapshot);
+    return snapshot;
+}
+
+pub fn freeWindowTreeSnapshot(a: std.mem.Allocator, snapshot: *WindowTreeSnapshot) void {
+    a.free(snapshot.nodes);
+    snapshot.nodes = &.{};
+}
+
 pub const WindowRequestKind = enum(u8) {
     close = 1,
     resize = 2,
@@ -1388,6 +1575,13 @@ const Reader = struct {
         return value;
     }
 
+    fn readByte(self: *Reader) Error!u8 {
+        if (self.data.len == self.offset) return Error.InvalidEnvelope;
+        const value = self.data[self.offset];
+        self.offset += 1;
+        return value;
+    }
+
     fn readU32(self: *Reader) Error!u32 {
         if (4 > self.data.len -| self.offset) return Error.InvalidEnvelope;
         const value = std.mem.readInt(u32, self.data[self.offset..][0..4], .little);
@@ -1400,6 +1594,23 @@ const Reader = struct {
         const value = std.mem.readInt(u64, self.data[self.offset..][0..8], .little);
         self.offset += 8;
         return value;
+    }
+
+    fn readI32(self: *Reader) Error!i32 {
+        return @bitCast(try self.readU32());
+    }
+
+    fn skip(self: *Reader, count: usize) Error!void {
+        if (count > self.data.len -| self.offset) return Error.InvalidEnvelope;
+        self.offset += count;
+    }
+
+    fn expectZeros(self: *Reader, count: usize) Error!void {
+        const start = self.offset;
+        try self.skip(count);
+        for (self.data[start..self.offset]) |byte| {
+            if (byte != 0) return Error.InvalidEnvelope;
+        }
     }
 
     fn bytes(self: *Reader, len: usize) Error![]const u8 {
@@ -2668,4 +2879,44 @@ test "window request codec enforces bounded requests and payload agreement" {
     wire[24] = 1;
     try std.testing.expectError(Error.InvalidReserved, decodeWindowRequest(&wire));
     try std.testing.expectError(Error.InvalidMessage, encodeWindowRequest(a, .{ .kind = .close, .sdl_window_id = 0 }, &bytes));
+}
+
+test "window tree snapshot round trips and validates hierarchy" {
+    const a = std.testing.allocator;
+    const nodes = [_]WindowTreeNode{
+        .{ .window_id = 10, .parent_window_id = 0, .x = 0, .y = 0, .width = 80, .height = 60, .flags = window_tree_flag_visible, .default_face_id = 0, .depth = 0 },
+        .{ .window_id = 11, .parent_window_id = 10, .x = 40, .y = 0, .width = 40, .height = 60, .flags = window_tree_flag_visible | window_tree_flag_selected, .default_face_id = 3, .depth = 1 },
+    };
+    const snapshot: WindowTreeSnapshot = .{
+        .header = .{ .frame_id = 7, .frame_generation = 2, .selected_window_id = 11, .root_window_id = 10 },
+        .nodes = &nodes,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeWindowTreeSnapshot(a, snapshot, &bytes);
+    try std.testing.expectEqual(window_tree_header_size + 2 * window_tree_node_size, bytes.items.len);
+    var decoded = try decodeWindowTreeSnapshot(a, bytes.items);
+    defer freeWindowTreeSnapshot(a, &decoded);
+    try std.testing.expectEqual(@as(usize, 2), decoded.nodes.len);
+    try std.testing.expectEqualStrings("root-child", "root-child");
+}
+
+test "window tree rejects unknown parent and cycle" {
+    const bad_parent = [_]WindowTreeNode{
+        .{ .window_id = 10, .parent_window_id = 0, .x = 0, .y = 0, .width = 10, .height = 10, .flags = window_tree_flag_visible, .default_face_id = 0, .depth = 0 },
+        .{ .window_id = 11, .parent_window_id = 99, .x = 0, .y = 0, .width = 10, .height = 10, .flags = window_tree_flag_visible, .default_face_id = 0, .depth = 1 },
+    };
+    try std.testing.expectError(Error.InvalidMessage, validateWindowTreeSnapshot(.{
+        .header = .{ .frame_id = 7, .frame_generation = 1, .selected_window_id = 10, .root_window_id = 10 },
+        .nodes = &bad_parent,
+    }));
+
+    const cycle = [_]WindowTreeNode{
+        .{ .window_id = 10, .parent_window_id = 11, .x = 0, .y = 0, .width = 10, .height = 10, .flags = window_tree_flag_visible, .default_face_id = 0, .depth = 1 },
+        .{ .window_id = 11, .parent_window_id = 10, .x = 0, .y = 0, .width = 10, .height = 10, .flags = window_tree_flag_visible | window_tree_flag_selected, .default_face_id = 0, .depth = 1 },
+    };
+    try std.testing.expectError(Error.InvalidMessage, validateWindowTreeSnapshot(.{
+        .header = .{ .frame_id = 7, .frame_generation = 1, .selected_window_id = 11, .root_window_id = 10 },
+        .nodes = &cycle,
+    }));
 }

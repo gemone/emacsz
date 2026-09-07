@@ -115,6 +115,13 @@ pub fn statusName(status: Status) []const u8 {
 
 fn entryFor(id: u16) !Entry {
     if (!protocol.knownMessage(id)) return error.UnknownMessageId;
+    if (id == 0x0300) return Entry{
+        .id = id,
+        .status = .implemented_codec,
+        .domain = .window,
+        .name = "window-tree-snapshot",
+        .evidence_or_gap = "bounded complete tree codec and Scene state validation",
+    };
     const range = rangeFor(id) orelse return error.UnclassifiedMessageId;
     return .{
         .id = id,
@@ -233,7 +240,7 @@ test "coverage table covers every assigned ID exactly once" {
 test "implemented and planned protocol coverage remain honest" {
     const implemented = entryFor(0x0203) catch unreachable;
     try std.testing.expectEqual(Status.implemented_codec, implemented.status);
-    const planned = entryFor(0x0300) catch unreachable;
+    const planned = entryFor(0x0301) catch unreachable;
     try std.testing.expectEqual(Status.planned, planned.status);
     try std.testing.expectError(error.UnknownMessageId, entryFor(0xffff));
 }

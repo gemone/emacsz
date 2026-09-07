@@ -50,6 +50,7 @@ Unknown optional capabilities are ignored. Unknown required messages trigger con
 | `frame.child` | Required for PGTK parity | negotiated | Tooltip/child unavailable |
 | `frame.tooltip` | Required for PGTK parity | negotiated | Echo-area fallback |
 | `window_tree` | Required | core/backend | Backend cannot operate |
+| `window.tree_snapshot_v1` | Optional/degraded | adapter/frontend | Bounded complete-tree state codec and Scene validation; no rendering/management parity |
 | `glyph_rows` | Required | core/backend | Backend cannot operate |
 | `shaped_glyphs` | Required | core/font stack + frontend | Incomplete text fallback |
 | `bidi` | Required | core/redisplay | RTL text nonconformant |
