@@ -67,6 +67,8 @@ pub const Message = struct {
     pub const version_mismatch: u16 = 0x000e;
     pub const frame_create: u16 = 0x0200;
     pub const window_tree_snapshot: u16 = 0x0300;
+    pub const window_create: u16 = 0x0301;
+    pub const window_delete: u16 = 0x0303;
     pub const frame_destroy: u16 = 0x0206;
     pub const frame_update: u16 = 0x0203;
     pub const frame_presented: u16 = 0x0204;
@@ -2581,6 +2583,161 @@ pub fn decodeFrameParent(data: []const u8) Error!FrameParentPayload {
 pub fn validateFrameParentEnvelope(payload: FrameParentPayload, envelope: Envelope) Error!void {
     try validateFrameParent(payload);
     if (envelope.frame_id == 0) return Error.InvalidMessage;
+}
+
+pub const WindowCreate = struct {
+    frame_id: u32,
+    frame_generation: u32,
+    node: WindowTreeNode,
+};
+
+pub const window_create_size: usize = 12 + window_tree_node_size;
+
+fn validateWindowCreate(create: WindowCreate) Error!void {
+    if (create.frame_id == 0 or create.frame_generation == 0) return Error.InvalidMessage;
+    if (create.node.window_id == 0 or create.node.width <= 0 or create.node.height <= 0 or
+        create.node.x < 0 or create.node.y < 0 or !create.node.visible())
+        return Error.InvalidMessage;
+    if (create.node.depth > max_window_tree_depth or
+        create.node.flags & ~@as(u32, 3) != 0)
+        return Error.InvalidMessage;
+}
+
+pub fn encodeWindowCreate(
+    a: std.mem.Allocator,
+    create: WindowCreate,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateWindowCreate(create);
+    var header: [12]u8 = [_]u8{0} ** 12;
+    std.mem.writeInt(u16, header[0..2], window_tree_schema, .little);
+    std.mem.writeInt(u32, header[4..8], create.frame_id, .little);
+    std.mem.writeInt(u32, header[8..12], create.frame_generation, .little);
+    try out.appendSlice(a, &header);
+    var node_bytes: [window_tree_node_size]u8 = [_]u8{0} ** window_tree_node_size;
+    std.mem.writeInt(u64, node_bytes[0..8], create.node.window_id, .little);
+    std.mem.writeInt(u64, node_bytes[8..16], create.node.parent_window_id, .little);
+    std.mem.writeInt(u32, node_bytes[16..20], @bitCast(create.node.x), .little);
+    std.mem.writeInt(u32, node_bytes[20..24], @bitCast(create.node.y), .little);
+    std.mem.writeInt(u32, node_bytes[24..28], @bitCast(create.node.width), .little);
+    std.mem.writeInt(u32, node_bytes[28..32], @bitCast(create.node.height), .little);
+    std.mem.writeInt(u32, node_bytes[32..36], create.node.flags, .little);
+    std.mem.writeInt(u32, node_bytes[36..40], create.node.default_face_id, .little);
+    node_bytes[40] = create.node.depth;
+    try out.appendSlice(a, &node_bytes);
+}
+
+pub fn decodeWindowCreate(data: []const u8) Error!WindowCreate {
+    if (data.len != window_create_size) return Error.InvalidTable;
+    var reader = Reader{ .data = data };
+    if (try reader.readU16() != window_tree_schema) return Error.InvalidTable;
+    try reader.expectZeros(2);
+    const frame_id = try reader.readU32();
+    const frame_generation = try reader.readU32();
+    const node = WindowTreeNode{
+        .window_id = try reader.readU64(),
+        .parent_window_id = try reader.readU64(),
+        .x = try reader.readI32(),
+        .y = try reader.readI32(),
+        .width = try reader.readI32(),
+        .height = try reader.readI32(),
+        .flags = try reader.readU32(),
+        .default_face_id = try reader.readU32(),
+        .depth = try reader.readByte(),
+    };
+    try reader.expectZeros(7);
+    const create: WindowCreate = .{ .frame_id = frame_id, .frame_generation = frame_generation, .node = node };
+    try validateWindowCreate(create);
+    return create;
+}
+
+pub const WindowDelete = struct {
+    frame_id: u32,
+    frame_generation: u32,
+    window_id: u64,
+};
+
+pub const window_delete_size: usize = 20;
+
+fn validateWindowDelete(delete: WindowDelete) Error!void {
+    if (delete.frame_id == 0 or delete.frame_generation == 0 or delete.window_id == 0)
+        return Error.InvalidMessage;
+}
+
+pub fn encodeWindowDelete(a: std.mem.Allocator, delete: WindowDelete, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    try validateWindowDelete(delete);
+    var bytes: [window_delete_size]u8 = [_]u8{0} ** window_delete_size;
+    std.mem.writeInt(u16, bytes[0..2], window_tree_schema, .little);
+    std.mem.writeInt(u32, bytes[4..8], delete.frame_id, .little);
+    std.mem.writeInt(u32, bytes[8..12], delete.frame_generation, .little);
+    std.mem.writeInt(u64, bytes[12..20], delete.window_id, .little);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeWindowDelete(data: []const u8) Error!WindowDelete {
+    if (data.len != window_delete_size) return Error.InvalidTable;
+    var reader = Reader{ .data = data };
+    if (try reader.readU16() != window_tree_schema) return Error.InvalidTable;
+    try reader.expectZeros(2);
+    const delete: WindowDelete = .{
+        .frame_id = try reader.readU32(),
+        .frame_generation = try reader.readU32(),
+        .window_id = try reader.readU64(),
+    };
+    try validateWindowDelete(delete);
+    return delete;
+}
+
+test "window lifecycle codecs have exact little-endian wire layout" {
+    const a = std.testing.allocator;
+    var wire: std.ArrayList(u8) = .empty;
+    defer wire.deinit(a);
+    const node: WindowTreeNode = .{
+        .window_id = 0x0102030405060708,
+        .parent_window_id = 9,
+        .x = 2,
+        .y = 3,
+        .width = 40,
+        .height = 20,
+        .flags = window_tree_flag_visible,
+        .default_face_id = 4,
+        .depth = 1,
+    };
+    try encodeWindowCreate(a, .{ .frame_id = 7, .frame_generation = 2, .node = node }, &wire);
+    try std.testing.expectEqual(window_create_size, wire.items.len);
+    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, wire.items[0..2], .little));
+    try std.testing.expectEqual(@as(u32, 7), std.mem.readInt(u32, wire.items[4..8], .little));
+    try std.testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, wire.items[8..12], .little));
+    const created = try decodeWindowCreate(wire.items);
+    try std.testing.expectEqual(node.window_id, created.node.window_id);
+    try std.testing.expectEqual(@as(u64, 9), created.node.parent_window_id);
+    try std.testing.expectEqual(@as(i32, 2), created.node.x);
+
+    wire.items[2] = 1;
+    try std.testing.expectError(Error.InvalidEnvelope, decodeWindowCreate(wire.items));
+    wire.items[2] = 0;
+    wire.items[12 + window_tree_node_size - 1] = 1;
+    try std.testing.expectError(Error.InvalidEnvelope, decodeWindowCreate(wire.items));
+    wire.items[12 + window_tree_node_size - 1] = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeWindowCreate(a, .{ .frame_id = 0, .frame_generation = 2, .node = node }, &wire));
+    try std.testing.expectError(Error.InvalidMessage, encodeWindowCreate(a, .{ .frame_id = 7, .frame_generation = 0, .node = node }, &wire));
+    try std.testing.expectError(Error.InvalidMessage, encodeWindowCreate(a, .{
+        .frame_id = 7,
+        .frame_generation = 2,
+        .node = .{ .window_id = 0, .parent_window_id = 0, .x = 0, .y = 0, .width = 1, .height = 1, .flags = window_tree_flag_visible, .default_face_id = 0, .depth = 0 },
+    }, &wire));
+
+    wire.clearRetainingCapacity();
+    try encodeWindowDelete(a, .{ .frame_id = 7, .frame_generation = 2, .window_id = node.window_id }, &wire);
+    try std.testing.expectEqual(window_delete_size, wire.items.len);
+    try std.testing.expectEqual(@as(u64, node.window_id), std.mem.readInt(u64, wire.items[12..20], .little));
+    const deleted = try decodeWindowDelete(wire.items);
+    try std.testing.expectEqual(node.window_id, deleted.window_id);
+    wire.items[3] = 1;
+    try std.testing.expectError(Error.InvalidEnvelope, decodeWindowDelete(wire.items));
+    wire.items[3] = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeWindowDelete(a, .{ .frame_id = 7, .frame_generation = 0, .window_id = node.window_id }, &wire));
+    try std.testing.expectError(Error.InvalidMessage, encodeWindowDelete(a, .{ .frame_id = 7, .frame_generation = 2, .window_id = 0 }, &wire));
 }
 
 pub fn encodeResourceRequests(a: std.mem.Allocator, requests: []const ResourceRequest, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {

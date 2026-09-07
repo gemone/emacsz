@@ -82,7 +82,11 @@ const ranges = [_]Range{
     .{ .low = 0x0212, .high = 0x0212, .status = .implemented_codec, .domain = .frame, .family = "frame-z-order", .note = "raise/lower/top/bottom/above/below codec, Scene state, SDL always-on-top probe" },
     .{ .low = 0x0213, .high = 0x0213, .status = .implemented_codec, .domain = .frame, .family = "frame-parent", .note = "nullable parent/modal codec, Scene state, SDL unparent probe; linked child windows pending" },
     .{ .low = 0x0214, .high = 0x0214, .status = .implemented_codec, .domain = .frame, .family = "frame-decorations", .note = "undecorated/decorated codec, Scene state, SDL probe" },
-    .{ .low = 0x0300, .high = 0x030a, .status = .planned, .domain = .window, .family = "window-tree", .note = "authoritative window-tree messages pending" },
+    .{ .low = 0x0300, .high = 0x0300, .status = .implemented_codec, .domain = .window, .family = "window-tree", .note = "bounded complete-tree codec and Scene validation" },
+    .{ .low = 0x0301, .high = 0x0301, .status = .implemented_codec, .domain = .window, .family = "window-create", .note = "bounded visible-window create codec and Scene lifecycle" },
+    .{ .low = 0x0302, .high = 0x0302, .status = .planned, .domain = .window, .family = "window-patch", .note = "changed window fields pending" },
+    .{ .low = 0x0303, .high = 0x0303, .status = .implemented_codec, .domain = .window, .family = "window-delete", .note = "bounded empty-window delete codec and Scene lifecycle" },
+    .{ .low = 0x0304, .high = 0x030a, .status = .planned, .domain = .window, .family = "window-state", .note = "zones/face/position/scroll/mouse-highlight payloads pending" },
     .{ .low = 0x0400, .high = 0x0404, .status = .planned, .domain = .render, .family = "render-debug", .note = "granular render boundary/row messages pending" },
     .{ .low = 0x0405, .high = 0x0405, .status = .implemented_codec, .domain = .render, .family = "glyph-run", .note = "bounded ASCII fallback v1/v2 and Scene rendering" },
     .{ .low = 0x0406, .high = 0x0406, .status = .implemented_codec, .domain = .render, .family = "glyph-run-delete", .note = "exact identity deletion and fallback restore" },
@@ -257,7 +261,7 @@ test "coverage table covers every assigned ID exactly once" {
 test "implemented and planned protocol coverage remain honest" {
     const implemented = entryFor(0x0203) catch unreachable;
     try std.testing.expectEqual(Status.implemented_codec, implemented.status);
-    const planned = entryFor(0x0301) catch unreachable;
+    const planned = entryFor(0x0302) catch unreachable;
     try std.testing.expectEqual(Status.planned, planned.status);
     try std.testing.expectError(error.UnknownMessageId, entryFor(0xffff));
 }

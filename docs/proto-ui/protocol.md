@@ -436,6 +436,22 @@ modal propagation, and Emacs child-frame parity remain pending.
 
 `WINDOW_POSITION` is diagnostic. Frontend layout uses rows and glyph runs, not buffer content.
 
+#### Window create/delete lifecycle v1 (implemented bounded adapter contract)
+
+`WINDOW_CREATE` (`0x0301`) uses a 12-byte header (`schema=1`, zero flags/reserved,
+nonzero frame ID and frame generation) followed by one standard 48-byte tree
+node. The node must be visible, have nonzero ID and positive geometry, use depth
+at most eight, and reference its parent only when that parent already exists in
+`Scene`. The child frame must be active with the envelope frame ID and current
+generation. Duplicate IDs are rejected.
+
+`WINDOW_DELETE` (`0x0303`) is a fixed 20-byte record (`schema=1`, zero
+flags/reserved, nonzero frame ID/generation, nonzero window ID). Deletion is
+rejected while the window still owns rows, glyph runs, cursor state, or image
+placements. Successful create/delete messages update `Scene.windows`
+atomically and preserve ordering; patch, zones, faces, scroll state, and
+mouse-highlight records remain pending.
+
 ### 11.1 `WINDOW_TREE_SNAPSHOT` v1 (implemented bounded adapter contract)
 
 `WINDOW_TREE_SNAPSHOT = 0x0300` is an authoritative complete-tree state message.

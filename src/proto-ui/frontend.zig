@@ -17,6 +17,7 @@ pub const Error = protocol.Error || session.Error || lifecycle.Error || error{
 pub const Window = struct {
     id: u64,
     frame_id: u32,
+    parent_id: u64 = 0,
     x: i32,
     y: i32,
     width: i32,
@@ -1384,8 +1385,10 @@ pub const Scene = struct {
         if (self.control.stage == .fatal or self.control.stage == .closed)
             return Error.InvalidSessionStage;
         if ((self.control.stage == .suspended or self.control.stage == .resume_pending) and
-            payload.envelope.message_type >= protocol.Message.frame_create and
-            payload.envelope.message_type < protocol.Message.window_tree_snapshot)
+            (payload.envelope.message_type >= protocol.Message.frame_create and
+                payload.envelope.message_type < protocol.Message.window_tree_snapshot or
+                payload.envelope.message_type == protocol.Message.window_create or
+                payload.envelope.message_type == protocol.Message.window_delete))
             return Error.SessionSuspended;
 
         switch (payload.envelope.message_type) {
@@ -1409,6 +1412,8 @@ pub const Scene = struct {
             protocol.Message.frame_size_hints => try self.applyFrameSizeHints(payload),
             protocol.Message.frame_z_order => try self.applyFrameZOrder(payload),
             protocol.Message.frame_parent => try self.applyFrameParent(payload),
+            protocol.Message.window_create => try self.applyWindowCreate(payload),
+            protocol.Message.window_delete => try self.applyWindowDelete(payload),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.font_define => try self.applyFontDefine(payload),
@@ -1758,6 +1763,68 @@ pub const Scene = struct {
                 return Error.InvalidMessage;
         }
         self.parent = parent;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyWindowCreate(self: *Scene, payload: protocol.Payload) Error!void {
+        const create = try protocol.decodeWindowCreate(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != create.frame_id or
+            frame.generation != create.frame_generation or
+            payload.envelope.frame_id != create.frame_id)
+            return Error.InvalidMessage;
+        if (self.windows.items.len >= protocol.max_window_tree_nodes)
+            return Error.ResourceTableFull;
+        for (self.windows.items) |existing| {
+            if (existing.id == create.node.window_id) return Error.InvalidTable;
+        }
+        if (create.node.parent_window_id != 0 and
+            findWindow(self.windows.items, create.node.parent_window_id) == null)
+            return Error.InvalidMessage;
+        try self.windows.append(self.allocator, .{
+            .id = create.node.window_id,
+            .frame_id = create.frame_id,
+            .parent_id = create.node.parent_window_id,
+            .x = create.node.x,
+            .y = create.node.y,
+            .width = create.node.width,
+            .height = create.node.height,
+        });
+        self.stats.control_messages += 1;
+    }
+
+    fn applyWindowDelete(self: *Scene, payload: protocol.Payload) Error!void {
+        const delete = try protocol.decodeWindowDelete(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != delete.frame_id or
+            frame.generation != delete.frame_generation or
+            payload.envelope.frame_id != delete.frame_id)
+            return Error.InvalidMessage;
+        var index: ?usize = null;
+        for (self.windows.items, 0..) |window, window_index| {
+            if (window.id == delete.window_id) {
+                index = window_index;
+                break;
+            }
+        }
+        const window_index = index orelse return Error.InvalidMessage;
+        const window_id = self.windows.items[window_index].id;
+        for (self.windows.items) |window| {
+            if (window.parent_id == window_id) return Error.ResourceNotLive;
+        }
+        for (self.rows.items) |row| {
+            if (row.window_id == window_id) return Error.ResourceNotLive;
+        }
+        for (self.glyph_runs.items) |run| {
+            if (run.window_id == window_id) return Error.ResourceNotLive;
+        }
+        for (self.image_placements[0..self.image_placement_count]) |placement| {
+            if (placement.window_id == window_id) return Error.ResourceNotLive;
+        }
+        if (self.cursor) |cursor| {
+            if (cursor.window_id == window_id) return Error.ResourceNotLive;
+        }
+        _ = self.windows.orderedRemove(window_index);
         self.stats.control_messages += 1;
     }
 
@@ -3006,6 +3073,97 @@ const default_glyph_delete: GlyphRunDeleteWire = .{
     .window_id = 100,
     .row_index = 0,
 };
+
+fn windowCreateMessage(a: std.mem.Allocator, sequence: u64, frame_id: u32, node: protocol.WindowTreeNode) ![]u8 {
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeWindowCreate(a, .{ .frame_id = frame_id, .frame_generation = 1, .node = node }, &payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{ .flags = 0, .message_type = protocol.Message.window_create, .sequence = sequence, .ack_sequence = 0, .session_id = 9, .frame_id = frame_id, .timestamp_ns = sequence }, payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
+fn windowDeleteMessage(a: std.mem.Allocator, sequence: u64, frame_id: u32, window_id: u64) ![]u8 {
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeWindowDelete(a, .{ .frame_id = frame_id, .frame_generation = 1, .window_id = window_id }, &payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{ .flags = 0, .message_type = protocol.Message.window_delete, .sequence = sequence, .ack_sequence = 0, .session_id = 9, .frame_id = frame_id, .timestamp_ns = sequence }, payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
+test "scene applies and deletes standalone window lifecycle messages" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create_frame = try createMessage(a, 1, 7, 7);
+    defer a.free(create_frame);
+    try scene.apply(create_frame);
+
+    const create = try windowCreateMessage(a, 2, 7, .{ .window_id = 900, .parent_window_id = 0, .x = 0, .y = 0, .width = 40, .height = 20, .flags = 2, .default_face_id = 0, .depth = 0 });
+    defer a.free(create);
+    try scene.apply(create);
+    try std.testing.expectEqual(@as(usize, 1), scene.windows.items.len);
+    try std.testing.expectEqual(@as(u64, 900), scene.windows.items[0].id);
+
+    const duplicate = try windowCreateMessage(a, 3, 7, .{ .window_id = 900, .parent_window_id = 0, .x = 0, .y = 0, .width = 30, .height = 20, .flags = 2, .default_face_id = 0, .depth = 0 });
+    defer a.free(duplicate);
+    try std.testing.expectError(Error.InvalidTable, scene.apply(duplicate));
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+
+    const child = try windowCreateMessage(a, 3, 7, .{ .window_id = 901, .parent_window_id = 900, .x = 0, .y = 0, .width = 30, .height = 20, .flags = 2, .default_face_id = 0, .depth = 1 });
+    defer a.free(child);
+    try scene.apply(child);
+    try std.testing.expectEqual(@as(u64, 0), scene.windows.items[0].parent_id);
+    try std.testing.expectEqual(@as(u64, 901), scene.windows.items[1].id);
+    try std.testing.expectEqual(@as(u64, 900), scene.windows.items[1].parent_id);
+
+    const parent_delete = try windowDeleteMessage(a, 4, 7, 900);
+    defer a.free(parent_delete);
+    try std.testing.expectError(Error.ResourceNotLive, scene.apply(parent_delete));
+
+    const child_delete = try windowDeleteMessage(a, 4, 7, 901);
+    defer a.free(child_delete);
+    try scene.apply(child_delete);
+    const delete = try windowDeleteMessage(a, 5, 7, 900);
+    defer a.free(delete);
+    try scene.apply(delete);
+    try std.testing.expectEqual(@as(usize, 0), scene.windows.items.len);
+    const missing_delete = try windowDeleteMessage(a, 6, 7, 900);
+    defer a.free(missing_delete);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(missing_delete));
+}
+
+test "window lifecycle is rejected while session is suspended" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create_frame = try createMessage(a, 1, 7, 7);
+    defer a.free(create_frame);
+    try scene.apply(create_frame);
+
+    var suspend_payload: std.ArrayList(u8) = .empty;
+    defer suspend_payload.deinit(a);
+    try session.encodeSuspend(a, .{ .reason = .transport_pressure }, &suspend_payload);
+    var suspend_message: std.ArrayList(u8) = .empty;
+    defer suspend_message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.session_suspend,
+        .sequence = 2,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 0,
+        .timestamp_ns = 2,
+    }, suspend_payload.items, &suspend_message);
+    try scene.apply(suspend_message.items);
+
+    const create = try windowCreateMessage(a, 3, 7, .{ .window_id = 900, .parent_window_id = 0, .x = 0, .y = 0, .width = 40, .height = 20, .flags = 2, .default_face_id = 0, .depth = 0 });
+    defer a.free(create);
+    try std.testing.expectError(Error.SessionSuspended, scene.apply(create));
+}
 
 test "scene applies and validates window tree snapshot" {
     const a = std.testing.allocator;
