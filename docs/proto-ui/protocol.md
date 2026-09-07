@@ -172,6 +172,34 @@ See [`capabilities.md`](capabilities.md).
 | `0x0010` | `RESYNC_BEGIN` | C→F | Scope | Snapshot follows |
 | `0x0011` | `RESYNC_COMPLETE` | C→F | Coherent sequence | Resume normal traffic |
 
+#### Session-control payloads
+
+`SESSION_SUSPEND` is exactly four bytes: `u8 reason` (`1=user`,
+`2=background`, `3=resource-pressure`, `4=transport-pressure`, `5=host`) and
+`u24 reserved=0`. It moves the control state to suspended.
+
+`SESSION_RESUME` is `u32 generation` (nonzero). It enters a resume-pending
+state. `SESSION_RESUMED` then carries `u64 next-sequence` (nonzero), confirms
+the resume, and returns control to active.
+
+`SESSION_CLOSE` is exactly four bytes: `u8 reason` (`1=normal`, `2=shutdown`,
+`3=protocol`, `4=resource`, `5=transport`) and `u24 reserved=0`. It is an
+ordered terminal control state; no normal session work follows it.
+
+`PING` and `PONG` are `u64 monotonic-timestamp` values. Zero is invalid. A
+pong must equal the outstanding ping timestamp and clears that pending probe.
+
+`ERROR` is a fixed 12-byte header followed by bounded UTF-8 detail. The header
+is `u16 code` (nonzero), `u8 severity` (`1=info`, `2=warning`,
+`3=recoverable`, `4=fatal`), `u8 recoverable`, `u32 message-resource-id`
+(nonzero), `u16 detail-byte-length` (0..256), and `u16 reserved=0`.
+`recoverable=0` or fatal severity transitions control to a fatal state.
+
+`VERSION_MISMATCH` is `u16 required-major`, `u16 required-minor`,
+`u16 observed-major`, `u16 observed-minor`. It is always fatal control state.
+The standard setup state machine and bounded control state machine are
+implemented; EPXL does not yet carry these standard control messages.
+
 ## 10. Frame messages
 
 | ID | Name | Direction | Payload | Semantics |

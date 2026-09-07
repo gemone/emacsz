@@ -37,6 +37,7 @@ pub const Status = enum {
 pub const Feature = enum {
     protocol_v1,
     capability_negotiation,
+    session_control_v1,
     transport_epxl_local,
     session_resync,
     frame_facts_profile,
@@ -99,6 +100,7 @@ pub const Feature = enum {
         return switch (self) {
             .protocol_v1 => "protocol.v1",
             .capability_negotiation => "capability.negotiation",
+            .session_control_v1 => "session.control_v1",
             .transport_epxl_local => "transport.epxl_local",
             .session_resync => "session.resync",
             .frame_facts_profile => "frame.facts_profile",
@@ -161,7 +163,7 @@ pub const Feature = enum {
 
     pub fn required(self: Feature) bool {
         return switch (self) {
-            .protocol_v1, .transport_epxl_local, .session_resync, .frame_facts_profile, .text_ascii_bounded, .renderer_sdl3 => true,
+            .protocol_v1, .session_control_v1, .transport_epxl_local, .session_resync, .frame_facts_profile, .text_ascii_bounded, .renderer_sdl3 => true,
             else => false,
         };
     }
@@ -212,6 +214,7 @@ pub const FeatureDescriptor = struct {
 pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .protocol_v1, .status = .implemented, .evidence = "proto-ui-conformance" },
     .{ .feature = .capability_negotiation, .status = .implemented, .evidence = "proto-ui-unit and sdl3-epxl-facts-smoke" },
+    .{ .feature = .session_control_v1, .status = .degraded, .evidence = "proto-ui-unit; not yet wired to EPXL transport" },
     .{ .feature = .transport_epxl_local, .status = .implemented, .evidence = "sdl3-live-smoke" },
     .{ .feature = .session_resync, .status = .implemented, .evidence = "sdl3-epxl-resync-smoke" },
     .{ .feature = .frame_facts_profile, .status = .degraded, .evidence = "sdl3-epxl-facts-smoke" },

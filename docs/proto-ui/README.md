@@ -78,6 +78,11 @@ maximize policy.  The diagnostic SDL bridge applies and restores both-axis
 maximization; single-axis platform mapping and redisplay adaptation remain
 pending.
 
+W12c-ctl adds standard EUP `SESSION_SUSPEND`, `SESSION_RESUME`,
+`SESSION_RESUMED`, `SESSION_CLOSE`, `PING`, `PONG`, `ERROR`, and
+`VERSION_MISMATCH` codecs with a bounded control state machine.  EPXL does not
+yet carry these standard messages.
+
 W12e adds a bounded adapter-owned resource payload cache with LRU eviction and
 strict wire contracts for `RESOURCE_REQUEST` and `RESOURCE_EVICT`.  The cache
 accepts at most 32 entries, 4096 bytes per payload, and 16 KiB total; existing

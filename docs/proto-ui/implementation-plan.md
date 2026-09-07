@@ -73,9 +73,10 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P6-prep reverse input bridge | Implemented for bounded SDL key/text intents through PureRuntimeHostV1 delivery/result/completion; not keymap/command parity |
 | P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
 | P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
-| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 39 implemented codecs, 3 partial, 122 planned; prevents an unclassified or overclaimed protocol table |
+| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 47 implemented codecs, 3 partial, 114 planned; prevents an unclassified or overclaimed protocol table |
 | Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
 | P12-prep EUP session setup | Implemented standard HELLO/HELLO_ACK/SESSION_READY/READY_ACK codecs and bounded state machine; not yet wired to EPXL transport |
+| P12-prep EUP session control | Implemented suspend/resume/close/ping/pong/error/version-mismatch codecs and bounded control state machine; not yet wired to EPXL transport |
 
 | P9-prep authoritative geometry | Implemented in runtime bridge with host rectangle caching and frame/window/damage bounds; real monitor/DPI events pending |
 | P10-prep face-bound debug runs | Implemented with GLYPH_RUN v2, exact live-face validation, and colored SDL fallback; not production face/shaping parity |
@@ -3127,10 +3128,14 @@ bounds, and observation validation in `runtime_bridge`; real monitor and scale
 events remain pending.
 Protocol coverage preparation adds `proto-ui-protocol-coverage`: every assigned
 EUP ID now has one honest status and evidence/gap classification.  The current
-counts are 39 implemented codecs, 3 partial, and 122 planned.
+counts are 47 implemented codecs, 3 partial, and 114 planned.
 P12 session-setup preparation adds concrete standard EUP HELLO, HELLO_ACK,
 SESSION_READY, and READY_ACK codecs with a bounded frontend state machine.  The
 authenticated EPXL handshake remains the current transport path.
+P12 session-control preparation adds concrete suspend/resume/close/liveness,
+error, and version-mismatch codecs plus a bounded control state machine.  The
+state machine enforces ordered suspend/resume and fatal close/error states, but
+EPXL does not yet carry the standard control messages.
 P12 title preparation adds `FRAME_TITLE` v1: a 16-byte, generation-qualified
 reference to a live string resource.  The Scene resolves and owns the title and
 the diagnostic SDL bridge applies it to its window; this does not register a

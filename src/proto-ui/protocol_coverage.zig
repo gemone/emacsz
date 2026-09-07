@@ -58,9 +58,10 @@ const Range = struct {
 };
 
 const ranges = [_]Range{
-    .{ .low = 0x0001, .high = 0x0002, .status = .partial, .domain = .session, .family = "handshake", .note = "EPXL handshake exists; full EUP payload codecs pending" },
+    .{ .low = 0x0001, .high = 0x0002, .status = .implemented_codec, .domain = .session, .family = "handshake", .note = "standard HELLO/HELLO_ACK codecs, setup state machine, EPXL transport" },
     .{ .low = 0x0003, .high = 0x0004, .status = .implemented_codec, .domain = .session, .family = "capabilities", .note = "capability table encode/decode and negotiation tests" },
-    .{ .low = 0x0005, .high = 0x000e, .status = .planned, .domain = .session, .family = "session-control", .note = "concrete session-control payload pending" },
+    .{ .low = 0x0005, .high = 0x0006, .status = .implemented_codec, .domain = .session, .family = "session-ready", .note = "standard ready handshake codecs and bounded state machine" },
+    .{ .low = 0x0007, .high = 0x000e, .status = .implemented_codec, .domain = .session, .family = "session-control", .note = "codecs and control state machine; not EPXL-wired" },
     .{ .low = 0x000f, .high = 0x0011, .status = .partial, .domain = .session, .family = "resync", .note = "authenticated local resync/recovery smoke; arbitrary recovery pending" },
     .{ .low = 0x0200, .high = 0x0200, .status = .implemented_codec, .domain = .frame, .family = "frame-create", .note = "frontend lifecycle and runtime bridge conformance" },
     .{ .low = 0x0201, .high = 0x0202, .status = .planned, .domain = .frame, .family = "frame-state", .note = "patch and snapshot payload pending" },

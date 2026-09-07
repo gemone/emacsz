@@ -1,4 +1,4 @@
-//! Standard EUP v1 session-setup payloads and bounded setup state machine.
+//! Standard EUP v1 session setup/control payloads and bounded state machines.
 //!
 //! This module is protocol preparation for the pure SDL3 runtime.  It does not
 //! replace the authenticated EPXL transport handshake yet and does not enable
@@ -24,6 +24,15 @@ pub const hello_ack_size: usize = 46;
 pub const session_ready_size: usize = 48;
 pub const ready_ack_size: usize = 48;
 pub const feature_hash_len: usize = 32;
+pub const suspend_size: usize = 4;
+pub const resume_size: usize = 4;
+pub const resumed_size: usize = 8;
+pub const close_size: usize = 4;
+pub const ping_size: usize = 8;
+pub const pong_size: usize = 8;
+pub const version_mismatch_size: usize = 8;
+pub const session_error_header_size: usize = 12;
+pub const max_session_error_detail: usize = 256;
 
 pub const Error = protocol.Error || error{
     InvalidSessionPayload,
@@ -93,7 +102,8 @@ pub const Setup = struct {
     next_sequence: u64 = 0,
     selected_minor: u16 = 0,
 
-    pub fn start(feature_hash: [feature_hash_len]u8, next_sequence: u64) Setup {
+    pub fn start(feature_hash: [feature_hash_len]u8, next_sequence: u64) Error!Setup {
+        if (next_sequence == 0) return error.InvalidSessionPayload;
         return .{
             .role = .frontend,
             .feature_hash = feature_hash,
@@ -167,11 +177,12 @@ fn hashEql(a: [feature_hash_len]u8, b: [feature_hash_len]u8) bool {
     return difference == 0;
 }
 
-fn appendHeader(gpa: std.mem.Allocator, out: *std.ArrayList(u8), major: u16, minor: u16, role: u8, profile: u8) !void {
-    try out.appendSlice(gpa, &[2]u8{ @intCast(major & 0xff), @intCast(major >> 8) });
-    try out.appendSlice(gpa, &[2]u8{ @intCast(minor & 0xff), @intCast(minor >> 8) });
-    try out.append(gpa, role);
-    try out.append(gpa, profile);
+fn appendHeader(out: *std.ArrayList(u8), major: u16, minor: u16, role: u8, profile: u8) void {
+    out.appendSliceAssumeCapacity(&.{
+        @truncate(major), @truncate(major >> 8),
+        @truncate(minor), @truncate(minor >> 8),
+        role,             profile,
+    });
 }
 
 pub fn encodeHello(gpa: std.mem.Allocator, hello: *const Hello, out: *std.ArrayList(u8)) !void {
@@ -179,7 +190,7 @@ pub fn encodeHello(gpa: std.mem.Allocator, hello: *const Hello, out: *std.ArrayL
         hello.protocol_minor > protocol_minor or hello.profile != .local_unix)
         return error.InvalidSessionPayload;
     try out.ensureUnusedCapacity(gpa, hello_size);
-    appendHeader(gpa, out, hello.protocol_major, hello.protocol_minor, @intFromEnum(hello.role()), @intFromEnum(hello.profile)) catch @panic("fixed append");
+    appendHeader(out, hello.protocol_major, hello.protocol_minor, @intFromEnum(hello.role()), @intFromEnum(hello.profile));
     out.appendSliceAssumeCapacity(&hello.feature_hash);
 }
 
@@ -208,7 +219,7 @@ pub fn encodeHelloAck(gpa: std.mem.Allocator, ack: *const HelloAck, out: *std.Ar
         ack.protocol_minor > protocol_minor or ack.profile != .local_unix or ack.session_id == 0)
         return error.InvalidSessionPayload;
     try out.ensureUnusedCapacity(gpa, hello_ack_size);
-    appendHeader(gpa, out, ack.protocol_major, ack.protocol_minor, @intFromEnum(ack.role()), @intFromEnum(ack.profile)) catch @panic("fixed append");
+    appendHeader(out, ack.protocol_major, ack.protocol_minor, @intFromEnum(ack.role()), @intFromEnum(ack.profile));
     var session: [8]u8 = undefined;
     std.mem.writeInt(u64, &session, ack.session_id, .little);
     out.appendSliceAssumeCapacity(&session);
@@ -297,6 +308,304 @@ pub fn decodeReadyAck(data: []const u8) Error!ReadyAck {
     return .{ .protocol_major = major, .protocol_minor = minor, .profile = profile, .feature_hash = hash, .next_sequence = next_sequence };
 }
 
+pub const SuspendReason = enum(u8) {
+    user = 1,
+    background = 2,
+    resource_pressure = 3,
+    transport_pressure = 4,
+    host = 5,
+};
+
+pub const CloseReason = enum(u8) {
+    normal = 1,
+    shutdown = 2,
+    protocol = 3,
+    resource = 4,
+    transport = 5,
+};
+
+pub const ErrorSeverity = enum(u8) {
+    info = 1,
+    warning = 2,
+    recoverable = 3,
+    fatal = 4,
+};
+
+pub const SessionSuspend = struct {
+    reason: SuspendReason,
+};
+
+pub const SessionResume = struct {
+    generation: u32,
+};
+
+pub const SessionResumed = struct {
+    next_sequence: u64,
+};
+
+pub const SessionClose = struct {
+    reason: CloseReason,
+};
+
+pub const Ping = struct {
+    timestamp_ns: u64,
+};
+
+pub const Pong = struct {
+    original_timestamp_ns: u64,
+};
+
+pub const SessionError = struct {
+    code: u16,
+    severity: ErrorSeverity,
+    recoverable: bool,
+    message_resource_id: u32,
+    detail: []const u8,
+};
+
+pub const VersionMismatch = struct {
+    required_major: u16,
+    required_minor: u16,
+    observed_major: u16,
+    observed_minor: u16,
+};
+
+pub const ControlStage = enum {
+    active,
+    suspended,
+    resume_pending,
+    closed,
+    fatal,
+};
+
+pub const Control = struct {
+    stage: ControlStage = .active,
+    suspend_reason: ?SuspendReason = null,
+    requested_resume_generation: u32 = 0,
+    resume_next_sequence: u64 = 0,
+    outstanding_ping_ns: u64 = 0,
+    close_reason: ?CloseReason = null,
+    last_error_code: u16 = 0,
+    last_error_severity: ErrorSeverity = .info,
+    recoverable_error_count: u64 = 0,
+
+    pub fn apply(self: *Control, message_type: u16, payload: []const u8) Error!void {
+        if (self.stage == .fatal or self.stage == .closed) return error.InvalidSessionStage;
+        switch (message_type) {
+            protocol.Message.session_suspend => {
+                if (self.stage != .active) return error.InvalidSessionStage;
+                const value = try decodeSuspend(payload);
+                self.stage = .suspended;
+                self.suspend_reason = value.reason;
+            },
+            protocol.Message.session_resume => {
+                if (self.stage != .suspended) return error.InvalidSessionStage;
+                const value = try decodeResume(payload);
+                self.requested_resume_generation = value.generation;
+                self.stage = .resume_pending;
+            },
+            protocol.Message.session_resumed => {
+                if (self.stage != .resume_pending) return error.InvalidSessionStage;
+                const value = try decodeResumed(payload);
+                self.resume_next_sequence = value.next_sequence;
+                self.stage = .active;
+                self.suspend_reason = null;
+                self.requested_resume_generation = 0;
+            },
+            protocol.Message.session_close => {
+                const value = try decodeClose(payload);
+                self.close_reason = value.reason;
+                self.stage = .closed;
+            },
+            protocol.Message.ping => {
+                const value = try decodePing(payload);
+                if (self.outstanding_ping_ns != 0) return error.InvalidSessionStage;
+                self.outstanding_ping_ns = value.timestamp_ns;
+            },
+            protocol.Message.pong => {
+                const value = try decodePong(payload);
+                if (self.outstanding_ping_ns == 0 or value.original_timestamp_ns != self.outstanding_ping_ns)
+                    return error.InvalidSessionPayload;
+                self.outstanding_ping_ns = 0;
+            },
+            protocol.Message.session_error => {
+                const value = try decodeSessionError(payload);
+                self.last_error_code = value.code;
+                self.last_error_severity = value.severity;
+                if (value.severity == .fatal or !value.recoverable) {
+                    self.stage = .fatal;
+                } else {
+                    self.recoverable_error_count += 1;
+                }
+            },
+            protocol.Message.version_mismatch => {
+                _ = try decodeVersionMismatch(payload);
+                self.stage = .fatal;
+            },
+            else => return error.InvalidSessionPayload,
+        }
+    }
+};
+
+pub fn encodeSuspend(gpa: std.mem.Allocator, value: SessionSuspend, out: *std.ArrayList(u8)) !void {
+    try out.appendSlice(gpa, &.{ @intFromEnum(value.reason), 0, 0, 0 });
+}
+
+pub fn decodeSuspend(data: []const u8) Error!SessionSuspend {
+    if (data.len != suspend_size or data[1] != 0 or data[2] != 0 or data[3] != 0)
+        return error.InvalidSessionPayload;
+    const value: SessionSuspend = .{ .reason = switch (data[0]) {
+        1 => .user,
+        2 => .background,
+        3 => .resource_pressure,
+        4 => .transport_pressure,
+        5 => .host,
+        else => return error.InvalidSessionPayload,
+    } };
+    return value;
+}
+
+pub fn encodeResume(gpa: std.mem.Allocator, value: SessionResume, out: *std.ArrayList(u8)) !void {
+    if (value.generation == 0) return error.InvalidSessionPayload;
+    var bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, &bytes, value.generation, .little);
+    try out.appendSlice(gpa, &bytes);
+}
+
+pub fn decodeResume(data: []const u8) Error!SessionResume {
+    if (data.len != resume_size) return error.InvalidSessionPayload;
+    const value: SessionResume = .{ .generation = std.mem.readInt(u32, data[0..4], .little) };
+    if (value.generation == 0) return error.InvalidSessionPayload;
+    return value;
+}
+
+pub fn encodeResumed(gpa: std.mem.Allocator, value: SessionResumed, out: *std.ArrayList(u8)) !void {
+    if (value.next_sequence == 0) return error.InvalidSessionPayload;
+    var bytes: [8]u8 = undefined;
+    std.mem.writeInt(u64, &bytes, value.next_sequence, .little);
+    try out.appendSlice(gpa, &bytes);
+}
+
+pub fn decodeResumed(data: []const u8) Error!SessionResumed {
+    if (data.len != resumed_size) return error.InvalidSessionPayload;
+    const value: SessionResumed = .{ .next_sequence = std.mem.readInt(u64, data[0..8], .little) };
+    if (value.next_sequence == 0) return error.InvalidSessionPayload;
+    return value;
+}
+
+pub fn encodeClose(gpa: std.mem.Allocator, value: SessionClose, out: *std.ArrayList(u8)) !void {
+    try out.appendSlice(gpa, &.{ @intFromEnum(value.reason), 0, 0, 0 });
+}
+
+pub fn decodeClose(data: []const u8) Error!SessionClose {
+    if (data.len != close_size or data[1] != 0 or data[2] != 0 or data[3] != 0)
+        return error.InvalidSessionPayload;
+    return .{ .reason = switch (data[0]) {
+        1 => .normal,
+        2 => .shutdown,
+        3 => .protocol,
+        4 => .resource,
+        5 => .transport,
+        else => return error.InvalidSessionPayload,
+    } };
+}
+
+pub fn encodePing(gpa: std.mem.Allocator, value: Ping, out: *std.ArrayList(u8)) !void {
+    if (value.timestamp_ns == 0) return error.InvalidSessionPayload;
+    var bytes: [8]u8 = undefined;
+    std.mem.writeInt(u64, &bytes, value.timestamp_ns, .little);
+    try out.appendSlice(gpa, &bytes);
+}
+
+pub fn decodePing(data: []const u8) Error!Ping {
+    if (data.len != ping_size) return error.InvalidSessionPayload;
+    const value: Ping = .{ .timestamp_ns = std.mem.readInt(u64, data[0..8], .little) };
+    if (value.timestamp_ns == 0) return error.InvalidSessionPayload;
+    return value;
+}
+
+pub fn encodePong(gpa: std.mem.Allocator, value: Pong, out: *std.ArrayList(u8)) !void {
+    if (value.original_timestamp_ns == 0) return error.InvalidSessionPayload;
+    var bytes: [8]u8 = undefined;
+    std.mem.writeInt(u64, &bytes, value.original_timestamp_ns, .little);
+    try out.appendSlice(gpa, &bytes);
+}
+
+pub fn decodePong(data: []const u8) Error!Pong {
+    if (data.len != pong_size) return error.InvalidSessionPayload;
+    const value: Pong = .{ .original_timestamp_ns = std.mem.readInt(u64, data[0..8], .little) };
+    if (value.original_timestamp_ns == 0) return error.InvalidSessionPayload;
+    return value;
+}
+
+fn validateSessionError(value: SessionError) Error!void {
+    if (value.code == 0 or value.message_resource_id == 0 or
+        value.detail.len > max_session_error_detail) return error.InvalidSessionPayload;
+    if (value.detail.len != 0 and !std.unicode.utf8ValidateSlice(value.detail))
+        return error.InvalidSessionPayload;
+}
+
+pub fn encodeSessionError(gpa: std.mem.Allocator, value: SessionError, out: *std.ArrayList(u8)) !void {
+    try validateSessionError(value);
+    try out.ensureUnusedCapacity(gpa, session_error_header_size + value.detail.len);
+    var code: [2]u8 = undefined;
+    std.mem.writeInt(u16, &code, value.code, .little);
+    try out.appendSlice(gpa, &.{ code[0], code[1], @intFromEnum(value.severity), @intFromBool(value.recoverable) });
+    var word: [4]u8 = undefined;
+    std.mem.writeInt(u32, &word, value.message_resource_id, .little);
+    try out.appendSlice(gpa, &word);
+    var half: [2]u8 = undefined;
+    std.mem.writeInt(u16, &half, @intCast(value.detail.len), .little);
+    try out.appendSlice(gpa, &half);
+    try out.appendSlice(gpa, &.{ 0, 0 });
+    try out.appendSlice(gpa, value.detail);
+}
+
+pub fn decodeSessionError(data: []const u8) Error!SessionError {
+    if (data.len < session_error_header_size) return error.InvalidSessionPayload;
+    const detail_length = std.mem.readInt(u16, data[8..10], .little);
+    if (data[10] != 0 or data[11] != 0 or data.len != session_error_header_size + @as(usize, detail_length))
+        return error.InvalidSessionPayload;
+    const value: SessionError = .{
+        .code = std.mem.readInt(u16, data[0..2], .little),
+        .severity = switch (data[2]) {
+            1 => .info,
+            2 => .warning,
+            3 => .recoverable,
+            4 => .fatal,
+            else => return error.InvalidSessionPayload,
+        },
+        .recoverable = switch (data[3]) {
+            0 => false,
+            1 => true,
+            else => return error.InvalidSessionPayload,
+        },
+        .message_resource_id = std.mem.readInt(u32, data[4..8], .little),
+        .detail = data[session_error_header_size..],
+    };
+    try validateSessionError(value);
+    return value;
+}
+
+pub fn encodeVersionMismatch(gpa: std.mem.Allocator, value: VersionMismatch, out: *std.ArrayList(u8)) !void {
+    var bytes: [version_mismatch_size]u8 = undefined;
+    std.mem.writeInt(u16, bytes[0..2], value.required_major, .little);
+    std.mem.writeInt(u16, bytes[2..4], value.required_minor, .little);
+    std.mem.writeInt(u16, bytes[4..6], value.observed_major, .little);
+    std.mem.writeInt(u16, bytes[6..8], value.observed_minor, .little);
+    try out.appendSlice(gpa, &bytes);
+}
+
+pub fn decodeVersionMismatch(data: []const u8) Error!VersionMismatch {
+    if (data.len != version_mismatch_size) return error.InvalidSessionPayload;
+    return .{
+        .required_major = std.mem.readInt(u16, data[0..2], .little),
+        .required_minor = std.mem.readInt(u16, data[2..4], .little),
+        .observed_major = std.mem.readInt(u16, data[4..6], .little),
+        .observed_minor = std.mem.readInt(u16, data[6..8], .little),
+    };
+}
+
 test "session setup payloads round trip with fixed sizes" {
     const hash = [_]u8{7} ** feature_hash_len;
     const hello: Hello = .{ .feature_hash = hash };
@@ -330,7 +639,7 @@ test "session setup payloads round trip with fixed sizes" {
 
 test "setup state machine reaches established and rejects mismatches" {
     const hash = [_]u8{9} ** feature_hash_len;
-    var setup = Setup.start(hash, 5);
+    var setup = try Setup.start(hash, 5);
     const hello = setup.makeHello();
     try setup.helloSent(&hello);
 
@@ -344,10 +653,110 @@ test "setup state machine reaches established and rejects mismatches" {
     try setup.established(&ready_ack);
     try std.testing.expectEqual(Stage.established, setup.stage);
 
-    var mismatch = Setup.start(hash, 5);
+    var mismatch = try Setup.start(hash, 5);
     mismatch.stage = .ready_sent;
     mismatch.session_id = 77;
     mismatch.selected_minor = 0;
     const bad_ack: ReadyAck = .{ .feature_hash = hash, .next_sequence = 6 };
     try std.testing.expectError(error.NextSequenceMismatch, mismatch.established(&bad_ack));
+    try std.testing.expectError(error.InvalidSessionPayload, Setup.start(hash, 0));
+}
+
+test "session control payloads round trip with strict fixed forms" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    try encodeSuspend(a, .{ .reason = .transport_pressure }, &bytes);
+    try std.testing.expectEqual(suspend_size, bytes.items.len);
+    try std.testing.expectEqual(SuspendReason.transport_pressure, (try decodeSuspend(bytes.items)).reason);
+    bytes.clearRetainingCapacity();
+
+    try encodeResume(a, .{ .generation = 44 }, &bytes);
+    try std.testing.expectEqual(resume_size, bytes.items.len);
+    try std.testing.expectEqual(@as(u32, 44), (try decodeResume(bytes.items)).generation);
+    bytes.clearRetainingCapacity();
+
+    try encodeResumed(a, .{ .next_sequence = 99 }, &bytes);
+    try std.testing.expectEqual(resumed_size, bytes.items.len);
+    try std.testing.expectEqual(@as(u64, 99), (try decodeResumed(bytes.items)).next_sequence);
+    bytes.clearRetainingCapacity();
+
+    try encodeClose(a, .{ .reason = .resource }, &bytes);
+    try std.testing.expectEqual(close_size, bytes.items.len);
+    try std.testing.expectEqual(CloseReason.resource, (try decodeClose(bytes.items)).reason);
+    bytes.clearRetainingCapacity();
+
+    try encodePing(a, .{ .timestamp_ns = 77 }, &bytes);
+    try std.testing.expectEqual(ping_size, bytes.items.len);
+    try std.testing.expectEqual(@as(u64, 77), (try decodePing(bytes.items)).timestamp_ns);
+    bytes.clearRetainingCapacity();
+
+    try encodePong(a, .{ .original_timestamp_ns = 77 }, &bytes);
+    try std.testing.expectEqual(pong_size, bytes.items.len);
+    try std.testing.expectEqual(@as(u64, 77), (try decodePong(bytes.items)).original_timestamp_ns);
+    bytes.clearRetainingCapacity();
+
+    try encodeSessionError(a, .{
+        .code = 501,
+        .severity = .recoverable,
+        .recoverable = true,
+        .message_resource_id = 12,
+        .detail = "retry",
+    }, &bytes);
+    try std.testing.expectEqual(session_error_header_size + 5, bytes.items.len);
+    const error_value = try decodeSessionError(bytes.items);
+    try std.testing.expectEqual(@as(u16, 501), error_value.code);
+    try std.testing.expectEqualStrings("retry", error_value.detail);
+    bytes.clearRetainingCapacity();
+
+    try encodeVersionMismatch(a, .{
+        .required_major = 1,
+        .required_minor = 2,
+        .observed_major = 2,
+        .observed_minor = 0,
+    }, &bytes);
+    try std.testing.expectEqual(version_mismatch_size, bytes.items.len);
+    const version_value = try decodeVersionMismatch(bytes.items);
+    try std.testing.expectEqual(@as(u16, 2), version_value.observed_major);
+}
+
+test "session control state machine enforces ordered lifecycle" {
+    var control: Control = .{};
+    try control.apply(protocol.Message.session_suspend, &.{ 4, 0, 0, 0 });
+    try std.testing.expectEqual(ControlStage.suspended, control.stage);
+    try std.testing.expectError(error.InvalidSessionStage, control.apply(protocol.Message.session_suspend, &.{ 1, 0, 0, 0 }));
+
+    try control.apply(protocol.Message.session_resume, &.{ 8, 0, 0, 0 });
+    try std.testing.expectEqual(ControlStage.resume_pending, control.stage);
+    try control.apply(protocol.Message.session_resumed, &.{ 9, 0, 0, 0, 0, 0, 0, 0 });
+    try std.testing.expectEqual(ControlStage.active, control.stage);
+
+    try control.apply(protocol.Message.ping, &.{ 21, 0, 0, 0, 0, 0, 0, 0 });
+    try std.testing.expectError(error.InvalidSessionStage, control.apply(protocol.Message.ping, &.{ 22, 0, 0, 0, 0, 0, 0, 0 }));
+    try control.apply(protocol.Message.pong, &.{ 21, 0, 0, 0, 0, 0, 0, 0 });
+    try std.testing.expectEqual(@as(u64, 0), control.outstanding_ping_ns);
+
+    try control.apply(protocol.Message.session_close, &.{ 1, 0, 0, 0 });
+    try std.testing.expectEqual(ControlStage.closed, control.stage);
+    try std.testing.expectError(error.InvalidSessionStage, control.apply(protocol.Message.ping, &.{ 22, 0, 0, 0, 0, 0, 0, 0 }));
+}
+
+test "session control validates reserved bytes and bounded UTF-8 detail" {
+    try std.testing.expectError(error.InvalidSessionPayload, decodeSuspend(&.{ 1, 1, 0, 0 }));
+    try std.testing.expectError(error.InvalidSessionPayload, decodeClose(&.{ 1, 0, 0, 1 }));
+
+    const long_detail = [_]u8{'x'} ** (max_session_error_detail + 1);
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidSessionPayload, encodeSessionError(std.testing.allocator, .{
+        .code = 1,
+        .severity = .recoverable,
+        .recoverable = true,
+        .message_resource_id = 1,
+        .detail = &long_detail,
+    }, &bytes));
+
+    const header = [_]u8{ 1, 0, 1, 1 } ++ std.mem.toBytes(@as(u32, 1)) ++ std.mem.toBytes(@as(u16, max_session_error_detail + 1)) ++ [2]u8{ 0, 0 };
+    try std.testing.expectError(error.InvalidSessionPayload, decodeSessionError(&header ++ long_detail));
 }
