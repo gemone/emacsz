@@ -11,6 +11,7 @@ pub const live = @import("live.zig");
 pub const terminal = @import("terminal.zig");
 pub const frame_service = @import("frame_service.zig");
 pub const runtime = @import("runtime.zig");
+pub const capture_service = @import("capture_service.zig");
 
 test {
     _ = protocol;
@@ -26,4 +27,5 @@ test {
     _ = terminal;
     _ = frame_service;
     _ = runtime;
+    _ = capture_service;
 }

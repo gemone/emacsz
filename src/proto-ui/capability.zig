@@ -61,6 +61,7 @@ pub const Feature = enum {
     runtime_fail_closed_manifest,
     adapter_generated_c_shim,
     adapter_host_shim_library,
+    capture_atomic_batches,
 
     pub fn name(self: Feature) []const u8 {
         return switch (self) {
@@ -90,6 +91,7 @@ pub const Feature = enum {
             .runtime_fail_closed_manifest => "runtime.fail_closed_manifest",
             .adapter_generated_c_shim => "adapter.generated_c_shim",
             .adapter_host_shim_library => "adapter.host_shim_library",
+            .capture_atomic_batches => "capture.atomic_batches",
         };
     }
 
@@ -109,6 +111,7 @@ pub const Feature = enum {
             => false,
             .adapter_generated_c_shim => false,
             .adapter_host_shim_library => false,
+            .capture_atomic_batches => false,
             .host_frame_state_seam => false,
             else => true,
         };
@@ -148,6 +151,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .runtime_fail_closed_manifest, .status = .degraded, .evidence = "proto-ui-runtime-manifest" },
     .{ .feature = .adapter_generated_c_shim, .status = .degraded, .evidence = "proto-ui-shim-conformance" },
     .{ .feature = .adapter_host_shim_library, .status = .degraded, .evidence = "proto-ui-shim-library-conformance" },
+    .{ .feature = .capture_atomic_batches, .status = .degraded, .evidence = "proto-ui-unit" },
 };
 
 pub const feature_count = @typeInfo(Feature).@"enum".fields.len;

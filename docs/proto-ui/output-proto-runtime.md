@@ -1,6 +1,6 @@
 # `output_proto` Runtime Bridge Design
 
-Status: normative design; R1 terminal lifecycle core, R2 fail-closed runtime manifest, R3 generated thin C adapter, R4 shared host-observation library, and R5 frame service mapping are implemented; runtime is not implemented
+Status: normative design; R1 terminal lifecycle core, R2 fail-closed runtime manifest, R3 generated thin C adapter, R4 shared host-observation library, R5 frame service mapping, and R6 atomic capture batches are implemented; runtime is not implemented
 Protocol: EUP v1
 Boundary rule: no intrusive edits to inherited GNU Emacs C files
 
@@ -205,7 +205,7 @@ manifest must record:
 | R3. Generated thin C adapter | Minimal conversion shim, no policy | Implemented as generated `shim.c` plus `proto-ui-shim-conformance` |
 | R4. Host adapter library | Linkable read-only host-observation library | Exported ABI conformance and symbol isolation pass |
 | R5. Frame service | Frame create/state/delete mapping | Implemented with bounded host-handle to EUP-frame mapping and fake-host coverage |
-| R6. Capture service | Window/row/cursor/damage atomic batches | Fake and replay differential tests produce byte-stable EUP |
+| R6. Capture service | Window/row/cursor/damage atomic batches | Implemented with fake, Scene-apply, and replay byte-stability tests |
 | R7. Host registration contract | Explicit reviewed extension decision | Required callbacks can be supplied without inherited-core policy changes |
 | R8. First terminal smoke | Real `window-system . proto` frame | Emacs creates, displays, operates, and deletes one SDL3 frame |
 | R9. Differential compatibility | PGTK vs Proto-UI behavior suite | Frame, text, cursor, input, scroll, resize, and lifecycle baselines pass |
@@ -214,7 +214,7 @@ R7 is the policy gate.  It must not be bypassed by hidden binary patching,
 symbol interposition, generated replacement of tracked C files, or runtime
 mutation of Emacs data structures.
 
-Implemented progress: **R1-R4 are implemented**.  R1 is the adapter-owned
+Implemented progress: **R1-R6 are implemented**.  R1 is the adapter-owned
 terminal lifecycle in `src/proto-ui/terminal.zig`; R2 is
 `src/proto-ui/runtime.zig`, the generated
 `zig-out/proto-ui/runtime_manifest.json`, and the nonzero
@@ -223,9 +223,11 @@ terminal lifecycle in `src/proto-ui/terminal.zig`; R2 is
 as `zig-out/lib/libproto-ui-shim.so` and proves dynamic ABI conformance plus
 symbol isolation.  R5 adds `FrameService` for bounded host-handle to EUP-frame
 mapping, generation/visibility/focus refresh, delete-once teardown, and terminal
-drain.  R6-R9 remain designed but not implemented; in particular, there is no
-real host registration contract, terminal registration, redisplay-owned EUP
-generation, transport, or real `output_proto` frame.
+drain.  R6 adds deterministic window/row/cursor/damage `FRAME_UPDATE` encoding,
+stale-generation commit guards, and replay byte-stability evidence.  R7-R9
+remain designed but not implemented; in particular, there is no real host
+registration contract, terminal registration, redisplay-owned EUP generation,
+transport, or real `output_proto` frame.
 
 ## 11. Acceptance for the first real SDL3 frame
 

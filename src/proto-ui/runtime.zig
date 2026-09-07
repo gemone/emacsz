@@ -91,6 +91,13 @@ pub const implemented_groundwork = [_]Groundwork{
         .owner = "proto-ui-adapter",
         .boundary = "host-frame to EUP-frame observation mapping only; no Emacs frame registration or output_proto runtime",
     },
+    .{
+        .name = "capture.atomic_batches",
+        .status = "implemented",
+        .evidence = "proto-ui-unit capture service tests",
+        .owner = "proto-ui-adapter",
+        .boundary = "bounded HostV1 observation to deterministic EUP envelopes; no Emacs redisplay hooks, host registration, or output_proto runtime",
+    },
 };
 
 pub const OwnershipSummary = struct {
@@ -101,7 +108,7 @@ pub const OwnershipSummary = struct {
 
 pub const ownership_summary = OwnershipSummary{
     .emacs = &.{ "terminal truth", "frame truth", "display truth", "command interpretation" },
-    .adapter = &.{ "protocol identity", "EUP translation", "protocol/session state" },
+    .adapter = &.{ "protocol identity", "EUP translation", "protocol/session state", "atomic capture batches" },
     .frontend = &.{ "scene ownership", "input capture", "renderer", "presentation" },
 };
 
@@ -128,6 +135,7 @@ pub fn validateState() ?[]const u8 {
     const expected_groundwork = [_][]const u8{
         "terminal.lifecycle_state_machine",
         "frame.service_mapping",
+        "capture.atomic_batches",
     };
     if (implemented_groundwork.len != expected_groundwork.len)
         return "unexpected groundwork count";

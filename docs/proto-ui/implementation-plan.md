@@ -109,6 +109,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W12h fail-closed runtime manifest/gate | Approved |
 | W12i generated C shim and linkable observation library | Approved |
 | W12j R5 frame service mapping | Approved |
+| W12k R6 atomic capture batches | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
@@ -2288,11 +2289,9 @@ Acceptance:
 zig build -Dproto-ui=true proto-ui-boundary --summary all
 ```
 
-Status: normative design.  Runtime tasks R1-R5 are implemented as the
-adapter-owned `TerminalRegistry`, fail-closed runtime manifest/gate, generated
-read-only C shim, dynamically linkable host-observation library, and bounded
-frame-service mapping; R6-R9 remain unimplemented.  The boundary gate and
-documentation links remain green.
+Status: normative design.  Runtime tasks R1-R6 are implemented through the
+bounded frame-service mapping and deterministic capture-batch encoder; R7-R9
+remain unimplemented.  The boundary gate and documentation links remain green.
 
 ##### R2 evidence
 
@@ -2331,6 +2330,15 @@ terminal drain.  Fake-host tests cover identity collisions, table overflow,
 generation range/mismatch, malformed state, unknown mappings, and cleanup
 without adding terminal registration, EUP generation, transport, or
 `output_proto` runtime.
+
+##### R6 evidence
+
+R6 adds `src/proto-ui/capture_service.zig` for one-window adapter observation
+batches.  It validates window/row/cursor/damage coherence, encodes stable
+section order and deterministic envelopes, verifies them through
+`frontend.Scene`, guards commit against stale host generations, and proves
+ERP1 replay round trips preserve bytes exactly.  It does not install redisplay
+hooks or claim redisplay-owned output.
 
 1. Implement child and tooltip frame protocol.
 2. Implement multi-frame focus isolation.
