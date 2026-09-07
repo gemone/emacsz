@@ -71,6 +71,12 @@ extern fn SDL_GetWindowBordersSize(window: *SDL_Window, top: *c_int, left: *c_in
 extern fn SDL_SetWindowIcon(window: *SDL_Window, icon: *SDL_Surface) bool;
 extern fn SDL_CreateSurfaceFrom(width: c_int, height: c_int, format: SDL_PixelFormat, pixels: ?*anyopaque, pitch: c_int) ?*SDL_Surface;
 extern fn SDL_DestroySurface(surface: *SDL_Surface) void;
+extern fn SDL_SetWindowMinimumSize(window: *SDL_Window, min_w: c_int, min_h: c_int) bool;
+extern fn SDL_SetWindowMaximumSize(window: *SDL_Window, max_w: c_int, max_h: c_int) bool;
+extern fn SDL_SetWindowAspectRatio(window: *SDL_Window, min_aspect: f32, max_aspect: f32) bool;
+extern fn SDL_GetWindowMinimumSize(window: *SDL_Window, w: *c_int, h: *c_int) bool;
+extern fn SDL_GetWindowMaximumSize(window: *SDL_Window, w: *c_int, h: *c_int) bool;
+extern fn SDL_GetWindowAspectRatio(window: *SDL_Window, min_aspect: *f32, max_aspect: *f32) bool;
 extern fn SDL_SetWindowFullscreen(window: *SDL_Window, fullscreen: bool) bool;
 extern fn SDL_SyncWindow(window: *SDL_Window) bool;
 extern fn SDL_GetDisplayForWindow(window: *SDL_Window) SDL_DisplayID;
@@ -2438,6 +2444,40 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (scene.geometry == null or scene.geometry.?.content.width != 240)
         return error.RuntimeBridgeGeometryInvalid;
 
+    var size_hints_payload: std.ArrayList(u8) = .empty;
+    defer size_hints_payload.deinit(gpa);
+    try protocol.encodeFrameSizeHints(gpa, .{
+        .flags = protocol.FrameSizeHintFlags.min_size |
+            protocol.FrameSizeHintFlags.max_size |
+            protocol.FrameSizeHintFlags.size_increment |
+            protocol.FrameSizeHintFlags.aspect_ratio,
+        .frame_generation = bridge.eup_frame_generation,
+        .min_width = 120,
+        .min_height = 48,
+        .max_width = 960,
+        .max_height = 480,
+        .width_increment = 8,
+        .height_increment = 8,
+        .aspect_min_numerator = 1,
+        .aspect_min_denominator = 4,
+        .aspect_max_numerator = 4,
+        .aspect_max_denominator = 1,
+    }, &size_hints_payload);
+    var size_hints: std.ArrayList(u8) = .empty;
+    defer size_hints.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_size_hints,
+        .sequence = 20,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, size_hints_payload.items, &size_hints);
+    try scene.apply(size_hints.items);
+    if (scene.size_hints == null or scene.size_hints.?.min_width != 120)
+        return error.RuntimeBridgeSizeHintsInvalid;
+
     if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
         scene.glyph_runs.items.len != 1 or scene.cursor == null)
         return error.RuntimeBridgeSceneInvalid;
@@ -2491,6 +2531,53 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     var border_right: c_int = 0;
     const borders_supported = SDL_GetWindowBordersSize(window, &border_top, &border_left, &border_bottom, &border_right) and
         border_top >= 0 and border_left >= 0 and border_bottom >= 0 and border_right >= 0;
+    var size_hints_supported = false;
+    if (scene.size_hints) |hints| {
+        size_hints_supported = true;
+        if (hints.flags & protocol.FrameSizeHintFlags.min_size != 0)
+            size_hints_supported = SDL_SetWindowMinimumSize(
+                window,
+                @intCast(hints.min_width),
+                @intCast(hints.min_height),
+            );
+        if (size_hints_supported and hints.flags & protocol.FrameSizeHintFlags.min_size != 0) {
+            var actual_width: c_int = 0;
+            var actual_height: c_int = 0;
+            size_hints_supported = SDL_GetWindowMinimumSize(window, &actual_width, &actual_height) and
+                actual_width == @as(c_int, @intCast(hints.min_width)) and
+                actual_height == @as(c_int, @intCast(hints.min_height));
+        }
+        if (hints.flags & protocol.FrameSizeHintFlags.max_size != 0)
+            size_hints_supported = SDL_SetWindowMaximumSize(
+                window,
+                @intCast(hints.max_width),
+                @intCast(hints.max_height),
+            );
+        if (size_hints_supported and hints.flags & protocol.FrameSizeHintFlags.max_size != 0) {
+            var actual_width: c_int = 0;
+            var actual_height: c_int = 0;
+            size_hints_supported = SDL_GetWindowMaximumSize(window, &actual_width, &actual_height) and
+                actual_width == @as(c_int, @intCast(hints.max_width)) and
+                actual_height == @as(c_int, @intCast(hints.max_height));
+        }
+        if (hints.flags & protocol.FrameSizeHintFlags.aspect_ratio != 0)
+            size_hints_supported = SDL_SetWindowAspectRatio(
+                window,
+                @as(f32, @floatFromInt(hints.aspect_min_numerator)) / @as(f32, @floatFromInt(hints.aspect_min_denominator)),
+                @as(f32, @floatFromInt(hints.aspect_max_numerator)) / @as(f32, @floatFromInt(hints.aspect_max_denominator)),
+            );
+        if (size_hints_supported and hints.flags & protocol.FrameSizeHintFlags.aspect_ratio != 0) {
+            const requested_min = @as(f32, @floatFromInt(hints.aspect_min_numerator)) /
+                @as(f32, @floatFromInt(hints.aspect_min_denominator));
+            const requested_max = @as(f32, @floatFromInt(hints.aspect_max_numerator)) /
+                @as(f32, @floatFromInt(hints.aspect_max_denominator));
+            var actual_min: f32 = 0;
+            var actual_max: f32 = 0;
+            size_hints_supported = SDL_GetWindowAspectRatio(window, &actual_min, &actual_max) and
+                @abs(actual_min - requested_min) <= 0.001 and
+                @abs(actual_max - requested_max) <= 0.001;
+        }
+    }
     var opacity_supported = false;
     if (scene.alpha) |alpha_state| {
         const requested_opacity = @as(f32, @floatFromInt(alpha_state.active_opacity)) / 10000.0;
@@ -2702,10 +2789,11 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,
+            size_hints_supported,
             opacity_supported,
             decorations_supported,
             scale_supported,

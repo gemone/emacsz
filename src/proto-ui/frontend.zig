@@ -1278,6 +1278,7 @@ pub const Scene = struct {
     maximize: ?protocol.FrameMaximizePayload = null,
     geometry: ?protocol.FrameGeometryPayload = null,
     icon: ?protocol.FrameIconPayload = null,
+    size_hints: ?protocol.FrameSizeHintsPayload = null,
     present: ?PresentHint = null,
     viewport: ?Viewport = null,
     window_tree: ?protocol.WindowTreeSnapshot = null,
@@ -1308,6 +1309,7 @@ pub const Scene = struct {
         self.maximize = null;
         self.geometry = null;
         self.icon = null;
+        self.size_hints = null;
         self.windows = .empty;
         self.rows = .empty;
         self.glyph_runs = .empty;
@@ -1400,6 +1402,7 @@ pub const Scene = struct {
             protocol.Message.frame_maximize => try self.applyFrameMaximize(payload),
             protocol.Message.frame_geometry => try self.applyFrameGeometry(payload),
             protocol.Message.frame_icon => try self.applyFrameIcon(payload),
+            protocol.Message.frame_size_hints => try self.applyFrameSizeHints(payload),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.font_define => try self.applyFontDefine(payload),
@@ -1426,6 +1429,7 @@ pub const Scene = struct {
         self.maximize = null;
         self.geometry = null;
         self.icon = null;
+        self.size_hints = null;
         self.clearGlyphRuns();
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
@@ -1693,6 +1697,17 @@ pub const Scene = struct {
                 return Error.InvalidMessage;
         }
         self.icon = if (icon.flags & protocol.FrameIconFlags.present != 0) icon else null;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFrameSizeHints(self: *Scene, payload: protocol.Payload) Error!void {
+        const hints = try protocol.decodeFrameSizeHints(payload.bytes);
+        try protocol.validateFrameSizeHintsEnvelope(hints, payload.envelope);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != hints.frame_generation)
+            return Error.InvalidMessage;
+        self.size_hints = hints;
         self.stats.control_messages += 1;
     }
 
@@ -2485,6 +2500,29 @@ fn frameMaximizeMessage(
         .frame_id = envelope_frame,
         .timestamp_ns = sequence,
     }, maximize_payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
+fn frameSizeHintsMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    envelope_frame: u32,
+    payload: protocol.FrameSizeHintsPayload,
+) ![]u8 {
+    var hints_payload: std.ArrayList(u8) = .empty;
+    defer hints_payload.deinit(a);
+    try protocol.encodeFrameSizeHints(a, payload, &hints_payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_size_hints,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = envelope_frame,
+        .timestamp_ns = sequence,
+    }, hints_payload.items, &message);
     return message.toOwnedSlice(a);
 }
 
@@ -3655,6 +3693,100 @@ test "scene applies maximize only to the active frame generation" {
 
     scene.resetForResync();
     try std.testing.expect(scene.maximize == null);
+}
+
+test "scene applies size hints only to the active frame generation" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    const hints = try frameSizeHintsMessage(a, 2, 7, .{
+        .flags = protocol.FrameSizeHintFlags.min_size |
+            protocol.FrameSizeHintFlags.max_size |
+            protocol.FrameSizeHintFlags.size_increment |
+            protocol.FrameSizeHintFlags.aspect_ratio,
+        .frame_generation = 1,
+        .min_width = 120,
+        .min_height = 48,
+        .max_width = 960,
+        .max_height = 480,
+        .width_increment = 8,
+        .height_increment = 8,
+        .aspect_min_numerator = 1,
+        .aspect_min_denominator = 4,
+        .aspect_max_numerator = 4,
+        .aspect_max_denominator = 1,
+    });
+    defer a.free(hints);
+    try scene.apply(hints);
+    try std.testing.expectEqual(@as(u32, 120), scene.size_hints.?.min_width);
+    try std.testing.expectEqual(@as(u32, 960), scene.size_hints.?.max_width);
+    try std.testing.expectEqual(@as(u32, 8), scene.size_hints.?.width_increment);
+
+    const replacement = try frameSizeHintsMessage(a, 3, 7, .{
+        .flags = protocol.FrameSizeHintFlags.min_size,
+        .frame_generation = 1,
+        .min_width = 80,
+        .min_height = 40,
+    });
+    defer a.free(replacement);
+    try scene.apply(replacement);
+    try std.testing.expectEqual(@as(u32, 80), scene.size_hints.?.min_width);
+    try std.testing.expectEqual(@as(u32, 0), scene.size_hints.?.max_width);
+
+    const stale = try frameSizeHintsMessage(a, 4, 7, .{
+        .flags = protocol.FrameSizeHintFlags.min_size,
+        .frame_generation = 2,
+        .min_width = 100,
+        .min_height = 40,
+    });
+    defer a.free(stale);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(stale));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+    try std.testing.expectEqual(@as(u32, 80), scene.size_hints.?.min_width);
+
+    const wrong_frame = try frameSizeHintsMessage(a, 4, 8, .{
+        .flags = protocol.FrameSizeHintFlags.min_size,
+        .frame_generation = 1,
+        .min_width = 100,
+        .min_height = 40,
+    });
+    defer a.free(wrong_frame);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_frame));
+
+    const current = try frameSizeHintsMessage(a, 4, 7, .{
+        .flags = protocol.FrameSizeHintFlags.min_size,
+        .frame_generation = 1,
+        .min_width = 100,
+        .min_height = 40,
+    });
+    defer a.free(current);
+    try scene.apply(current);
+    try std.testing.expectEqual(@as(u32, 100), scene.size_hints.?.min_width);
+
+    var destroy_payload: [8]u8 = undefined;
+    std.mem.writeInt(u32, destroy_payload[0..4], 7, .little);
+    std.mem.writeInt(u32, destroy_payload[4..8], 1, .little);
+    var destroy: std.ArrayList(u8) = .empty;
+    defer destroy.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_destroy,
+        .sequence = 5,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 7,
+        .timestamp_ns = 5,
+    }, &destroy_payload, &destroy);
+    try scene.apply(destroy.items);
+    try std.testing.expect(scene.size_hints == null);
+
+    scene.resetForResync();
+    try std.testing.expect(scene.size_hints == null);
 }
 
 test "scene applies standard session control and pauses frame traffic" {

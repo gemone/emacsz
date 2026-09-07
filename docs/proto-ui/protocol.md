@@ -327,6 +327,38 @@ Scene state and queries real window border sizes, but does not yet move or resiz
 the platform window. Emacs/runtime ownership of the authoritative values and
 live resize migration remain pending.
 
+#### Frame size hints
+
+`FRAME_SIZE_HINTS` (`0x0211`) is a fixed 48-byte payload that expresses resize
+constraints without changing frame identity:
+
+```text
+schema                       u16 = 1
+flags                        u8
+reserved                     u8  = 0
+frame_generation             u32 (nonzero)
+min_width                    u32
+min_height                   u32
+max_width                    u32
+max_height                   u32
+width_increment              u32
+height_increment             u32
+aspect_min_numerator         u32
+aspect_min_denominator       u32
+aspect_max_numerator         u32
+aspect_max_denominator       u32
+```
+
+Flag bits are `1=min-size`, `2=max-size`, `4=size-increment`, and
+`8=aspect-ratio`; unknown bits are invalid. A flag's values are nonzero, while
+values for an absent group must be zero. If min and max are present, max must
+dominate min. All width, height, and increment values must fit the platform
+`c_int` range. Increments are present or absent as a pair. Aspect numerator and
+denominator values must be nonzero and min must not exceed max; ordering uses
+128-bit cross multiplication. The diagnostic SDL bridge applies min/max and
+aspect constraints; size increments and redisplay geometry adaptation remain
+pending.
+
 ## 11. Window messages
 
 | ID | Name | Direction | Payload | Semantics |

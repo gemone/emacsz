@@ -104,6 +104,10 @@ reference.  `Scene` validates the live image and hotspot, and the SDL bridge
 creates a surface and applies the icon; multi-resolution and animated icons
 remain pending.
 
+W12f-hints adds `FRAME_SIZE_HINTS` v1 for min/max size, resize increments, and
+aspect limits.  The SDL bridge applies min/max and aspect constraints, while
+size increments and redisplay geometry adaptation remain pending.
+
 W12e adds a bounded adapter-owned resource payload cache with LRU eviction and
 strict wire contracts for `RESOURCE_REQUEST` and `RESOURCE_EVICT`.  The cache
 accepts at most 32 entries, 4096 bytes per payload, and 16 KiB total; existing

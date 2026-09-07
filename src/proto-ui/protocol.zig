@@ -77,6 +77,7 @@ pub const Message = struct {
     pub const frame_alpha: u16 = 0x020d;
     pub const frame_focus: u16 = 0x0210;
     pub const frame_decorations: u16 = 0x0214;
+    pub const frame_size_hints: u16 = 0x0211;
     pub const frame_scale: u16 = 0x020f;
     pub const frame_fullscreen: u16 = 0x020b;
     pub const frame_geometry: u16 = 0x0207;
@@ -1209,6 +1210,31 @@ pub const FrameIconPayload = struct {
     reserved_tail: u32 = 0,
 };
 
+pub const FrameSizeHintFlags = struct {
+    pub const min_size: u8 = 1 << 0;
+    pub const max_size: u8 = 1 << 1;
+    pub const size_increment: u8 = 1 << 2;
+    pub const aspect_ratio: u8 = 1 << 3;
+    pub const known: u8 = min_size | max_size | size_increment | aspect_ratio;
+};
+
+pub const FrameSizeHintsPayload = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    frame_generation: u32,
+    min_width: u32 = 0,
+    min_height: u32 = 0,
+    max_width: u32 = 0,
+    max_height: u32 = 0,
+    width_increment: u32 = 0,
+    height_increment: u32 = 0,
+    aspect_min_numerator: u32 = 0,
+    aspect_min_denominator: u32 = 0,
+    aspect_max_numerator: u32 = 0,
+    aspect_max_denominator: u32 = 0,
+};
+
 pub const PresentDamageKind = enum(u8) {
     none = 0,
     initial = 1,
@@ -2297,6 +2323,104 @@ pub fn decodeFrameIcon(data: []const u8) Error!FrameIconPayload {
 
 pub fn validateFrameIconEnvelope(payload: FrameIconPayload, envelope: Envelope) Error!void {
     try validateFrameIcon(payload);
+    if (envelope.frame_id == 0) return Error.InvalidMessage;
+}
+
+fn validateFrameSizeHints(payload: FrameSizeHintsPayload) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or
+        payload.flags & ~FrameSizeHintFlags.known != 0)
+        return Error.InvalidMessage;
+    if (payload.frame_generation == 0) return Error.InvalidMessage;
+
+    const has_min = payload.flags & FrameSizeHintFlags.min_size != 0;
+    const has_max = payload.flags & FrameSizeHintFlags.max_size != 0;
+    const has_increment = payload.flags & FrameSizeHintFlags.size_increment != 0;
+    const has_aspect = payload.flags & FrameSizeHintFlags.aspect_ratio != 0;
+    const fits_platform_dimension = struct {
+        fn check(value: u32) bool {
+            return value <= std.math.maxInt(i32);
+        }
+    }.check;
+    if (!fits_platform_dimension(payload.min_width) or
+        !fits_platform_dimension(payload.min_height) or
+        !fits_platform_dimension(payload.max_width) or
+        !fits_platform_dimension(payload.max_height) or
+        !fits_platform_dimension(payload.width_increment) or
+        !fits_platform_dimension(payload.height_increment))
+        return Error.InvalidMessage;
+    if ((has_min and (payload.min_width == 0 or payload.min_height == 0)) or
+        (!has_min and (payload.min_width != 0 or payload.min_height != 0)))
+        return Error.InvalidMessage;
+    if ((has_max and (payload.max_width == 0 or payload.max_height == 0)) or
+        (!has_max and (payload.max_width != 0 or payload.max_height != 0)))
+        return Error.InvalidMessage;
+    if (has_min and has_max and (payload.max_width < payload.min_width or
+        payload.max_height < payload.min_height)) return Error.InvalidMessage;
+
+    const increment_present = payload.width_increment != 0 or payload.height_increment != 0;
+    if (has_increment != increment_present or
+        (has_increment and (payload.width_increment == 0 or payload.height_increment == 0)))
+        return Error.InvalidMessage;
+
+    if (has_aspect) {
+        if (payload.aspect_min_numerator == 0 or payload.aspect_min_denominator == 0 or
+            payload.aspect_max_numerator == 0 or payload.aspect_max_denominator == 0 or
+            @as(u128, payload.aspect_min_numerator) * payload.aspect_max_denominator >
+                @as(u128, payload.aspect_max_numerator) * payload.aspect_min_denominator)
+            return Error.InvalidMessage;
+    } else if (payload.aspect_min_numerator != 0 or payload.aspect_min_denominator != 0 or
+        payload.aspect_max_numerator != 0 or payload.aspect_max_denominator != 0)
+        return Error.InvalidMessage;
+}
+
+pub fn encodeFrameSizeHints(
+    a: std.mem.Allocator,
+    payload: FrameSizeHintsPayload,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameSizeHints(payload);
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &bytes, payload.schema, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, payload.flags);
+    try out.append(a, payload.reserved);
+    var word: [4]u8 = undefined;
+    inline for (.{ payload.frame_generation, payload.min_width, payload.min_height, payload.max_width, payload.max_height, payload.width_increment, payload.height_increment, payload.aspect_min_numerator, payload.aspect_min_denominator, payload.aspect_max_numerator, payload.aspect_max_denominator }) |value| {
+        std.mem.writeInt(u32, &word, value, .little);
+        try out.appendSlice(a, &word);
+    }
+}
+
+pub fn decodeFrameSizeHints(data: []const u8) Error!FrameSizeHintsPayload {
+    if (data.len != 48) return Error.InvalidTable;
+    var offset: usize = 4;
+    var values: [11]u32 = undefined;
+    inline for (&values) |*value| {
+        value.* = std.mem.readInt(u32, data[offset..][0..4], .little);
+        offset += 4;
+    }
+    const payload = FrameSizeHintsPayload{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .frame_generation = values[0],
+        .min_width = values[1],
+        .min_height = values[2],
+        .max_width = values[3],
+        .max_height = values[4],
+        .width_increment = values[5],
+        .height_increment = values[6],
+        .aspect_min_numerator = values[7],
+        .aspect_min_denominator = values[8],
+        .aspect_max_numerator = values[9],
+        .aspect_max_denominator = values[10],
+    };
+    try validateFrameSizeHints(payload);
+    return payload;
+}
+
+pub fn validateFrameSizeHintsEnvelope(payload: FrameSizeHintsPayload, envelope: Envelope) Error!void {
+    try validateFrameSizeHints(payload);
     if (envelope.frame_id == 0) return Error.InvalidMessage;
 }
 
@@ -3417,6 +3541,78 @@ test "frame dropped payload enforces strict wire form" {
         .last_presented_sequence = 1,
         .reason = .invalid_window_size,
     }, &bytes));
+}
+
+test "frame size hints enforce flags values and aspect ordering" {
+    const a = std.testing.allocator;
+    const payload = FrameSizeHintsPayload{
+        .flags = FrameSizeHintFlags.min_size | FrameSizeHintFlags.max_size |
+            FrameSizeHintFlags.size_increment | FrameSizeHintFlags.aspect_ratio,
+        .frame_generation = 3,
+        .min_width = 200,
+        .min_height = 100,
+        .max_width = 800,
+        .max_height = 600,
+        .width_increment = 10,
+        .height_increment = 20,
+        .aspect_min_numerator = 1,
+        .aspect_min_denominator = 2,
+        .aspect_max_numerator = 2,
+        .aspect_max_denominator = 1,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFrameSizeHints(a, payload, &bytes);
+    try std.testing.expectEqual(@as(usize, 48), bytes.items.len);
+    try std.testing.expectEqual(payload, try decodeFrameSizeHints(bytes.items));
+    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, bytes.items[0..2], .little));
+    try std.testing.expectEqual(payload.frame_generation, std.mem.readInt(u32, bytes.items[4..8], .little));
+    try std.testing.expectEqual(payload.min_width, std.mem.readInt(u32, bytes.items[8..12], .little));
+    try std.testing.expectEqual(payload.max_height, std.mem.readInt(u32, bytes.items[20..24], .little));
+    try std.testing.expectEqual(payload.width_increment, std.mem.readInt(u32, bytes.items[24..28], .little));
+    try std.testing.expectEqual(payload.height_increment, std.mem.readInt(u32, bytes.items[28..32], .little));
+    try std.testing.expectEqual(payload.aspect_min_numerator, std.mem.readInt(u32, bytes.items[32..36], .little));
+    try std.testing.expectEqual(payload.aspect_max_denominator, std.mem.readInt(u32, bytes.items[44..48], .little));
+
+    var invalid = payload;
+    invalid.flags = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSizeHints(a, invalid, &bytes));
+    invalid = payload;
+    invalid.reserved = 1;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSizeHints(a, invalid, &bytes));
+    invalid = payload;
+    invalid.frame_generation = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSizeHints(a, invalid, &bytes));
+    invalid = payload;
+    invalid.min_width = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSizeHints(a, invalid, &bytes));
+    invalid = payload;
+    invalid.min_height = std.math.maxInt(i32) + 1;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSizeHints(a, invalid, &bytes));
+    invalid = payload;
+    invalid.max_width = 100;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSizeHints(a, invalid, &bytes));
+    invalid = payload;
+    invalid.max_height = 90;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSizeHints(a, invalid, &bytes));
+    invalid = payload;
+    invalid.width_increment = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSizeHints(a, invalid, &bytes));
+    invalid = payload;
+    invalid.height_increment = std.math.maxInt(i32) + 1;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSizeHints(a, invalid, &bytes));
+    invalid = payload;
+    invalid.aspect_min_numerator = 3;
+    invalid.aspect_min_denominator = 1;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSizeHints(a, invalid, &bytes));
+    invalid = payload;
+    invalid.aspect_min_numerator = std.math.maxInt(u32);
+    invalid.aspect_min_denominator = 1;
+    invalid.aspect_max_numerator = 1;
+    invalid.aspect_max_denominator = std.math.maxInt(u32);
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSizeHints(a, invalid, &bytes));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFrameSizeHints(bytes.items));
 }
 
 test "resource request and evict codecs enforce strict wire form" {
