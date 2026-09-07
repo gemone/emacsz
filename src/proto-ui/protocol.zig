@@ -9,6 +9,10 @@ pub const max_opacity: u16 = 10000;
 pub const max_frame_scale: f32 = 64.0;
 pub const max_frame_dpi: f32 = 4096.0;
 
+pub const FrameMonitorFlags = struct {
+    pub const primary: u8 = 1 << 0;
+};
+
 pub const Error = error{
     InvalidEnvelope,
     InvalidVersion,
@@ -59,6 +63,7 @@ pub const Message = struct {
     pub const frame_decorations: u16 = 0x0214;
     pub const frame_scale: u16 = 0x020f;
     pub const frame_fullscreen: u16 = 0x020b;
+    pub const frame_monitor: u16 = 0x020e;
     pub const resource_request: u16 = 0x0510;
     pub const resource_evict: u16 = 0x0511;
     pub const resource_snapshot: u16 = 0x0512;
@@ -1129,6 +1134,19 @@ pub const FrameFullscreenPayload = struct {
     frame_generation: u32,
 };
 
+pub const FrameMonitorPayload = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    monitor_id: u32,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    frame_generation: u32,
+    reserved_tail: u32 = 0,
+};
+
 pub const FrameFocusPayload = struct {
     frame_id: u32,
     frame_generation: u32,
@@ -1773,6 +1791,65 @@ pub fn decodeFrameFullscreen(data: []const u8) Error!FrameFullscreenPayload {
 
 pub fn validateFrameFullscreenEnvelope(payload: FrameFullscreenPayload, envelope: Envelope) Error!void {
     try validateFrameFullscreen(payload);
+    if (envelope.frame_id == 0) return Error.InvalidMessage;
+}
+
+fn validateFrameMonitor(payload: FrameMonitorPayload) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or
+        payload.flags & ~FrameMonitorFlags.primary != 0 or
+        payload.reserved_tail != 0) return Error.InvalidMessage;
+    if (payload.monitor_id == 0 or payload.frame_generation == 0) return Error.InvalidMessage;
+    if (payload.width <= 0 or payload.height <= 0) return Error.InvalidMessage;
+    const right = @as(i64, payload.x) + @as(i64, payload.width);
+    const bottom = @as(i64, payload.y) + @as(i64, payload.height);
+    if (right > std.math.maxInt(i32) or bottom > std.math.maxInt(i32))
+        return Error.InvalidMessage;
+}
+
+pub fn encodeFrameMonitor(
+    a: std.mem.Allocator,
+    payload: FrameMonitorPayload,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameMonitor(payload);
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &bytes, payload.schema, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, payload.flags);
+    try out.append(a, payload.reserved);
+    var word: [4]u8 = undefined;
+    std.mem.writeInt(u32, &word, payload.monitor_id, .little);
+    try out.appendSlice(a, &word);
+    inline for (.{ payload.x, payload.y, payload.width, payload.height }) |value| {
+        std.mem.writeInt(u32, &word, @bitCast(value), .little);
+        try out.appendSlice(a, &word);
+    }
+    std.mem.writeInt(u32, &word, payload.frame_generation, .little);
+    try out.appendSlice(a, &word);
+    std.mem.writeInt(u32, &word, payload.reserved_tail, .little);
+    try out.appendSlice(a, &word);
+}
+
+pub fn decodeFrameMonitor(data: []const u8) Error!FrameMonitorPayload {
+    if (data.len != 32) return Error.InvalidTable;
+    const payload = FrameMonitorPayload{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .monitor_id = std.mem.readInt(u32, data[4..8], .little),
+        .x = @bitCast(std.mem.readInt(u32, data[8..12], .little)),
+        .y = @bitCast(std.mem.readInt(u32, data[12..16], .little)),
+        .width = @bitCast(std.mem.readInt(u32, data[16..20], .little)),
+        .height = @bitCast(std.mem.readInt(u32, data[20..24], .little)),
+        .frame_generation = std.mem.readInt(u32, data[24..28], .little),
+        .reserved_tail = std.mem.readInt(u32, data[28..32], .little),
+    };
+    try validateFrameMonitor(payload);
+    return payload;
+}
+
+pub fn validateFrameMonitorEnvelope(payload: FrameMonitorPayload, envelope: Envelope) Error!void {
+    try validateFrameMonitor(payload);
     if (envelope.frame_id == 0) return Error.InvalidMessage;
 }
 
@@ -2595,6 +2672,80 @@ test "frame fullscreen payload enforces strict wire form" {
     try std.testing.expectError(Error.InvalidMessage, encodeFrameFullscreen(a, .{
         .mode = .none,
         .frame_generation = 0,
+    }, &bytes));
+}
+
+test "frame monitor payload enforces strict wire form" {
+    const a = std.testing.allocator;
+    const payload = FrameMonitorPayload{
+        .flags = FrameMonitorFlags.primary,
+        .monitor_id = 30,
+        .x = -10,
+        .y = 0,
+        .width = 1920,
+        .height = 1080,
+        .frame_generation = 2,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFrameMonitor(a, payload, &bytes);
+    try std.testing.expectEqual(@as(usize, 32), bytes.items.len);
+    try std.testing.expectEqual(payload, try decodeFrameMonitor(bytes.items));
+
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameMonitor(bytes.items));
+    bytes.items[0] = 1;
+    bytes.items[2] = FrameMonitorFlags.primary | 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameMonitor(bytes.items));
+    bytes.items[2] = FrameMonitorFlags.primary;
+    std.mem.writeInt(u32, bytes.items[16..20], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameMonitor(bytes.items));
+    std.mem.writeInt(u32, bytes.items[16..20], 1920, .little);
+    std.mem.writeInt(u32, bytes.items[28..32], 1, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameMonitor(bytes.items));
+    std.mem.writeInt(u32, bytes.items[28..32], 0, .little);
+    std.mem.writeInt(u32, bytes.items[8..12], @bitCast(@as(i32, std.math.minInt(i32))), .little);
+    std.mem.writeInt(u32, bytes.items[16..20], @bitCast(@as(i32, std.math.maxInt(i32))), .little);
+    try std.testing.expectEqual(@as(i32, std.math.minInt(i32)), (try decodeFrameMonitor(bytes.items)).x);
+    try std.testing.expectEqual(@as(i32, std.math.maxInt(i32)), (try decodeFrameMonitor(bytes.items)).width);
+    std.mem.writeInt(u32, bytes.items[8..12], @bitCast(@as(i32, std.math.maxInt(i32))), .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameMonitor(bytes.items));
+    std.mem.writeInt(u32, bytes.items[8..12], @bitCast(@as(i32, 0)), .little);
+    std.mem.writeInt(u32, bytes.items[8..12], @bitCast(@as(i32, 0)), .little);
+    std.mem.writeInt(u32, bytes.items[16..20], 1920, .little);
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameMonitor(a, .{
+        .monitor_id = 1,
+        .x = 0,
+        .y = 0,
+        .width = 1,
+        .height = 1,
+        .frame_generation = 0,
+    }, &bytes));
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameMonitor(a, .{
+        .monitor_id = 1,
+        .x = 0,
+        .y = 0,
+        .width = 0,
+        .height = 1,
+        .frame_generation = 1,
+    }, &bytes));
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameMonitor(a, .{
+        .monitor_id = 1,
+        .x = 0,
+        .y = 0,
+        .width = 1,
+        .height = -1,
+        .frame_generation = 1,
+    }, &bytes));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFrameMonitor(bytes.items));
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameMonitor(a, .{
+        .monitor_id = 0,
+        .x = 0,
+        .y = 0,
+        .width = 1,
+        .height = 1,
+        .frame_generation = 1,
     }, &bytes));
 }
 

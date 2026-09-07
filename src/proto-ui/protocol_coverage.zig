@@ -74,7 +74,7 @@ const ranges = [_]Range{
     .{ .low = 0x020b, .high = 0x020b, .status = .implemented_codec, .domain = .frame, .family = "frame-fullscreen", .note = "Emacs fullscreen-mode codec, Scene state, SDL fullboth probe" },
     .{ .low = 0x020c, .high = 0x020c, .status = .planned, .domain = .frame, .family = "frame-maximize", .note = "horizontal/vertical maximize payload pending" },
     .{ .low = 0x020d, .high = 0x020d, .status = .implemented_codec, .domain = .frame, .family = "frame-alpha", .note = "active/inactive/background opacity codec, Scene state, SDL probe" },
-    .{ .low = 0x020e, .high = 0x020e, .status = .planned, .domain = .frame, .family = "frame-monitor", .note = "monitor descriptor and change payload pending" },
+    .{ .low = 0x020e, .high = 0x020e, .status = .implemented_codec, .domain = .frame, .family = "frame-monitor", .note = "generation-qualified monitor identity, primary flag, bounds codec, SDL query" },
     .{ .low = 0x020f, .high = 0x020f, .status = .implemented_codec, .domain = .frame, .family = "frame-scale", .note = "generation-qualified scale/DPI codec, Scene state, SDL probe" },
     .{ .low = 0x0210, .high = 0x0210, .status = .implemented_codec, .domain = .frame, .family = "frame-focus", .note = "state codec, Scene registry, bridge conformance" },
     .{ .low = 0x0211, .high = 0x0213, .status = .planned, .domain = .frame, .family = "frame-window-manager", .note = "hints/z-order/parent payloads pending" },

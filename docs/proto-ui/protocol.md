@@ -1001,9 +1001,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 32 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 38 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 129 | Assigned for the target protocol but not implemented |
+| `planned` | 123 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every
@@ -1533,6 +1533,32 @@ diagnostic SDL bridge maps `fullboth` to SDL's desktop-fullscreen request,
 verifies the platform flag, and immediately restores windowed mode. SDL
 mapping for width-only, height-only, and maximized modes remains pending;
 these are state codec support only, not redisplay resize/layout parity.
+
+#### Frame monitor state
+
+`FRAME_MONITOR` (`0x020e`) identifies the monitor that owns a frame and its
+authoritative logical bounds in a fixed 32-byte payload:
+
+```text
+schema               u16 = 1
+flags                u8  (bit 0=primary; bits 1-7 reserved)
+reserved             u8  = 0
+monitor_id           u32 (nonzero)
+x                    i32
+y                    i32
+width                i32 (> 0)
+height               i32 (> 0)
+frame_generation     u32 (nonzero)
+reserved             u32 = 0
+```
+
+`x + width` and `y + height` must remain representable in `i32`. Flags outside
+`primary` are invalid. The envelope frame ID, active frame identity, and
+`frame_generation` must agree. Scene stores the complete monitor descriptor and
+clears it on frame destruction, authenticated resync, or scene teardown. The
+diagnostic SDL bridge queries the real SDL display ID and bounds. This does not
+yet implement monitor-change events, frontend-to-core monitor events, display
+hotplug recovery, or redisplay-driven frame migration.
 
 The facts profile also defines a deliberately bounded `KEY_EVENT` payload for
 `0x0600`: `u16 action` (`1=backspace`, `2=cursor-left`, `3=cursor-right`,

@@ -69,6 +69,10 @@ fullheight, and maximized modes.  The diagnostic SDL bridge applies and
 restores `fullboth`; the other modes remain Scene-only until platform mapping
 and redisplay geometry adaptation land.
 
+W12d-m adds `FRAME_MONITOR` v1 for a generation-qualified monitor identity,
+primary flag, and logical bounds.  The diagnostic SDL bridge queries the real
+SDL display ID and bounds; change events and frame migration remain pending.
+
 W12e adds a bounded adapter-owned resource payload cache with LRU eviction and
 strict wire contracts for `RESOURCE_REQUEST` and `RESOURCE_EVICT`.  The cache
 accepts at most 32 entries, 4096 bytes per payload, and 16 KiB total; existing

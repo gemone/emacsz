@@ -1270,6 +1270,7 @@ pub const Scene = struct {
     decorations: ?protocol.FrameDecorationsPayload = null,
     scale: ?protocol.FrameScalePayload = null,
     fullscreen: ?protocol.FrameFullscreenPayload = null,
+    monitor: ?protocol.FrameMonitorPayload = null,
     present: ?PresentHint = null,
     viewport: ?Viewport = null,
     window_tree: ?protocol.WindowTreeSnapshot = null,
@@ -1295,6 +1296,7 @@ pub const Scene = struct {
         self.decorations = null;
         self.scale = null;
         self.fullscreen = null;
+        self.monitor = null;
         self.windows = .empty;
         self.rows = .empty;
         self.glyph_runs = .empty;
@@ -1349,6 +1351,7 @@ pub const Scene = struct {
             protocol.Message.frame_decorations => try self.applyFrameDecorations(payload),
             protocol.Message.frame_scale => try self.applyFrameScale(payload),
             protocol.Message.frame_fullscreen => try self.applyFrameFullscreen(payload),
+            protocol.Message.frame_monitor => try self.applyFrameMonitor(payload),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.font_define => try self.applyFontDefine(payload),
@@ -1371,6 +1374,7 @@ pub const Scene = struct {
         self.decorations = null;
         self.scale = null;
         self.fullscreen = null;
+        self.monitor = null;
         self.clearGlyphRuns();
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
@@ -1584,6 +1588,17 @@ pub const Scene = struct {
             frame.generation != fullscreen.frame_generation)
             return Error.InvalidMessage;
         self.fullscreen = fullscreen;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFrameMonitor(self: *Scene, payload: protocol.Payload) Error!void {
+        const monitor = try protocol.decodeFrameMonitor(payload.bytes);
+        try protocol.validateFrameMonitorEnvelope(monitor, payload.envelope);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != monitor.frame_generation)
+            return Error.InvalidMessage;
+        self.monitor = monitor;
         self.stats.control_messages += 1;
     }
 
@@ -2330,6 +2345,29 @@ fn frameFullscreenMessage(
         .frame_id = envelope_frame,
         .timestamp_ns = sequence,
     }, fullscreen_payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
+fn frameMonitorMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    envelope_frame: u32,
+    payload: protocol.FrameMonitorPayload,
+) ![]u8 {
+    var monitor_payload: std.ArrayList(u8) = .empty;
+    defer monitor_payload.deinit(a);
+    try protocol.encodeFrameMonitor(a, payload, &monitor_payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_monitor,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = envelope_frame,
+        .timestamp_ns = sequence,
+    }, monitor_payload.items, &message);
     return message.toOwnedSlice(a);
 }
 
@@ -3254,6 +3292,85 @@ test "scene applies fullscreen only to the active frame generation" {
 
     scene.resetForResync();
     try std.testing.expect(scene.fullscreen == null);
+}
+
+test "scene applies monitor only to the active frame generation" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    const monitor = try frameMonitorMessage(a, 2, 7, .{
+        .flags = protocol.FrameMonitorFlags.primary,
+        .monitor_id = 30,
+        .x = 0,
+        .y = 0,
+        .width = 1920,
+        .height = 1080,
+        .frame_generation = 1,
+    });
+    defer a.free(monitor);
+    try scene.apply(monitor);
+    try std.testing.expectEqual(@as(u32, 30), scene.monitor.?.monitor_id);
+    try std.testing.expectEqual(@as(i32, 1920), scene.monitor.?.width);
+
+    const replacement = try frameMonitorMessage(a, 3, 7, .{
+        .monitor_id = 31,
+        .x = 1920,
+        .y = 0,
+        .width = 1280,
+        .height = 720,
+        .frame_generation = 1,
+    });
+    defer a.free(replacement);
+    try scene.apply(replacement);
+    try std.testing.expectEqual(@as(u32, 31), scene.monitor.?.monitor_id);
+
+    const stale = try frameMonitorMessage(a, 4, 7, .{
+        .monitor_id = 31,
+        .x = 0,
+        .y = 0,
+        .width = 1,
+        .height = 1,
+        .frame_generation = 2,
+    });
+    defer a.free(stale);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(stale));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const wrong_frame = try frameMonitorMessage(a, 4, 8, .{
+        .monitor_id = 31,
+        .x = 0,
+        .y = 0,
+        .width = 1,
+        .height = 1,
+        .frame_generation = 1,
+    });
+    defer a.free(wrong_frame);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_frame));
+
+    var destroy_payload: [8]u8 = undefined;
+    std.mem.writeInt(u32, destroy_payload[0..4], 7, .little);
+    std.mem.writeInt(u32, destroy_payload[4..8], 1, .little);
+    var destroy: std.ArrayList(u8) = .empty;
+    defer destroy.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_destroy,
+        .sequence = 4,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 7,
+        .timestamp_ns = 4,
+    }, &destroy_payload, &destroy);
+    try scene.apply(destroy.items);
+    try std.testing.expect(scene.monitor == null);
+
+    scene.resetForResync();
+    try std.testing.expect(scene.monitor == null);
 }
 
 test "scene atomically validates resource generation declarations" {
