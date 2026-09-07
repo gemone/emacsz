@@ -1112,3 +1112,21 @@ directory, constrain the token file to owner-only access, and remove stale
 endpoints before listening.  Implementations must keep secret comparison
 constant time.  Compression, encryption, fragment reassembly, and
 external-network deployment remain transport-level future work.
+
+#### Deterministic fuzz hardening
+
+`proto-ui-fuzz` is the adapter-only robustness gate for decode and frontend
+application boundaries.  It uses a fixed seeded PRNG, processes 4096
+iterations per target by default, and completes without libFuzzer or network
+access.  The seven targets are raw EUP envelopes, `FRAME_UPDATE` payloads,
+capability tables, strict visibility/focus payloads, resource request/evict
+payloads, key/text/pointer/wheel input codecs, and `Scene.apply` messages
+derived from valid EUP seeds.
+
+The mutation set includes bit flips, truncation, field/type flips, exact and
+structural duplication, zero generations, stale generations, oversized lengths,
+and nonzero reserved bytes.  Errors are expected results, every iteration owns
+fresh memory, and no scene state survives an iteration.  The emitted one-line
+JSON summary names the seed, iteration count, accepted/rejected counts,
+targets, and pass result.  `--iterations` is capped at 100000 and `--seed`
+must be nonzero; repeated runs with the same options produce identical counts.

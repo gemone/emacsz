@@ -354,6 +354,7 @@ Required gates:
 zig fmt --check src/proto-ui build.zig
 zig build -Dproto-ui=true proto-ui-unit --summary all
 zig build -Dproto-ui=true proto-ui-boundary --summary all
+zig build -Dproto-ui=true proto-ui-fuzz --summary all
 zig build -Dproto-ui=true proto-ui-conformance --summary all
 zig build -Dproto-ui=true proto-ui-shim-library --summary all
 zig build -Dproto-ui=true proto-ui-shim-library-conformance --summary all
@@ -367,6 +368,8 @@ The boundary report must show:
 3. No normal-RIF integration point is implemented inside Emacs core.
 4. No generated file is written into tracked inherited C source paths.
 5. Default-build symbol and behavior isolation remain clean.
+6. `protocol.fuzz_hardening` reports degraded/non-negotiable with
+   `proto-ui-fuzz` evidence and a deterministic bounded run.
 
 ## 10. Definition of done
 

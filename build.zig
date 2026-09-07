@@ -511,6 +511,24 @@ pub fn build(b: *std.Build) void {
         );
         conformance_step.dependOn(&run_conformance.step);
 
+        // W13-a: bounded deterministic protocol fuzzing is part of the local
+        // adapter boundary.  It never invokes libFuzzer and never opens a
+        // socket.
+        const fuzz_tool = b.addExecutable(.{
+            .name = "proto-ui-fuzz",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/fuzz.zig"),
+            }),
+        });
+        const run_fuzz = b.addRunArtifact(fuzz_tool);
+        const fuzz_step = b.step(
+            "proto-ui-fuzz",
+            "Run bounded deterministic EUP protocol fuzz hardening",
+        );
+        fuzz_step.dependOn(&run_fuzz.step);
+
         // R3: compile generated C directly in the build graph and test it
         // through the tracked Zig host harness.  No generated C is copied
         // into tracked inherited source.
@@ -623,6 +641,7 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&install_shim_library.step);
         boundary_step.dependOn(&run_shim_library_conformance.step);
         boundary_step.dependOn(&run_boundary_audit.step);
+        boundary_step.dependOn(&run_fuzz.step);
 
         // R7: the host registration decision is source-authoritative policy.
         // Pending is valid, but it neither approves integration nor enables
@@ -5643,6 +5662,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true proto-ui-shim-conformance - compile and test the generated C shim
         \\  zig build -Dproto-ui=true proto-ui-shim-library - build/install the shared C shim
         \\  zig build -Dproto-ui=true proto-ui-shim-library-conformance - dlopen ABI/export tests
+        \\  zig build -Dproto-ui=true proto-ui-fuzz - deterministic bounded EUP protocol fuzzing
         \\
         \\  zig build -Dproto-ui=true proto-ui-host-contract - pending registration decision audit
         \\  zig build -Dproto-ui=true proto-ui-runtime-manifest - fail-closed runtime manifest audit

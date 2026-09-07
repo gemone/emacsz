@@ -2386,6 +2386,10 @@ Review gates:
 
 Goal: prove protocol robustness.
 
+Status: W13-a complete.  The deterministic protocol fuzz gate covers envelope,
+frame-update, capability, visibility/focus, resource, input-codec, and frontend
+`Scene.apply` seeds.  Replay-specific differential coverage remains W13 scope.
+
 Tasks:
 
 1. Add envelope fuzzing.
@@ -2531,6 +2535,7 @@ Current steps:
 zig build -Dproto-ui=true proto-ui-unit
 zig build -Dproto-ui=true proto-ui-abi
 zig build -Dproto-ui=true proto-ui-conformance
+zig build -Dproto-ui=true proto-ui-fuzz
 zig build -Dproto-ui=true proto-ui-boundary
 zig build -Dproto-ui=true proto-ui-boundary-audit
 zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke
@@ -2550,7 +2555,6 @@ Planned steps:
 ```sh
 zig build -Dproto-ui=true proto-ui-roundtrip
 zig build -Dproto-ui=true proto-ui-replay-test
-zig build -Dproto-ui=true proto-ui-fuzz
 zig build -Dproto-ui=true proto-ui-bench
 zig build -Dproto-ui=true proto-ui-diff
 zig build -Dproto-ui=true proto-ui-live-recovery-test

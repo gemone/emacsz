@@ -129,6 +129,7 @@ zig build -Dproto-ui=true
 # Run protocol and adapter boundary tests.
 zig build -Dproto-ui=true proto-ui-unit
 zig build -Dproto-ui=true proto-ui-boundary
+zig build -Dproto-ui=true proto-ui-fuzz
 
 # Build the independent SDL3 frontend.
 zig build -Dproto-ui=true -Dsdl3-frontend=true

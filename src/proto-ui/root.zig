@@ -13,6 +13,7 @@ pub const frame_service = @import("frame_service.zig");
 pub const runtime = @import("runtime.zig");
 pub const capture_service = @import("capture_service.zig");
 pub const host_contract = @import("host_contract.zig");
+pub const fuzz = @import("fuzz.zig");
 
 test {
     _ = protocol;
@@ -30,4 +31,5 @@ test {
     _ = runtime;
     _ = capture_service;
     _ = host_contract;
+    _ = fuzz;
 }

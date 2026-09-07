@@ -387,7 +387,8 @@ pub fn encodeTextInput(a: std.mem.Allocator, input: TextInput, out: *std.ArrayLi
 pub fn decodeTextInput(bytes: []const u8) Error!TextInput {
     if (bytes.len < 4) return Error.InvalidTable;
     const length = std.mem.readInt(u32, bytes[0..4], .little);
-    if (bytes.len != 4 + length or length == 0 or length > max_text_columns) return Error.InvalidTable;
+    if (length == 0 or length > max_text_columns or
+        bytes.len < 4 or bytes.len - 4 != length) return Error.InvalidTable;
     const text = bytes[4..];
     for (text) |byte| {
         if (byte < 0x20 or byte > 0x7e) return Error.InvalidTable;
