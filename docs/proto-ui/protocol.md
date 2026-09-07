@@ -234,6 +234,45 @@ normal positive-path session closes.
 | `0x0213` | `FRAME_PARENT` | C→F | Parent frame or null | Child-frame relation |
 | `0x0214` | `FRAME_DECORATIONS` | C→F | Decorated/undecorated | Window decoration policy |
 
+#### Frame presentation feedback
+
+`FRAME_PRESENTED` (`0x0204`) is a fixed 56-byte frontend-to-core record:
+
+```text
+schema                   u16 = 1
+flags                    u8  = 0
+reserved                 u8  = 0
+frame_generation         u32 (nonzero)
+redisplay_generation     u64 (nonzero)
+frame_sequence           u64 (nonzero)
+presented_at_ns          u64 (nonzero)
+frame_path_ns            u64
+draw_command_count       u64
+damage_kind              u8  (0..6)
+reserved                 u56 = 0
+```
+
+`FRAME_DROPPED` (`0x0205`) is a fixed 48-byte frontend-to-core record:
+
+```text
+schema                     u16 = 1
+flags                      u8  = 0
+reserved                   u8  = 0
+frame_generation           u32 (nonzero)
+redisplay_generation       u64 (nonzero)
+frame_sequence             u64 (nonzero)
+last_presented_sequence    u64
+observed_at_ns             u64 (nonzero)
+reason                     u8  (1..6)
+reserved                   u56 = 0
+```
+
+Drop reasons are invalid window size, render-device loss, draw failure,
+superseded frame, missing resource, and limit exceeded. Damage kind distinguishes
+none, initial, cursor, text, region, viewport, and unchanged presents. These
+codecs and SDL counter conformance are implemented; core consumption, adaptive
+pacing decisions, and GPU timestamps remain pending.
+
 ## 11. Window messages
 
 | ID | Name | Direction | Payload | Semantics |

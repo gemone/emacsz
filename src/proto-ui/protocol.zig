@@ -70,6 +70,7 @@ pub const Message = struct {
     pub const frame_destroy: u16 = 0x0206;
     pub const frame_update: u16 = 0x0203;
     pub const frame_presented: u16 = 0x0204;
+    pub const frame_dropped: u16 = 0x0205;
     pub const frame_visibility: u16 = 0x0208;
     pub const frame_title: u16 = 0x0209;
     pub const frame_alpha: u16 = 0x020d;
@@ -1170,6 +1171,52 @@ pub const FrameMaximizePayload = struct {
     frame_generation: u32,
 };
 
+pub const PresentDamageKind = enum(u8) {
+    none = 0,
+    initial = 1,
+    cursor = 2,
+    text = 3,
+    region = 4,
+    viewport = 5,
+    unchanged = 6,
+};
+
+pub const FrameDropReason = enum(u8) {
+    invalid_window_size = 1,
+    render_device_lost = 2,
+    draw_failed = 3,
+    superseded = 4,
+    resource_missing = 5,
+    limit_exceeded = 6,
+};
+
+pub const FramePresentedPayload = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    frame_generation: u32,
+    redisplay_generation: u64,
+    frame_sequence: u64,
+    presented_at_ns: u64,
+    frame_path_ns: u64,
+    draw_command_count: u64,
+    damage_kind: PresentDamageKind,
+    reserved_tail: [7]u8 = .{ 0, 0, 0, 0, 0, 0, 0 },
+};
+
+pub const FrameDroppedPayload = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    frame_generation: u32,
+    redisplay_generation: u64,
+    frame_sequence: u64,
+    last_presented_sequence: u64,
+    observed_at_ns: u64,
+    reason: FrameDropReason,
+    reserved_tail: [7]u8 = .{ 0, 0, 0, 0, 0, 0, 0 },
+};
+
 pub const FrameFocusPayload = struct {
     frame_id: u32,
     frame_generation: u32,
@@ -1917,6 +1964,138 @@ pub fn decodeFrameMaximize(data: []const u8) Error!FrameMaximizePayload {
 pub fn validateFrameMaximizeEnvelope(payload: FrameMaximizePayload, envelope: Envelope) Error!void {
     try validateFrameMaximize(payload);
     if (envelope.frame_id == 0) return Error.InvalidMessage;
+}
+
+fn validateFrameFeedbackIdentity(
+    frame_generation: u32,
+    redisplay_generation: u64,
+    frame_sequence: u64,
+    timestamp_ns: u64,
+) Error!void {
+    if (frame_generation == 0 or redisplay_generation == 0 or
+        frame_sequence == 0 or timestamp_ns == 0) return Error.InvalidMessage;
+}
+
+fn validateFramePresented(payload: FramePresentedPayload) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or payload.reserved != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0)) return Error.InvalidMessage;
+    try validateFrameFeedbackIdentity(
+        payload.frame_generation,
+        payload.redisplay_generation,
+        payload.frame_sequence,
+        payload.presented_at_ns,
+    );
+}
+
+pub fn encodeFramePresented(
+    a: std.mem.Allocator,
+    payload: FramePresentedPayload,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateFramePresented(payload);
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &bytes, payload.schema, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, payload.flags);
+    try out.append(a, payload.reserved);
+    var word: [4]u8 = undefined;
+    std.mem.writeInt(u32, &word, payload.frame_generation, .little);
+    try out.appendSlice(a, &word);
+    var long: [8]u8 = undefined;
+    inline for (.{ payload.redisplay_generation, payload.frame_sequence, payload.presented_at_ns, payload.frame_path_ns, payload.draw_command_count }) |value| {
+        std.mem.writeInt(u64, &long, value, .little);
+        try out.appendSlice(a, &long);
+    }
+    try out.append(a, @intFromEnum(payload.damage_kind));
+    try out.appendSlice(a, &payload.reserved_tail);
+}
+
+pub fn decodeFramePresented(data: []const u8) Error!FramePresentedPayload {
+    if (data.len != 56) return Error.InvalidTable;
+    const payload = FramePresentedPayload{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .frame_generation = std.mem.readInt(u32, data[4..8], .little),
+        .redisplay_generation = std.mem.readInt(u64, data[8..16], .little),
+        .frame_sequence = std.mem.readInt(u64, data[16..24], .little),
+        .presented_at_ns = std.mem.readInt(u64, data[24..32], .little),
+        .frame_path_ns = std.mem.readInt(u64, data[32..40], .little),
+        .draw_command_count = std.mem.readInt(u64, data[40..48], .little),
+        .damage_kind = switch (data[48]) {
+            0 => .none,
+            1 => .initial,
+            2 => .cursor,
+            3 => .text,
+            4 => .region,
+            5 => .viewport,
+            6 => .unchanged,
+            else => return Error.InvalidMessage,
+        },
+        .reserved_tail = data[49..56][0..7].*,
+    };
+    try validateFramePresented(payload);
+    return payload;
+}
+
+fn validateFrameDropped(payload: FrameDroppedPayload) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or payload.reserved != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0)) return Error.InvalidMessage;
+    try validateFrameFeedbackIdentity(
+        payload.frame_generation,
+        payload.redisplay_generation,
+        payload.frame_sequence,
+        payload.observed_at_ns,
+    );
+}
+
+pub fn encodeFrameDropped(
+    a: std.mem.Allocator,
+    payload: FrameDroppedPayload,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameDropped(payload);
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &bytes, payload.schema, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, payload.flags);
+    try out.append(a, payload.reserved);
+    var word: [4]u8 = undefined;
+    std.mem.writeInt(u32, &word, payload.frame_generation, .little);
+    try out.appendSlice(a, &word);
+    var long: [8]u8 = undefined;
+    inline for (.{ payload.redisplay_generation, payload.frame_sequence, payload.last_presented_sequence, payload.observed_at_ns }) |value| {
+        std.mem.writeInt(u64, &long, value, .little);
+        try out.appendSlice(a, &long);
+    }
+    try out.append(a, @intFromEnum(payload.reason));
+    try out.appendSlice(a, &payload.reserved_tail);
+}
+
+pub fn decodeFrameDropped(data: []const u8) Error!FrameDroppedPayload {
+    if (data.len != 48) return Error.InvalidTable;
+    const payload = FrameDroppedPayload{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .frame_generation = std.mem.readInt(u32, data[4..8], .little),
+        .redisplay_generation = std.mem.readInt(u64, data[8..16], .little),
+        .frame_sequence = std.mem.readInt(u64, data[16..24], .little),
+        .last_presented_sequence = std.mem.readInt(u64, data[24..32], .little),
+        .observed_at_ns = std.mem.readInt(u64, data[32..40], .little),
+        .reason = switch (data[40]) {
+            1 => .invalid_window_size,
+            2 => .render_device_lost,
+            3 => .draw_failed,
+            4 => .superseded,
+            5 => .resource_missing,
+            6 => .limit_exceeded,
+            else => return Error.InvalidMessage,
+        },
+        .reserved_tail = data[41..48][0..7].*,
+    };
+    try validateFrameDropped(payload);
+    return payload;
 }
 
 pub fn encodeResourceRequests(a: std.mem.Allocator, requests: []const ResourceRequest, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
@@ -2845,6 +3024,112 @@ test "frame maximize payload enforces strict wire form" {
     try std.testing.expectError(Error.InvalidMessage, encodeFrameMaximize(a, .{
         .flags = FrameMaximizeFlags.horizontal,
         .frame_generation = 0,
+    }, &bytes));
+}
+
+test "frame presented payload enforces strict wire form" {
+    const a = std.testing.allocator;
+    const payload = FramePresentedPayload{
+        .frame_generation = 2,
+        .redisplay_generation = 0x0102030405060708,
+        .frame_sequence = 0x0102030405060709,
+        .presented_at_ns = 0x010203040506070a,
+        .frame_path_ns = 0x010203040506070b,
+        .draw_command_count = 0x010203040506070c,
+        .damage_kind = .region,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFramePresented(a, payload, &bytes);
+    try std.testing.expectEqual(@as(usize, 56), bytes.items.len);
+    try std.testing.expectEqual(payload, try decodeFramePresented(bytes.items));
+    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, bytes.items[0..2], .little));
+    try std.testing.expectEqual(payload.frame_generation, std.mem.readInt(u32, bytes.items[4..8], .little));
+    try std.testing.expectEqual(payload.redisplay_generation, std.mem.readInt(u64, bytes.items[8..16], .little));
+    try std.testing.expectEqual(payload.presented_at_ns, std.mem.readInt(u64, bytes.items[24..32], .little));
+
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeFramePresented(bytes.items));
+    bytes.items[0] = 1;
+    bytes.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFramePresented(bytes.items));
+    bytes.items[2] = 0;
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFramePresented(bytes.items));
+    bytes.items[3] = 0;
+    bytes.items[48] = 9;
+    try std.testing.expectError(Error.InvalidMessage, decodeFramePresented(bytes.items));
+    bytes.items[48] = @intFromEnum(PresentDamageKind.region);
+    bytes.items[49] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFramePresented(bytes.items));
+    bytes.items[49] = 0;
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFramePresented(bytes.items));
+    inline for (.{ "frame_generation", "redisplay_generation", "frame_sequence", "presented_at_ns" }) |field| {
+        var invalid = payload;
+        @field(invalid, field) = 0;
+        try std.testing.expectError(Error.InvalidMessage, encodeFramePresented(a, invalid, &bytes));
+    }
+    try std.testing.expectError(Error.InvalidMessage, encodeFramePresented(a, .{
+        .frame_generation = 0,
+        .redisplay_generation = 1,
+        .frame_sequence = 1,
+        .presented_at_ns = 1,
+        .frame_path_ns = 1,
+        .draw_command_count = 1,
+        .damage_kind = .initial,
+    }, &bytes));
+}
+
+test "frame dropped payload enforces strict wire form" {
+    const a = std.testing.allocator;
+    const payload = FrameDroppedPayload{
+        .frame_generation = 2,
+        .redisplay_generation = 0x0102030405060708,
+        .frame_sequence = 0x0102030405060709,
+        .last_presented_sequence = 0x010203040506070a,
+        .observed_at_ns = 0x010203040506070b,
+        .reason = .superseded,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFrameDropped(a, payload, &bytes);
+    try std.testing.expectEqual(@as(usize, 48), bytes.items.len);
+    try std.testing.expectEqual(payload, try decodeFrameDropped(bytes.items));
+    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, bytes.items[0..2], .little));
+    try std.testing.expectEqual(payload.frame_generation, std.mem.readInt(u32, bytes.items[4..8], .little));
+    try std.testing.expectEqual(payload.redisplay_generation, std.mem.readInt(u64, bytes.items[8..16], .little));
+    try std.testing.expectEqual(payload.observed_at_ns, std.mem.readInt(u64, bytes.items[32..40], .little));
+
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameDropped(bytes.items));
+    bytes.items[0] = 1;
+    bytes.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameDropped(bytes.items));
+    bytes.items[2] = 0;
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameDropped(bytes.items));
+    bytes.items[2] = 0;
+    bytes.items[40] = 9;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameDropped(bytes.items));
+    bytes.items[40] = @intFromEnum(FrameDropReason.superseded);
+    bytes.items[41] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameDropped(bytes.items));
+    bytes.items[41] = 0;
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFrameDropped(bytes.items));
+    inline for (.{ "frame_generation", "redisplay_generation", "frame_sequence", "observed_at_ns" }) |field| {
+        var invalid = payload;
+        @field(invalid, field) = 0;
+        try std.testing.expectError(Error.InvalidMessage, encodeFrameDropped(a, invalid, &bytes));
+    }
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameDropped(a, .{
+        .frame_generation = 0,
+        .redisplay_generation = 1,
+        .frame_sequence = 1,
+        .observed_at_ns = 1,
+        .last_presented_sequence = 1,
+        .reason = .invalid_window_size,
     }, &bytes));
 }
 

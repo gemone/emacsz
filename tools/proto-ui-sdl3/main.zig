@@ -2463,6 +2463,50 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     var frame_gate: renderer_policy.FrameGate = .{};
     var frame_counters: renderer_policy.FrameCounters = .{};
     try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+    if (frame_counters.presented_frames != 1) return error.RuntimeBridgePresentCounterInvalid;
+    if (scene.frame_header) |header| {
+        const presented_payload: protocol.FramePresentedPayload = .{
+            .frame_generation = bridge.eup_frame_generation,
+            .redisplay_generation = header.redisplay_generation,
+            .frame_sequence = header.sequence,
+            .presented_at_ns = frame_counters.present_last_ns,
+            .frame_path_ns = frame_counters.frame_path_last_ns,
+            .draw_command_count = frame_counters.draw_commands_total,
+            .damage_kind = .initial,
+        };
+        var presented_bytes: std.ArrayList(u8) = .empty;
+        defer presented_bytes.deinit(gpa);
+        try protocol.encodeFramePresented(gpa, presented_payload, &presented_bytes);
+        const presented = try protocol.decodeFramePresented(presented_bytes.items);
+        if (presented.frame_generation != bridge.eup_frame_generation or
+            presented.redisplay_generation != header.redisplay_generation or
+            presented.frame_sequence != header.sequence or
+            presented.presented_at_ns != frame_counters.present_last_ns or
+            presented.frame_path_ns != frame_counters.frame_path_last_ns or
+            presented.draw_command_count != frame_counters.draw_commands_total or
+            presented.damage_kind != .initial)
+            return error.RuntimeBridgePresentedFeedbackInvalid;
+
+        const dropped_payload: protocol.FrameDroppedPayload = .{
+            .frame_generation = bridge.eup_frame_generation,
+            .redisplay_generation = header.redisplay_generation,
+            .frame_sequence = header.sequence + 1,
+            .last_presented_sequence = header.sequence,
+            .observed_at_ns = frame_counters.present_last_ns + 1,
+            .reason = .superseded,
+        };
+        var dropped_bytes: std.ArrayList(u8) = .empty;
+        defer dropped_bytes.deinit(gpa);
+        try protocol.encodeFrameDropped(gpa, dropped_payload, &dropped_bytes);
+        const dropped = try protocol.decodeFrameDropped(dropped_bytes.items);
+        if (dropped.frame_generation != bridge.eup_frame_generation or
+            dropped.redisplay_generation != header.redisplay_generation or
+            dropped.frame_sequence != header.sequence + 1 or
+            dropped.last_presented_sequence != header.sequence or
+            dropped.observed_at_ns <= presented.presented_at_ns or
+            dropped.reason != .superseded)
+            return error.RuntimeBridgeDroppedFeedbackInvalid;
+    } else return error.RuntimeBridgeFrameHeaderInvalid;
     var key: runtime_host.InputEvent = .{
         .event_id = 11,
         .kind = runtime_bridge.input_kind_key,
@@ -2529,7 +2573,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             opacity_supported,
             decorations_supported,

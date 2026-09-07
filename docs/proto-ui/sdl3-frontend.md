@@ -576,7 +576,12 @@ scene object counts
 memory usage
 ```
 
-W10b-a implements the first subset in smoke diagnostics: actual renderer
+W12f-p implements the protocol subset for the first two records:
+`FRAME_PRESENTED` carries frame/redisplay generation, frame sequence,
+monotonic present time, frame-path duration, draw-command count, and damage
+class.  `FRAME_DROPPED` carries the dropped frame and last-presented sequence,
+observed time, and bounded drop reason.
+W10b-a implements the first broader subset in smoke diagnostics: actual renderer
 name/tier and present mode, `presented_frames`, `skipped_frames`, full-frame path
 nanoseconds, and the last monotonic present timestamp.
 

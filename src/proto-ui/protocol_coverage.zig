@@ -66,7 +66,7 @@ const ranges = [_]Range{
     .{ .low = 0x0200, .high = 0x0200, .status = .implemented_codec, .domain = .frame, .family = "frame-create", .note = "frontend lifecycle and runtime bridge conformance" },
     .{ .low = 0x0201, .high = 0x0202, .status = .planned, .domain = .frame, .family = "frame-state", .note = "patch and snapshot payload pending" },
     .{ .low = 0x0203, .high = 0x0203, .status = .implemented_codec, .domain = .frame, .family = "frame-update", .note = "atomic header/section codec, Scene apply, replay tests" },
-    .{ .low = 0x0204, .high = 0x0205, .status = .planned, .domain = .frame, .family = "frame-feedback", .note = "presentation feedback payload pending" },
+    .{ .low = 0x0204, .high = 0x0205, .status = .implemented_codec, .domain = .frame, .family = "frame-feedback", .note = "presented/dropped codecs and SDL counter feedback conformance; core consumer pending" },
     .{ .low = 0x0206, .high = 0x0206, .status = .implemented_codec, .domain = .frame, .family = "frame-destroy", .note = "frontend and runtime bridge lifecycle conformance" },
     .{ .low = 0x0207, .high = 0x0207, .status = .planned, .domain = .frame, .family = "frame-geometry", .note = "dedicated geometry message pending" },
     .{ .low = 0x0208, .high = 0x0208, .status = .implemented_codec, .domain = .frame, .family = "frame-visibility", .note = "state codec, Scene registry, bridge conformance" },

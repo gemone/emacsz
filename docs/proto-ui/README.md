@@ -89,6 +89,11 @@ state and requires the control capability on both peers.  An automatic PONG
 responder is implemented; a separate fresh connection proves fatal
 `VERSION_MISMATCH` transport.
 
+W12f-p adds little-endian `FRAME_PRESENTED` and `FRAME_DROPPED` codecs.  The
+SDL bridge now encodes and validates real `FRAME_PRESENTED` counter data from a
+rendered frame plus a deterministic superseded-frame drop record; core
+consumption and pacing remain pending.
+
 W12e adds a bounded adapter-owned resource payload cache with LRU eviction and
 strict wire contracts for `RESOURCE_REQUEST` and `RESOURCE_EVICT`.  The cache
 accepts at most 32 entries, 4096 bytes per payload, and 16 KiB total; existing
