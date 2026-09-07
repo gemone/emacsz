@@ -1807,6 +1807,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     try bridge.createTerminal(.{ .requested_generation = 1 });
     try bridge.activateTerminal();
     try bridge.registerFrame(.{ .id = 22, .generation = 1 });
+    _ = try bridge.refreshFrameGeometry();
     try bridge.beginCapture(1);
 
     try bridge.observeWindow(.{
@@ -1852,7 +1853,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         .visible = true,
         .active = true,
     });
-    try bridge.observeDamage(.{ .width = 208, .height = 48 });
+    try bridge.observeDamage(.{ .width = 800, .height = 600 });
     try bridge.commitCapture();
 
     var scene = frontend.Scene.init(gpa);

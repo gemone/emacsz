@@ -32,6 +32,20 @@ pub const header =
     \\  uint64_t generation;
     \\} ProtoUiIdentity;
     \\
+    \\typedef struct ProtoUiGeometry {
+    \\  int32_t x;
+    \\  int32_t y;
+    \\  int32_t width;
+    \\  int32_t height;
+    \\} ProtoUiGeometry;
+    \\
+    \\typedef struct ProtoUiFrameState {
+    \\  uint64_t generation;
+    \\  uint8_t visibility;
+    \\  uint8_t focused;
+    \\  uint8_t reserved[6];
+    \\} ProtoUiFrameState;
+    \\
     \\typedef struct ProtoUiTerminalCreateRequest {
     \\  uint64_t requested_generation;
     \\  uint8_t kind;
@@ -169,11 +183,10 @@ pub const header =
     \\  ProtoUiIdentity *protocol_frame);
     \\typedef ProtoUiPureRuntimeStatus (*ProtoUiFrameStateFn)(
     \\  void *context, const ProtoUiIdentity *frame,
-    \\  uint64_t generation, uint8_t visibility, uint8_t focused,
-    \\  const uint8_t *reserved);
+    \\  ProtoUiFrameState *state);
     \\typedef ProtoUiPureRuntimeStatus (*ProtoUiFrameGeometryFn)(
     \\  void *context, const ProtoUiIdentity *frame,
-    \\  int32_t *x, int32_t *y, int32_t *width, int32_t *height);
+    \\  ProtoUiGeometry *geometry);
     \\typedef ProtoUiPureRuntimeStatus (*ProtoUiCaptureBeginFn)(
     \\  void *context, const ProtoUiCaptureRequest *request,
     \\  ProtoUiIdentity *session);
@@ -270,6 +283,8 @@ pub const header =
     \\  const ProtoUiLifecycleGroupV1 *lifecycle;
     \\} ProtoUiPureRuntimeHostV1;
     \\
+    \\_Static_assert(sizeof(ProtoUiGeometry) == 16u, "invalid Geometry ABI");
+    \\_Static_assert(sizeof(ProtoUiFrameState) == 16u, "invalid FrameState ABI");
     \\_Static_assert(sizeof(ProtoUiIdentity) == 16u, "invalid Identity ABI");
     \\_Static_assert(offsetof(ProtoUiTerminalCreateRequest, kind) == 8u,
     \\              "invalid TerminalCreateRequest ABI");

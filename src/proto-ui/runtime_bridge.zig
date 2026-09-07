@@ -106,6 +106,7 @@ pub const Bridge = struct {
     input_count: usize = 0,
     lifecycle: LifecycleCounters = .{},
     frame_state: ?FrameRuntimeState = null,
+    frame_geometry: ?runtime_host.adapter.Geometry = null,
 
     pub fn init(table: runtime_host.PureRuntimeHostV1) Error!Bridge {
         try runtime_host.validateTable(&table);
@@ -192,6 +193,12 @@ pub const Bridge = struct {
         try self.requireState(.capturing);
         try runtime_host.validateWindowRecord(&record);
         if (record.generation != self.frame.generation) return error.InvalidFrameIdentity;
+        if (self.frame_geometry) |bounds| {
+            if (record.x < bounds.x or record.y < bounds.y or
+                @as(i64, record.x) + record.width > @as(i64, bounds.x) + bounds.width or
+                @as(i64, record.y) + record.height > @as(i64, bounds.y) + bounds.height)
+                return error.InvalidFrameIdentity;
+        }
         if (self.counts.windows == max_windows) return error.TooManyWindows;
         for (self.windows[0..self.counts.windows]) |existing| {
             if (existing.id == record.id) return error.DuplicateWindow;
@@ -263,15 +270,9 @@ pub const Bridge = struct {
     pub fn observeDamage(self: *Bridge, record: runtime_host.DamageRecord) Error!void {
         try self.requireState(.capturing);
         try runtime_host.validateDamageRecord(&record);
-        if (self.counts.windows == 0) return error.UnknownWindow;
-        var right: i64 = 0;
-        var bottom: i64 = 0;
-        for (self.windows[0..self.counts.windows]) |window| {
-            right = @max(right, @as(i64, window.x) + window.width);
-            bottom = @max(bottom, @as(i64, window.y) + window.height);
-        }
-        if (@as(i64, record.x) + record.width > right or
-            @as(i64, record.y) + record.height > bottom)
+        const bounds = self.frame_geometry orelse return error.InvalidState;
+        if (@as(i64, record.x) + record.width > @as(i64, bounds.x) + bounds.width or
+            @as(i64, record.y) + record.height > @as(i64, bounds.y) + bounds.height)
             return error.InvalidState;
         if (self.counts.damage == max_damage) return error.TooManyDamage;
         const group = try self.redisplayGroup();
@@ -295,6 +296,27 @@ pub const Bridge = struct {
 
     pub fn snapshotCounts(self: *const Bridge) Counts {
         return self.counts;
+    }
+
+    pub fn refreshFrameGeometry(self: *Bridge) Error!runtime_host.adapter.Geometry {
+        switch (self.state) {
+            .frame_registered, .capturing, .captured => {},
+            else => return error.InvalidState,
+        }
+        const group = try self.frameGroup();
+        const context = group.context orelse return error.InvalidRuntimeHost;
+        const callback = group.read_geometry orelse return error.InvalidRuntimeHost;
+        var geometry: runtime_host.adapter.Geometry = .{};
+        try runtime_host.ensureOk(callback(context, &self.frame, &geometry));
+        try runtime_host.validateGeometry(&geometry);
+        if (geometry.width <= 0 or geometry.height <= 0)
+            return error.InvalidFrameIdentity;
+        self.frame_geometry = geometry;
+        return geometry;
+    }
+
+    pub fn geometrySnapshot(self: *const Bridge) ?runtime_host.adapter.Geometry {
+        return self.frame_geometry;
     }
 
     pub fn refreshFrameState(self: *Bridge) Error!FrameStateChange {
@@ -487,16 +509,11 @@ pub const Bridge = struct {
             }, &damage_bytes);
         }
 
-        var logical_width: i64 = 0;
-        var logical_height: i64 = 0;
-        for (self.windows[0..self.counts.windows]) |window| {
-            const right: i64 = @as(i64, window.x) + window.width;
-            const bottom: i64 = @as(i64, window.y) + window.height;
-            logical_width = @max(logical_width, right);
-            logical_height = @max(logical_height, bottom);
-        }
-        const header_width: i32 = @intCast(logical_width);
-        const header_height: i32 = @intCast(logical_height);
+        const bounds = self.frame_geometry orelse return error.InvalidState;
+        const header_x: i32 = bounds.x;
+        const header_y: i32 = bounds.y;
+        const header_width: i32 = bounds.width;
+        const header_height: i32 = bounds.height;
         const sections = [_]protocol.Section{
             .{ .kind = protocol.SectionKind.windows, .records = window_bytes.items },
             .{ .kind = protocol.SectionKind.rows, .records = row_bytes.items },
@@ -511,12 +528,12 @@ pub const Bridge = struct {
                 .frame_generation = frame_generation,
                 .sequence = sequence,
                 .redisplay_generation = self.redisplay_generation,
-                .logical_x = 0,
-                .logical_y = 0,
+                .logical_x = header_x,
+                .logical_y = header_y,
                 .logical_width = header_width,
                 .logical_height = header_height,
-                .physical_x = 0,
-                .physical_y = 0,
+                .physical_x = header_x,
+                .physical_y = header_y,
                 .physical_width = header_width,
                 .physical_height = header_height,
                 .scale = 1.0,
@@ -792,6 +809,9 @@ test "pure runtime bridge produces a valid bounded EUP frame lifecycle" {
     try bridge.createTerminal(.{ .requested_generation = 1 });
     try bridge.activateTerminal();
     try bridge.registerFrame(.{ .id = 22, .generation = 8 });
+    const geometry = try bridge.refreshFrameGeometry();
+    try std.testing.expectEqual(@as(i32, 800), geometry.width);
+    try std.testing.expectEqual(@as(i32, 600), geometry.height);
     const initial_state = try bridge.refreshFrameState();
     try std.testing.expect(initial_state.visibility_changed);
     try std.testing.expect(initial_state.focus_changed);
@@ -806,7 +826,7 @@ test "pure runtime bridge produces a valid bounded EUP frame lifecycle" {
     @memcpy(run_text[0..5], "Emacs");
     try bridge.observeRun(.{ .run_id = 1, .window_id = 10, .row_index = 0, .x = 2, .y = 0, .width = 40, .height = 10, .text_length = 5, .text = run_text });
     try bridge.observeCursor(.{ .window_id = 10, .x = 0, .y = 0, .width = 2, .height = 8, .visible = true, .active = true });
-    try bridge.observeDamage(.{ .width = 80, .height = 60 });
+    try bridge.observeDamage(.{ .width = 800, .height = 600 });
     try std.testing.expectEqual(Counts{ .windows = 1, .rows = 1, .runs = 1, .cursors = 1, .damage = 1 }, bridge.snapshotCounts());
     try bridge.commitCapture();
 
