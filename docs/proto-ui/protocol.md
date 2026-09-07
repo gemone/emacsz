@@ -1437,6 +1437,33 @@ diagnostic SDL bridge applies this Scene-owned title to the SDL window. This
 does not claim Emacs runtime title publication, complete frame-parameter
 parity, or `output_proto` registration.
 
+#### Frame alpha state
+
+`FRAME_ALPHA` (`0x020d`) carries Emacs-compatible opacity authority in fixed
+point. Values are hundredths of a percent from `0` (fully transparent) through
+`10000` (fully opaque):
+
+```text
+schema               u16 = 1
+flags                u8  = 0
+reserved             u8  = 0
+active_opacity       u16 (0..10000)
+inactive_opacity     u16 (0..10000)
+background_opacity   u16 (0..10000)
+reserved             u16 = 0
+frame_generation     u32 (nonzero)
+reserved             u32 = 0
+```
+
+The payload is exactly 20 bytes. The envelope frame ID, active frame identity,
+and `frame_generation` must agree. `active_opacity` and `inactive_opacity`
+model the two sides of Emacs frame focus opacity; `background_opacity` models
+`alpha-background`. Scene replaces the complete triple only after validation.
+The diagnostic SDL bridge probes active-window opacity and falls back to an
+opaque window when the platform or compositor does not support it. This is not
+redisplay blending policy, focus-runtime integration, or complete PGTK alpha
+parity.
+
 The facts profile also defines a deliberately bounded `KEY_EVENT` payload for
 `0x0600`: `u16 action` (`1=backspace`, `2=cursor-left`, `3=cursor-right`,
 `4=cursor-up`, `5=cursor-down`, `6=copy`), `u8 state` (`1=pressed`), and

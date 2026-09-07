@@ -1266,6 +1266,7 @@ pub const Scene = struct {
     damage: std.ArrayList(Rect) = .empty,
     text: std.ArrayList(TextLine) = .empty,
     title: ?[:0]u8 = null,
+    alpha: ?protocol.FrameAlphaPayload = null,
     present: ?PresentHint = null,
     viewport: ?Viewport = null,
     window_tree: ?protocol.WindowTreeSnapshot = null,
@@ -1287,6 +1288,7 @@ pub const Scene = struct {
         for (self.text.items) |line| self.allocator.free(line.bytes);
         self.text.deinit(self.allocator);
         self.clearTitle();
+        self.alpha = null;
         self.windows = .empty;
         self.rows = .empty;
         self.glyph_runs = .empty;
@@ -1335,6 +1337,7 @@ pub const Scene = struct {
             protocol.Message.glyph_run_delete => try self.applyGlyphRunDelete(payload),
             protocol.Message.frame_visibility => try self.applyFrameVisibility(payload),
             protocol.Message.frame_title => try self.applyFrameTitle(payload),
+            protocol.Message.frame_alpha => try self.applyFrameAlpha(payload),
             protocol.Message.frame_focus => try self.applyFrameFocus(payload),
             protocol.Message.frame_destroy => try self.applyFrameDestroy(payload.envelope, payload.bytes),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
@@ -1355,6 +1358,7 @@ pub const Scene = struct {
 
     fn clearVisualState(self: *Scene) void {
         self.clearTitle();
+        self.alpha = null;
         self.clearGlyphRuns();
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
@@ -1524,6 +1528,17 @@ pub const Scene = struct {
         errdefer self.allocator.free(owned);
         self.clearTitle();
         self.title = owned;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFrameAlpha(self: *Scene, payload: protocol.Payload) Error!void {
+        const alpha = try protocol.decodeFrameAlpha(payload.bytes);
+        try protocol.validateFrameAlphaEnvelope(alpha, payload.envelope);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != alpha.frame_generation)
+            return Error.InvalidMessage;
+        self.alpha = alpha;
         self.stats.control_messages += 1;
     }
 
@@ -2178,6 +2193,29 @@ fn frameTitleMessage(
         .frame_id = envelope_frame,
         .timestamp_ns = sequence,
     }, title_payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
+fn frameAlphaMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    envelope_frame: u32,
+    payload: protocol.FrameAlphaPayload,
+) ![]u8 {
+    var alpha_payload: std.ArrayList(u8) = .empty;
+    defer alpha_payload.deinit(a);
+    try protocol.encodeFrameAlpha(a, payload, &alpha_payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_alpha,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = envelope_frame,
+        .timestamp_ns = sequence,
+    }, alpha_payload.items, &message);
     return message.toOwnedSlice(a);
 }
 
@@ -2889,6 +2927,60 @@ test "scene applies title only for live active-generation strings" {
 
     scene.resetForResync();
     try std.testing.expect(scene.title == null);
+}
+
+test "scene applies alpha only to the active frame generation" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    const alpha = try frameAlphaMessage(a, 2, 7, .{
+        .active_opacity = 8000,
+        .inactive_opacity = 6000,
+        .background_opacity = 9000,
+        .frame_generation = 1,
+    });
+    defer a.free(alpha);
+    try scene.apply(alpha);
+    try std.testing.expectEqual(@as(u16, 8000), scene.alpha.?.active_opacity);
+    try std.testing.expectEqual(@as(u16, 6000), scene.alpha.?.inactive_opacity);
+    try std.testing.expectEqual(@as(u16, 9000), scene.alpha.?.background_opacity);
+
+    const opaque_replacement = try frameAlphaMessage(a, 3, 7, .{
+        .active_opacity = 10000,
+        .inactive_opacity = 10000,
+        .background_opacity = 10000,
+        .frame_generation = 1,
+    });
+    defer a.free(opaque_replacement);
+    try scene.apply(opaque_replacement);
+    try std.testing.expectEqual(@as(u16, 10000), scene.alpha.?.active_opacity);
+
+    const stale = try frameAlphaMessage(a, 4, 7, .{
+        .active_opacity = 0,
+        .inactive_opacity = 0,
+        .background_opacity = 0,
+        .frame_generation = 2,
+    });
+    defer a.free(stale);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(stale));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const wrong_frame = try frameAlphaMessage(a, 4, 8, .{
+        .active_opacity = 0,
+        .inactive_opacity = 0,
+        .background_opacity = 0,
+        .frame_generation = 1,
+    });
+    defer a.free(wrong_frame);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_frame));
+
+    scene.resetForResync();
+    try std.testing.expect(scene.alpha == null);
 }
 
 test "scene atomically validates resource generation declarations" {

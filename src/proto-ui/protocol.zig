@@ -5,6 +5,7 @@ pub const minor_version: u16 = 0;
 pub const header_size: u16 = 62;
 pub const max_rows: usize = 256;
 pub const max_damage: usize = 256;
+pub const max_opacity: u16 = 10000;
 
 pub const Error = error{
     InvalidEnvelope,
@@ -51,6 +52,7 @@ pub const Message = struct {
     pub const frame_presented: u16 = 0x0204;
     pub const frame_visibility: u16 = 0x0208;
     pub const frame_title: u16 = 0x0209;
+    pub const frame_alpha: u16 = 0x020d;
     pub const frame_focus: u16 = 0x0210;
     pub const resource_request: u16 = 0x0510;
     pub const resource_evict: u16 = 0x0511;
@@ -1073,6 +1075,18 @@ pub const FrameTitlePayload = struct {
     frame_generation: u32,
 };
 
+pub const FrameAlphaPayload = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    active_opacity: u16,
+    inactive_opacity: u16,
+    background_opacity: u16,
+    reserved_middle: u16 = 0,
+    frame_generation: u32,
+    reserved_tail: u32 = 0,
+};
+
 pub const FrameFocusPayload = struct {
     frame_id: u32,
     frame_generation: u32,
@@ -1503,6 +1517,66 @@ pub fn decodeFrameTitle(data: []const u8) Error!FrameTitlePayload {
 
 pub fn validateFrameTitleEnvelope(payload: FrameTitlePayload, envelope: Envelope) Error!void {
     try validateFrameTitle(payload);
+    if (envelope.frame_id == 0) return Error.InvalidMessage;
+}
+
+fn validateFrameAlpha(payload: FrameAlphaPayload) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or
+        payload.reserved != 0 or payload.reserved_middle != 0 or
+        payload.reserved_tail != 0)
+        return Error.InvalidMessage;
+    if (payload.active_opacity > max_opacity or
+        payload.inactive_opacity > max_opacity or
+        payload.background_opacity > max_opacity)
+        return Error.InvalidMessage;
+    if (payload.frame_generation == 0) return Error.InvalidMessage;
+}
+
+pub fn encodeFrameAlpha(
+    a: std.mem.Allocator,
+    payload: FrameAlphaPayload,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameAlpha(payload);
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &bytes, payload.schema, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, payload.flags);
+    try out.append(a, payload.reserved);
+    std.mem.writeInt(u16, &bytes, payload.active_opacity, .little);
+    try out.appendSlice(a, &bytes);
+    std.mem.writeInt(u16, &bytes, payload.inactive_opacity, .little);
+    try out.appendSlice(a, &bytes);
+    std.mem.writeInt(u16, &bytes, payload.background_opacity, .little);
+    try out.appendSlice(a, &bytes);
+    std.mem.writeInt(u16, &bytes, payload.reserved_middle, .little);
+    try out.appendSlice(a, &bytes);
+    var word: [4]u8 = undefined;
+    std.mem.writeInt(u32, &word, payload.frame_generation, .little);
+    try out.appendSlice(a, &word);
+    std.mem.writeInt(u32, &word, payload.reserved_tail, .little);
+    try out.appendSlice(a, &word);
+}
+
+pub fn decodeFrameAlpha(data: []const u8) Error!FrameAlphaPayload {
+    if (data.len != 20) return Error.InvalidTable;
+    const payload = FrameAlphaPayload{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .active_opacity = std.mem.readInt(u16, data[4..6], .little),
+        .inactive_opacity = std.mem.readInt(u16, data[6..8], .little),
+        .background_opacity = std.mem.readInt(u16, data[8..10], .little),
+        .reserved_middle = std.mem.readInt(u16, data[10..12], .little),
+        .frame_generation = std.mem.readInt(u32, data[12..16], .little),
+        .reserved_tail = std.mem.readInt(u32, data[16..20], .little),
+    };
+    try validateFrameAlpha(payload);
+    return payload;
+}
+
+pub fn validateFrameAlphaEnvelope(payload: FrameAlphaPayload, envelope: Envelope) Error!void {
+    try validateFrameAlpha(payload);
     if (envelope.frame_id == 0) return Error.InvalidMessage;
 }
 
@@ -2169,6 +2243,65 @@ test "frame title payload enforces strict wire form" {
     try std.testing.expectError(Error.InvalidMessage, encodeFrameTitle(a, .{
         .string_resource_id = 0,
         .string_generation = 1,
+        .frame_generation = 1,
+    }, &bytes));
+}
+
+test "frame alpha payload enforces strict wire form" {
+    const a = std.testing.allocator;
+    const payload = FrameAlphaPayload{
+        .active_opacity = 8000,
+        .inactive_opacity = 6000,
+        .background_opacity = 9000,
+        .frame_generation = 2,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFrameAlpha(a, payload, &bytes);
+    try std.testing.expectEqual(@as(usize, 20), bytes.items.len);
+    try std.testing.expectEqual(payload, try decodeFrameAlpha(bytes.items));
+
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameAlpha(bytes.items));
+    bytes.items[0] = 1;
+    bytes.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameAlpha(bytes.items));
+    bytes.items[2] = 0;
+    bytes.items[8] = 0x11;
+    bytes.items[9] = 0x27;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameAlpha(bytes.items));
+    bytes.items[8] = 0x28;
+    bytes.items[9] = 0x23;
+    std.mem.writeInt(u16, bytes.items[10..12], 1, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameAlpha(bytes.items));
+    std.mem.writeInt(u16, bytes.items[10..12], 0, .little);
+    std.mem.writeInt(u32, bytes.items[16..20], 1, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameAlpha(bytes.items));
+    std.mem.writeInt(u32, bytes.items[16..20], 0, .little);
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFrameAlpha(bytes.items));
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameAlpha(a, .{
+        .active_opacity = 0,
+        .inactive_opacity = 0,
+        .background_opacity = 0,
+        .frame_generation = 0,
+    }, &bytes));
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameAlpha(a, .{
+        .active_opacity = max_opacity + 1,
+        .inactive_opacity = max_opacity,
+        .background_opacity = max_opacity,
+        .frame_generation = 1,
+    }, &bytes));
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameAlpha(a, .{
+        .active_opacity = max_opacity,
+        .inactive_opacity = max_opacity + 1,
+        .background_opacity = max_opacity,
+        .frame_generation = 1,
+    }, &bytes));
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameAlpha(a, .{
+        .active_opacity = max_opacity,
+        .inactive_opacity = max_opacity,
+        .background_opacity = max_opacity + 1,
         .frame_generation = 1,
     }, &bytes));
 }

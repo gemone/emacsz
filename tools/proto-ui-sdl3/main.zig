@@ -53,6 +53,8 @@ extern fn SDL_Quit() void;
 extern fn SDL_CreateWindow(title: [*:0]const u8, w: c_int, h: c_int, flags: SDLWindowFlags) ?*SDL_Window;
 extern fn SDL_DestroyWindow(window: *SDL_Window) void;
 extern fn SDL_SetWindowTitle(window: *SDL_Window, title: [*:0]const u8) void;
+extern fn SDL_SetWindowOpacity(window: *SDL_Window, opacity: f32) bool;
+extern fn SDL_GetWindowOpacity(window: *SDL_Window) f32;
 extern fn SDL_CreateRenderer(window: *SDL_Window, name: ?[*:0]const u8) ?*SDL_Renderer;
 extern fn SDL_DestroyRenderer(renderer: *SDL_Renderer) void;
 extern fn SDL_GetRendererName(renderer: *SDL_Renderer) [*:0]const u8;
@@ -1924,14 +1926,35 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     }, title_payload.items, &title);
     try scene.apply(title.items);
 
+    var alpha_payload: std.ArrayList(u8) = .empty;
+    defer alpha_payload.deinit(gpa);
+    try protocol.encodeFrameAlpha(gpa, .{
+        .active_opacity = 8000,
+        .inactive_opacity = 6000,
+        .background_opacity = 9000,
+        .frame_generation = bridge.eup_frame_generation,
+    }, &alpha_payload);
+    var alpha: std.ArrayList(u8) = .empty;
+    defer alpha.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_alpha,
+        .sequence = 5,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, alpha_payload.items, &alpha);
+    try scene.apply(alpha.items);
+
     var update: std.ArrayList(u8) = .empty;
     defer update.deinit(gpa);
-    try bridge.encodeFrameUpdate(gpa, 5, capability.session_id, 2, &update);
+    try bridge.encodeFrameUpdate(gpa, 6, capability.session_id, 2, &update);
     try scene.apply(update.items);
 
     var run: std.ArrayList(u8) = .empty;
     defer run.deinit(gpa);
-    try bridge.encodeRun(gpa, 0, 6, capability.session_id, 3, &run);
+    try bridge.encodeRun(gpa, 0, 7, capability.session_id, 3, &run);
     try scene.apply(run.items);
 
     if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
@@ -1941,6 +1964,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         return error.RuntimeBridgeRunInvalid;
     if (scene.title == null or !std.mem.eql(u8, scene.title.?, "Emacs Proto-UI"))
         return error.RuntimeBridgeTitleInvalid;
+    if (scene.alpha == null or scene.alpha.?.active_opacity != 8000)
+        return error.RuntimeBridgeAlphaInvalid;
 
     if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
     defer SDL_Quit();
@@ -1948,6 +1973,21 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         return sdlFail("SDL_CreateWindow");
     defer SDL_DestroyWindow(window);
     SDL_SetWindowTitle(window, scene.title.?.ptr);
+    var opacity_supported = false;
+    if (scene.alpha) |alpha_state| {
+        const requested_opacity = @as(f32, @floatFromInt(alpha_state.active_opacity)) / 10000.0;
+        opacity_supported = SDL_SetWindowOpacity(window, requested_opacity);
+        if (opacity_supported) {
+            const actual_opacity = SDL_GetWindowOpacity(window);
+            if (@abs(actual_opacity - requested_opacity) > 0.001) {
+                _ = SDL_SetWindowOpacity(window, 1.0);
+                opacity_supported = false;
+            }
+        }
+        // Restore the diagnostic window even if the platform accepted fade;
+        // alpha state remains authoritative in the Scene.
+        _ = SDL_SetWindowOpacity(window, 1.0);
+    }
     const selected_renderer = try createRenderer(gpa, window, config.renderer_request, config.present_mode);
     defer destroyRenderer(selected_renderer);
 
@@ -2042,8 +2082,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
-        .{},
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"opacity_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        .{opacity_supported},
     );
 }
 

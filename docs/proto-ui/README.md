@@ -50,6 +50,11 @@ diagnostic SDL bridge applies it to its real SDL window.  This is protocol and
 frontend state only, not Emacs title publication or `output_proto` frame
 ownership.
 
+W12d-a adds `FRAME_ALPHA` v1 for active, inactive, and background opacity in
+hundredths of a percent.  `Scene` validates and owns the complete triple, and
+the diagnostic SDL bridge probes active-window opacity with explicit opaque
+fallback.  This is not focus-runtime or redisplay blending parity.
+
 W12e adds a bounded adapter-owned resource payload cache with LRU eviction and
 strict wire contracts for `RESOURCE_REQUEST` and `RESOURCE_EVICT`.  The cache
 accepts at most 32 entries, 4096 bytes per payload, and 16 KiB total; existing
