@@ -449,6 +449,15 @@ Required policies:
 
 The default EPXL interactive path also translates Ctrl+C to `KEY_EVENT.copy`. Emacs performs the bounded first-line kill-ring save, publishes a validated printable-ASCII result artifact, and SDL installs that result through its platform clipboard. `sdl3-emacs-copy-local-smoke` retains the explicit rollback path.
 
+With negotiated `input.pointer_v2`, SDL motion and buttons 1..5 map to strict
+v2 intents. Motion state maps to hover or the exact drag button mask, button
+1..5 maps to left/middle/right/X1/X2, SDL click counts 1..8 are preserved, and
+current SDL modifiers fold to EUP bits. The delivery journal rejects a drag
+whose mask differs from the active mask and a release whose button/click state
+does not match the active session. This is capability-gated and ordered by the
+existing one-in-flight EPXL journal. The bounded pointer path remains the
+explicit rollback/fallback profile.
+
 The bounded pointer profile accepts zero-modifier idle motion and ordered
 single-left-button press/drag/release sessions. Idle motion is best-effort and
 coalesced to the idle journal boundary. Drag motion is admitted only while a

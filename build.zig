@@ -952,6 +952,14 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_focus_window_step.dependOn(&run_sdl3_focus_window_smoke.step);
 
+        const run_sdl3_pointer_v2_smoke = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_pointer_v2_smoke.addArg("--pointer-v2-smoke");
+        const sdl3_pointer_v2_step = b.step(
+            "sdl3-pointer-v2-smoke",
+            "Translate synthetic SDL pointer press, drag, click, and release intents into ordered v2 events",
+        );
+        sdl3_pointer_v2_step.dependOn(&run_sdl3_pointer_v2_smoke.step);
+
         const run_sdl3_clipboard_smoke = b.addRunArtifact(sdl3_frontend);
         run_sdl3_clipboard_smoke.addArg("--clipboard-smoke");
         const sdl3_clipboard_step = b.step(

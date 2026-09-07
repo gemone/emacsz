@@ -7,6 +7,9 @@ const protocol = @import("protocol.zig");
 pub const SDL_EVENT_KEY_DOWN: c_uint = 0x300;
 pub const SDL_EVENT_KEY_UP: c_uint = 0x301;
 pub const SDL_EVENT_TEXT_INPUT: c_uint = 0x303;
+pub const SDL_EVENT_MOUSE_MOTION: c_uint = 0x400;
+pub const SDL_EVENT_MOUSE_BUTTON_DOWN: c_uint = 0x401;
+pub const SDL_EVENT_MOUSE_BUTTON_UP: c_uint = 0x402;
 pub const SDL_EVENT_WINDOW_FOCUS_GAINED: c_uint = 0x20e;
 pub const SDL_EVENT_WINDOW_FOCUS_LOST: c_uint = 0x20f;
 pub const SDL_EVENT_WINDOW_CLOSE_REQUESTED: c_uint = 0x210;
@@ -49,6 +52,162 @@ pub const key_modifier_caps_lock: u32 = 1 << 7;
 pub const key_modifier_num_lock: u32 = 1 << 8;
 pub const key_modifier_scroll_lock: u32 = 1 << 9;
 pub const key_modifier_mask: u32 = (1 << 10) - 1;
+
+pub const pointer_v2_schema: u16 = 2;
+pub const pointer_v2_record_size: usize = 30;
+
+pub const pointer_button_left: u32 = 1;
+pub const pointer_button_middle: u32 = 2;
+pub const pointer_button_right: u32 = 4;
+pub const pointer_button_x1: u32 = 8;
+pub const pointer_button_x2: u32 = 16;
+pub const pointer_button_mask: u32 =
+    pointer_button_left | pointer_button_middle | pointer_button_right |
+    pointer_button_x1 | pointer_button_x2;
+pub const pointer_click_button_mask: u32 =
+    pointer_button_left | pointer_button_middle | pointer_button_right;
+
+pub const PointerPhaseV2 = enum(u8) {
+    motion = 1,
+    press = 2,
+    release = 3,
+    cancel = 4,
+    drag = 5,
+};
+
+pub const PointerEventV2 = struct {
+    phase: PointerPhaseV2,
+    buttons: u32,
+    x: i32,
+    y: i32,
+    clicks: u8 = 0,
+    modifiers: u32 = 0,
+
+    pub fn valid(self: PointerEventV2) bool {
+        if (self.x < 0 or self.x > frontend.max_pointer_coordinate or
+            self.y < 0 or self.y > frontend.max_pointer_coordinate or
+            self.buttons & ~pointer_button_mask != 0 or
+            self.modifiers & ~key_modifier_mask != 0) return false;
+        return switch (self.phase) {
+            // Hover and drag are distinct so a receiver can preserve the
+            // button state carried by every motion sample.
+            .motion => self.clicks == 0,
+            .drag => self.clicks == 0 and self.buttons != 0,
+            .press, .release => self.clicks >= 1 and self.clicks <= 8 and
+                @popCount(self.buttons) == 1 and
+                self.buttons & ~pointer_click_button_mask == 0,
+            .cancel => self.clicks == 0 and self.buttons == 0,
+        };
+    }
+};
+
+pub fn validPointerEventV2(event: PointerEventV2) bool {
+    return event.valid();
+}
+
+pub fn encodePointerEventV2(a: std.mem.Allocator, event: PointerEventV2, out: *std.ArrayList(u8)) !void {
+    if (!event.valid()) return error.InvalidPointerV2;
+    try out.append(a, 0);
+    try out.append(a, 0);
+    var bytes: [4]u8 = undefined;
+    std.mem.writeInt(u16, bytes[0..2], pointer_v2_schema, .little);
+    try out.appendSlice(a, bytes[0..2]);
+    try out.append(a, @intFromEnum(event.phase));
+    try out.append(a, 0);
+    std.mem.writeInt(u32, bytes[0..4], event.buttons, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, event.clicks);
+    try out.appendSlice(a, &.{ 0, 0, 0 });
+    std.mem.writeInt(i32, bytes[0..4], event.x, .little);
+    try out.appendSlice(a, &bytes);
+    std.mem.writeInt(i32, bytes[0..4], event.y, .little);
+    try out.appendSlice(a, &bytes);
+    std.mem.writeInt(u32, bytes[0..4], event.modifiers, .little);
+    try out.appendSlice(a, &bytes);
+    std.mem.writeInt(u32, bytes[0..4], 0, .little);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn isPointerEventV2(bytes: []const u8) bool {
+    return bytes.len >= 4 and bytes[0] == 0 and bytes[1] == 0 and
+        std.mem.readInt(u16, bytes[2..4], .little) == pointer_v2_schema;
+}
+
+pub fn decodePointerEventV2(bytes: []const u8) !PointerEventV2 {
+    if (bytes.len != pointer_v2_record_size or !isPointerEventV2(bytes) or bytes[4] == 0 or
+        bytes[5] != 0 or bytes[11] != 0 or bytes[12] != 0 or bytes[13] != 0 or
+        bytes[26] != 0 or bytes[27] != 0 or bytes[28] != 0 or bytes[29] != 0)
+        return error.InvalidPointerV2;
+    const phase: PointerPhaseV2 = switch (bytes[4]) {
+        1 => .motion,
+        2 => .press,
+        3 => .release,
+        4 => .cancel,
+        5 => .drag,
+        else => return error.InvalidPointerV2,
+    };
+    const event: PointerEventV2 = .{
+        .phase = phase,
+        .buttons = std.mem.readInt(u32, bytes[6..10], .little),
+        .x = std.mem.readInt(i32, bytes[14..18], .little),
+        .y = std.mem.readInt(i32, bytes[18..22], .little),
+        .clicks = bytes[10],
+        .modifiers = std.mem.readInt(u32, bytes[22..26], .little),
+    };
+    if (!event.valid()) return error.InvalidPointerV2;
+    return event;
+}
+
+fn sdlMouseButtonBit(button: u8) ?u32 {
+    return switch (button) {
+        1 => pointer_button_left,
+        2 => pointer_button_middle,
+        3 => pointer_button_right,
+        4 => pointer_button_x1,
+        5 => pointer_button_x2,
+        else => null,
+    };
+}
+
+pub const PointerSource = struct {
+    event_type: c_uint,
+    sdl_button: u8 = 0,
+    down: bool = false,
+    clicks: u8 = 0,
+    x: i32,
+    y: i32,
+    state: u32 = 0,
+    modifiers: u32 = 0,
+};
+
+pub fn translatePointerV2(source: PointerSource) ?PointerEventV2 {
+    if (source.x < 0 or source.x > frontend.max_pointer_coordinate or
+        source.y < 0 or source.y > frontend.max_pointer_coordinate or
+        source.modifiers & ~key_modifier_mask != 0) return null;
+    if (source.event_type == SDL_EVENT_MOUSE_MOTION) {
+        if (source.state & ~pointer_button_mask != 0) return null;
+        return .{
+            .phase = if (source.state == 0) .motion else .drag,
+            .buttons = source.state,
+            .x = source.x,
+            .y = source.y,
+            .modifiers = source.modifiers,
+        };
+    }
+    if (source.event_type != SDL_EVENT_MOUSE_BUTTON_DOWN and
+        source.event_type != SDL_EVENT_MOUSE_BUTTON_UP) return null;
+    if (source.down != (source.event_type == SDL_EVENT_MOUSE_BUTTON_DOWN)) return null;
+    const button = sdlMouseButtonBit(source.sdl_button) orelse return null;
+    if (source.clicks < 1 or source.clicks > 8) return null;
+    return .{
+        .phase = if (source.event_type == SDL_EVENT_MOUSE_BUTTON_DOWN) .press else .release,
+        .buttons = button,
+        .x = source.x,
+        .y = source.y,
+        .clicks = source.clicks,
+        .modifiers = source.modifiers,
+    };
+}
 
 /// Fixed storage keeps reverse-input queue ownership explicit and bounded.
 pub const FullKeyEvent = struct {
@@ -299,6 +458,7 @@ pub const TranslatedEvent = union(enum) {
     key_v2: FullKeyEvent,
     text: TextEvent,
     pointer: frontend.PointerInput,
+    pointer_v2: PointerEventV2,
     wheel: frontend.WheelInput,
     focus: protocol.FocusEvent,
     window: protocol.WindowRequest,
@@ -339,6 +499,13 @@ pub const Queue = struct {
         if (!event.valid()) return error.InvalidPointerIntent;
         if (self.length == queue_capacity) return error.InputQueueFull;
         self.items[self.length] = .{ .pointer = event };
+        self.length += 1;
+    }
+
+    pub fn pushPointerV2(self: *Queue, event: PointerEventV2) !void {
+        if (!validPointerEventV2(event)) return error.InvalidPointerV2;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .pointer_v2 = event };
         self.length += 1;
     }
 
@@ -392,6 +559,10 @@ pub fn platformEventsNegotiated(journal: *const DeliveryJournal, effective: bool
     return effective and journal.platform_negotiated;
 }
 
+pub fn pointerV2Negotiated(journal: *const DeliveryJournal, effective: bool) bool {
+    return effective and journal.pointer_v2_negotiated;
+}
+
 /// Bounded frontend-owned delivery state. The queue preserves intent order;
 /// `pending` retains the one EPXL intent whose transport ACK has not arrived,
 /// including across a reconnect. Retry attempts use the original wire sequence.
@@ -404,7 +575,10 @@ pub const DeliveryJournal = struct {
     retry_armed: bool = false,
     pointer_active: bool = false,
     key_v2_negotiated: bool = false,
+    pointer_v2_negotiated: bool = false,
     platform_negotiated: bool = false,
+    pointer_v2_buttons: u32 = 0,
+    pointer_v2_clicks: u8 = 0,
 
     pub const Sent = struct {
         sequence: u64,
@@ -444,6 +618,49 @@ pub const DeliveryJournal = struct {
         // for this fixed-capacity queue; queue.pushPointer cannot then fail.
         try self.queue.pushPointer(event);
         self.pointer_active = next_active;
+    }
+
+    pub fn pushPointerV2(self: *DeliveryJournal, event: PointerEventV2) !void {
+        if (!self.pointer_v2_negotiated) return error.PointerV2CapabilityNotNegotiated;
+        if (!validPointerEventV2(event)) return error.InvalidPointerV2;
+        if (self.queue.length == queue_capacity) return error.InputQueueFull;
+        var next_active = self.pointer_active;
+        var next_buttons = self.pointer_v2_buttons;
+        var next_clicks = self.pointer_v2_clicks;
+        switch (event.phase) {
+            .press => {
+                if (self.pointer_active) return error.PointerSessionActive;
+                next_active = true;
+                next_buttons = event.buttons;
+                next_clicks = event.clicks;
+            },
+            .motion => {
+                if (self.pointer_active) return error.PointerSessionActive;
+                if (event.buttons != 0) return error.PointerSessionActive;
+            },
+            .drag => {
+                if (!self.pointer_active or event.buttons != self.pointer_v2_buttons) return error.PointerSessionActive;
+            },
+            .release => {
+                if (!self.pointer_active or event.buttons != self.pointer_v2_buttons or
+                    event.clicks != self.pointer_v2_clicks) return error.PointerSessionActive;
+                next_active = false;
+                next_buttons = 0;
+                next_clicks = 0;
+            },
+            .cancel => {
+                if (!self.pointer_active) return error.PointerSessionActive;
+                next_active = false;
+                next_buttons = 0;
+                next_clicks = 0;
+            },
+        }
+        // Capacity and validity are checked before the session mutation; the
+        // fixed-capacity enqueue cannot fail afterwards.
+        try self.queue.pushPointerV2(event);
+        self.pointer_active = next_active;
+        self.pointer_v2_buttons = next_buttons;
+        self.pointer_v2_clicks = next_clicks;
     }
 
     pub fn pushWheel(self: *DeliveryJournal, event: frontend.WheelInput) !void {
@@ -742,6 +959,137 @@ test "pointer queue rejects bounded-profile violations before journaling" {
     try std.testing.expectError(error.InvalidPointerIntent, queue.pushPointer(.{ .phase = .motion, .x = 0, .y = 0, .button = 2 }));
     try std.testing.expectError(error.InvalidPointerIntent, queue.pushPointer(.{ .phase = .press, .x = 0, .y = 0, .button = 1, .clicks = 2 }));
     try std.testing.expectEqual(@as(usize, 0), queue.length);
+}
+
+test "legacy pointer codec remains exactly bounded" {
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(std.testing.allocator);
+    try frontend.encodePointerInput(std.testing.allocator, .{ .phase = .press, .button = 1, .x = 7, .y = 9, .clicks = 1 }, &bytes);
+    try std.testing.expectEqual(@as(usize, 14), bytes.items.len);
+    const decoded = try frontend.decodePointerInput(bytes.items);
+    try std.testing.expectEqual(frontend.PointerPhase.press, decoded.phase);
+    try std.testing.expectEqual(@as(u8, 1), decoded.button);
+    try std.testing.expect(!isPointerEventV2(bytes.items));
+}
+
+test "pointer v2 round trips motion press drag and release" {
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(std.testing.allocator);
+    const press: PointerEventV2 = .{ .phase = .press, .buttons = pointer_button_left, .x = 1, .y = 2, .clicks = 2, .modifiers = key_modifier_control };
+    try encodePointerEventV2(std.testing.allocator, press, &bytes);
+    try std.testing.expectEqual(pointer_v2_record_size, bytes.items.len);
+    try std.testing.expectEqual(press, try decodePointerEventV2(bytes.items));
+    try std.testing.expect(isPointerEventV2(bytes.items));
+
+    for ([_]PointerEventV2{
+        .{ .phase = .motion, .buttons = 0, .x = 3, .y = 4 },
+        .{ .phase = .drag, .buttons = pointer_button_left, .x = 5, .y = 6 },
+        .{ .phase = .release, .buttons = pointer_button_left, .x = 7, .y = 8, .clicks = 2 },
+    }) |event| {
+        bytes.clearRetainingCapacity();
+        try encodePointerEventV2(std.testing.allocator, event, &bytes);
+        try std.testing.expectEqual(event, try decodePointerEventV2(bytes.items));
+    }
+}
+
+test "pointer v2 accepts hover left middle right double and modifiers" {
+    var journal: DeliveryJournal = .{ .pointer_v2_negotiated = true };
+    try journal.pushPointerV2(.{ .phase = .motion, .buttons = 0, .x = 1, .y = 1 });
+    try journal.pushPointerV2(.{ .phase = .press, .buttons = pointer_button_left, .x = 2, .y = 2, .clicks = 2, .modifiers = key_modifier_control });
+    try journal.pushPointerV2(.{ .phase = .drag, .buttons = pointer_button_left, .x = 3, .y = 3 });
+    try journal.pushPointerV2(.{ .phase = .release, .buttons = pointer_button_left, .x = 4, .y = 4, .clicks = 2, .modifiers = key_modifier_control });
+    for ([_]u32{ pointer_button_middle, pointer_button_right }) |button| {
+        try journal.pushPointerV2(.{ .phase = .press, .buttons = button, .x = 5, .y = 6, .clicks = 1 });
+        try journal.pushPointerV2(.{ .phase = .release, .buttons = button, .x = 7, .y = 8, .clicks = 1 });
+    }
+    try std.testing.expectEqual(@as(usize, 8), journal.queue.length);
+}
+
+test "pointer v2 journal preserves button state and rejects lossy transitions" {
+    var journal: DeliveryJournal = .{ .pointer_v2_negotiated = true };
+    try journal.pushPointerV2(.{ .phase = .press, .buttons = pointer_button_left, .x = 1, .y = 1, .clicks = 1 });
+    try std.testing.expect(journal.pointer_active);
+    try std.testing.expectEqual(pointer_button_left, journal.pointer_v2_buttons);
+    try std.testing.expectError(error.PointerSessionActive, journal.pushPointerV2(.{ .phase = .motion, .buttons = 0, .x = 2, .y = 2 }));
+    try std.testing.expectError(error.PointerSessionActive, journal.pushPointerV2(.{ .phase = .drag, .buttons = pointer_button_right, .x = 2, .y = 2 }));
+    try std.testing.expectError(error.PointerSessionActive, journal.pushPointerV2(.{ .phase = .release, .buttons = pointer_button_left, .x = 2, .y = 2, .clicks = 2 }));
+    try std.testing.expectEqual(@as(usize, 1), journal.queue.length);
+    try journal.pushPointerV2(.{ .phase = .drag, .buttons = pointer_button_left, .x = 2, .y = 2 });
+    try journal.pushPointerV2(.{ .phase = .cancel, .buttons = 0, .x = 3, .y = 3 });
+    try std.testing.expect(!journal.pointer_active);
+    try std.testing.expectEqual(@as(u32, 0), journal.pointer_v2_buttons);
+}
+
+test "pointer v2 capability and queue bounds reject without mutation" {
+    var journal: DeliveryJournal = .{};
+    try std.testing.expectError(error.PointerV2CapabilityNotNegotiated, journal.pushPointerV2(.{ .phase = .motion, .buttons = 0, .x = 1, .y = 1 }));
+    try std.testing.expectEqual(@as(usize, 0), journal.queue.length);
+
+    journal.pointer_v2_negotiated = true;
+    while (journal.queue.length < queue_capacity) try journal.pushPointerV2(.{ .phase = .motion, .buttons = 0, .x = 1, .y = 1 });
+    try std.testing.expectError(error.InputQueueFull, journal.pushPointerV2(.{ .phase = .motion, .buttons = 0, .x = 2, .y = 2 }));
+    try std.testing.expectEqual(queue_capacity, journal.queue.length);
+    try std.testing.expectEqual(@as(i32, 1), journal.queue.items[0].pointer_v2.x);
+}
+
+test "pointer v2 rejects hostile wire fields without allocation" {
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(std.testing.allocator);
+    const valid: PointerEventV2 = .{ .phase = .press, .buttons = pointer_button_left, .x = 1, .y = 2, .clicks = 1 };
+    try encodePointerEventV2(std.testing.allocator, valid, &bytes);
+
+    const malformed = [_]PointerEventV2{
+        .{ .phase = .press, .buttons = pointer_button_left | pointer_button_right, .x = 1, .y = 1, .clicks = 1 },
+        .{ .phase = .press, .buttons = pointer_button_x1, .x = 1, .y = 1, .clicks = 1 },
+        .{ .phase = .press, .buttons = pointer_button_left, .x = 1, .y = 1, .clicks = 0 },
+        .{ .phase = .press, .buttons = pointer_button_left, .x = 1, .y = 1, .clicks = 9 },
+        .{ .phase = .press, .buttons = pointer_button_left, .x = 1, .y = 1, .clicks = 1, .modifiers = key_modifier_mask + 1 },
+        .{ .phase = .press, .buttons = pointer_button_left | 0x8000_0000, .x = 1, .y = 1, .clicks = 1 },
+        .{ .phase = .motion, .buttons = 0, .x = -1, .y = 1 },
+        .{ .phase = .motion, .buttons = 0, .x = 1, .y = frontend.max_pointer_coordinate + 1 },
+        .{ .phase = .drag, .buttons = 0, .x = 1, .y = 1 },
+        .{ .phase = .cancel, .buttons = pointer_button_left, .x = 1, .y = 1 },
+    };
+    for (malformed) |event| {
+        try std.testing.expectError(error.InvalidPointerV2, encodePointerEventV2(std.testing.allocator, event, &bytes));
+    }
+
+    try std.testing.expectError(error.InvalidPointerV2, decodePointerEventV2(bytes.items[0 .. bytes.items.len - 1]));
+    var trailing: [pointer_v2_record_size + 1]u8 = undefined;
+    @memcpy(trailing[0..bytes.items.len], bytes.items);
+    trailing[bytes.items.len] = 0;
+    try std.testing.expectError(error.InvalidPointerV2, decodePointerEventV2(&trailing));
+    for ([_]usize{ 4, 5, 11, 12, 13, 26, 27, 28, 29 }) |offset| {
+        var wire: [pointer_v2_record_size]u8 = undefined;
+        @memcpy(&wire, bytes.items);
+        wire[offset] = 1;
+        try std.testing.expectError(error.InvalidPointerV2, decodePointerEventV2(&wire));
+    }
+    var unknown_phase: [pointer_v2_record_size]u8 = undefined;
+    @memcpy(&unknown_phase, bytes.items);
+    unknown_phase[4] = 9;
+    try std.testing.expectError(error.InvalidPointerV2, decodePointerEventV2(&unknown_phase));
+    var bad_schema: [pointer_v2_record_size]u8 = undefined;
+    @memcpy(&bad_schema, bytes.items);
+    bad_schema[3] = 1;
+    try std.testing.expectError(error.InvalidPointerV2, decodePointerEventV2(&bad_schema));
+}
+
+test "pointer v2 SDL translation folds buttons clicks and modifiers" {
+    try std.testing.expectEqual(PointerPhaseV2.motion, translatePointerV2(.{ .event_type = SDL_EVENT_MOUSE_MOTION, .x = 1, .y = 2 }).?.phase);
+    const drag = translatePointerV2(.{ .event_type = SDL_EVENT_MOUSE_MOTION, .x = 3, .y = 4, .state = pointer_button_left, .modifiers = key_modifier_shift }).?;
+    try std.testing.expectEqual(PointerPhaseV2.drag, drag.phase);
+    try std.testing.expectEqual(key_modifier_shift, drag.modifiers);
+    const press = translatePointerV2(.{ .event_type = SDL_EVENT_MOUSE_BUTTON_DOWN, .sdl_button = 1, .down = true, .clicks = 2, .x = 5, .y = 6, .modifiers = key_modifier_control }).?;
+    try std.testing.expectEqual(PointerPhaseV2.press, press.phase);
+    try std.testing.expectEqual(pointer_button_left, press.buttons);
+    try std.testing.expectEqual(@as(u8, 2), press.clicks);
+    try std.testing.expectEqual(pointer_button_middle, translatePointerV2(.{ .event_type = SDL_EVENT_MOUSE_BUTTON_UP, .sdl_button = 2, .clicks = 1, .x = 7, .y = 8 }).?.buttons);
+    try std.testing.expectEqual(pointer_button_right, translatePointerV2(.{ .event_type = SDL_EVENT_MOUSE_BUTTON_UP, .sdl_button = 3, .clicks = 1, .x = 7, .y = 8 }).?.buttons);
+    try std.testing.expect(translatePointerV2(.{ .event_type = SDL_EVENT_MOUSE_BUTTON_DOWN, .sdl_button = 6, .clicks = 1, .x = 0, .y = 0 }) == null);
+    try std.testing.expect(translatePointerV2(.{ .event_type = SDL_EVENT_MOUSE_BUTTON_DOWN, .sdl_button = 1, .clicks = 9, .x = 0, .y = 0 }) == null);
+    try std.testing.expect(translatePointerV2(.{ .event_type = 0, .sdl_button = 1, .down = true, .clicks = 1, .x = 0, .y = 0 }) == null);
+    try std.testing.expect(translatePointerV2(.{ .event_type = SDL_EVENT_MOUSE_BUTTON_DOWN, .sdl_button = 1, .down = false, .clicks = 1, .x = 0, .y = 0 }) == null);
 }
 
 test "pointer journal enforces ordered drag sessions" {

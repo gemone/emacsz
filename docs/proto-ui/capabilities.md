@@ -264,10 +264,10 @@ Priorities:
 | Modifier state | P0 | Degraded | Ctrl+C and Ctrl+V only; general modifier sets rejected |
 | Multibyte input | P0 | Pending | W12/W16 PGTK parity gate not met |
 | Dead keys | P1 | Pending | W12/W16 PGTK parity gate not met |
-| Mouse motion | P0 | Degraded | Best-effort idle motion and ordered drag session admission |
-| Mouse buttons | P0 | Degraded | Single left press/release through public point mapping |
-| Click count | P1 | Pending | W12/W16 PGTK parity gate not met |
-| Drag events | P1 | Degraded | Ordered left press/motion/release; not selection drag |
+| Mouse motion | P0 | Degraded | Bounded hover/drag admission; negotiated v2 preserves the exact button mask |
+| Mouse buttons | P0 | Degraded | Bounded left plus negotiated strict left/middle/right/X1/X2 v2 intents |
+| Click count | P1 | Degraded | V2 validates and transports clicks 1..8; execution/selection parity remains pending |
+| Drag events | P1 | Degraded | Ordered bounded left or negotiated v2 exact-mask drag; not selection drag |
 | Wheel scroll | P0 | Degraded | Vertical whole line ticks only |
 | Touchpad scroll | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Touch | EXP | Pending | W12/W16 PGTK parity gate not met |

@@ -1781,6 +1781,42 @@ Acceptance:
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-key-v2-smoke --summary all
 ```
 
+### W9n — Backward-compatible pointer event v2 transport (approved)
+
+Goal: extend the existing bounded `POINTER_EVENT` profile with strict,
+negotiated pointer state while preserving the legacy codec and without
+claiming selection semantics or full Emacs mouse parity.
+
+Implemented:
+
+1. The original 14-byte facts-profile pointer codec is unchanged. Within
+   `POINTER_EVENT`, the v2 marker is `phase=0`, `reserved=0`, and `schema=2`.
+   V2 is exactly 30 bytes and carries motion/press/release/cancel/drag, a
+   five-bit button mask, click count, bounded coordinates, and the EUP key
+   modifier bitset.
+2. Press/release accept exactly one left/middle/right button and clicks 1..8.
+   Motion is empty-mask hover; drag requires the active mask. Cancel is empty.
+   Unknown enum, button, modifier, coordinate, reserved, and trailing-byte
+   values fail without queue mutation.
+3. The delivery journal stores the active v2 button mask and click count. It
+   rejects lossy drag/release state, preserves one-in-flight EPXL ordering,
+   and keeps v2 events capability-gated. Legacy bounded peers continue using
+   `input.pointer_bounded`.
+4. SDL3 motion and buttons 1..5 translate to v2. Motion state maps directly to
+   hover/drag masks, button indexes map to left/middle/right/X1/X2, SDL clicks
+   are preserved, and current platform modifiers fold to EUP bits.
+5. `input.pointer_v2` is optional, negotiable, degraded, and evidenced by
+   `sdl3-pointer-v2-smoke`. The synthetic smoke receives seven deterministic
+   intents: modified left press/drag/release, two middle events, and two right
+   events. These are transport intents only; no selection or full mouse parity
+   is claimed.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-pointer-v2-smoke --summary all
+```
+
 ### W9l — Public point and dynamic cursor (approved)
 
 Goal: replace the fixed facts-profile cursor with public Emacs point observation

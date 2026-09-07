@@ -1321,6 +1321,32 @@ sequence and ACK rules; Emacs maps accepted endpoints through public window
 position APIs and republishes the resulting point. Intermediate drag motion is
 transported and ACKed but has no text-selection semantics.
 
+Within the same `POINTER_EVENT` message, `u8 phase=0` followed by `u8
+reserved=0` and `u16 schema=2` is a backward-compatible v2 discriminator. The
+fixed 30-byte v2 payload is little-endian:
+
+```text
+0                u8  (v2 marker; legacy phase byte)
+reserved         u8  (zero)
+schema           u16 (2, little endian)
+phase            u8  (1=motion, 2=press, 3=release, 4=cancel, 5=drag)
+reserved         u8  (zero)
+buttons          u32 (left=1, middle=2, right=4, x1=8, x2=16)
+clicks           u8  (0..8)
+reserved         u24 (zero)
+x                i32 (0..16383)
+y                i32 (0..16383)
+modifiers        u32 (EUP key modifier bitset)
+reserved         u32 (zero)
+```
+
+Motion is hover only with an empty button mask; drag requires a nonempty mask.
+Press/release carry exactly one left/middle/right button and clicks 1..8.
+Cancel carries no buttons or clicks. Unknown buttons or modifiers, nonzero
+reserved fields, out-of-range coordinates, contradictory phase state, short or
+trailing payloads are invalid. Delivery journals retain the active v2 mask and
+click count so a drag cannot silently lose button state.
+
 If the transport ACK is lost before disconnect, a frontend may retry the same
 bounded intent with its original reverse-input sequence after authenticated
 resync.  The publisher must remain idempotent at the sequence boundary: a

@@ -83,6 +83,8 @@ extern fn SDL_GetWindowID(window: *SDL_Window) u32;
 extern fn SDL_Delay(ms: c_uint) void;
 extern fn SDL_StartTextInput(window: *SDL_Window) bool;
 extern fn SDL_GetKeyName(key: c_uint) ?[*:0]const u8;
+extern fn SDL_GetModState() u16;
+extern fn SDL_SetModState(modifiers: u16) void;
 extern fn SDL_GetClipboardText() [*c]u8;
 extern fn SDL_SetClipboardText(text: [*:0]const u8) bool;
 extern fn SDL_free(mem: ?*anyopaque) void;
@@ -253,6 +255,24 @@ fn mouseButtonEvent(x: f32, y: f32, event_type: c_uint, down: bool) SDL_Event {
     return event;
 }
 
+fn pointerMotionEventV2(x: f32, y: f32, state: u32, _: u32) SDL_Event {
+    return mouseMotionEvent(x, y, state);
+}
+
+fn pointerButtonEvent(
+    x: f32,
+    y: f32,
+    event_type: c_uint,
+    down: bool,
+    button: u8,
+    clicks: u8,
+) SDL_Event {
+    var event = mouseButtonEvent(x, y, event_type, down);
+    event.button.button = button;
+    event.button.clicks = clicks;
+    return event;
+}
+
 fn wheelEvent(y: i32) SDL_Event {
     var event: SDL_Event = undefined;
     event.wheel = .{
@@ -313,7 +333,7 @@ const SDL_FRect = extern struct {
     h: f32,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, emacs_clipboard_unicode };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, emacs_clipboard_unicode };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -339,6 +359,7 @@ const Config = struct {
     interactive_publisher: bool = false,
     interactive_synthetic: bool = false,
     synthetic_pointer: bool = false,
+    synthetic_pointer_v2: bool = false,
     synthetic_wheel: bool = false,
     synthetic_viewport: bool = false,
 };
@@ -410,6 +431,52 @@ fn runInputTranslationSmoke() !void {
         "sdl3-input-smoke: translated {d} keys and {d} text event; rejected {d} unsupported SDL event(s); lifecycle OK\n",
         .{ queue.length - 1, 1, synthetic.len - recognized },
     );
+}
+
+fn runPointerV2Smoke() !void {
+    if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
+    defer SDL_Quit();
+    const window = SDL_CreateWindow("Emacs Proto-UI Pointer V2", 480, 320, SDL_WINDOW_RESIZABLE) orelse return sdlFail("SDL_CreateWindow");
+    defer SDL_DestroyWindow(window);
+    var journal: input_policy.DeliveryJournal = .{};
+    journal.pointer_v2_negotiated = true;
+    if (!input_policy.pointerV2Negotiated(&journal, true)) return error.CapabilityJournalMismatch;
+    const modifiers = input_policy.sdlModifiersToEup(input_policy.sdl_kmod_lctrl);
+    SDL_SetModState(input_policy.sdl_kmod_lctrl);
+    defer SDL_SetModState(0);
+    var synthetic = [_]SDL_Event{
+        pointerButtonEvent(8, 2, SDL_EVENT_MOUSE_BUTTON_DOWN, true, 1, 1),
+        pointerMotionEventV2(16, 4, input_policy.pointer_button_left, modifiers),
+        pointerButtonEvent(24, 6, SDL_EVENT_MOUSE_BUTTON_UP, false, 1, 1),
+        pointerButtonEvent(32, 8, SDL_EVENT_MOUSE_BUTTON_DOWN, true, 2, 1),
+        pointerButtonEvent(32, 8, SDL_EVENT_MOUSE_BUTTON_UP, false, 2, 1),
+        pointerButtonEvent(40, 10, SDL_EVENT_MOUSE_BUTTON_DOWN, true, 3, 1),
+        pointerButtonEvent(40, 10, SDL_EVENT_MOUSE_BUTTON_UP, false, 3, 1),
+    };
+    for (&synthetic) |*event| {
+        if (!SDL_PushEvent(event)) return sdlFail("SDL_PushEvent");
+    }
+    const expected = [_][]const u8{ "press", "drag", "release", "press", "release", "press", "release" };
+    var received: usize = 0;
+    var polls: usize = 0;
+    while (received < expected.len and polls < 256) : (polls += 1) {
+        var event: SDL_Event = undefined;
+        if (!SDL_PollEvent(&event)) {
+            SDL_Delay(1);
+            continue;
+        }
+        const source: input_policy.PointerSource = switch (event.type) {
+            input_policy.SDL_EVENT_MOUSE_MOTION => .{ .event_type = event.type, .x = @intFromFloat(event.motion.x), .y = @intFromFloat(event.motion.y), .state = event.motion.state, .modifiers = modifiers },
+            input_policy.SDL_EVENT_MOUSE_BUTTON_DOWN, input_policy.SDL_EVENT_MOUSE_BUTTON_UP => .{ .event_type = event.type, .sdl_button = event.button.button, .down = event.button.down, .clicks = event.button.clicks, .x = @intFromFloat(event.button.x), .y = @intFromFloat(event.button.y), .modifiers = input_policy.sdlModifiersToEup(SDL_GetModState()) },
+            else => continue,
+        };
+        const translated = input_policy.translatePointerV2(source) orelse return error.PointerTranslationFailed;
+        try journal.pushPointerV2(translated);
+        if (!std.mem.eql(u8, @tagName(translated.phase), expected[received])) return error.PointerOrderMismatch;
+        received += 1;
+    }
+    if (received != expected.len or journal.queue.length != expected.len) return error.PointerTranslationIncomplete;
+    std.debug.print("sdl3-pointer-v2-smoke: {{\"kind\":\"sdl3-pointer-v2-smoke\",\"received\":{d},\"order\":[\"left-modified-press\",\"left-modified-drag\",\"left-modified-release\",\"middle-click\",\"middle-release\",\"right-click\",\"right-release\"],\"emacs_destroyed\":false,\"result\":\"pass\"}}\n", .{received});
 }
 
 fn runFocusWindowSmoke() !void {
@@ -501,6 +568,7 @@ fn writeTranslatedEvent(
         // Pointer/wheel intents are intentionally EPXL-only; the local fallback
         // does not pretend to support them.
         .pointer => {},
+        .pointer_v2 => {},
         .wheel => {},
         // Platform observation is EPXL-only by design; there is no inherited
         // Emacs core fallback and no local mutation.
@@ -1139,6 +1207,10 @@ fn sendDeliveryEvent(
             try frontend.encodePointerInput(gpa, pointer, &payload);
             break :blk protocol.Message.pointer_event;
         },
+        .pointer_v2 => |pointer| blk: {
+            try input_policy.encodePointerEventV2(gpa, pointer, &payload);
+            break :blk protocol.Message.pointer_event;
+        },
         .wheel => |wheel| blk: {
             try frontend.encodeWheelInput(gpa, wheel, &payload);
             break :blk protocol.Message.wheel_event;
@@ -1331,6 +1403,7 @@ fn awaitFrameAck(
                     std.mem.readInt(u16, payload.bytes[2..4], .little) == input_policy.key_v2_schema;
                 var full_key: ?input_policy.FullKeyEvent = null;
                 const is_pointer = payload.envelope.message_type == protocol.Message.pointer_event;
+                const is_pointer_v2 = is_pointer and input_policy.isPointerEventV2(payload.bytes);
                 const is_wheel = payload.envelope.message_type == protocol.Message.wheel_event;
                 const is_focus = payload.envelope.message_type == protocol.Message.focus_event;
                 const is_window = payload.envelope.message_type == protocol.Message.window_request;
@@ -1345,7 +1418,8 @@ fn awaitFrameAck(
                     (is_key_v2 and capabilities.contains(.input_key_full_v2)) or
                     (is_key and capabilities.contains(.input_key_bounded) and
                         (!copy_action or capabilities.contains(.clipboard_ascii_bounded))) or
-                    (is_pointer and capabilities.contains(.input_pointer_bounded)) or
+                    ((is_pointer_v2 and capabilities.contains(.input_pointer_v2)) or
+                        (is_pointer and !is_pointer_v2 and capabilities.contains(.input_pointer_bounded))) or
                     (is_wheel and capabilities.contains(.input_wheel_line)) or
                     (is_focus and capabilities.contains(.platform_focus_window_events)) or
                     (is_window and capabilities.contains(.platform_focus_window_events));
@@ -1375,6 +1449,15 @@ fn awaitFrameAck(
                     const value = try std.fmt.allocPrint(gpa, "{s} {d}", .{ direction, @abs(event.y) });
                     defer gpa.free(value);
                     try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "wheel", value);
+                } else if (is_pointer_v2) {
+                    const event = try input_policy.decodePointerEventV2(payload.bytes);
+                    const value = try std.fmt.allocPrint(
+                        gpa,
+                        "{{\"phase\":\"{s}\",\"buttons\":{d},\"x\":{d},\"y\":{d},\"clicks\":{d},\"modifiers\":{d},\"execution\":\"observed\"}}",
+                        .{ @tagName(event.phase), event.buttons, event.x, event.y, event.clicks, event.modifiers },
+                    );
+                    defer gpa.free(value);
+                    try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "pointer-v2", value);
                 } else if (is_pointer) {
                     const event = try frontend.decodePointerInput(payload.bytes);
                     const value = try std.fmt.allocPrint(gpa, "{s} {d} {d}", .{ @tagName(event.phase), event.x, event.y });
@@ -1603,6 +1686,7 @@ fn inputEventAllowed(capabilities: capability.Set, event: input_policy.Translate
         .key => capabilities.contains(.input_key_bounded),
         .key_v2 => capabilities.contains(.input_key_full_v2),
         .pointer => capabilities.contains(.input_pointer_bounded),
+        .pointer_v2 => capabilities.contains(.input_pointer_v2),
         .wheel => capabilities.contains(.input_wheel_line),
         .focus => capabilities.contains(.platform_focus_window_events),
         .window => capabilities.contains(.platform_focus_window_events),
@@ -1656,7 +1740,12 @@ fn clipboardSupportFor(capabilities: capability.Set) ?input_policy.TextSupport {
 
 fn syncDeliveryCapabilities(delivery: *input_policy.DeliveryJournal, capabilities: capability.Set) void {
     delivery.key_v2_negotiated = capabilities.contains(.input_key_full_v2);
+    delivery.pointer_v2_negotiated = capabilities.contains(.input_pointer_v2);
     delivery.platform_negotiated = capabilities.contains(.platform_focus_window_events);
+}
+
+fn usePointerV2(capabilities: capability.Set, config: *const Config) bool {
+    return capabilities.contains(.input_pointer_v2) and config.synthetic_pointer_v2;
 }
 
 fn pollEpxlInteractiveInput(
@@ -1776,50 +1865,63 @@ fn pollEpxlInteractiveInput(
                 }
             },
             SDL_EVENT_MOUSE_MOTION => {
-                if (config.interactive_synthetic and !config.synthetic_pointer) return;
-                const dragging = event.motion.state == SDL_BUTTON_LMASK;
-                if (event.motion.state != 0 and !dragging) return;
-                if (dragging != delivery.pointer_active) return;
+                if (config.interactive_synthetic and !config.synthetic_pointer and !config.synthetic_pointer_v2) return;
                 const x = boundedPointerCoordinate(event.motion.x) orelse return;
                 const y = boundedPointerCoordinate(event.motion.y) orelse return;
-                if (!dragging and (delivery.pending != null or delivery.queue.length > 0)) return;
-                // Idle motion is best-effort and coalesced to the idle boundary.
-                // Drag motion is ordered because the left pointer session is active.
-                try delivery.pushPointer(.{
-                    .phase = .motion,
-                    .button = if (dragging) 1 else 0,
-                    .x = x,
-                    .y = y,
-                });
-                dirty.* = true;
-            },
-            SDL_EVENT_MOUSE_BUTTON_DOWN => {
-                if (config.interactive_synthetic and !config.synthetic_pointer) return;
-                if (!event.button.down) return;
-                const x = boundedPointerCoordinate(event.button.x) orelse return;
-                const y = boundedPointerCoordinate(event.button.y) orelse return;
-                if (event.button.button == 1 and event.button.clicks == 1) {
-                    delivery.pushPointer(.{
-                        .phase = .press,
-                        .button = 1,
+                if (usePointerV2(capabilities, config)) {
+                    const translated = input_policy.translatePointerV2(.{
+                        .event_type = event.type,
                         .x = x,
                         .y = y,
-                        .clicks = 1,
-                    }) catch |err| switch (err) {
+                        .state = event.motion.state,
+                        .modifiers = input_policy.sdlModifiersToEup(SDL_GetModState()),
+                    }) orelse return;
+                    delivery.pushPointerV2(translated) catch |err| switch (err) {
+                        error.PointerSessionActive => return,
+                        else => return err,
+                    };
+                } else {
+                    const dragging = event.motion.state == SDL_BUTTON_LMASK;
+                    if (event.motion.state != 0 and !dragging) return;
+                    if (dragging != delivery.pointer_active) return;
+                    if (!dragging and (delivery.pending != null or delivery.queue.length > 0)) return;
+                    // Idle motion is best-effort and coalesced to the idle boundary.
+                    // Drag motion is ordered because the left pointer session is active.
+                    try delivery.pushPointer(.{
+                        .phase = .motion,
+                        .button = if (dragging) 1 else 0,
+                        .x = x,
+                        .y = y,
+                    });
+                }
+                dirty.* = true;
+            },
+            SDL_EVENT_MOUSE_BUTTON_DOWN, SDL_EVENT_MOUSE_BUTTON_UP => {
+                if (config.interactive_synthetic and !config.synthetic_pointer and !config.synthetic_pointer_v2) return;
+                const down = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+                if (down != event.button.down) return;
+                const x = boundedPointerCoordinate(event.button.x) orelse return;
+                const y = boundedPointerCoordinate(event.button.y) orelse return;
+                if (usePointerV2(capabilities, config)) {
+                    const translated = input_policy.translatePointerV2(.{
+                        .event_type = event.type,
+                        .sdl_button = event.button.button,
+                        .down = down,
+                        .clicks = event.button.clicks,
+                        .x = x,
+                        .y = y,
+                        .modifiers = input_policy.sdlModifiersToEup(SDL_GetModState()),
+                    }) orelse return;
+                    delivery.pushPointerV2(translated) catch |err| switch (err) {
                         error.PointerSessionActive => return,
                         else => return err,
                     };
                     dirty.* = true;
+                    return;
                 }
-            },
-            SDL_EVENT_MOUSE_BUTTON_UP => {
-                if (config.interactive_synthetic and !config.synthetic_pointer) return;
-                if (event.button.down) return;
-                const x = boundedPointerCoordinate(event.button.x) orelse return;
-                const y = boundedPointerCoordinate(event.button.y) orelse return;
                 if (event.button.button == 1 and event.button.clicks == 1) {
                     delivery.pushPointer(.{
-                        .phase = .release,
+                        .phase = if (down) .press else .release,
                         .button = 1,
                         .x = x,
                         .y = y,
@@ -2190,6 +2292,9 @@ fn runEpxlInteractiveFrontend(
                 input_dirty = true;
                 switch (outcome.delivered.event) {
                     .pointer => |pointer| if (pointer.phase == .release) {
+                        pointer_release_delivered = true;
+                    },
+                    .pointer_v2 => |pointer| if (pointer.phase == .release) {
                         pointer_release_delivered = true;
                     },
                     .wheel => |wheel| wheel_ticks_delivered += @abs(wheel.y),
@@ -3009,6 +3114,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.clipboard_unicode_publisher = false;
         } else if (std.mem.eql(u8, arg, "--input-translate-smoke")) {
             config.mode = .input_translation;
+        } else if (std.mem.eql(u8, arg, "--pointer-v2-smoke")) {
+            config.mode = .pointer_v2_translation;
+            config.synthetic_pointer_v2 = true;
         } else if (std.mem.eql(u8, arg, "--focus-window-smoke")) {
             config.mode = .focus_window_translation;
         } else if (std.mem.eql(u8, arg, "--facts")) {
@@ -3033,6 +3141,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         if (config.token_path.len == 0) return error.MissingTokenPath;
         config.token = try readTokenFile(gpa, io, config.token_path);
         try runPublisher(gpa, io, &config);
+        return;
+    }
+    if (config.mode == .pointer_v2_translation) {
+        try runPointerV2Smoke();
         return;
     }
     if (config.mode == .focus_window_translation) {
@@ -3202,6 +3314,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .publisher => unreachable,
         .emacs => unreachable,
         .input_translation => unreachable,
+        .pointer_v2_translation => unreachable,
         .focus_window_translation => unreachable,
         .emacs_interactive => unreachable,
         .clipboard => unreachable,
