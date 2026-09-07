@@ -2286,10 +2286,10 @@ Acceptance:
 zig build -Dproto-ui=true proto-ui-boundary --summary all
 ```
 
-Status: normative design.  Runtime tasks R1 and R2 are implemented as the
-adapter-owned `TerminalRegistry` and fail-closed runtime manifest/gate;
-R3-R9 remain unimplemented.  The boundary gate and documentation links remain
-green.
+Status: normative design.  Runtime tasks R1-R3 are implemented as the
+adapter-owned `TerminalRegistry`, fail-closed runtime manifest/gate, and
+generated read-only C shim; R4-R9 remain unimplemented.  The boundary gate and
+documentation links remain green.
 
 ##### R2 evidence
 
@@ -2300,6 +2300,16 @@ nonzero boundary gate with reason
 required callback groups, R1 groundwork, ownership boundaries, and the exact
 failure command.  It never enables terminal registration or falls back to
 PGTK/TTY.
+
+##### R3 evidence
+
+R3 extends ABI generation with deterministic `shim.c`, installs it beside
+`abi_v1.h`, and compiles that generated source directly in the build graph.
+The tracked Zig host harness validates C/Zig layout, success delegation, null
+arguments, ABI/table mismatch, missing callbacks, callback failure, zero
+generation, and legacy/current frame-state table handling.  It adds no
+terminal registration, protocol encoding, EUP generation, or `output_proto`
+runtime.
 
 Tasks:
 

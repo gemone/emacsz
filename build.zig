@@ -449,6 +449,7 @@ pub fn build(b: *std.Build) void {
         const run_abi_gen = b.addRunArtifact(abi_gen_tool);
         const abi_header = run_abi_gen.addOutputFileArg("abi_v1.h");
         const abi_manifest = run_abi_gen.addOutputFileArg("manifest.json");
+        const abi_shim = run_abi_gen.addOutputFileArg("shim.c");
         const install_abi_header = b.addInstallFile(
             abi_header,
             "include/proto-ui/abi_v1.h",
@@ -456,6 +457,10 @@ pub fn build(b: *std.Build) void {
         const install_abi_manifest = b.addInstallFile(
             abi_manifest,
             "include/proto-ui/manifest.json",
+        );
+        const install_abi_shim = b.addInstallFile(
+            abi_shim,
+            "include/proto-ui/shim.c",
         );
 
         const abi_gen_step = b.step(
@@ -465,6 +470,7 @@ pub fn build(b: *std.Build) void {
         abi_gen_step.dependOn(&run_abi_gen.step);
         abi_gen_step.dependOn(&install_abi_header.step);
         abi_gen_step.dependOn(&install_abi_manifest.step);
+        abi_gen_step.dependOn(&install_abi_shim.step);
 
         // W12a: capability status is source-authoritative and emitted as
         // machine-readable JSON beside the non-normative ABI summary.
@@ -505,6 +511,39 @@ pub fn build(b: *std.Build) void {
         );
         conformance_step.dependOn(&run_conformance.step);
 
+        // R3: compile generated C directly in the build graph and test it
+        // through the tracked Zig host harness.  No generated C is copied
+        // into tracked inherited source.
+        const shim_conformance_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = optimize,
+            .root_source_file = b.path("src/proto-ui/shim_conformance.zig"),
+        });
+        shim_conformance_module.addCSourceFile(.{
+            .file = abi_shim,
+            .flags = &.{"-std=c11"},
+        });
+        shim_conformance_module.addIncludePath(abi_header.dirname());
+        shim_conformance_module.link_libc = true;
+        const shim_conformance_tests = b.addTest(.{
+            .root_module = shim_conformance_module,
+        });
+        const run_shim_conformance = b.addRunArtifact(shim_conformance_tests);
+        const shim_conformance_step = b.step(
+            "proto-ui-shim-conformance",
+            "Compile and test the generated Proto-UI thin C shim",
+        );
+        shim_conformance_step.dependOn(&run_shim_conformance.step);
+
+        const shim_step = b.step(
+            "proto-ui-shim",
+            "Generate and install the versioned Proto-UI thin C shim",
+        );
+        shim_step.dependOn(&run_abi_gen.step);
+        shim_step.dependOn(&install_abi_header.step);
+        shim_step.dependOn(&install_abi_manifest.step);
+        shim_step.dependOn(&install_abi_shim.step);
+
         const boundary_audit_tool = b.addExecutable(.{
             .name = "proto-ui-boundary-audit",
             .root_module = b.createModule(.{
@@ -531,9 +570,11 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&run_abi_gen.step);
         boundary_step.dependOn(&install_abi_header.step);
         boundary_step.dependOn(&install_abi_manifest.step);
+        boundary_step.dependOn(&install_abi_shim.step);
         boundary_step.dependOn(&run_status_gen.step);
         boundary_step.dependOn(&install_status_manifest.step);
         boundary_step.dependOn(&run_conformance.step);
+        boundary_step.dependOn(&run_shim_conformance.step);
         boundary_step.dependOn(&run_boundary_audit.step);
 
         // R2: source-authoritative runtime manifest plus an independent
@@ -5505,6 +5546,8 @@ pub fn build(b: *std.Build) void {
         \\
         \\Proto-UI path (opt-in: -Dproto-ui=true):
         \\  zig build -Dproto-ui=true proto-ui-unit - adapter, EUP protocol, and transport tests
+        \\  zig build -Dproto-ui=true proto-ui-shim - generated/installable thin C shim
+        \\  zig build -Dproto-ui=true proto-ui-shim-conformance - compile and test the generated C shim
         \\
         \\  zig build -Dproto-ui=true proto-ui-runtime-manifest - fail-closed runtime manifest audit
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module - Emacs dynamic-module seam

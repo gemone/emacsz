@@ -74,7 +74,7 @@ src/proto-ui/
   transport.zig         bounded memory sink and ERP1 replay codec
   live.zig              EPXL local handshake and bounded stream frames
   conformance.zig       fake-host ABI conformance
-  abi_gen.zig           generated C header and ABI summary
+  abi_gen.zig           generated C header, ABI summary, and thin shim
   boundary_audit.zig    changed-path boundary classifier
   root.zig              module/test aggregator
 
@@ -96,8 +96,8 @@ zig-out/include/proto-ui/
 
 1. **Manifest selection.**  `zig build` selects the adapter profile declared by
    `-Dproto-ui` and future frontend options.
-2. **ABI generation.**  Emit `proto-ui/abi_v1.h`, symbol tables, and a JSON or
-   Zig manifest describing sizes, ownership, and version requirements.
+2. **ABI generation.**  Emit `abi_v1.h`, a non-normative JSON summary, and
+   `shim.c` under `zig-out/include/proto-ui/`.
 3. **Shim generation.**  Generate a thin C shim from a Proto-UI-owned template.
    The shim converts ABI arguments and immediately calls Zig adapter entry
    points.
@@ -281,8 +281,12 @@ host and adapter conformance tests pass.
 3. Export only the declared adapter table.
 4. Verify no inherited C source changes and no new default-build symbols.
 
-Acceptance: default `-Dproto-ui=false` link graph has no Proto-UI symbols;
-optional build passes ABI and symbol isolation tests.
+Status: implemented for the read-only host observation shim. The generated
+entry points are `proto_ui_shim_abi_version`, `proto_ui_shim_host_validate`,
+`proto_ui_shim_read_generation`, `proto_ui_shim_read_geometry`, and
+`proto_ui_shim_read_frame_state`. Their positive and fail-closed paths are
+compiled from the generated source and tested by
+`proto-ui-shim-conformance`. This does not link or register `output_proto`.
 
 ### W4c-b1-c — Adapter-owned normal-RIF streaming
 

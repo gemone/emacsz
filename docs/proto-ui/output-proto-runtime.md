@@ -1,6 +1,6 @@
 # `output_proto` Runtime Bridge Design
 
-Status: normative design; R1 terminal lifecycle core and R2 fail-closed runtime manifest implemented, runtime not implemented
+Status: normative design; R1 terminal lifecycle core, R2 fail-closed runtime manifest, and R3 generated thin C adapter are implemented; runtime is not implemented
 Protocol: EUP v1
 Boundary rule: no intrusive edits to inherited GNU Emacs C files
 
@@ -202,7 +202,7 @@ manifest must record:
 |---|---|---|
 | R1. Terminal lifecycle core | Zig terminal state machine, IDs, generations, failure cleanup | Fake-host tests cover every transition and cleanup path |
 | R2. Runtime manifest | Machine-readable runtime contract and unavailable reason | Build fails closed with an explicit diagnostic without host callbacks |
-| R3. Generated thin C adapter | Minimal conversion shim, no policy | ABI/layout tests and negative malformed-table tests pass |
+| R3. Generated thin C adapter | Minimal conversion shim, no policy | Implemented as generated `shim.c` plus `proto-ui-shim-conformance` |
 | R4. Host adapter library | Linkable Proto-UI-owned adapter artifact | Exported ABI conformance and symbol isolation pass |
 | R5. Frame service | Frame create/state/delete mapping | Fake host validates generation, visibility, focus, and teardown |
 | R6. Capture service | Window/row/cursor/damage atomic batches | Fake and replay differential tests produce byte-stable EUP |
@@ -214,13 +214,16 @@ R7 is the policy gate.  It must not be bypassed by hidden binary patching,
 symbol interposition, generated replacement of tracked C files, or runtime
 mutation of Emacs data structures.
 
-Implemented progress: **R1 and R2 are implemented**.  R1 is the adapter-owned
+Implemented progress: **R1, R2, and R3 are implemented**.  R1 is the adapter-owned
 terminal lifecycle in `src/proto-ui/terminal.zig`; R2 is
 `src/proto-ui/runtime.zig`, the generated
 `zig-out/proto-ui/runtime_manifest.json`, and the nonzero
-`-Dproto-ui-runtime=true` boundary gate.  R3-R9 remain designed but not
-implemented; in particular, no host adapter library, real host registration
-contract, or real `output_proto` frame exists.
+`-Dproto-ui-runtime=true` boundary gate.  R3 is the generated `shim.c` and
+`proto-ui-shim-conformance` gate.  R4-R9 remain designed but not
+-Dproto-ui-runtime=true boundary gate. R3 is the generated `shim.c` and
+`proto-ui-shim-conformance` gate. R4-R9 remain designed but not implemented;
+in particular, no host adapter library, real host registration contract, or
+real `output_proto` frame exists.
 
 ## 11. Acceptance for the first real SDL3 frame
 
