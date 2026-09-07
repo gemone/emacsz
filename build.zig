@@ -949,6 +949,79 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&install_runtime_host.step);
         boundary_step.dependOn(&run_runtime_host_gate.step);
 
+        // P3 C projection: compile the generated PureRuntimeHostV1 header with
+        // a generated conformance translation unit.  It remains unlinked from
+        // Emacs and cannot enable terminal registration.
+        const runtime_host_abi_gen_tool = b.addExecutable(.{
+            .name = "proto-ui-runtime-host-abi-gen",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/runtime_host_abi_gen.zig"),
+            }),
+        });
+        const run_runtime_host_abi_gen = b.addRunArtifact(runtime_host_abi_gen_tool);
+        const runtime_host_abi_header = run_runtime_host_abi_gen.addOutputFileArg(
+            "pure_runtime_host_v1.h",
+        );
+        const runtime_host_abi_conformance_c = run_runtime_host_abi_gen.addOutputFileArg(
+            "pure_runtime_host_abi_conformance.c",
+        );
+        const runtime_host_abi_manifest = run_runtime_host_abi_gen.addOutputFileArg(
+            "pure_runtime_host_abi_manifest.json",
+        );
+        const install_runtime_host_abi_header = b.addInstallFile(
+            runtime_host_abi_header,
+            "include/proto-ui/pure_runtime_host_v1.h",
+        );
+        const install_runtime_host_abi_manifest = b.addInstallFile(
+            runtime_host_abi_manifest,
+            "proto-ui/pure_runtime_host_abi_manifest.json",
+        );
+
+        const runtime_host_abi_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = optimize,
+            .root_source_file = b.path("src/proto-ui/runtime_host_abi_conformance.zig"),
+        });
+        runtime_host_abi_module.addCSourceFile(.{
+            .file = runtime_host_abi_conformance_c,
+            .flags = &.{"-std=c11"},
+        });
+        runtime_host_abi_module.addIncludePath(runtime_host_abi_header.dirname());
+        runtime_host_abi_module.link_libc = true;
+        const runtime_host_abi_tests = b.addTest(.{
+            .root_module = runtime_host_abi_module,
+        });
+        const run_runtime_host_abi_conformance = b.addRunArtifact(runtime_host_abi_tests);
+
+        const runtime_host_abi_gate_tool = b.addExecutable(.{
+            .name = "proto-ui-runtime-host-abi-gate",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/runtime_host_abi_gate.zig"),
+            }),
+        });
+        const run_runtime_host_abi_gate = b.addRunArtifact(runtime_host_abi_gate_tool);
+        run_runtime_host_abi_gate.addFileArg(runtime_host_abi_manifest);
+        run_runtime_host_abi_gate.step.dependOn(&run_runtime_host_abi_gen.step);
+
+        const runtime_host_abi_step = b.step(
+            "proto-ui-runtime-host-abi",
+            "Generate and conformance-test the PureRuntimeHostV1 C ABI",
+        );
+        runtime_host_abi_step.dependOn(&run_runtime_host_abi_gen.step);
+        runtime_host_abi_step.dependOn(&install_runtime_host_abi_header.step);
+        runtime_host_abi_step.dependOn(&install_runtime_host_abi_manifest.step);
+        runtime_host_abi_step.dependOn(&run_runtime_host_abi_conformance.step);
+        runtime_host_abi_step.dependOn(&run_runtime_host_abi_gate.step);
+
+        boundary_step.dependOn(&install_runtime_host_abi_header.step);
+        boundary_step.dependOn(&install_runtime_host_abi_manifest.step);
+        boundary_step.dependOn(&run_runtime_host_abi_conformance.step);
+        boundary_step.dependOn(&run_runtime_host_abi_gate.step);
+
         // R2: source-authoritative runtime manifest plus an independent
         // machine-readable gate.  Audit mode succeeds only by reporting
         // unavailability; require mode is deliberately nonzero.

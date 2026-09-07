@@ -66,6 +66,8 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | Pure SDL3 PGTK-parity target | Normative target documented; runtime and parity not implemented |
 | P1 PGTK/SDL differential parity plan | Implemented as a 48-case planned policy manifest; no differential case or parity evidence is complete |
 | P3 PureRuntimeHostV1 ABI | Implemented as adapter-owned fake-host contract for five callback groups; Emacs registration and runtime remain absent |
+| P3 PureRuntimeHostV1 C projection | Implemented with generated header and compiled C conformance; not linked to inherited Emacs or runtime |
+
 
 | P2 R7 registration proposal | Implemented as ready-for-review policy artifact; R7 decision, terminal registration, and runtime remain pending |
 
@@ -3080,6 +3082,8 @@ Non-goals:
 3. Adding scattered Proto-UI branches to inherited Emacs C/H/Lisp.
 4. Registering `output_proto` before the R7 host contract is explicitly approved.
 
+P3 C projection adds `proto-ui-runtime-host-abi`: the generated C header and
+translation unit compile, but remain build artifacts outside inherited Emacs.
 P3 runtime-ABI preparation adds `proto-ui-runtime-host`: the five required
 callback groups now have a versioned C-ABI table and fake-host conformance, but
 no Emacs host is selected and runtime remains fail-closed.
