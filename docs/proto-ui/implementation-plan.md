@@ -2221,6 +2221,36 @@ coverage and preserved the existing backspace action ID. Final checks verified
 copy/interactive smokes, changed-path and negative inherited-C audits, and the
 full built-in check run.
 
+#### W11c — Bounded Unicode clipboard text (approved)
+
+Goal: extend the existing 120-byte, one-line clipboard bridge from printable
+ASCII to strict UTF-8 while keeping capability fallback explicit.
+
+1. Validate clipboard text as strict UTF-8, 1..120 bytes, with no NUL or C0
+   control byte; newline remains rejected. ASCII compatibility is unchanged.
+2. Add optional, negotiable `clipboard.text_unicode`. ASCII-only peers retain
+   `clipboard.ascii_bounded`; non-ASCII paste without Unicode negotiation fails
+   before the delivery queue changes.
+3. Gate Unicode copy on the effective capability. The Emacs-owned adapter
+   explicitly encodes UTF-8, publishes an ASCII-safe `base64:` artifact, and
+   SDL decodes and validates exact bytes before installing platform clipboard
+   text.
+4. Add the opt-in real-process smoke `sdl3-clipboard-unicode-smoke` for CJK
+   paste plus marker-text observation and exact `Emacs 你好` copy round trip.
+
+This is a bounded plain-text bridge only. It does not claim shaped rendering,
+font parity, rich text, MIME types, selection ownership, clipboard-manager
+integration, or full Emacs clipboard parity.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true proto-ui-boundary --summary all
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-clipboard-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-clipboard-unicode-smoke
+```
+
 ### W12 — Complete EUP feature surface
 
 Goal: close PGTK parity gaps.

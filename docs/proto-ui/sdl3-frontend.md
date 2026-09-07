@@ -294,15 +294,19 @@ subset; all other events remain observed/unhandled. This is not full keymap,
 IME, or command execution parity.
 
 W11a implements the first clipboard capture path: Ctrl+V reads SDL clipboard
-text, accepts only bounded printable ASCII through the input queue, and frees
-SDL-owned text on every path. Unicode clipboard, rich text, MIME selection,
+text, validates it as a bounded one-line UTF-8 payload, and frees SDL-owned
+text on every path. W11c adds optional `clipboard.text_unicode`; without it,
+non-ASCII paste is rejected without queue mutation. Rich text, MIME selection,
 ownership events, and external clipboard targets remain pending.
 
 W11b implements the opposite bounded smoke path: Ctrl+C publishes a first-line
-Emacs buffer artifact after `kill-ring-save`; SDL3 accepts only non-empty,
-printable ASCII of at most 120 bytes before installing it through
-`SDL_SetClipboardText`. The same Unicode, MIME, selection-ownership, external
-target, and rich-text limits remain.
+Emacs buffer artifact after `kill-ring-save`; SDL3 installs only a non-empty,
+bounded payload. W11c gates the Unicode copy direction on effective
+`clipboard.text_unicode`: the Emacs-owned adapter explicitly encodes UTF-8,
+publishes `base64:<RFC 4648 bytes>`, and SDL decodes and verifies the exact
+UTF-8 bytes before `SDL_SetClipboardText`. Without that capability, copy retains
+the ASCII path. MIME, selection ownership, external targets, and rich text
+remain out of scope.
 
 W8b-a adds a persistent public-fact bridge: the SDL loop writes one translated
 action to an atomic local file, waits for consumption, polls the republished

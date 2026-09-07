@@ -1464,6 +1464,28 @@ pub fn build(b: *std.Build) void {
             "Exercise bounded clipboard copy through the local fallback",
         );
         sdl3_emacs_copy_local_step.dependOn(&run_sdl3_emacs_copy_local.step);
+        const run_sdl3_clipboard_unicode = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--clipboard-unicode-smoke",
+            "--auto-quit-ms=3000",
+        });
+        run_sdl3_clipboard_unicode.setCwd(b.path("."));
+        run_sdl3_clipboard_unicode.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_clipboard_unicode.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_clipboard_unicode.step.dependOn(step);
+        const sdl3_clipboard_unicode_step = b.step(
+            "sdl3-clipboard-unicode-smoke",
+            "Exercise bounded Unicode paste and base64 copy through real Emacs and SDL3",
+        );
+        sdl3_clipboard_unicode_step.dependOn(&run_sdl3_clipboard_unicode.step);
     }
     if (proto_frame_smoke_dep) |frame_step| {
         if (proto_sdl_fixture_dep) |fixture_step| fixture_step.dependOn(frame_step);

@@ -433,10 +433,7 @@ pub fn isCopyShortcut(
 }
 
 pub fn validClipboardText(text: []const u8) bool {
-    for (text) |byte| {
-        if (!std.ascii.isPrint(byte)) return false;
-    }
-    return text.len > 0 and text.len <= max_clipboard_bytes;
+    return validTextInput(text);
 }
 
 pub fn translateKey(
@@ -477,6 +474,44 @@ pub fn isPasteShortcut(
         modifiers & sdl_ctrl_modifiers != 0 and modifiers & ~sdl_ctrl_modifiers == 0;
 }
 
+pub const clipboard_artifact_prefix = "base64:";
+pub const max_clipboard_artifact_bytes =
+    clipboard_artifact_prefix.len + std.base64.standard.Encoder.calcSize(max_clipboard_bytes);
+
+pub const ClipboardCodecError = error{
+    InvalidClipboardArtifact,
+    OutOfMemory,
+};
+
+/// A conservative, text-only clipboard artifact. Base64 preserves exact
+/// UTF-8 bytes without turning this bridge into a MIME/rich-text transport.
+pub fn encodeClipboardArtifact(a: std.mem.Allocator, text: []const u8, out: *std.ArrayList(u8)) !void {
+    if (!validClipboardText(text)) return error.InvalidClipboardArtifact;
+    const encoded_size = std.base64.standard.Encoder.calcSize(text.len);
+    try out.ensureUnusedCapacity(a, clipboard_artifact_prefix.len + encoded_size);
+    out.appendSliceAssumeCapacity(clipboard_artifact_prefix);
+    const encoded_start = out.items.len;
+    out.appendNTimesAssumeCapacity(0, encoded_size);
+    const encoded = out.items[encoded_start..][0..encoded_size];
+    _ = std.base64.standard.Encoder.encode(encoded, text);
+}
+
+pub fn decodeClipboardArtifact(a: std.mem.Allocator, artifact: []const u8) ![]u8 {
+    if (!std.mem.startsWith(u8, artifact, clipboard_artifact_prefix))
+        return error.InvalidClipboardArtifact;
+    const encoded = artifact[clipboard_artifact_prefix.len..];
+    const decoded_size = std.base64.standard.Decoder.calcSizeForSlice(encoded) catch
+        return error.InvalidClipboardArtifact;
+    if (decoded_size == 0 or decoded_size > max_clipboard_bytes)
+        return error.InvalidClipboardArtifact;
+    const decoded = try a.alloc(u8, decoded_size);
+    errdefer a.free(decoded);
+    std.base64.standard.Decoder.decode(decoded, encoded) catch
+        return error.InvalidClipboardArtifact;
+    if (!validClipboardText(decoded)) return error.InvalidClipboardArtifact;
+    return decoded;
+}
+
 test "translates only pressed unmodified bounded editing keys" {
     try std.testing.expectEqual(frontend.KeyAction.backspace, translateKey(SDL_SCANCODE_BACKSPACE, true, false, 0).?.action);
     try std.testing.expectEqual(frontend.KeyAction.cursor_left, translateKey(SDL_SCANCODE_LEFT, true, false, 0).?.action);
@@ -500,9 +535,41 @@ test "copy shortcut requires pressed non-repeat Ctrl+C" {
 
 test "validates bounded clipboard copy payload" {
     try std.testing.expect(validClipboardText("Emacs Proto-UI"));
+    try std.testing.expect(validClipboardText("你好"));
+    try std.testing.expect(validClipboardText("e\u{0301}"));
     try std.testing.expect(!validClipboardText(""));
+    try std.testing.expect(!validClipboardText("\x00"));
     try std.testing.expect(!validClipboardText("a" ** 121));
     try std.testing.expect(!validClipboardText("bad\npayload"));
+    try std.testing.expect(!validClipboardText("\tbad"));
+    try std.testing.expect(!validClipboardText("\xff\xfe"));
+}
+
+test "clipboard artifacts round trip exact Unicode and reject hostile bytes" {
+    const a = std.testing.allocator;
+    var artifact: std.ArrayList(u8) = .empty;
+    defer artifact.deinit(a);
+    try encodeClipboardArtifact(a, "Emacs 你好", &artifact);
+    const decoded = try decodeClipboardArtifact(a, artifact.items);
+    defer a.free(decoded);
+    try std.testing.expectEqualStrings("Emacs 你好", decoded);
+
+    try std.testing.expectError(error.InvalidClipboardArtifact, decodeClipboardArtifact(a, "Emacs 你好"));
+    try std.testing.expectError(error.InvalidClipboardArtifact, decodeClipboardArtifact(a, "base64:!"));
+    try std.testing.expectError(error.InvalidClipboardArtifact, decodeClipboardArtifact(a, "base64:"));
+    artifact.clearRetainingCapacity();
+    try std.testing.expectError(error.InvalidClipboardArtifact, encodeClipboardArtifact(a, "bad\npayload", &artifact));
+}
+
+test "clipboard Unicode delivery is capability gated without queue side effects" {
+    var journal: DeliveryJournal = .{};
+    try journal.pushTextAllowed("ASCII", .ascii);
+    try std.testing.expectError(error.TextCapabilityNotNegotiated, journal.pushTextAllowed("你好", .ascii));
+    try std.testing.expectEqual(@as(usize, 1), journal.queue.length);
+    try std.testing.expectEqualStrings("ASCII", journal.queue.items[0].text.bytes());
+    try journal.pushTextAllowed("你好", .unicode);
+    try std.testing.expectEqual(@as(usize, 2), journal.queue.length);
+    try std.testing.expectEqualStrings("你好", journal.queue.items[1].text.bytes());
 }
 
 test "text support validates ASCII, Unicode, and hostile bytes" {
