@@ -374,6 +374,46 @@ These messages are reserved for tools, debug, and explicitly negotiated fallback
 | `0x040e` | `FLUSH` | C→F | Present boundary |
 | `0x040f` | `RENDER_HINT` | C→F | Renderer preference |
 
+### 13.1 `GLYPH_RUN` debug-fallback v1 (implemented bounded adapter contract)
+
+`GLYPH_RUN = 0x0405` has one explicit normative v1 encoding: an exact
+little-endian 60-byte header followed by 1..120 bytes of printable ASCII
+(0x20..0x7e).  It is a diagnostic fallback, **not** the normative shaped
+`GLYPH_RUN`, redisplay-owned row model, face/font renderer, BiDi, or image
+path.  The byte length must exactly equal `60 + text_length`; trailing bytes
+are invalid.
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 2 | `schema` | `1` |
+| 2 | 2 | `flags` | bit 0 (`debug fallback`) must be 1; bits 1..15 must be 0 |
+| 4 | 2 | `direction` | `1` means visual LTR diagnostic |
+| 6 | 2 | `reserved` | zero |
+| 8 | 4 | `run_id` | nonzero stable identity |
+| 12 | 4 | `generation` | nonzero; replacement must be strictly newer |
+| 16 | 8 | `window_id` | nonzero, exists in active frame context |
+| 24 | 4 | `row_index` | an existing row owned by `window_id` |
+| 28 | 4 | `face_id` | zero in v1 |
+| 32 | 4 | `font_id` | zero in v1 |
+| 36 | 4 | `x` | nonnegative logical coordinate |
+| 40 | 4 | `y` | nonnegative logical coordinate |
+| 44 | 4 | `width` | nonnegative |
+| 48 | 4 | `height` | nonnegative |
+| 52 | 8 | `reserved` | zero |
+| 60 | 1..120 | `text` | printable ASCII; no NUL, C0, DEL, or high bytes |
+
+A v1 message is accepted only when its EUP envelope frame names the frontend's
+single active frame at that frame's current generation, the referenced window
+and row exist, the rectangle fits the current frame logical bounds, and there
+are no more than 64 active runs after validation.  A run ID replacement is
+accepted only for a strictly newer generation; stale/equal input is rejected
+atomically and does not advance the expected sequence.  `FRAME_UPDATE` is
+authoritative and clears all debug runs; frame deletion, resync, and scene
+teardown free all owned text.
+
+This schema has no shaping, cluster, BiDi reorder, font, face, atlas, image,
+widget, Emacs capture, or `output_proto` semantics.
+
 ## 14. Resource messages
 
 | ID | Name | Direction | Payload | Semantics |

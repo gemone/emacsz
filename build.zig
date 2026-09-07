@@ -928,6 +928,16 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_renderer_smoke_step.dependOn(&run_sdl3_renderer_smoke.step);
 
+        const run_sdl3_glyph_run_smoke = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_glyph_run_smoke.addArg("--glyph-run-smoke");
+        run_sdl3_glyph_run_smoke.addArg("--renderer=gpu");
+        run_sdl3_glyph_run_smoke.addArg("--present=off");
+        const sdl3_glyph_run_smoke_step = b.step(
+            "sdl3-glyph-run-smoke",
+            "Validate bounded debug glyph-run storage and SDL3 text rendering",
+        );
+        sdl3_glyph_run_smoke_step.dependOn(&run_sdl3_glyph_run_smoke.step);
+
         const run_sdl3_software_renderer_smoke = b.addRunArtifact(sdl3_frontend);
         run_sdl3_software_renderer_smoke.addArg("--replay");
         run_sdl3_software_renderer_smoke.addFileArg(replay_file);

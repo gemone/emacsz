@@ -79,6 +79,108 @@ pub const TextLine = struct {
     bytes: [:0]const u8,
 };
 
+pub const max_glyph_text_bytes: usize = 120;
+pub const max_glyph_runs: usize = 64;
+pub const glyph_record_size: usize = 60;
+pub const glyph_debug_fallback: u16 = 1 << 0;
+
+pub const GlyphRun = struct {
+    run_id: u32,
+    generation: u32,
+    window_id: u64,
+    row_index: u32,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    text: [:0]u8,
+};
+
+pub const GlyphRunWire = struct {
+    schema: u16 = 1,
+    flags: u16 = glyph_debug_fallback,
+    direction: u16 = 1,
+    run_id: u32,
+    generation: u32,
+    window_id: u64,
+    row_index: u32,
+    face_id: u32 = 0,
+    font_id: u32 = 0,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    text: []const u8,
+
+    fn valid(self: GlyphRunWire) bool {
+        return self.run_id != 0 and self.generation != 0 and self.window_id != 0 and
+            self.x >= 0 and self.y >= 0 and self.width >= 0 and self.height >= 0;
+    }
+};
+
+pub fn encodeGlyphRun(a: std.mem.Allocator, run: GlyphRunWire, out: *std.ArrayList(u8)) !void {
+    if (run.schema != 1 or run.flags != glyph_debug_fallback or run.direction != 1 or
+        run.face_id != 0 or run.font_id != 0 or run.run_id == 0 or
+        run.generation == 0 or run.window_id == 0 or
+        !validGlyphRunText(run.text)) return Error.InvalidMessage;
+    if (run.x < 0 or run.y < 0 or run.width < 0 or run.height < 0)
+        return Error.InvalidMessage;
+    try out.appendSlice(a, &[8]u8{
+        1,                          0,
+        @intCast(run.flags & 0xff), @intCast(run.flags >> 8),
+        1,                          0,
+        0,                          0,
+    });
+    try putU32(out, a, run.run_id);
+    try putU32(out, a, run.generation);
+    try putU64(out, a, run.window_id);
+    try putU32(out, a, run.row_index);
+    try putU32(out, a, run.face_id);
+    try putU32(out, a, run.font_id);
+    try putI32(out, a, run.x);
+    try putI32(out, a, run.y);
+    try putI32(out, a, run.width);
+    try putI32(out, a, run.height);
+    try out.appendSlice(a, &[_]u8{0} ** 8);
+    try out.appendSlice(a, run.text);
+}
+
+pub fn decodeGlyphRun(bytes: []const u8) Error!GlyphRunWire {
+    if (bytes.len < glyph_record_size + 1 or bytes.len > glyph_record_size + max_glyph_text_bytes)
+        return Error.InvalidTable;
+    const header = bytes[0..glyph_record_size];
+    const text = bytes[glyph_record_size..];
+    const schema = std.mem.readInt(u16, header[0..2], .little);
+    const flags = std.mem.readInt(u16, header[2..4], .little);
+    const direction = std.mem.readInt(u16, header[4..6], .little);
+    if (schema != 1 or flags != glyph_debug_fallback or direction != 1 or
+        std.mem.readInt(u16, header[6..8], .little) != 0) return Error.InvalidVersion;
+    const run: GlyphRunWire = .{
+        .run_id = std.mem.readInt(u32, header[8..12], .little),
+        .generation = std.mem.readInt(u32, header[12..16], .little),
+        .window_id = std.mem.readInt(u64, header[16..24], .little),
+        .row_index = std.mem.readInt(u32, header[24..28], .little),
+        .face_id = std.mem.readInt(u32, header[28..32], .little),
+        .font_id = std.mem.readInt(u32, header[32..36], .little),
+        .x = @bitCast(std.mem.readInt(u32, header[36..40], .little)),
+        .y = @bitCast(std.mem.readInt(u32, header[40..44], .little)),
+        .width = @bitCast(std.mem.readInt(u32, header[44..48], .little)),
+        .height = @bitCast(std.mem.readInt(u32, header[48..52], .little)),
+        .text = text,
+    };
+    if (!std.mem.allEqual(u8, header[52..60], 0)) return Error.InvalidReserved;
+    if (!run.valid() or !validGlyphRunText(text)) return Error.InvalidMessage;
+    return run;
+}
+
+fn validGlyphRunText(text: []const u8) bool {
+    if (text.len == 0 or text.len > max_glyph_text_bytes) return false;
+    for (text) |byte| {
+        if (byte < 0x20 or byte == 0x7f or byte > 0x7e) return false;
+    }
+    return true;
+}
+
 pub const TextLineWire = struct {
     row_index: u32,
     line: []const u8,
@@ -1024,6 +1126,7 @@ pub const Scene = struct {
     frame_header: ?protocol.FrameUpdateHeader = null,
     windows: std.ArrayList(Window) = .empty,
     rows: std.ArrayList(Row) = .empty,
+    glyph_runs: std.ArrayList(GlyphRun) = .empty,
     strings: StringResources = .{},
     faces: FaceResources = .{},
     fonts: FontResources = .{},
@@ -1042,6 +1145,7 @@ pub const Scene = struct {
     pub fn deinit(self: *Scene) void {
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
+        self.clearGlyphRuns();
         self.damage.deinit(self.allocator);
         self.strings.deinit(self.allocator);
         self.faces = .{};
@@ -1051,6 +1155,7 @@ pub const Scene = struct {
         self.text.deinit(self.allocator);
         self.windows = .empty;
         self.rows = .empty;
+        self.glyph_runs = .empty;
         self.damage = .empty;
         self.strings = .{};
         self.faces = .{};
@@ -1088,6 +1193,7 @@ pub const Scene = struct {
         switch (payload.envelope.message_type) {
             protocol.Message.frame_create => try self.applyFrameCreate(payload.envelope, payload.bytes),
             protocol.Message.frame_update => try self.applyFrameUpdate(payload),
+            protocol.Message.glyph_run => try self.applyGlyphRun(payload),
             protocol.Message.frame_visibility => try self.applyFrameVisibility(payload),
             protocol.Message.frame_focus => try self.applyFrameFocus(payload),
             protocol.Message.frame_destroy => try self.applyFrameDestroy(payload.envelope, payload.bytes),
@@ -1108,6 +1214,7 @@ pub const Scene = struct {
     }
 
     fn clearVisualState(self: *Scene) void {
+        self.clearGlyphRuns();
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
         self.damage.deinit(self.allocator);
@@ -1115,12 +1222,76 @@ pub const Scene = struct {
         self.text.deinit(self.allocator);
         self.windows = .empty;
         self.rows = .empty;
+        self.glyph_runs = .empty;
         self.damage = .empty;
         self.text = .empty;
         self.frame_header = null;
         self.cursor = null;
         self.present = null;
         self.viewport = null;
+    }
+
+    fn clearGlyphRuns(self: *Scene) void {
+        for (self.glyph_runs.items) |run| self.allocator.free(run.text);
+        self.glyph_runs.deinit(self.allocator);
+        self.glyph_runs = .empty;
+    }
+
+    fn applyGlyphRun(self: *Scene, payload: protocol.Payload) Error!void {
+        const wire = try decodeGlyphRun(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (payload.envelope.frame_id != frame.frame_id) return Error.InvalidMessage;
+        if (self.frame_header == null) return Error.FrameNotActive;
+
+        var window: ?Window = null;
+        for (self.windows.items) |candidate| {
+            if (candidate.id == wire.window_id) {
+                window = candidate;
+                break;
+            }
+        }
+        const owner = window orelse return Error.InvalidMessage;
+        if (wire.row_index >= self.rows.items.len) return Error.InvalidMessage;
+        if (self.rows.items[wire.row_index].window_id != owner.id) return Error.InvalidMessage;
+        const header = self.frame_header.?;
+        if (!inside(wire.x, wire.width, header.logical_width) or
+            !inside(wire.y, wire.height, header.logical_height)) return Error.InvalidMessage;
+
+        var existing_index: ?usize = null;
+        for (self.glyph_runs.items, 0..) |active, index| {
+            if (active.run_id == wire.run_id) {
+                existing_index = index;
+                break;
+            }
+        }
+        if (existing_index) |index| {
+            if (wire.generation <= self.glyph_runs.items[index].generation)
+                return Error.StaleGeneration;
+        } else if (self.glyph_runs.items.len == max_glyph_runs) {
+            return Error.ResourceTableFull;
+        }
+
+        const owned = try self.allocator.dupeZ(u8, wire.text);
+        errdefer self.allocator.free(owned);
+        const next: GlyphRun = .{
+            .run_id = wire.run_id,
+            .generation = wire.generation,
+            .window_id = wire.window_id,
+            .row_index = wire.row_index,
+            .x = wire.x,
+            .y = wire.y,
+            .width = wire.width,
+            .height = wire.height,
+            .text = owned,
+        };
+        if (existing_index) |index| {
+            const old = self.glyph_runs.items[index].text;
+            self.glyph_runs.items[index] = next;
+            self.allocator.free(old);
+        } else {
+            try self.glyph_runs.append(self.allocator, next);
+        }
+        self.stats.control_messages += 1;
     }
 
     fn applyFrameDestroy(self: *Scene, envelope: protocol.Envelope, bytes: []const u8) Error!void {
@@ -1448,14 +1619,20 @@ pub const Scene = struct {
         // The update is now known to be complete; commit it atomically.
         const old_windows = self.windows;
         const old_rows = self.rows;
+        var old_glyph_runs = self.glyph_runs;
         const old_damage = self.damage;
         const old_text = self.text;
         self.windows = windows;
         self.rows = rows;
+        self.glyph_runs = .empty;
         self.damage = damage;
         self.text = text;
         windows = old_windows;
         rows = old_rows;
+        // FRAME_UPDATE is authoritative visual state.  Free the old owned
+        // glyph storage only after the complete update has validated.
+        for (old_glyph_runs.items) |run| self.allocator.free(run.text);
+        old_glyph_runs.deinit(self.allocator);
         damage = old_damage;
         text = old_text;
         self.frame_header = update.header;
@@ -1807,6 +1984,98 @@ test "text codecs accept bounded UTF-8 and reject malformed input" {
 
     const oversized = "a" ** 121;
     try std.testing.expectError(Error.InvalidTable, encodeTextInput(a, .{ .text = oversized[0..] }, &bytes));
+}
+
+fn glyphRunMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    generation: u32,
+    text: []const u8,
+) ![]u8 {
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeGlyphRun(a, .{
+        .run_id = 9,
+        .generation = generation,
+        .window_id = 100,
+        .row_index = 0,
+        .x = 1,
+        .y = 2,
+        .width = 20,
+        .height = 8,
+        .text = text,
+    }, &payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = protocol.Flags.debug,
+        .message_type = protocol.Message.glyph_run,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 7,
+        .timestamp_ns = sequence,
+    }, payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
+test "glyph run debug fallback codec is exact and bounded" {
+    const a = std.testing.allocator;
+    var wire: std.ArrayList(u8) = .empty;
+    defer wire.deinit(a);
+    try encodeGlyphRun(a, .{
+        .run_id = 9,
+        .generation = 2,
+        .window_id = 100,
+        .row_index = 0,
+        .x = 1,
+        .y = 2,
+        .width = 20,
+        .height = 8,
+        .text = "Emacs text",
+    }, &wire);
+    try std.testing.expectEqual(glyph_record_size + 10, wire.items.len);
+    const decoded = try decodeGlyphRun(wire.items);
+    try std.testing.expectEqual(@as(u16, 1), decoded.schema);
+    try std.testing.expectEqual(@as(u16, 1), decoded.direction);
+    try std.testing.expectEqual(glyph_debug_fallback, decoded.flags);
+    try std.testing.expectEqualStrings("Emacs text", decoded.text);
+    try wire.append(a, 0);
+    try std.testing.expectError(Error.InvalidMessage, decodeGlyphRun(wire.items));
+}
+
+test "scene validates glyph context and replaces by strictly newer generation" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    const first = try glyphRunMessage(a, 3, 2, "Emacs");
+    defer a.free(first);
+    try scene.apply(first);
+    try std.testing.expectEqual(@as(usize, 1), scene.glyph_runs.items.len);
+    try std.testing.expectEqualStrings("Emacs", scene.glyph_runs.items[0].text);
+
+    const equal = try glyphRunMessage(a, 4, 2, "stale");
+    defer a.free(equal);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(equal));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+    try std.testing.expectEqualStrings("Emacs", scene.glyph_runs.items[0].text);
+
+    const replacement = try glyphRunMessage(a, 4, 3, "replacement");
+    defer a.free(replacement);
+    try scene.apply(replacement);
+    try std.testing.expectEqualStrings("replacement", scene.glyph_runs.items[0].text);
+
+    const next_update = try updateMessage(a, 5, 7, 7, 80, 0);
+    defer a.free(next_update);
+    try scene.apply(next_update);
+    try std.testing.expectEqual(@as(usize, 0), scene.glyph_runs.items.len);
 }
 
 test "key event codec validates bounded editing actions" {

@@ -205,6 +205,16 @@ Requirements:
 4. Atlas misses fall back without blocking semantic updates.
 5. Missing glyphs render a deterministic fallback.
 
+W10d adds the first bounded scene storage and debug-draw execution for
+negotiated `render.glyph_run_debug_v1`.  It accepts the exact 60-byte v1
+header plus 1..120 printable-ASCII bytes, retains at most 64 active owned text
+buffers, validates active frame/window/row context and frame bounds, and
+replaces a run only with a strictly newer generation.  The SDL draw path emits
+the existing ASCII debug-text command at the run's logical position.  This is
+not redisplay ownership or the production glyph path: no shaping, BiDi
+reordering, faces, fonts, atlas entries, images, widgets, Emacs capture, or
+`output_proto` registration is claimed.
+
 ### 8.4 Images
 
 Image resources become textures. The frontend honors format, stride, alpha mode, color space, scaling filter, mipmap policy, cache policy, and animation timing.
@@ -581,6 +591,8 @@ The final frontend supports at least:
 `--replay` runs without a live Emacs connection for deterministic frontend testing.
 `--renderer` may also name an SDL driver; an unavailable named driver is an error.
 `--renderer=gpu` is the only request with automatic software fallback.
+`--glyph-run-smoke` opens an active one-window/one-row diagnostic frame, sends
+one valid `GLYPH_RUN` v1, asserts scene and draw-list state, and auto-closes.
 
 ## 18. Acceptance criteria
 

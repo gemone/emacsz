@@ -333,7 +333,7 @@ const SDL_FRect = extern struct {
     h: f32,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, emacs_clipboard_unicode, emacs_pointer_selection, emacs_pointer_middle_paste };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, emacs_clipboard_unicode, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -1553,6 +1553,172 @@ fn sendSnapshotMessages(
     }
 }
 
+fn runGlyphRunSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
+    var scene = frontend.Scene.init(gpa);
+    defer scene.deinit();
+
+    var create_payload: [8]u8 = undefined;
+    std.mem.writeInt(u32, create_payload[0..4], 1, .little);
+    std.mem.writeInt(u32, create_payload[4..8], 1, .little);
+    var create: std.ArrayList(u8) = .empty;
+    defer create.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_create,
+        .sequence = 1,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = 1,
+        .timestamp_ns = 1,
+    }, &create_payload, &create);
+    try scene.apply(create.items);
+
+    var window_bytes: std.ArrayList(u8) = .empty;
+    defer window_bytes.deinit(gpa);
+    try frontend.encodeWindow(gpa, .{
+        .id = 100,
+        .frame_id = 1,
+        .x = 0,
+        .y = 0,
+        .width = 200,
+        .height = 40,
+    }, &window_bytes);
+    var row_bytes: std.ArrayList(u8) = .empty;
+    defer row_bytes.deinit(gpa);
+    try frontend.encodeRow(gpa, .{
+        .window_id = 100,
+        .index = 0,
+        .flags = 0,
+        .x = 0,
+        .y = 0,
+        .width = 200,
+        .height = 40,
+        .ascent = 8,
+        .descent = 2,
+        .baseline = 8,
+        .visible_height = 40,
+    }, &row_bytes);
+    var damage_bytes: std.ArrayList(u8) = .empty;
+    defer damage_bytes.deinit(gpa);
+    try frontend.encodeRect(gpa, .{ .x = 0, .y = 0, .width = 200, .height = 60 }, &damage_bytes);
+    const sections = [_]protocol.Section{
+        .{ .kind = protocol.SectionKind.windows, .records = window_bytes.items },
+        .{ .kind = protocol.SectionKind.rows, .records = row_bytes.items },
+        .{ .kind = protocol.SectionKind.damage, .records = damage_bytes.items },
+    };
+    var update_payload: std.ArrayList(u8) = .empty;
+    defer update_payload.deinit(gpa);
+    try protocol.encodeFrameUpdate(gpa, .{
+        .header = .{
+            .frame_id = 1,
+            .frame_generation = 1,
+            .sequence = 2,
+            .redisplay_generation = 1,
+            .logical_x = 0,
+            .logical_y = 0,
+            .logical_width = 200,
+            .logical_height = 60,
+            .physical_x = 0,
+            .physical_y = 0,
+            .physical_width = 200,
+            .physical_height = 60,
+            .scale = 1,
+            .dpi_x = 96,
+            .dpi_y = 96,
+            .damage_mode = 2,
+            .update_cause = 1,
+            .coalesced_count = 0,
+            .timestamp_ns = 2,
+        },
+        .sections = &sections,
+    }, &update_payload);
+    var update: std.ArrayList(u8) = .empty;
+    defer update.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = protocol.Flags.delta,
+        .message_type = protocol.Message.frame_update,
+        .sequence = 2,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = 1,
+        .timestamp_ns = 2,
+    }, update_payload.items, &update);
+    try scene.apply(update.items);
+
+    var glyph_payload: std.ArrayList(u8) = .empty;
+    defer glyph_payload.deinit(gpa);
+    try frontend.encodeGlyphRun(gpa, .{
+        .run_id = 9,
+        .generation = 1,
+        .window_id = 100,
+        .row_index = 0,
+        .x = 8,
+        .y = 2,
+        .width = 40,
+        .height = 8,
+        .text = "Emacs",
+    }, &glyph_payload);
+    var glyph: std.ArrayList(u8) = .empty;
+    defer glyph.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = protocol.Flags.debug,
+        .message_type = protocol.Message.glyph_run,
+        .sequence = 3,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = 1,
+        .timestamp_ns = 3,
+    }, glyph_payload.items, &glyph);
+    try scene.apply(glyph.items);
+
+    if (scene.frame == null or scene.frames.frames[0].status != .active or
+        scene.windows.items.len != 1 or scene.rows.items.len != 1 or
+        scene.glyph_runs.items.len != 1 or
+        !std.mem.eql(u8, scene.glyph_runs.items[0].text, "Emacs"))
+        return error.GlyphRunSceneStateInvalid;
+
+    if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
+    defer SDL_Quit();
+    const window = SDL_CreateWindow("Emacs Proto-UI Glyph Run", 240, 96, 0) orelse
+        return sdlFail("SDL_CreateWindow");
+    defer SDL_DestroyWindow(window);
+    const selected_renderer = try createRenderer(gpa, window, config.renderer_request, config.present_mode);
+    defer destroyRenderer(selected_renderer);
+
+    var frame_gate: renderer_policy.FrameGate = .{};
+    var frame_counters: renderer_policy.FrameCounters = .{};
+    var draw_list: renderer_policy.DrawList = .{ .allocator = gpa };
+    defer draw_list.deinit();
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    var rendered = false;
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .text => |text| {
+                rendered = text.x == 8 and text.y == 2 and std.mem.eql(u8, text.bytes, "Emacs");
+            },
+            else => {},
+        }
+    }
+    if (!rendered) return error.GlyphRunNotRendered;
+
+    try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+    var quit = false;
+    const started = SDL_GetTicks();
+    while (!quit and SDL_GetTicks() - started < config.auto_quit_ms) {
+        var event: SDL_Event = undefined;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_QUIT) quit = true;
+        }
+        try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+        SDL_Delay(10);
+    }
+    if (frame_counters.text_commands_total == 0) return error.GlyphRunNotRendered;
+    std.debug.print(
+        "sdl3-glyph-run-smoke: {{\"kind\":\"sdl3-glyph-run-smoke\",\"active_runs\":1,\"text\":\"Emacs\",\"rendered\":true,\"auto_closed\":true,\"result\":\"pass\"}}\n",
+        .{},
+    );
+}
+
 fn runLiveFrontend(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -2598,6 +2764,17 @@ fn buildSceneDrawList(
         );
     }
 
+    for (scene.glyph_runs.items) |run| {
+        const owner = findSceneWindow(scene, run.window_id) orelse continue;
+        // GLYPH_RUN v1 is diagnostic ASCII fallback only.  Future redisplay-
+        // owned runs will carry shaping, direction, face, and font identity.
+        try list.drawText(
+            @floatFromInt(owner.x + run.x),
+            @floatFromInt(owner.y + run.y),
+            run.text,
+        );
+    }
+
     for (scene.windows.items) |window| {
         try list.fillRect(.{
             .x = @floatFromInt(window.x),
@@ -3218,6 +3395,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         } else if (std.mem.eql(u8, arg, "--pointer-v2-smoke")) {
             config.mode = .pointer_v2_translation;
             config.synthetic_pointer_v2 = true;
+        } else if (std.mem.eql(u8, arg, "--glyph-run-smoke")) {
+            config.mode = .glyph_run_smoke;
+            config.auto_quit_ms = 180;
         } else if (std.mem.eql(u8, arg, "--focus-window-smoke")) {
             config.mode = .focus_window_translation;
         } else if (std.mem.eql(u8, arg, "--facts")) {
@@ -3246,6 +3426,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     }
     if (config.mode == .pointer_v2_translation) {
         try runPointerV2Smoke();
+        return;
+    }
+    if (config.mode == .glyph_run_smoke) {
+        try runGlyphRunSmoke(gpa, &config);
         return;
     }
     if (config.mode == .focus_window_translation) {
@@ -3436,6 +3620,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             try runFrameLifecycleSmoke(gpa, io, &config);
             return;
         },
+        .glyph_run_smoke => unreachable,
         .facts_publisher => unreachable,
     };
     defer scene.deinit();

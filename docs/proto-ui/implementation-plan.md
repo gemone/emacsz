@@ -99,6 +99,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W10c-a damage classification baseline | Approved |
 | W10c-b cursor-only clipped redraw | Approved |
 | W10c-c bounded text-region clipping | Approved |
+| W10d bounded GLYPH_RUN debug fallback | Approved |
 | W12a EPXL capability/status manifest | Approved |
 | W12b frame lifecycle/resource generation contract | Approved |
 | W12c real-frame lifecycle bridge smoke | Approved |
@@ -2241,6 +2242,48 @@ zig build check
 ```
 
 Status: approved. The dedicated reviewer completed correctness, integration/runtime, and boundary/docs/status passes; approved fixes added renderer-matching row indexing, conservative row plus 8x8 debug-text damage bounds, checked text geometry, actual executed draw-stat accounting, bounded retry of torn apply-ACK artifacts, and complete diagnostics.
+
+#### W10d — Bounded `GLYPH_RUN` debug fallback (approved)
+
+Goal: add a strict diagnostic render-message path without allowing it to imply
+redisplay ownership or production text compatibility.
+
+1. Assign the explicit EUP `GLYPH_RUN = 0x0405` v1 schema: an exact 60-byte
+   little-endian header plus 1..120 printable-ASCII bytes.
+2. Validate schema, debug-fallback flag, visual-LTR diagnostic direction,
+   zero reserved data, nonzero run/frame/window identities, zero face/font
+   references, nonnegative geometry, row ownership, active frame generation,
+   frame bounds, and exact payload length.
+3. Retain at most 64 owned text runs in the frontend Scene. Replace by
+   `run_id` only with a strictly newer generation; reject stale/equal input
+   before mutation and without sequence advance. Free all runs on authoritative
+   frame update, frame deletion, resync, clear, and deinit.
+4. Negotiate optional, degraded `render.glyph_run_debug_v1`; keep
+   `redisplay.glyph_rows` pending and R7 runtime fail-closed unchanged.
+5. Render accepted runs through the existing ASCII debug-text draw-list path.
+   Add `--glyph-run-smoke` and `sdl3-glyph-run-smoke` with one active frame,
+   one window/row, scene/draw assertions, and automatic close.
+6. Extend deterministic protocol fuzzing with malformed-text, trailing-byte,
+   valid, and newer-generation-replacement seeds.
+
+Non-goals: this slice is not redisplay-owned, shaped text, BiDi reordering,
+faces, fonts, glyph atlas/images/widgets, Emacs capture, or `output_proto`.
+
+Acceptance:
+
+```sh
+zig fmt --check src/proto-ui/frontend.zig src/proto-ui/protocol.zig src/proto-ui/fuzz.zig src/proto-ui/capability.zig tools/proto-ui-sdl3/main.zig build.zig
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true proto-ui-boundary --summary all
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-glyph-run-smoke --summary all
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke --summary all
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-renderer-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-frame-smoke --summary all
+```
+
+Status: approved. Three completed review rounds covered codec/security, Scene
+and renderer integration, and boundary/docs/status. No inherited Emacs C, H, or
+Lisp source changed.
 
 ### W11 — Desktop integration
 

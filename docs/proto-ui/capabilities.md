@@ -66,6 +66,7 @@ Unknown optional capabilities are ignored. Unknown required messages trigger con
 | `fringe_bitmaps` | Required graphic parity | backend/frontend | Fringe degraded |
 | `partial_damage` | Required | backend/frontend | Full redraw |
 | `damage_coalescing` | Required | backend | Higher bandwidth/frame drops |
+| `render.glyph_run_debug_v1` | Optional/degraded | adapter/frontend | Facts text remains the safe baseline |
 | `scroll_optimization` | Recommended | backend/frontend | Full redraw |
 | `scrollbars` | Required PGTK parity | negotiated | Scrollbar hidden |
 | `menu_model` | Required | core/backend | Menus unavailable |
@@ -102,6 +103,7 @@ Unknown optional capabilities are ignored. Unknown required messages trigger con
 | `image.mipmap` | Downscale quality | Linear filtering |
 | `async_upload` | Avoid stalls | Synchronous upload |
 | `damage.present` | Present changed regions | Full present |
+| `render.glyph_run_debug_v1` | Diagnostic ASCII run transport/render | Ignore unsupported message; keep facts text |
 | `present.vsync` | Avoid tearing | Software pacing |
 | `present.adaptive_vsync` | Latency control | Regular vsync |
 | `present.mailbox` | Low latency | Vsync/immediate fallback |
@@ -154,6 +156,11 @@ atomic capture batches. 118 PGTK rows are audited: 21 Degraded,
 97 Pending, 0 Blocked, and 0 fully Implemented. Pending rows are not failures
 of the protocol design; they are requirements still separating the bounded
 facts bridge from W12 PGTK parity and the W16 real-frame acceptance test.
+
+Outside that audited PGTK count, W10d additionally reports
+`render.glyph_run_debug_v1` as optional/degraded/negotiable.  Its evidence is
+`sdl3-glyph-run-smoke`; it is a transport/render diagnostic and does not change
+the pending `redisplay.glyph_rows` or any PGTK status above.
 
 Priorities:
 
