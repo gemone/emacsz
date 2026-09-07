@@ -2342,6 +2342,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     defer active_update.deinit(gpa);
     try bridge.encodeFrameUpdate(gpa, 14, capability.session_id, 2, &active_update);
     try scene.apply(active_update.items);
+    try bridge.acceptFrameUpdate(14);
 
     var run: std.ArrayList(u8) = .empty;
     defer run.deinit(gpa);
@@ -2556,7 +2557,6 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         .damage_only_allowed = true,
         .deadline_ns = 2,
     });
-    try bridge.flush();
     var flush: std.ArrayList(u8) = .empty;
     defer flush.deinit(gpa);
     try bridge.encodeFlush(gpa, 24, capability.session_id, 1, &flush);

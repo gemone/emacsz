@@ -518,7 +518,9 @@ debug `GLYPH_RUN` messages; this remains fallback diagnostic rendering.
 create/update/destroy messages with a fake host.  It is not runtime registration.
 `runtime_bridge` can also begin a committed capture again with a strictly newer
 redisplay generation, atomically reset bounded observations, and bind the next
-`FRAME_UPDATE`/`FLUSH` pair to that generation.  This remains fake-host adapter
+`FRAME_UPDATE`/`FLUSH` pair to that generation.  A frame must be explicitly
+accepted before flush, and flush invokes the host callback before EUP emission.
+Render hints remain frame-lifetime policy.  This remains fake-host adapter
 preparation, not redisplay capture.
 `proto-ui-runtime-host-abi` projects that contract to a generated C header and
 compiles a conformance translation unit.  `proto-ui-runtime-host` defines and conformance-tests a versioned five-group

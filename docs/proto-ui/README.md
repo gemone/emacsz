@@ -202,8 +202,11 @@ pending.
 P14 continuous-capture preparation lets a committed fake-host bridge begin a
 strictly newer redisplay generation without rebuilding its terminal or frame.
 The bridge atomically resets bounded observations and prior flush state only
-after the host accepts the next capture.  This prepares a repeated host update
-cycle; it is not real redisplay capture or `output_proto` registration.
+after the host accepts the next capture.  `FLUSH` is emitted only after the
+frame is explicitly accepted and the host flush callback succeeds; render hints
+remain frame-lifetime policy across capture generations.  This prepares a
+repeated host update cycle; it is not real redisplay capture or `output_proto`
+registration.
 
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and

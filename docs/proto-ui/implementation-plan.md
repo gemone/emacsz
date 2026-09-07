@@ -85,7 +85,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P12-prep frame parent | Implemented nullable parent/modal codec, child/active-parent identity validation, Scene state, and SDL unparent probe; linked/modal child windows pending |
 | P12-prep window patch | Implemented bounded geometry/parent/visibility/face/depth patch with cycle and depth validation; zones/scroll pending |
 | P12-prep cursor update | Implemented dedicated cursor codec, Scene owner/geometry validation, and SDL render evidence; cursor styles/IME pending |
-| P14-prep continuous capture generations | Implemented monotonic host-capture reuse from `captured` to `capturing`, atomic observation reset, stale-generation rejection, monotonic `FRAME_UPDATE` identity, and fresh `FLUSH` binding; no real Emacs host |
+| P14-prep continuous capture generations | Implemented monotonic host-capture reuse from `captured` to `capturing`, atomic observation reset, stale-generation rejection, monotonic encoded/accepted `FRAME_UPDATE` identity, host-flush-bound `FLUSH` emission, and frame-lifetime render hints; no real Emacs host |
 
 | P9-prep authoritative geometry | Implemented in runtime bridge with host rectangle caching and frame/window/damage bounds; real monitor/DPI events pending |
 | P10-prep face-bound debug runs | Implemented with GLYPH_RUN v2, exact live-face validation, and colored SDL fallback; not production face/shaping parity |
@@ -3219,8 +3219,12 @@ P14 continuous-capture preparation lets a committed `captured` bridge begin a
 strictly newer redisplay generation without rebuilding the terminal or frame.
 The host callback must succeed before the bridge swaps the capture identity,
 resets bounded observation tables, invalidates the prior frame sequence/flush,
-and accepts the next authoritative update.  This remains fake-host adapter
-preparation; redisplay capture and `output_proto` registration remain pending.
+and accepts the next authoritative update.  An update is encoded and then
+explicitly accepted before `FLUSH`; a rejected encode is never flushed.  A
+successful `FLUSH` first invokes the host flush callback, then emits the EUP
+boundary.  A render hint remains policy for the EUP frame generation across
+capture generations.  This remains fake-host adapter preparation; redisplay
+capture and `output_proto` registration remain pending.
 P12 maximize preparation adds `FRAME_MAXIMIZE` v1 for horizontal and vertical
 axis flags.  The diagnostic SDL bridge applies and restores both-axis
 maximization; single-axis mapping and redisplay adaptation remain pending.
