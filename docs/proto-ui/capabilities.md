@@ -144,8 +144,8 @@ Priority and requirement columns define the specification target. The Status and
 The base snapshot below records `23da8d92855`; the current revision adds W12a
 bounded capability/status negotiation, W12b bounded frame/resource generation
 contracts, W12c real-frame lifecycle bridge smoke, and W12d frame
-visibility/focus state contracts. 113 PGTK rows are audited: 21 Degraded,
-92 Pending, 0 Blocked, and 0 fully Implemented. Pending rows are not failures
+visibility/focus state contracts. 118 PGTK rows are audited: 21 Degraded,
+97 Pending, 0 Blocked, and 0 fully Implemented. Pending rows are not failures
 of the protocol design; they are requirements still separating the bounded
 facts bridge from W12 PGTK parity and the W16 real-frame acceptance test.
 
@@ -433,7 +433,7 @@ parity.
 | Desktop | Bounded ASCII clipboard paste/copy | Unicode, MIME, PRIMARY/SECONDARY selection, DND, dialogs, menus, scrollbars | `sdl3-clipboard-smoke`, `sdl3-emacs-copy-smoke` |
 | Performance | Change-aware present/skip, damage-class counters, clip counters, renderer tier reporting | Machine-readable benchmark, latency percentiles, bandwidth/GPU evidence | Renderer/interactive smoke diagnostics; W14 harness remains pending |
 
-The status audit contains 113 PGTK capability rows: 21 Degraded, 92 Pending,
+The status audit contains 118 PGTK capability rows: 21 Degraded, 97 Pending,
 0 Blocked, and 0 fully Implemented. A Degraded row always identifies both the
 verified bounded subset and the parity gap that remains.
 
