@@ -86,7 +86,8 @@ honoring that message's authoritative next sequence.  `sdl3-live-smoke` now
 carries suspend/resume, PING/PONG, a recoverable ERROR, and normal close over
 authenticated EPXL frames, then asserts the frontend reached a clean closed
 state and requires the control capability on both peers.  An automatic PONG
-responder is implemented; `VERSION_MISMATCH` transport remains pending.
+responder is implemented; a separate fresh connection proves fatal
+`VERSION_MISMATCH` transport.
 
 W12e adds a bounded adapter-owned resource payload cache with LRU eviction and
 strict wire contracts for `RESOURCE_REQUEST` and `RESOURCE_EVICT`.  The cache

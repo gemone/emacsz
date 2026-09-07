@@ -367,6 +367,7 @@ const Config = struct {
     auto_quit_ms: u32 = 250,
     resync_sessions: u32 = 1,
     standard_session_control: bool = false,
+    version_mismatch: bool = false,
     auto_input: ?[]const u8 = null,
     auto_key: ?frontend.KeyAction = null,
     renderer_request: []const u8 = "auto",
@@ -1026,6 +1027,31 @@ fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
     try writer.interface.writeAll(&ready);
     try writer.interface.flush();
     const negotiated = try negotiatePublisherSide(gpa, &reader.interface, &writer.interface);
+
+    if (config.version_mismatch) {
+        if (!negotiated.effective.contains(.session_control_v1))
+            return error.SessionControlCapabilityNotNegotiated;
+        var acks = live.AckTracker.init(1);
+        var payload: [8]u8 = undefined;
+        std.mem.writeInt(u16, payload[0..2], 1, .little);
+        std.mem.writeInt(u16, payload[2..4], 0, .little);
+        std.mem.writeInt(u16, payload[4..6], 2, .little);
+        std.mem.writeInt(u16, payload[6..8], 0, .little);
+        try sendStandardEupFrame(
+            gpa,
+            &reader.interface,
+            &writer.interface,
+            &acks,
+            5,
+            protocol.Message.version_mismatch,
+            0,
+            0,
+            5,
+            &payload,
+        );
+        std.debug.print("sdl3-live-smoke: standard EUP VERSION_MISMATCH carried over authenticated EPXL frames\n", .{});
+        return;
+    }
 
     const messages = try transport.readReplay(gpa, io, config.replay_path);
     defer transport.freeReplay(gpa, messages);
@@ -2694,6 +2720,66 @@ fn runLiveFrontend(
     return scene;
 }
 
+fn runVersionMismatchFrontend(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    config: *const Config,
+) !frontend.Scene {
+    const address = try std.Io.net.UnixAddress.init(config.endpoint);
+    var stream: std.Io.net.Stream = undefined;
+    var connected = false;
+    try io.sleep(.fromMilliseconds(10), .awake);
+    for (0..200) |_| {
+        stream = address.connect(io) catch {
+            try io.sleep(.fromMilliseconds(10), .awake);
+            continue;
+        };
+        connected = true;
+        break;
+    }
+    if (!connected) return error.VersionMismatchEndpointUnavailable;
+    defer stream.close(io);
+
+    var write_buffer: [16 * 1024]u8 = undefined;
+    var read_buffer: [16 * 1024]u8 = undefined;
+    var writer = stream.writer(io, &write_buffer);
+    var reader = stream.reader(io, &read_buffer);
+
+    var hello: [live.handshake_size]u8 = undefined;
+    live.encodeHandshake(.{ .kind = .client_hello, .token = config.token }, &hello);
+    try writer.interface.writeAll(&hello);
+    try writer.interface.flush();
+
+    var ready_bytes: [live.handshake_size]u8 = undefined;
+    try reader.interface.readSliceAll(&ready_bytes);
+    const ready = try live.decodeHandshake(&ready_bytes);
+    if (ready.kind != .server_ready) return error.InvalidHandshake;
+    var zero_token: live.Token = [_]u8{0} ** live.token_len;
+    if (!live.tokenEql(&zero_token, &ready.token)) return error.InvalidHandshake;
+    const negotiated = try negotiateFrontendSide(gpa, &reader.interface, &writer.interface);
+    if (!negotiated.effective.contains(.session_control_v1))
+        return error.SessionControlCapabilityNotNegotiated;
+
+    var scene = frontend.Scene.init(gpa);
+    errdefer scene.deinit();
+    const message = (try live.readFrame(&reader.interface, gpa)) orelse return error.ExpectedVersionMismatch;
+    defer gpa.free(message);
+    const wire = try protocol.decodeEnvelope(message);
+    if (wire.envelope.message_type != protocol.Message.version_mismatch or
+        wire.envelope.sequence != 5 or
+        wire.envelope.session_id != capability.session_id or
+        wire.envelope.frame_id != 0) return error.ExpectedVersionMismatch;
+    const mismatch = try session_codec.decodeVersionMismatch(wire.bytes);
+    if (mismatch.required_major != 1 or mismatch.required_minor != 0 or
+        mismatch.observed_major != 2 or mismatch.observed_minor != 0)
+        return error.ExpectedVersionMismatch;
+    try scene.apply(message);
+    try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = wire.envelope.sequence });
+    try writer.interface.flush();
+    if (scene.control.stage != .fatal) return error.VersionMismatchNotFatal;
+    return scene;
+}
+
 fn boundedPointerCoordinate(value: f32) ?i32 {
     if (!std.math.isFinite(value)) return null;
     if (value < 0 or value > @as(f32, @floatFromInt(frontend.max_pointer_coordinate))) return null;
@@ -4263,6 +4349,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .publisher;
         } else if (std.mem.eql(u8, arg, "--standard-control")) {
             config.standard_session_control = true;
+        } else if (std.mem.eql(u8, arg, "--version-mismatch")) {
+            config.version_mismatch = true;
         } else if (std.mem.eql(u8, arg, "--emacs")) {
             try setString(gpa, &config.emacs_path, args.next() orelse return error.MissingEmacsPath);
         } else if (std.mem.eql(u8, arg, "--module")) {
@@ -4588,6 +4676,19 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                     loaded.control.last_error_severity != .recoverable)
                     return error.SessionErrorNotRecovered;
             }
+
+            // A closed session cannot accept another control, so prove the
+            // final VERSION_MISMATCH transport case on a fresh connection.
+            config.version_mismatch = true;
+            var mismatch_child = try std.process.spawn(io, .{
+                .argv = &.{ config.self_exe, "--publisher", "--version-mismatch", "--standard-control", "--replay", config.replay_path, "--endpoint", config.endpoint, "--token-file", config.token_path },
+            });
+            errdefer mismatch_child.kill(io);
+            var mismatch_scene = try runVersionMismatchFrontend(gpa, io, &config);
+            mismatch_scene.deinit();
+            const mismatch_term = try mismatch_child.wait(io);
+            if (mismatch_term != .exited or mismatch_term.exited != 0) return error.PublisherFailed;
+
             std.Io.Dir.cwd().deleteTree(io, private_dir) catch {};
             gpa.free(private_dir);
             break :blk loaded;

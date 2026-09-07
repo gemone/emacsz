@@ -205,7 +205,8 @@ reverse-direction PONG whose payload echoes the PING timestamp; its envelope
 carries the responder's monotonic send time. When standard control is
 requested, both transport peers reject the session unless
 `session.control_v1` was negotiated.
-VERSION_MISMATCH transport remains runtime wiring work.
+A fatal `VERSION_MISMATCH` is transported on a fresh connection after the
+normal positive-path session closes.
 
 ## 10. Frame messages
 
