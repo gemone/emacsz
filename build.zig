@@ -861,6 +861,50 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&install_r7_proposal.step);
         boundary_step.dependOn(&run_r7_proposal_gate.step);
 
+        // P1: this manifest plans differential evidence; it is deliberately
+        // distinct from the future sdl3-pgtk-parity runtime acceptance gate.
+        const pgtk_parity_gen_tool = b.addExecutable(.{
+            .name = "proto-ui-pgtk-parity-gen",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/pgtk_parity_gen.zig"),
+            }),
+        });
+        pgtk_parity_gen_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_pgtk_parity_gen = b.addRunArtifact(pgtk_parity_gen_tool);
+        const pgtk_parity_artifact = run_pgtk_parity_gen.addOutputFileArg(
+            "pgtk_parity_manifest.json",
+        );
+        const install_pgtk_parity = b.addInstallFile(
+            pgtk_parity_artifact,
+            "proto-ui/pgtk_parity_manifest.json",
+        );
+
+        const pgtk_parity_gate_tool = b.addExecutable(.{
+            .name = "proto-ui-pgtk-parity-gate",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/pgtk_parity_gate.zig"),
+            }),
+        });
+        pgtk_parity_gate_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_pgtk_parity_gate = b.addRunArtifact(pgtk_parity_gate_tool);
+        run_pgtk_parity_gate.addFileArg(pgtk_parity_artifact);
+        run_pgtk_parity_gate.step.dependOn(&run_pgtk_parity_gen.step);
+
+        const pgtk_parity_plan_step = b.step(
+            "proto-ui-pgtk-parity-plan",
+            "Generate and audit the planned PGTK-to-SDL3 differential matrix",
+        );
+        pgtk_parity_plan_step.dependOn(&run_pgtk_parity_gen.step);
+        pgtk_parity_plan_step.dependOn(&install_pgtk_parity.step);
+        pgtk_parity_plan_step.dependOn(&run_pgtk_parity_gate.step);
+
+        boundary_step.dependOn(&install_pgtk_parity.step);
+        boundary_step.dependOn(&run_pgtk_parity_gate.step);
+
         // R2: source-authoritative runtime manifest plus an independent
         // machine-readable gate.  Audit mode succeeds only by reporting
         // unavailability; require mode is deliberately nonzero.

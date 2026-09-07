@@ -185,6 +185,7 @@ Current and target options:
 | `-Dproto-ui=true` | Adapter protocol/ABI, conformance, replay, and optional frontend smokes | Implemented in bounded slices |
 | `proto-ui-host-contract` step | Generate and audit the source-authoritative registration decision | Implemented; decision is pending and runtime unavailable |
 | `proto-ui-r7-proposal` step | Generate and audit the pure-SDL3 R7 registration proposal | Implemented; proposal is ready for review, decision remains pending, and runtime is unavailable |
+| `proto-ui-pgtk-parity-plan` step | Generate and audit the planned PGTK-to-Proto differential matrix | Implemented as planning policy; all 48 cases remain planned and parity is not implemented |
 | `-Dmodules=true` | Public dynamic-module observation bridge | Implemented in bounded slices |
 | `-Dproto-ui-runtime=true` | Require the future host extension contract; without it the boundary fails with `host_registration_contract_missing` | Fail-closed audit/gate implemented; runtime absent |
 | `-Dproto-ui-frontend=true` | Install and smoke the independent SDL3 frontend | Design for final name; current SDL option remains opt-in |

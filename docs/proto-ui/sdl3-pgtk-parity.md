@@ -163,7 +163,7 @@ capabilities must keep the relevant capability pending and block W16.
 | Milestone | Outcome | Completion evidence |
 |---|---|---|
 | P0. Freeze this target | Documents and gates agree that PGTK is reference-only | This file plus consistent status manifests/docs |
-| P1. PGTK semantic inventory | Every PGTK capability row maps to an owner, EUP record, SDL action, fallback, and gate | Updated capability matrix with no unspecified rows |
+| P1. PGTK semantic inventory and differential plan | Every PGTK capability row maps to an owner, EUP record, SDL action, fallback, and gate; 48 concrete differential cases remain planned | `proto-ui-pgtk-parity-plan` emits and audits `pgtk_parity_manifest.json` |
 | P2. R7 registration proposal and decision | A source-authoritative proposal is ready for review, then explicitly approved or denied | `r7_proposal.json`, proposal gate, signed-off host registration contract, and review metadata |
 | P3. Terminal registration | `output_proto` can exist as a real terminal without PGTK initialization | Fake-host plus live terminal lifecycle tests |
 | P4. First pure frame | Emacs creates `window-system = proto`; SDL creates the visible surface | One local command creates, focuses, resizes, deletes the frame |
@@ -173,6 +173,11 @@ capabilities must keep the relevant capability pending and block W16.
 | P8. Desktop widgets | Menus, dialogs, tooltips, tool bars, scrollbars, and WM integration work | PGTK semantic matrix plus platform-specific checks |
 | P9. Recovery/performance | Frontend failure is contained and performance targets are met | replay, fuzz, disconnect, GPU-reset, latency, throughput evidence |
 | P10. W16 acceptance | Final user scenario is fully green | W16 checklist plus machine-readable artifacts |
+
+P1 preparation adds `proto-ui-pgtk-parity-plan`.  The generated manifest is a
+planned differential suite, not parity evidence; all cases remain `planned` and
+the aggregate result remains `not_implemented`.  It is distinct from the future
+`sdl3-pgtk-parity` runtime acceptance gate.
 
 P2 preparation adds `proto-ui-r7-proposal`, which emits
 `zig-out/proto-ui/r7_proposal.json`.  The proposal is **ready for review** while

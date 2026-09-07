@@ -494,9 +494,11 @@ Proto frame.  The target ownership model, PGTK responsibility matrix, protocol
 gaps, differential gates, and final acceptance rules are defined in
 [`sdl3-pgtk-parity.md`](sdl3-pgtk-parity.md).
 
-R7 host-registration decision infrastructure is implemented, and
-`proto-ui-r7-proposal` emits a source-authoritative pure-SDL3 registration
-proposal with `ready_for_review` status.  The source decision itself remains
+`proto-ui-pgtk-parity-plan` emits a 48-case planned PGTK/SDL differential
+matrix; it is planning policy, not parity evidence.  R7 host-registration
+decision infrastructure is implemented, and `proto-ui-r7-proposal` emits a
+source-authoritative pure-SDL3 registration proposal with `ready_for_review`
+status.  The source decision itself remains
 `pending` with `host_registration_contract_missing`, so no terminal can be
 registered and runtime remains fail closed.  Current PGTK/SDL diagnostic bridges
 therefore remain non-final compatibility evidence.
