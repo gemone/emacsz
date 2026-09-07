@@ -80,8 +80,11 @@ pending.
 
 W12c-ctl adds standard EUP `SESSION_SUSPEND`, `SESSION_RESUME`,
 `SESSION_RESUMED`, `SESSION_CLOSE`, `PING`, `PONG`, `ERROR`, and
-`VERSION_MISMATCH` codecs with a bounded control state machine.  EPXL does not
-yet carry these standard messages.
+`VERSION_MISMATCH` codecs with a bounded control state machine.  `Scene` now
+blocks frame traffic while suspended and resumes only after `SESSION_RESUMED`,
+honoring that message's authoritative next sequence.  The SDL bridge proves
+suspend/resume recovery; terminal and liveness controls remain codec/state
+coverage.  EPXL does not yet carry these standard messages.
 
 W12e adds a bounded adapter-owned resource payload cache with LRU eviction and
 strict wire contracts for `RESOURCE_REQUEST` and `RESOURCE_EVICT`.  The cache

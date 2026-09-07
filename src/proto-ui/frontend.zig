@@ -6,9 +6,13 @@
 
 const std = @import("std");
 const protocol = @import("protocol.zig");
+const session = @import("session.zig");
 const lifecycle = @import("lifecycle.zig");
 
-pub const Error = protocol.Error || lifecycle.Error || error{OutOfMemory};
+pub const Error = protocol.Error || session.Error || lifecycle.Error || error{
+    OutOfMemory,
+    SessionSuspended,
+};
 
 pub const Window = struct {
     id: u64,
@@ -1275,6 +1279,7 @@ pub const Scene = struct {
     present: ?PresentHint = null,
     viewport: ?Viewport = null,
     window_tree: ?protocol.WindowTreeSnapshot = null,
+    control: session.Control = .{},
     stats: ApplyStats = .{},
 
     pub fn init(allocator: std.mem.Allocator) Scene {
@@ -1318,6 +1323,7 @@ pub const Scene = struct {
         self.viewport = null;
         if (self.window_tree) |*tree| protocol.freeWindowTreeSnapshot(self.allocator, tree);
         self.window_tree = null;
+        self.control = .{};
         self.image_placement_count = 0;
         self.stats = .{};
     }
@@ -1338,6 +1344,39 @@ pub const Scene = struct {
             if (payload.envelope.sequence != expected) return Error.InvalidSequence;
         }
         const next_sequence = std.math.add(u64, payload.envelope.sequence, 1) catch return Error.InvalidSequence;
+
+        switch (payload.envelope.message_type) {
+            protocol.Message.session_suspend,
+            protocol.Message.session_resume,
+            protocol.Message.session_resumed,
+            protocol.Message.session_close,
+            protocol.Message.ping,
+            protocol.Message.pong,
+            protocol.Message.session_error,
+            protocol.Message.version_mismatch,
+            => {
+                var authoritative_sequence = next_sequence;
+                if (payload.envelope.message_type == protocol.Message.session_resumed) {
+                    const resumed = try session.decodeResumed(payload.bytes);
+                    if (resumed.next_sequence <= payload.envelope.sequence)
+                        return Error.InvalidSequence;
+                    authoritative_sequence = resumed.next_sequence;
+                }
+                try self.control.apply(payload.envelope.message_type, payload.bytes);
+                self.stats.control_messages += 1;
+                self.next_sequence = authoritative_sequence;
+                if (previous_session == null) self.session_id = payload.envelope.session_id;
+                return;
+            },
+            else => {},
+        }
+
+        if (self.control.stage == .fatal or self.control.stage == .closed)
+            return Error.InvalidSessionStage;
+        if ((self.control.stage == .suspended or self.control.stage == .resume_pending) and
+            payload.envelope.message_type >= protocol.Message.frame_create and
+            payload.envelope.message_type < protocol.Message.window_tree_snapshot)
+            return Error.SessionSuspended;
 
         switch (payload.envelope.message_type) {
             protocol.Message.frame_create => try self.applyFrameCreate(payload.envelope, payload.bytes),
@@ -2409,6 +2448,25 @@ fn frameMaximizeMessage(
     return message.toOwnedSlice(a);
 }
 
+fn sessionControlMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    message_type: u16,
+    payload: []const u8,
+) ![]u8 {
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = message_type,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .timestamp_ns = sequence,
+    }, payload, &message);
+    return message.toOwnedSlice(a);
+}
+
 test "scene rejects frame ownership geometry and reserved bytes" {
     const a = std.testing.allocator;
     {
@@ -3477,6 +3535,152 @@ test "scene applies maximize only to the active frame generation" {
 
     scene.resetForResync();
     try std.testing.expect(scene.maximize == null);
+}
+
+test "scene applies standard session control and pauses frame traffic" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    const control_suspend = try sessionControlMessage(
+        a,
+        2,
+        protocol.Message.session_suspend,
+        &.{ 3, 0, 0, 0 },
+    );
+    defer a.free(control_suspend);
+    try scene.apply(control_suspend);
+    try std.testing.expectEqual(session.ControlStage.suspended, scene.control.stage);
+
+    const blocked_update = try updateMessage(a, 3, 7, 7, 10, 0);
+    defer a.free(blocked_update);
+    try std.testing.expectError(Error.SessionSuspended, scene.apply(blocked_update));
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+
+    const control_resume = try sessionControlMessage(
+        a,
+        3,
+        protocol.Message.session_resume,
+        &.{ 11, 0, 0, 0 },
+    );
+    defer a.free(control_resume);
+    try scene.apply(control_resume);
+    try std.testing.expectEqual(session.ControlStage.resume_pending, scene.control.stage);
+
+    const blocked_pending_update = try updateMessage(a, 4, 7, 7, 10, 0);
+    defer a.free(blocked_pending_update);
+    try std.testing.expectError(Error.SessionSuspended, scene.apply(blocked_pending_update));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const stale_resumed = try sessionControlMessage(
+        a,
+        4,
+        protocol.Message.session_resumed,
+        &.{ 4, 0, 0, 0, 0, 0, 0, 0 },
+    );
+    defer a.free(stale_resumed);
+    try std.testing.expectError(Error.InvalidSequence, scene.apply(stale_resumed));
+    try std.testing.expectEqual(session.ControlStage.resume_pending, scene.control.stage);
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const resumed = try sessionControlMessage(
+        a,
+        4,
+        protocol.Message.session_resumed,
+        &.{ 12, 0, 0, 0, 0, 0, 0, 0 },
+    );
+    defer a.free(resumed);
+    try scene.apply(resumed);
+    try std.testing.expectEqual(session.ControlStage.active, scene.control.stage);
+    try std.testing.expectEqual(@as(u64, 12), scene.next_sequence.?);
+
+    const update = try updateMessage(a, 12, 7, 7, 10, 0);
+    defer a.free(update);
+    try scene.apply(update);
+    try std.testing.expectEqual(@as(u64, 1), scene.stats.frame_updates);
+
+    const close = try sessionControlMessage(
+        a,
+        13,
+        protocol.Message.session_close,
+        &.{ 1, 0, 0, 0 },
+    );
+    defer a.free(close);
+    try scene.apply(close);
+    try std.testing.expectEqual(session.ControlStage.closed, scene.control.stage);
+}
+
+test "scene terminal control states reject traffic without advancing sequence" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    var mismatch: [8]u8 = undefined;
+    std.mem.writeInt(u16, mismatch[0..2], 1, .little);
+    std.mem.writeInt(u16, mismatch[2..4], 0, .little);
+    std.mem.writeInt(u16, mismatch[4..6], 2, .little);
+    std.mem.writeInt(u16, mismatch[6..8], 0, .little);
+    const fatal = try sessionControlMessage(
+        a,
+        2,
+        protocol.Message.version_mismatch,
+        &mismatch,
+    );
+    defer a.free(fatal);
+    try scene.apply(fatal);
+    try std.testing.expectEqual(session.ControlStage.fatal, scene.control.stage);
+
+    const blocked_update = try updateMessage(a, 3, 7, 7, 10, 0);
+    defer a.free(blocked_update);
+    try std.testing.expectError(Error.InvalidSessionStage, scene.apply(blocked_update));
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+
+    const ping = try sessionControlMessage(
+        a,
+        3,
+        protocol.Message.ping,
+        &.{ 22, 0, 0, 0, 0, 0, 0, 0 },
+    );
+    defer a.free(ping);
+    try std.testing.expectError(Error.InvalidSessionStage, scene.apply(ping));
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+
+    const closed = try createMessage(a, 3, 8, 8);
+    defer a.free(closed);
+    try std.testing.expectError(Error.InvalidSessionStage, scene.apply(closed));
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+}
+
+test "scene ordered close rejects frame traffic" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    const update = try updateMessage(a, 2, 7, 7, 10, 0);
+    defer a.free(update);
+    try scene.apply(update);
+
+    const close = try sessionControlMessage(
+        a,
+        3,
+        protocol.Message.session_close,
+        &.{ 1, 0, 0, 0 },
+    );
+    defer a.free(close);
+    try scene.apply(close);
+    try std.testing.expectEqual(session.ControlStage.closed, scene.control.stage);
 }
 
 test "scene atomically validates resource generation declarations" {

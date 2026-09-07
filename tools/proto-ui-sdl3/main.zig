@@ -1812,6 +1812,25 @@ fn runGlyphRunSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     );
 }
 
+fn encodeSessionControlEnvelope(
+    gpa: std.mem.Allocator,
+    sequence: u64,
+    message_type: u16,
+    payload: []const u8,
+) ![]u8 {
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = message_type,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .timestamp_ns = 1,
+    }, payload, &message);
+    return message.toOwnedSlice(gpa);
+}
+
 fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     var host: runtime_host.FakeHost = undefined;
     const table = runtime_host.fakeTable(&host);
@@ -2063,15 +2082,58 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     }, maximize_payload.items, &maximize);
     try scene.apply(maximize.items);
 
+    const control_suspend = try encodeSessionControlEnvelope(
+        gpa,
+        11,
+        protocol.Message.session_suspend,
+        &.{ 4, 0, 0, 0 },
+    );
+    defer gpa.free(control_suspend);
+    try scene.apply(control_suspend);
+    if (scene.control.stage != .suspended) return error.RuntimeBridgeSuspendStateInvalid;
+
     var update: std.ArrayList(u8) = .empty;
     defer update.deinit(gpa);
-    try bridge.encodeFrameUpdate(gpa, 11, capability.session_id, 2, &update);
-    try scene.apply(update.items);
+    try bridge.encodeFrameUpdate(gpa, 12, capability.session_id, 2, &update);
+    if (scene.apply(update.items)) |_| {
+        return error.RuntimeBridgeSuspendNotBlocking;
+    } else |err| {
+        if (err != frontend.Error.SessionSuspended) return err;
+    }
+
+    const control_resume = try encodeSessionControlEnvelope(
+        gpa,
+        12,
+        protocol.Message.session_resume,
+        &.{ 2, 0, 0, 0 },
+    );
+    defer gpa.free(control_resume);
+    try scene.apply(control_resume);
+    if (scene.control.stage != .resume_pending)
+        return error.RuntimeBridgeResumePendingStateInvalid;
+
+    const control_resumed = try encodeSessionControlEnvelope(
+        gpa,
+        13,
+        protocol.Message.session_resumed,
+        &.{ 14, 0, 0, 0, 0, 0, 0, 0 },
+    );
+    defer gpa.free(control_resumed);
+    try scene.apply(control_resumed);
+    if (scene.control.stage != .active or scene.next_sequence.? != 14)
+        return error.RuntimeBridgeResumeSequenceInvalid;
+
+    var active_update: std.ArrayList(u8) = .empty;
+    defer active_update.deinit(gpa);
+    try bridge.encodeFrameUpdate(gpa, 14, capability.session_id, 2, &active_update);
+    try scene.apply(active_update.items);
 
     var run: std.ArrayList(u8) = .empty;
     defer run.deinit(gpa);
-    try bridge.encodeRun(gpa, 0, 12, capability.session_id, 3, &run);
+    try bridge.encodeRun(gpa, 0, 15, capability.session_id, 3, &run);
     try scene.apply(run.items);
+    if (scene.control.stage != .active or scene.next_sequence.? != 16)
+        return error.RuntimeBridgeControlSequenceInvalid;
 
     if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
         scene.glyph_runs.items.len != 1 or scene.cursor == null)
@@ -2266,7 +2328,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             opacity_supported,
             decorations_supported,
