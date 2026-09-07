@@ -100,6 +100,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W10c-b cursor-only clipped redraw | Approved |
 | W10c-c bounded text-region clipping | Approved |
 | W10d bounded GLYPH_RUN debug fallback | Approved |
+| W10e real-frame public-facts glyph marker | Approved |
 | W12a EPXL capability/status manifest | Approved |
 | W12b frame lifecycle/resource generation contract | Approved |
 | W12c real-frame lifecycle bridge smoke | Approved |
@@ -2284,6 +2285,44 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-frame-smoke -
 Status: approved. Three completed review rounds covered codec/security, Scene
 and renderer integration, and boundary/docs/status. No inherited Emacs C, H, or
 Lisp source changed.
+
+#### W10e — Real-frame public-facts glyph marker (approved)
+
+Goal: prove that the existing real PGTK frame lifecycle smoke can render its
+public-facts marker through the bounded W10d debug fallback without claiming a
+display backend or redisplay pipeline.
+
+1. After `FRAME_CREATE` and `FRAME_UPDATE`, derive one `GLYPH_RUN` for the exact
+   public-facts line `Emacs Proto-UI` from the frontend scene's actual
+   window/row geometry. Use the same text origin used by the debug draw list,
+   assign sequence 7, and move `FRAME_DESTROY` to sequence 8 in producer and
+   frontend scenes.
+2. Render before sending the real-frame delete request. Assert one active run
+   with exact text and valid owner-relative geometry, while preserving
+   contiguous scene sequencing and failure-safe real-frame deletion.
+3. Suppress legacy facts text only for a row/window with an active glyph run.
+   Scenes without glyph runs retain the existing facts renderer unchanged.
+4. Keep `sdl3-frame-smoke` as the acceptance gate.
+
+Non-goals: this is not redisplay-owned capture, shaped text, BiDi, faces,
+fonts, production glyph rendering, atlas/images/widgets, real `output_proto`
+registration, or R7 bypass. Text remains a public Emacs fact.
+
+Acceptance:
+
+```sh
+zig fmt --check tools/proto-ui-sdl3/main.zig
+git diff --check
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true proto-ui-boundary --summary all
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-glyph-run-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-frame-smoke --summary all
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke --summary all
+```
+
+Status: approved. Three completed review rounds covered lifecycle/order,
+renderer/regression, and boundary/docs/status. No inherited Emacs C, H, or Lisp
+source changed.
 
 ### W11 — Desktop integration
 

@@ -215,6 +215,14 @@ not redisplay ownership or the production glyph path: no shaping, BiDi
 reordering, faces, fonts, atlas entries, images, widgets, Emacs capture, or
 `output_proto` registration is claimed.
 
+W10e uses this fallback in the real-frame lifecycle smoke.  After the public
+`FRAME_CREATE`/`FRAME_UPDATE` pair, the smoke derives one `GLYPH_RUN` for
+`Emacs Proto-UI` from the frontend scene's actual window/row geometry, renders
+it with the same debug-text origin, suppresses duplicate facts text on that
+row, and validates it before the real Emacs frame is deleted.  This does not
+capture redisplay rows or make SDL3 the frame owner; it is not shaped text and
+does not render faces/fonts or register `output_proto`.
+
 ### 8.4 Images
 
 Image resources become textures. The frontend honors format, stride, alpha mode, color space, scaling filter, mipmap policy, cache policy, and animation timing.

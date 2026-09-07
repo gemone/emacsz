@@ -1598,12 +1598,19 @@ fn runGlyphRunSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         .baseline = 8,
         .visible_height = 40,
     }, &row_bytes);
+    var text_bytes: std.ArrayList(u8) = .empty;
+    defer text_bytes.deinit(gpa);
+    try frontend.encodeTextLine(gpa, .{
+        .row_index = 0,
+        .line = "stale facts text",
+    }, &text_bytes);
     var damage_bytes: std.ArrayList(u8) = .empty;
     defer damage_bytes.deinit(gpa);
     try frontend.encodeRect(gpa, .{ .x = 0, .y = 0, .width = 200, .height = 60 }, &damage_bytes);
     const sections = [_]protocol.Section{
         .{ .kind = protocol.SectionKind.windows, .records = window_bytes.items },
         .{ .kind = protocol.SectionKind.rows, .records = row_bytes.items },
+        .{ .kind = protocol.SectionKind.extension_min, .records = text_bytes.items },
         .{ .kind = protocol.SectionKind.damage, .records = damage_bytes.items },
     };
     var update_payload: std.ArrayList(u8) = .empty;
@@ -1691,15 +1698,18 @@ fn runGlyphRunSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     defer draw_list.deinit();
     try buildSceneDrawList(&scene, &draw_list, 240, 96);
     var rendered = false;
+    var stale_text_rendered = false;
     for (draw_list.commands.items) |command| {
         switch (command) {
             .text => |text| {
                 rendered = text.x == 8 and text.y == 2 and std.mem.eql(u8, text.bytes, "Emacs");
+                if (std.mem.indexOf(u8, text.bytes, "stale facts text") != null)
+                    stale_text_rendered = true;
             },
             else => {},
         }
     }
-    if (!rendered) return error.GlyphRunNotRendered;
+    if (!rendered or stale_text_rendered) return error.GlyphRunNotRendered;
 
     try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
     var quit = false;
@@ -2703,6 +2713,65 @@ fn findSceneWindow(scene: *frontend.Scene, id: u64) ?frontend.Window {
     return null;
 }
 
+fn spanInside(offset: i32, extent: i32, limit: i32) bool {
+    return offset >= 0 and extent >= 0 and limit >= 0 and
+        offset <= limit and extent <= limit - offset;
+}
+
+fn debugTextOrigin(owner: frontend.Window, row: frontend.Row) struct { x: i64, y: i64 } {
+    const baseline_offset: i64 = @max(1, @as(i64, row.baseline) - debug_text_character_size);
+    return .{
+        .x = @as(i64, owner.x) + row.x + 2,
+        .y = @as(i64, owner.y) + row.y + baseline_offset,
+    };
+}
+
+fn publicFactsGlyphRun(
+    scene: *const frontend.Scene,
+    text: []const u8,
+) !frontend.GlyphRunWire {
+    if (text.len == 0 or text.len > frontend.max_glyph_text_bytes or
+        scene.windows.items.len == 0 or scene.rows.items.len == 0 or
+        scene.text.items.len != 1)
+        return error.GlyphRunSceneStateInvalid;
+    const observed = scene.text.items[0];
+    if (!std.mem.eql(u8, observed.bytes, text) or
+        observed.row_index >= scene.rows.items.len)
+        return error.GlyphRunSceneStateInvalid;
+    const owner = scene.windows.items[0];
+    const row = scene.rows.items[observed.row_index];
+    if (row.window_id != owner.id or row.index != 0 or row.visible_height <= 0)
+        return error.GlyphRunSceneStateInvalid;
+    const origin = debugTextOrigin(owner, row);
+    const x = std.math.cast(i32, origin.x - owner.x) orelse return error.InvalidTextGeometry;
+    const y = std.math.cast(i32, origin.y - owner.y) orelse return error.InvalidTextGeometry;
+    const width = std.math.cast(
+        i32,
+        text.len * @as(usize, @intCast(debug_text_character_size)),
+    ) orelse return error.InvalidTextGeometry;
+    if (!spanInside(x, width, owner.width) or
+        !spanInside(y, row.visible_height, owner.height))
+        return error.InvalidTextGeometry;
+    return .{
+        .run_id = 1,
+        .generation = 1,
+        .window_id = owner.id,
+        .row_index = row.index,
+        .x = x,
+        .y = y,
+        .width = width,
+        .height = row.visible_height,
+        .text = text,
+    };
+}
+
+fn rowHasGlyphRun(scene: *const frontend.Scene, window_id: u64, row_index: u32) bool {
+    for (scene.glyph_runs.items) |run| {
+        if (run.window_id == window_id and run.row_index == row_index) return true;
+    }
+    return false;
+}
+
 fn sceneHasText(scene: *const frontend.Scene, needle: []const u8) bool {
     for (scene.text.items) |line| {
         if (std.mem.indexOf(u8, line.bytes, needle) != null) return true;
@@ -2749,12 +2818,13 @@ fn buildSceneDrawList(
         const row = scene.rows.items[line.row_index];
         const owner = findSceneWindow(scene, row.window_id) orelse continue;
         if (line.bytes.len == 0) continue;
+        if (rowHasGlyphRun(scene, owner.id, row.index)) continue;
         // The ASCII bitmap path has no text shaping or CJK font fallback.
         // Unicode is still observed and asserted by the EPXL smoke.
         if (!input_policy.isAsciiText(line.bytes)) continue;
-        const text_x: i64 = @as(i64, owner.x) + row.x + 2;
-        const baseline_offset: i64 = @max(1, @as(i64, row.baseline) - 8);
-        const text_y: i64 = @as(i64, owner.y) + row.y + baseline_offset;
+        const origin = debugTextOrigin(owner, row);
+        const text_x: i64 = origin.x;
+        const text_y: i64 = origin.y;
         if (text_x < std.math.minInt(i32) or text_x > std.math.maxInt(i32) or
             text_y < std.math.minInt(i32) or text_y > std.math.maxInt(i32)) return error.InvalidTextGeometry;
         try list.drawText(
@@ -3996,6 +4066,36 @@ fn runFrameLifecycleSmoke(
         scene.frames.len != 1 or scene.frames.frames[0].status != .active)
         return error.FrameLifecycleRoundTripFailed;
 
+    const marker = "Emacs Proto-UI";
+    const glyph_run = try publicFactsGlyphRun(&scene, marker);
+    var glyph_payload: std.ArrayList(u8) = .empty;
+    defer glyph_payload.deinit(gpa);
+    try frontend.encodeGlyphRun(gpa, glyph_run, &glyph_payload);
+    var glyph_message: std.ArrayList(u8) = .empty;
+    defer glyph_message.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = protocol.Flags.debug,
+        .message_type = protocol.Message.glyph_run,
+        .sequence = 7,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = 1,
+        .timestamp_ns = 7,
+    }, glyph_payload.items, &glyph_message);
+    try producer_scene.apply(glyph_message.items);
+    try scene.apply(glyph_message.items);
+    if (producer_scene.next_sequence != 8 or scene.next_sequence != 8)
+        return error.FrameLifecycleRoundTripFailed;
+    try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+    if (scene.glyph_runs.items.len != 1) return error.GlyphRunSceneStateInvalid;
+    const active_run = scene.glyph_runs.items[0];
+    if (!std.mem.eql(u8, active_run.text, marker) or
+        active_run.window_id != glyph_run.window_id or
+        active_run.row_index != glyph_run.row_index or
+        active_run.x != glyph_run.x or active_run.y != glyph_run.y or
+        active_run.width != glyph_run.width or active_run.height != glyph_run.height)
+        return error.GlyphRunSceneStateInvalid;
+
     // Atomic delete request; the Emacs client consumes it before deleting.
     try atomicWriteFile(gpa, io, delete_path, "delete");
     try waitForFilePrefix(gpa, io, deleted_path, "deleted", 12000);
@@ -4012,14 +4112,16 @@ fn runFrameLifecycleSmoke(
     try protocol.encodeEnvelope(gpa, .{
         .flags = 0,
         .message_type = protocol.Message.frame_destroy,
-        .sequence = 7,
+        .sequence = 8,
         .ack_sequence = 0,
         .session_id = capability.session_id,
         .frame_id = 1,
-        .timestamp_ns = 7,
+        .timestamp_ns = 8,
     }, &destroy_payload, &destroy_message);
     try producer_scene.apply(destroy_message.items);
     try scene.apply(destroy_message.items);
+    if (producer_scene.next_sequence != 9 or scene.next_sequence != 9)
+        return error.FrameLifecycleRoundTripFailed;
     if (scene.frame != null or scene.frames.len != 1 or
         scene.frames.frames[0].status != .destroyed or scene.windows.items.len != 0)
         return error.FrameLifecycleRoundTripFailed;
