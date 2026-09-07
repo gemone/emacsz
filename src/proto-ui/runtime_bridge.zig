@@ -58,6 +58,18 @@ pub const State = enum {
     destroyed,
 };
 
+pub const FrameRuntimeState = struct {
+    host_generation: u64,
+    visibility: runtime_host.adapter.FrameVisibility,
+    focused: bool,
+};
+
+pub const FrameStateChange = struct {
+    visibility_changed: bool,
+    focus_changed: bool,
+    state: FrameRuntimeState,
+};
+
 pub const Counts = struct {
     windows: usize = 0,
     rows: usize = 0,
@@ -84,6 +96,7 @@ pub const Bridge = struct {
     input_ids: [max_tracked_inputs]u64 = undefined,
     input_states: [max_tracked_inputs]InputState = undefined,
     input_count: usize = 0,
+    frame_state: ?FrameRuntimeState = null,
 
     pub fn init(table: runtime_host.PureRuntimeHostV1) Error!Bridge {
         try runtime_host.validateTable(&table);
@@ -273,6 +286,102 @@ pub const Bridge = struct {
 
     pub fn snapshotCounts(self: *const Bridge) Counts {
         return self.counts;
+    }
+
+    pub fn refreshFrameState(self: *Bridge) Error!FrameStateChange {
+        switch (self.state) {
+            .frame_registered, .capturing, .captured => {},
+            else => return error.InvalidState,
+        }
+        const group = try self.frameGroup();
+        const context = group.context orelse return error.InvalidRuntimeHost;
+        const callback = group.read_frame_state orelse return error.InvalidRuntimeHost;
+        var observed: runtime_host.adapter.FrameState = .{};
+        try runtime_host.ensureOk(callback(context, &self.frame, &observed));
+        try runtime_host.validateFrameState(&observed);
+        if (observed.generation != self.frame.generation)
+            return error.InvalidFrameIdentity;
+        const visibility: runtime_host.adapter.FrameVisibility = @enumFromInt(observed.visibility);
+        const focused = observed.focused != 0;
+        if (visibility != .visible and focused)
+            return error.InvalidFrameIdentity;
+
+        const previous = self.frame_state;
+        const next: FrameRuntimeState = .{
+            .host_generation = observed.generation,
+            .visibility = visibility,
+            .focused = focused,
+        };
+        self.frame_state = next;
+        return .{
+            .visibility_changed = previous == null or
+                previous.?.visibility != next.visibility,
+            .focus_changed = previous == null or
+                previous.?.focused != next.focused,
+            .state = next,
+        };
+    }
+
+    pub fn encodeFrameVisibility(
+        self: *const Bridge,
+        gpa: std.mem.Allocator,
+        sequence: u64,
+        session_id: u64,
+        timestamp_ns: u64,
+        out: *std.ArrayList(u8),
+    ) Error!void {
+        switch (self.state) {
+            .frame_registered, .capturing, .captured => {},
+            else => return error.InvalidState,
+        }
+        const cached = self.frame_state orelse return error.InvalidState;
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(gpa);
+        try protocol.encodeFrameVisibility(gpa, .{
+            .frame_id = @intCast(self.frame.id),
+            .frame_generation = self.eup_frame_generation,
+            .state = @enumFromInt(@intFromEnum(cached.visibility)),
+        }, &payload);
+        try protocol.encodeEnvelope(gpa, .{
+            .flags = 0,
+            .message_type = protocol.Message.frame_visibility,
+            .sequence = sequence,
+            .ack_sequence = 0,
+            .session_id = session_id,
+            .frame_id = @intCast(self.frame.id),
+            .timestamp_ns = timestamp_ns,
+        }, payload.items, out);
+    }
+
+    pub fn encodeFrameFocus(
+        self: *const Bridge,
+        gpa: std.mem.Allocator,
+        sequence: u64,
+        session_id: u64,
+        timestamp_ns: u64,
+        out: *std.ArrayList(u8),
+    ) Error!void {
+        switch (self.state) {
+            .frame_registered, .capturing, .captured => {},
+            else => return error.InvalidState,
+        }
+        const cached = self.frame_state orelse return error.InvalidState;
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(gpa);
+        try protocol.encodeFrameFocus(gpa, .{
+            .frame_id = @intCast(self.frame.id),
+            .frame_generation = self.eup_frame_generation,
+            .focused = cached.focused,
+        }, &payload);
+        try protocol.encodeEnvelope(gpa, .{
+            .flags = 0,
+            .message_type = protocol.Message.frame_focus,
+            .sequence = sequence,
+            .ack_sequence = 0,
+            .session_id = session_id,
+            .frame_id = @intCast(self.frame.id),
+            .timestamp_ns = timestamp_ns,
+        }, payload.items, out);
     }
 
     pub fn encodeFrameCreate(
@@ -603,6 +712,12 @@ test "pure runtime bridge produces a valid bounded EUP frame lifecycle" {
     try bridge.createTerminal(.{ .requested_generation = 1 });
     try bridge.activateTerminal();
     try bridge.registerFrame(.{ .id = 22, .generation = 8 });
+    const initial_state = try bridge.refreshFrameState();
+    try std.testing.expect(initial_state.visibility_changed);
+    try std.testing.expect(initial_state.focus_changed);
+    const unchanged_state = try bridge.refreshFrameState();
+    try std.testing.expect(!unchanged_state.visibility_changed);
+    try std.testing.expect(!unchanged_state.focus_changed);
     try bridge.beginCapture(8);
 
     try bridge.observeWindow(.{ .id = 10, .generation = 8, .width = 80, .height = 60 });
@@ -632,9 +747,24 @@ test "pure runtime bridge produces a valid bounded EUP frame lifecycle" {
     try std.testing.expectEqual(@as(usize, 1), scene.rows.items.len);
     try std.testing.expect(scene.cursor != null);
 
+    var visibility: std.ArrayList(u8) = .empty;
+    defer visibility.deinit(gpa);
+    try bridge.encodeFrameVisibility(gpa, 3, 9, 3, &visibility);
+    try scene.apply(visibility.items);
+
+    var focus: std.ArrayList(u8) = .empty;
+    defer focus.deinit(gpa);
+    try bridge.encodeFrameFocus(gpa, 4, 9, 4, &focus);
+    try scene.apply(focus.items);
+    try std.testing.expectEqual(
+        protocol.FrameVisibilityState.visible,
+        scene.frames.lookup(100).?.visibility,
+    );
+    try std.testing.expect(scene.frames.lookup(100).?.focused);
+
     var run: std.ArrayList(u8) = .empty;
     defer run.deinit(gpa);
-    try bridge.encodeRun(gpa, 0, 3, 9, 3, &run);
+    try bridge.encodeRun(gpa, 0, 5, 9, 5, &run);
     try scene.apply(run.items);
     try std.testing.expectEqual(@as(usize, 1), scene.glyph_runs.items.len);
     try std.testing.expectEqualStrings("Emacs", scene.glyph_runs.items[0].text);
@@ -642,10 +772,23 @@ test "pure runtime bridge produces a valid bounded EUP frame lifecycle" {
     try bridge.destroy();
     var destroy: std.ArrayList(u8) = .empty;
     defer destroy.deinit(gpa);
-    try bridge.encodeFrameDestroy(gpa, 4, 9, 4, &destroy);
+    try bridge.encodeFrameDestroy(gpa, 6, 9, 6, &destroy);
     try scene.apply(destroy.items);
     try std.testing.expectEqual(State.destroyed, bridge.state);
     try std.testing.expectEqual(@as(usize, 0), scene.windows.items.len);
+}
+
+test "hidden focused host state is rejected without cache mutation" {
+    var host: runtime_host.FakeHost = undefined;
+    const table = runtime_host.fakeTable(&host);
+    var bridge = try Bridge.init(table);
+    try bridge.createTerminal(.{ .requested_generation = 1 });
+    try bridge.registerFrame(.{ .id = 22, .generation = 1 });
+
+    host.frame_visibility = .hidden;
+    host.frame_focused = true;
+    try std.testing.expectError(error.InvalidFrameIdentity, bridge.refreshFrameState());
+    try std.testing.expect(bridge.frame_state == null);
 }
 
 test "bridge delivers key and text intents with ordered lifecycle" {

@@ -71,6 +71,8 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P5-prep bounded run payload | Implemented for fake-host debug `GLYPH_RUN` fallback; redisplay capture, shaping, faces, and production runs remain pending |
 | P5-prep SDL bridge presentation | Implemented as a fake-host SDL3 smoke; not `output_proto`, Emacs registration, production redisplay, or parity evidence |
 | P6-prep reverse input bridge | Implemented for bounded SDL key/text intents through PureRuntimeHostV1 delivery/result/completion; not keymap/command parity |
+| P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
+
 
 
 
@@ -3090,6 +3092,9 @@ Non-goals:
 3. Adding scattered Proto-UI branches to inherited Emacs C/H/Lisp.
 4. Registering `output_proto` before the R7 host contract is explicitly approved.
 
+P7 lifecycle-state preparation adds host-driven visibility/focus caching and
+deterministic EUP state encoders to `runtime_bridge`; no real host or platform
+source is attached.
 P6 reverse-input preparation adds bounded key/text intents, delivery ACKs, host
 results, and completion tracking through `runtime_bridge`.  This is intent
 transport only; keymaps, commands, IME, modifiers coverage, and full input parity

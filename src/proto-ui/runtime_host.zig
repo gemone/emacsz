@@ -6,7 +6,7 @@
 //! initialize PGTK, or modify inherited GNU Emacs code.
 
 const std = @import("std");
-const adapter = @import("adapter.zig");
+pub const adapter = @import("adapter.zig");
 
 pub const abi_version: u32 = 1;
 pub const authoritative_source = "src/proto-ui/runtime_host.zig";
