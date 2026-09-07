@@ -9,6 +9,7 @@ pub const adapter = @import("adapter.zig");
 pub const transport = @import("transport.zig");
 pub const live = @import("live.zig");
 pub const terminal = @import("terminal.zig");
+pub const frame_service = @import("frame_service.zig");
 pub const runtime = @import("runtime.zig");
 
 test {
@@ -23,5 +24,6 @@ test {
     _ = transport;
     _ = live;
     _ = terminal;
+    _ = frame_service;
     _ = runtime;
 }

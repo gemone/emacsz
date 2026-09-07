@@ -76,13 +76,22 @@ pub const Groundwork = struct {
     boundary: []const u8,
 };
 
-pub const implemented_groundwork = [_]Groundwork{.{
-    .name = "terminal.lifecycle_state_machine",
-    .status = "implemented",
-    .evidence = "proto-ui-unit terminal lifecycle tests",
-    .owner = "proto-ui-adapter",
-    .boundary = "identity/generation/cleanup state only; no Emacs terminal registration",
-}};
+pub const implemented_groundwork = [_]Groundwork{
+    .{
+        .name = "terminal.lifecycle_state_machine",
+        .status = "implemented",
+        .evidence = "proto-ui-unit terminal lifecycle tests",
+        .owner = "proto-ui-adapter",
+        .boundary = "identity/generation/cleanup state only; no Emacs terminal registration",
+    },
+    .{
+        .name = "frame.service_mapping",
+        .status = "implemented",
+        .evidence = "proto-ui-unit frame service mapping tests",
+        .owner = "proto-ui-adapter",
+        .boundary = "host-frame to EUP-frame observation mapping only; no Emacs frame registration or output_proto runtime",
+    },
+};
 
 pub const OwnershipSummary = struct {
     emacs: []const []const u8,
@@ -116,9 +125,17 @@ pub fn validateState() ?[]const u8 {
             if (operation.len == 0) return "empty callback operation";
         }
     }
-    for (implemented_groundwork) |item| {
-        if (!std.mem.eql(u8, item.name, "terminal.lifecycle_state_machine")) return "unexpected groundwork";
+    const expected_groundwork = [_][]const u8{
+        "terminal.lifecycle_state_machine",
+        "frame.service_mapping",
+    };
+    if (implemented_groundwork.len != expected_groundwork.len)
+        return "unexpected groundwork count";
+    for (implemented_groundwork, 0..) |item, index| {
+        if (!std.mem.eql(u8, item.name, expected_groundwork[index])) return "unexpected groundwork";
         if (!std.mem.eql(u8, item.owner, "proto-ui-adapter")) return "groundwork owner is not adapter";
+        if (item.status.len == 0 or item.evidence.len == 0 or item.boundary.len == 0)
+            return "incomplete groundwork";
     }
     return null;
 }
@@ -228,6 +245,7 @@ test "runtime manifest is valid, deterministic, and never enables runtime" {
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"fail_closed\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"host_registration_contract_missing\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"terminal.lifecycle_state_machine\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"frame.service_mapping\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "runtime_available\":true") == null);
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, first.items, .{});
     defer parsed.deinit();

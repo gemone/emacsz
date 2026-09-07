@@ -72,6 +72,47 @@ pub const FrameRegistry = struct {
         self.len += 1;
     }
 
+    /// Frame-service registration may own several live frames.  Like the
+    /// transport-level create path, an EUP ID remains reserved after destroy.
+    pub fn createObserved(
+        self: *FrameRegistry,
+        id: u32,
+        generation: u32,
+        visibility: FrameVisibility,
+        focused: bool,
+    ) Error!void {
+        if (id == 0 or generation == 0) return Error.InvalidMessage;
+        if (focused and visibility != .visible) return Error.FrameNotVisible;
+        if (self.find(id) != null) return Error.FrameAlreadyExists;
+        if (self.len == max_frames) return Error.ResourceTableFull;
+        self.frames[self.len] = .{
+            .id = id,
+            .generation = generation,
+            .status = .active,
+            .visibility = visibility,
+            .focused = focused,
+        };
+        self.len += 1;
+    }
+
+    /// Apply one authoritative host observation atomically.  A newer host
+    /// generation advances the protocol generation; a lower one is stale.
+    pub fn advanceObserved(
+        self: *FrameRegistry,
+        id: u32,
+        generation: u32,
+        visibility: FrameVisibility,
+        focused: bool,
+    ) Error!void {
+        if (id == 0 or generation == 0) return Error.InvalidMessage;
+        if (focused and visibility != .visible) return Error.FrameNotVisible;
+        const index = self.frameIndexIfActive(id) orelse return Error.FrameNotActive;
+        if (generation < self.frames[index].generation) return Error.StaleGeneration;
+        self.frames[index].generation = generation;
+        self.frames[index].visibility = visibility;
+        self.frames[index].focused = focused;
+    }
+
     pub fn setVisibility(self: *FrameRegistry, id: u32, generation: u32, visibility: FrameVisibility) Error!void {
         const frame = self.find(id) orelse return Error.FrameNotActive;
         if (frame.status != .active or frame.generation != generation) return Error.FrameNotActive;
@@ -105,6 +146,15 @@ pub const FrameRegistry = struct {
             if (frame.id == id) return index;
         }
         unreachable;
+    }
+
+    fn frameIndexIfActive(self: *FrameRegistry, id: u32) ?usize {
+        for (self.frames[0..self.len], 0..) |frame, index| {
+            if (frame.id == id) {
+                return if (frame.status == .active) index else null;
+            }
+        }
+        return null;
     }
 };
 

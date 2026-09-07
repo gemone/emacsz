@@ -1,6 +1,6 @@
 # `output_proto` Runtime Bridge Design
 
-Status: normative design; R1 terminal lifecycle core, R2 fail-closed runtime manifest, R3 generated thin C adapter, and R4 shared host-observation library are implemented; runtime is not implemented
+Status: normative design; R1 terminal lifecycle core, R2 fail-closed runtime manifest, R3 generated thin C adapter, R4 shared host-observation library, and R5 frame service mapping are implemented; runtime is not implemented
 Protocol: EUP v1
 Boundary rule: no intrusive edits to inherited GNU Emacs C files
 
@@ -204,7 +204,7 @@ manifest must record:
 | R2. Runtime manifest | Machine-readable runtime contract and unavailable reason | Build fails closed with an explicit diagnostic without host callbacks |
 | R3. Generated thin C adapter | Minimal conversion shim, no policy | Implemented as generated `shim.c` plus `proto-ui-shim-conformance` |
 | R4. Host adapter library | Linkable read-only host-observation library | Exported ABI conformance and symbol isolation pass |
-| R5. Frame service | Frame create/state/delete mapping | Fake host validates generation, visibility, focus, and teardown |
+| R5. Frame service | Frame create/state/delete mapping | Implemented with bounded host-handle to EUP-frame mapping and fake-host coverage |
 | R6. Capture service | Window/row/cursor/damage atomic batches | Fake and replay differential tests produce byte-stable EUP |
 | R7. Host registration contract | Explicit reviewed extension decision | Required callbacks can be supplied without inherited-core policy changes |
 | R8. First terminal smoke | Real `window-system . proto` frame | Emacs creates, displays, operates, and deletes one SDL3 frame |
@@ -221,8 +221,10 @@ terminal lifecycle in `src/proto-ui/terminal.zig`; R2 is
 `-Dproto-ui-runtime=true` boundary gate.  R3 is the generated `shim.c` and
 `proto-ui-shim-conformance` gate.  R4 installs that exact generated artifact
 as `zig-out/lib/libproto-ui-shim.so` and proves dynamic ABI conformance plus
-symbol isolation. R5-R9 remain designed but not implemented; in particular,
-there is no real host registration contract, terminal registration, EUP
+symbol isolation.  R5 adds `FrameService` for bounded host-handle to EUP-frame
+mapping, generation/visibility/focus refresh, delete-once teardown, and terminal
+drain.  R6-R9 remain designed but not implemented; in particular, there is no
+real host registration contract, terminal registration, redisplay-owned EUP
 generation, transport, or real `output_proto` frame.
 
 ## 11. Acceptance for the first real SDL3 frame
