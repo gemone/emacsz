@@ -544,6 +544,51 @@ pub fn build(b: *std.Build) void {
         shim_step.dependOn(&install_abi_manifest.step);
         shim_step.dependOn(&install_abi_shim.step);
 
+        // R4: build the generated shim as a host shared adapter library.  The
+        // C header exports only PROTO_UI_API symbols; hidden default C
+        // visibility keeps static implementation helpers private.
+        const shim_library_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        shim_library_module.addCSourceFile(.{
+            .file = abi_shim,
+            .flags = &.{ "-std=c11", "-fvisibility=hidden" },
+        });
+        shim_library_module.addIncludePath(abi_header.dirname());
+        const shim_library = b.addLibrary(.{
+            .name = "proto-ui-shim",
+            .root_module = shim_library_module,
+            .linkage = .dynamic,
+        });
+        const install_shim_library = b.addInstallArtifact(shim_library, .{});
+        const shim_library_step = b.step(
+            "proto-ui-shim-library",
+            "Generate, compile, and install the shared Proto-UI host shim library",
+        );
+        shim_library_step.dependOn(&install_shim_library.step);
+
+        const shim_library_conformance_exe = b.addExecutable(.{
+            .name = "proto-ui-shim-library-conformance",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .link_libc = true,
+                .root_source_file = b.path("src/proto-ui/shim_library_conformance.zig"),
+            }),
+        });
+        shim_library_conformance_exe.root_module.addIncludePath(abi_header.dirname());
+        const run_shim_library_conformance = b.addRunArtifact(shim_library_conformance_exe);
+        // Use the build artifact directly, not an installed stale path; the
+        // Run step consumes and depends on exactly the shared library above.
+        run_shim_library_conformance.addFileArg(shim_library.getEmittedBin());
+        const shim_library_conformance_step = b.step(
+            "proto-ui-shim-library-conformance",
+            "Load the generated shared shim and validate exported ABI isolation",
+        );
+        shim_library_conformance_step.dependOn(&run_shim_library_conformance.step);
+
         const boundary_audit_tool = b.addExecutable(.{
             .name = "proto-ui-boundary-audit",
             .root_module = b.createModule(.{
@@ -575,6 +620,8 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&install_status_manifest.step);
         boundary_step.dependOn(&run_conformance.step);
         boundary_step.dependOn(&run_shim_conformance.step);
+        boundary_step.dependOn(&install_shim_library.step);
+        boundary_step.dependOn(&run_shim_library_conformance.step);
         boundary_step.dependOn(&run_boundary_audit.step);
 
         // R2: source-authoritative runtime manifest plus an independent
@@ -5548,6 +5595,8 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true proto-ui-unit - adapter, EUP protocol, and transport tests
         \\  zig build -Dproto-ui=true proto-ui-shim - generated/installable thin C shim
         \\  zig build -Dproto-ui=true proto-ui-shim-conformance - compile and test the generated C shim
+        \\  zig build -Dproto-ui=true proto-ui-shim-library - build/install the shared C shim
+        \\  zig build -Dproto-ui=true proto-ui-shim-library-conformance - dlopen ABI/export tests
         \\
         \\  zig build -Dproto-ui=true proto-ui-runtime-manifest - fail-closed runtime manifest audit
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module - Emacs dynamic-module seam

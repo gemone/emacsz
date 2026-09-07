@@ -59,6 +59,7 @@ pub const Feature = enum {
     runtime_host_registration_contract,
     runtime_fail_closed_manifest,
     adapter_generated_c_shim,
+    adapter_host_shim_library,
 
     pub fn name(self: Feature) []const u8 {
         return switch (self) {
@@ -86,6 +87,7 @@ pub const Feature = enum {
             .runtime_host_registration_contract => "runtime.host_registration_contract",
             .runtime_fail_closed_manifest => "runtime.fail_closed_manifest",
             .adapter_generated_c_shim => "adapter.generated_c_shim",
+            .adapter_host_shim_library => "adapter.host_shim_library",
         };
     }
 
@@ -101,6 +103,7 @@ pub const Feature = enum {
             .frame_output_proto, .frame_lifecycle, .frame_visibility_focus_contract, .resource_generation_contract, .resource_payload_eviction_contract, .redisplay_glyph_rows, .resource_v1 => false,
             .runtime_host_registration_contract, .runtime_fail_closed_manifest => false,
             .adapter_generated_c_shim => false,
+            .adapter_host_shim_library => false,
             .host_frame_state_seam => false,
             else => true,
         };
@@ -138,6 +141,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .runtime_host_registration_contract, .status = .pending, .evidence = "runtime manifest reports host_registration_contract_missing" },
     .{ .feature = .runtime_fail_closed_manifest, .status = .degraded, .evidence = "proto-ui-runtime-manifest" },
     .{ .feature = .adapter_generated_c_shim, .status = .degraded, .evidence = "proto-ui-shim-conformance" },
+    .{ .feature = .adapter_host_shim_library, .status = .degraded, .evidence = "proto-ui-shim-library-conformance" },
 };
 
 pub const feature_count = @typeInfo(Feature).@"enum".fields.len;

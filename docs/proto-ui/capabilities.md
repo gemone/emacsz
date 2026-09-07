@@ -146,7 +146,8 @@ bounded capability/status negotiation, W12b bounded frame/resource generation
 contracts, W12c real-frame lifecycle bridge smoke, W12d frame
 visibility/focus state contracts, W12e bounded resource payload/eviction
 policy, W12f optional host frame-state ABI seam, W12g terminal-lifecycle core,
-and W12h fail-closed runtime manifest/gate. 118 PGTK rows are audited: 21 Degraded,
+W12h fail-closed runtime manifest/gate, and W12i generated C adapter plus
+linkable observation library. 118 PGTK rows are audited: 21 Degraded,
 97 Pending, 0 Blocked, and 0 fully Implemented. Pending rows are not failures
 of the protocol design; they are requirements still separating the bounded
 facts bridge from W12 PGTK parity and the W16 real-frame acceptance test.
@@ -428,7 +429,7 @@ parity.
 
 | Layer | Working now | Still required for parity | Evidence |
 |---|---|---|---|
-| Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry, bounded EPXL capability negotiation/status manifest, frame visibility/focus state codec, bounded resource payload cache/eviction policy, request/evict codecs, optional host frame-state ABI seam, and terminal-lifecycle core | General resource/widget capability coverage, arbitrary recovery, remote safety, runtime terminal registration | `proto-ui-conformance`, `proto-ui-unit`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
+| Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry, bounded EPXL capability negotiation/status manifest, frame visibility/focus state codec, bounded resource payload cache/eviction policy, request/evict codecs, optional host frame-state ABI seam, terminal-lifecycle core, generated read-only C adapter, and dynamically linkable observation library | General resource/widget capability coverage, arbitrary recovery, remote safety, runtime terminal registration | `proto-ui-conformance`, `proto-ui-unit`, `proto-ui-shim-conformance`, `proto-ui-shim-library-conformance`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
 | Emacs observation | Real Emacs process publishes public frame/window geometry, bounded printable-ASCII text, point/cursor, and viewport facts; W12c creates/deletes one real display-backed frame and synchronizes one EUP/SDL3 frame lifecycle | Redisplay-owned rows/glyphs/faces/fonts, full window tree, `output_proto`-owned frame creation/deletion, runtime visibility/focus events | `proto-ui-module-smoke`, `sdl3-emacs-smoke`, `sdl3-epxl-facts-smoke`, `sdl3-frame-smoke` |
 | SDL3 rendering | Real SDL window, frame/window/row/cursor scene, software/GPU selection, clear/fill/debug-text list, retained cursor/text clips | Glyph atlas/runs, faces, images, widgets, true partial present, GPU timestamps | `sdl3-ui-smoke`, `sdl3-renderer-smoke`, `sdl3-pointer-smoke`, `sdl3-epxl-interactive-smoke` |
 | Input | Bounded ASCII insert/delete, arrows, Ctrl+C/Ctrl+V, left pointer sessions, vertical wheel | Full keymaps, Unicode/IME, focus, selection drag, pixel/horizontal scroll | `sdl3-input-translate-smoke`, `sdl3-epxl-input-smoke`, `sdl3-epxl-edit-smoke`, `sdl3-pointer-smoke`, `sdl3-wheel-smoke` |
@@ -449,9 +450,9 @@ verified bounded subset and the parity gap that remains.
 
 ### 12.3 Minimum next milestone
 
-With the W12f host ABI seam defined, the next adapter-first milestone is a
-separate Proto-UI-owned host adapter and `output_proto` runtime identity/teardown
-design before redisplay-owned rows, faces, or images can be transported safely.
+With the R4 linkable observation library complete, the next adapter-first
+milestone is R5 frame-service mapping and teardown before redisplay-owned rows,
+faces, or images can be transported safely.
 The authoritative task split and fail-closed runtime contract are defined in
 [`output-proto-runtime.md`](output-proto-runtime.md).
 

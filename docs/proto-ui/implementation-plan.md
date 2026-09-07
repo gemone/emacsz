@@ -107,6 +107,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W12f optional host frame-state ABI seam | Approved |
 | W12g output-proto runtime design and R1 terminal lifecycle | Approved |
 | W12h fail-closed runtime manifest/gate | Approved |
+| W12i generated C shim and linkable observation library | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
@@ -2286,10 +2287,10 @@ Acceptance:
 zig build -Dproto-ui=true proto-ui-boundary --summary all
 ```
 
-Status: normative design.  Runtime tasks R1-R3 are implemented as the
-adapter-owned `TerminalRegistry`, fail-closed runtime manifest/gate, and
-generated read-only C shim; R4-R9 remain unimplemented.  The boundary gate and
-documentation links remain green.
+Status: normative design.  Runtime tasks R1-R4 are implemented as the
+adapter-owned `TerminalRegistry`, fail-closed runtime manifest/gate, generated
+read-only C shim, and dynamically linkable host-observation library; R5-R9
+remain unimplemented.  The boundary gate and documentation links remain green.
 
 ##### R2 evidence
 
@@ -2311,7 +2312,13 @@ generation, and legacy/current frame-state table handling.  It adds no
 terminal registration, protocol encoding, EUP generation, or `output_proto`
 runtime.
 
-Tasks:
+##### R4 evidence
+
+R4 compiles that same generated source as a host shared library, installs it
+under `zig-out/lib`, hides non-API C symbols, and runs a tracked
+dynamic-loader conformance executable against the exact build-graph artifact.
+It validates all five loaded function pointers, success/fail-closed paths, and
+forbidden-symbol isolation without registering a terminal or enabling runtime.
 
 1. Implement child and tooltip frame protocol.
 2. Implement multi-frame focus isolation.

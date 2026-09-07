@@ -286,7 +286,18 @@ entry points are `proto_ui_shim_abi_version`, `proto_ui_shim_host_validate`,
 `proto_ui_shim_read_generation`, `proto_ui_shim_read_geometry`, and
 `proto_ui_shim_read_frame_state`. Their positive and fail-closed paths are
 compiled from the generated source and tested by
-`proto-ui-shim-conformance`. This does not link or register `output_proto`.
+`proto-ui-shim-conformance`.
+
+`proto-ui-shim-library` compiles the exact generated `shim.c` as a host shared
+library and installs it as `zig-out/lib/libproto-ui-shim.so` (`.dylib`/`.dll`
+on the corresponding host format). C compilation uses hidden default
+visibility, so only the five `PROTO_UI_API` functions are dynamic exports.
+`proto-ui-shim-library-conformance` receives the build-graph artifact (not a
+hardcoded installed path), loads and closes it through the platform loader,
+resolves every entry point, exercises success and fail-closed paths, and
+asserts that the static validator, `main`, registration, EUP, transport, and
+`output_proto_register` names are absent. This still does not register
+`output_proto`.
 
 ### W4c-b1-c — Adapter-owned normal-RIF streaming
 
@@ -334,6 +345,8 @@ zig fmt --check src/proto-ui build.zig
 zig build -Dproto-ui=true proto-ui-unit --summary all
 zig build -Dproto-ui=true proto-ui-boundary --summary all
 zig build -Dproto-ui=true proto-ui-conformance --summary all
+zig build -Dproto-ui=true proto-ui-shim-library --summary all
+zig build -Dproto-ui=true proto-ui-shim-library-conformance --summary all
 zig build --summary all
 ```
 
