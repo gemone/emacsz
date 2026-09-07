@@ -1904,21 +1904,87 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     var frame_gate: renderer_policy.FrameGate = .{};
     var frame_counters: renderer_policy.FrameCounters = .{};
     try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+    var key: runtime_host.InputEvent = .{
+        .event_id = 11,
+        .kind = runtime_bridge.input_kind_key,
+        .code = 4,
+    };
+    var text: runtime_host.InputEvent = .{
+        .event_id = 12,
+        .kind = runtime_bridge.input_kind_text,
+        .payload_length = 5,
+    };
+    @memcpy(text.payload[0..5], "Emacs");
+    var sdl_key = keyEvent(&key);
+    var sdl_text = textEventFromPayload(&text);
+    if (!SDL_PushEvent(&sdl_key)) return sdlFail("SDL_PushEvent");
+    if (!SDL_PushEvent(&sdl_text)) return sdlFail("SDL_PushEvent");
+
+    var delivered_key = false;
+    var delivered_text = false;
     var quit = false;
     const started = SDL_GetTicks();
     while (!quit and SDL_GetTicks() - started < config.auto_quit_ms) {
         var event: SDL_Event = undefined;
         while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_EVENT_QUIT) quit = true;
+            if (event.type == SDL_EVENT_QUIT) {
+                quit = true;
+                continue;
+            }
+            var input: runtime_host.InputEvent = .{
+                .event_id = if (!delivered_key) key.event_id else text.event_id,
+                .kind = if (!delivered_key) key.kind else text.kind,
+                .code = key.code,
+                .payload_length = text.payload_length,
+            };
+            if (!delivered_text and event.type == SDL_EVENT_TEXT_INPUT) {
+                const source_pointer = event.text.text orelse return error.RuntimeBridgeInputMismatch;
+                const source = std.mem.span(source_pointer);
+                if (source.len != text.payload_length or
+                    !std.mem.eql(u8, source, text.payload[0..text.payload_length]))
+                    return error.RuntimeBridgeInputMismatch;
+                @memcpy(input.payload[0..text.payload_length], text.payload[0..text.payload_length]);
+            } else if (!delivered_key and event.type == SDL_EVENT_KEY_DOWN) {
+                input.code = std.math.cast(u32, event.key.scancode) orelse return error.RuntimeBridgeInputMismatch;
+            } else continue;
+
+            _ = try bridge.deliverInput(input);
+            try bridge.deliverResult(.{
+                .event_id = input.event_id,
+                .command_status = @intFromEnum(runtime_host.CommandStatus.ok),
+            });
+            try bridge.deliverCompletion(.{
+                .transaction_id = input.event_id,
+                .status = .ok,
+                .completed = true,
+            });
+            if (!delivered_key) {
+                delivered_key = true;
+            } else if (!delivered_text) {
+                delivered_text = true;
+            }
         }
         try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
         SDL_Delay(10);
     }
-    if (frame_counters.text_commands_total == 0) return error.RuntimeBridgeNotRendered;
+    if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
+        return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{},
     );
+}
+
+fn keyEvent(input: *const runtime_host.InputEvent) SDL_Event {
+    return keyboardEvent(@intCast(input.code), true, 0);
+}
+
+var runtime_bridge_text_payload: [runtime_host.InputEvent.payload_bytes + 1]u8 = undefined;
+
+fn textEventFromPayload(input: *const runtime_host.InputEvent) SDL_Event {
+    @memset(&runtime_bridge_text_payload, 0);
+    @memcpy(runtime_bridge_text_payload[0..input.payload_length], input.payload[0..input.payload_length]);
+    return textEvent(@ptrCast(&runtime_bridge_text_payload));
 }
 
 fn runLiveFrontend(

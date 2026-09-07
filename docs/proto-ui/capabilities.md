@@ -494,6 +494,9 @@ Proto frame.  The target ownership model, PGTK responsibility matrix, protocol
 gaps, differential gates, and final acceptance rules are defined in
 [`sdl3-pgtk-parity.md`](sdl3-pgtk-parity.md).
 
+The same smoke now delivers one SDL key and one bounded SDL text intent through
+`PureRuntimeHostV1` input callbacks with result/completion tracking.  This is
+not keymap or command parity.
 `sdl3-runtime-bridge-smoke` presents that fake-host bridge scene through SDL3
 without Emacs registration.  `runtime_bridge` can also project bounded host ASCII run payloads into existing
 debug `GLYPH_RUN` messages; this remains fallback diagnostic rendering.

@@ -25,6 +25,9 @@ pub const Error = runtime_host.Error || frontend.Error || protocol.Error ||
         TooManyRuns,
         TooManyCursors,
         TooManyDamage,
+        DuplicateInput,
+        TooManyInputs,
+        UnknownInput,
     };
 
 pub const max_windows: usize = 4;
@@ -32,6 +35,19 @@ pub const max_rows: usize = 32;
 pub const max_runs: usize = 64;
 pub const max_cursors: usize = 4;
 pub const max_damage: usize = 32;
+pub const max_tracked_inputs: usize = 16;
+
+pub const input_kind_key: u16 = 1;
+pub const input_kind_text: u16 = 2;
+pub const input_kind_pointer_button: u16 = 3;
+pub const input_kind_pointer_motion: u16 = 4;
+pub const input_kind_wheel: u16 = 5;
+
+pub const InputState = struct {
+    accepted: bool = false,
+    result_reported: bool = false,
+    completed: bool = false,
+};
 
 pub const State = enum {
     idle,
@@ -65,6 +81,9 @@ pub const Bridge = struct {
     cursors: [max_cursors]runtime_host.CursorRecord = undefined,
     damage: [max_damage]runtime_host.DamageRecord = undefined,
     counts: Counts = .{},
+    input_ids: [max_tracked_inputs]u64 = undefined,
+    input_states: [max_tracked_inputs]InputState = undefined,
+    input_count: usize = 0,
 
     pub fn init(table: runtime_host.PureRuntimeHostV1) Error!Bridge {
         try runtime_host.validateTable(&table);
@@ -439,6 +458,96 @@ pub const Bridge = struct {
         }, payload.items, out);
     }
 
+    fn findInput(self: *const Bridge, event_id: u64) ?usize {
+        for (self.input_ids[0..self.input_count], 0..) |candidate, index| {
+            if (candidate == event_id) return index;
+        }
+        return null;
+    }
+
+    fn checkInputCapacity(self: *const Bridge, event_id: u64) Error!void {
+        if (event_id == 0) return error.InvalidState;
+        if (self.findInput(event_id) != null) return error.DuplicateInput;
+        if (self.input_count == max_tracked_inputs) return error.TooManyInputs;
+    }
+
+    fn inputTracker(self: *Bridge, event_id: u64) Error!*InputState {
+        const index = self.findInput(event_id) orelse return error.UnknownInput;
+        return &self.input_states[index];
+    }
+
+    pub fn deliverInput(
+        self: *Bridge,
+        event: runtime_host.InputEvent,
+    ) Error!runtime_host.InputAck {
+        switch (self.state) {
+            .frame_registered, .capturing, .captured => {},
+            else => return error.InvalidState,
+        }
+        try self.checkInputCapacity(event.event_id);
+        var delivered = event;
+        delivered.frame_id = self.frame.id;
+        try runtime_host.validateInputEvent(&delivered);
+
+        const group = self.table.input orelse return error.InvalidRuntimeHost;
+        const context = group.context orelse return error.InvalidRuntimeHost;
+        const callback = group.deliver_event orelse return error.InvalidRuntimeHost;
+        var ack: runtime_host.InputAck = .{};
+        try runtime_host.ensureOk(callback(context, &delivered, &ack));
+        if (ack.event_id != delivered.event_id) return error.InvalidState;
+
+        if (ack.accepted and ack.status == .ok) {
+            self.input_ids[self.input_count] = delivered.event_id;
+            self.input_states[self.input_count] = .{ .accepted = true };
+            self.input_count += 1;
+        }
+        return ack;
+    }
+
+    pub fn deliverResult(
+        self: *Bridge,
+        result: runtime_host.InputResult,
+    ) Error!void {
+        switch (self.state) {
+            .frame_registered, .capturing, .captured => {},
+            else => return error.InvalidState,
+        }
+        try runtime_host.validateInputResult(&result);
+        const tracker = try self.inputTracker(result.event_id);
+        if (!tracker.accepted or tracker.result_reported) return error.InvalidState;
+
+        const group = self.table.input orelse return error.InvalidRuntimeHost;
+        const context = group.context orelse return error.InvalidRuntimeHost;
+        const callback = group.deliver_result orelse return error.InvalidRuntimeHost;
+        try runtime_host.ensureOk(callback(context, &result));
+        tracker.result_reported = true;
+    }
+
+    pub fn deliverCompletion(
+        self: *Bridge,
+        completion: runtime_host.CompletionStatus,
+    ) Error!void {
+        switch (self.state) {
+            .frame_registered, .capturing, .captured => {},
+            else => return error.InvalidState,
+        }
+        try runtime_host.validateCompletion(&completion);
+        const tracker = try self.inputTracker(completion.transaction_id);
+        if (!tracker.accepted or !tracker.result_reported or tracker.completed)
+            return error.InvalidState;
+
+        const group = self.table.input orelse return error.InvalidRuntimeHost;
+        const context = group.context orelse return error.InvalidRuntimeHost;
+        const callback = group.deliver_completion_status orelse return error.InvalidRuntimeHost;
+        try runtime_host.ensureOk(callback(context, &completion));
+        tracker.completed = true;
+    }
+
+    pub fn inputSnapshot(self: *const Bridge, event_id: u64) ?InputState {
+        const index = self.findInput(event_id) orelse return null;
+        return self.input_states[index];
+    }
+
     pub fn destroy(self: *Bridge) Error!void {
         if (self.state == .destroyed or self.state == .idle) return error.InvalidState;
         if (self.state == .capturing) {
@@ -537,6 +646,61 @@ test "pure runtime bridge produces a valid bounded EUP frame lifecycle" {
     try scene.apply(destroy.items);
     try std.testing.expectEqual(State.destroyed, bridge.state);
     try std.testing.expectEqual(@as(usize, 0), scene.windows.items.len);
+}
+
+test "bridge delivers key and text intents with ordered lifecycle" {
+    const gpa = std.testing.allocator;
+    var host: runtime_host.FakeHost = undefined;
+    const table = runtime_host.fakeTable(&host);
+    var bridge = try Bridge.init(table);
+
+    try bridge.createTerminal(.{ .requested_generation = 1 });
+    try bridge.registerFrame(.{ .id = 22, .generation = 1 });
+
+    const key = runtime_host.InputEvent{
+        .event_id = 11,
+        .kind = input_kind_key,
+        .code = 4,
+        .modifiers = 2,
+    };
+    const key_ack = try bridge.deliverInput(key);
+    try std.testing.expect(key_ack.accepted);
+    try bridge.deliverResult(.{ .event_id = key.event_id, .command_status = @intFromEnum(runtime_host.CommandStatus.ok) });
+    try bridge.deliverCompletion(.{ .transaction_id = key.event_id, .status = .ok, .completed = true });
+
+    var text = runtime_host.InputEvent{
+        .event_id = 12,
+        .kind = input_kind_text,
+        .payload_length = 5,
+    };
+    @memcpy(text.payload[0..5], "Emacs");
+    const text_ack = try bridge.deliverInput(text);
+    try std.testing.expect(text_ack.accepted);
+    try bridge.deliverResult(.{ .event_id = text.event_id, .command_status = @intFromEnum(runtime_host.CommandStatus.ok) });
+    try bridge.deliverCompletion(.{ .transaction_id = text.event_id, .status = .ok, .completed = true });
+
+    try std.testing.expectEqual(
+        InputState{ .accepted = true, .result_reported = true, .completed = true },
+        bridge.inputSnapshot(11).?,
+    );
+    try std.testing.expectEqual(
+        InputState{ .accepted = true, .result_reported = true, .completed = true },
+        bridge.inputSnapshot(12).?,
+    );
+    _ = gpa;
+}
+
+test "bridge rejects duplicate input and completion before result" {
+    var host: runtime_host.FakeHost = undefined;
+    const table = runtime_host.fakeTable(&host);
+    var bridge = try Bridge.init(table);
+    try bridge.createTerminal(.{ .requested_generation = 1 });
+    try bridge.registerFrame(.{ .id = 22, .generation = 1 });
+
+    const event: runtime_host.InputEvent = .{ .event_id = 20, .kind = input_kind_key };
+    _ = try bridge.deliverInput(event);
+    try std.testing.expectError(error.DuplicateInput, bridge.deliverInput(event));
+    try std.testing.expectError(error.InvalidState, bridge.deliverCompletion(.{ .transaction_id = event.event_id, .completed = true }));
 }
 
 test "bridge rejects observations outside capturing state without mutation" {

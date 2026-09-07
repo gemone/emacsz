@@ -168,6 +168,7 @@ capabilities must keep the relevant capability pending and block W16.
 | P3. Runtime host ABI preparation | All five required callback groups have a versioned C-ABI table, validator, fake-host conformance, generated C header, and manifest | `proto-ui-runtime-host` and `proto-ui-runtime-host-abi`; live terminal registration still requires R7 approval |
 | P4-prep. Runtime bridge | `PureRuntimeHostV1` observations can drive deterministic EUP create/update/destroy messages in fake-host conformance | `runtime_bridge` unit suite; still no Emacs registration |
 | P5-prep. Run payload bridge | Host text runs become bounded EUP debug glyph runs and are rendered as fallback text | `runtime_bridge` unit suite and `sdl3-runtime-bridge-smoke`; still not redisplay capture or shaped text |
+| P6-prep. Reverse input bridge | SDL key/text intents reach `PureRuntimeHostV1` deliver/result/completion callbacks with bounded tracking | `sdl3-runtime-bridge-smoke`; still not keymap/command parity |
 | P4. Terminal registration | `output_proto` can exist as a real terminal without PGTK initialization | Fake-host plus live terminal lifecycle tests after explicit R7 approval |
 | P4. First pure frame | Emacs creates `window-system = proto`; SDL creates the visible surface | One local command creates, focuses, resizes, deletes the frame |
 | P5. Redisplay-owned display | Rows/runs/cursor/damage come from Emacs redisplay | ASCII/CJK/BiDi/face fixtures compare against PGTK baselines |
@@ -181,6 +182,11 @@ P1 preparation adds `proto-ui-pgtk-parity-plan`.  The generated manifest is a
 planned differential suite, not parity evidence; all cases remain `planned` and
 the aggregate result remains `not_implemented`.  It is distinct from the future
 `sdl3-pgtk-parity` runtime acceptance gate.
+
+P6 preparation adds the reverse input path: SDL key/text intents are normalized
+to bounded `PureRuntimeHostV1.InputEvent` records and tracked through delivery,
+result, and terminal completion states.  The host callback remains authoritative
+for command interpretation; the frontend still evaluates no Elisp.
 
 `sdl3-runtime-bridge-smoke` closes the fake-host loop through the independent
 SDL3 renderer: the bridge emits EUP, `frontend.Scene` applies it, and SDL

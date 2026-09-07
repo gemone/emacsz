@@ -129,6 +129,8 @@ pub const DamageRecord = extern struct {
 };
 
 pub const InputEvent = extern struct {
+    pub const payload_bytes: usize = 64;
+
     event_id: u64 = 0,
     frame_id: u64 = 0,
     kind: u16 = 0,
@@ -155,6 +157,14 @@ pub const InputResult = extern struct {
 };
 
 pub const CommandStatus = enum(u8) { ok = 0, unhandled = 1, error_result = 2 };
+
+pub const InputKind = enum(u16) {
+    key = 1,
+    text = 2,
+    pointer_button = 3,
+    pointer_motion = 4,
+    wheel = 5,
+};
 
 pub const CompletionStatus = extern struct {
     transaction_id: u64 = 0,
@@ -384,6 +394,20 @@ pub fn validateDamageRecord(record: *const DamageRecord) Error!void {
 pub fn validateInputEvent(event: *const InputEvent) Error!void {
     if (event.event_id == 0 or event.payload_length > event.payload.len or event.reserved != 0)
         return error.InvalidRuntimeHost;
+    switch (event.kind) {
+        @intFromEnum(InputKind.key),
+        @intFromEnum(InputKind.text),
+        @intFromEnum(InputKind.pointer_button),
+        @intFromEnum(InputKind.pointer_motion),
+        @intFromEnum(InputKind.wheel),
+        => {},
+        else => return error.InvalidRuntimeHost,
+    }
+    if (event.kind == @intFromEnum(InputKind.text)) {
+        const payload = event.payload[0..event.payload_length];
+        if (!std.unicode.utf8ValidateSlice(payload)) return error.InvalidRuntimeHost;
+        if (std.mem.indexOfScalar(u8, payload, 0) != null) return error.InvalidRuntimeHost;
+    }
 }
 
 pub fn validateInputResult(result: *const InputResult) Error!void {
@@ -761,7 +785,7 @@ test "fake host terminal frame capture input and lifecycle conformance" {
     try std.testing.expectEqual(Status.ok, table.redisplay.?.commit_capture.?(table.redisplay.?.context.?, &session));
 
     var ack: InputAck = .{};
-    try std.testing.expectEqual(Status.ok, table.input.?.deliver_event.?(table.input.?.context.?, &.{ .event_id = 5 }, &ack));
+    try std.testing.expectEqual(Status.ok, table.input.?.deliver_event.?(table.input.?.context.?, &.{ .event_id = 5, .kind = @intFromEnum(InputKind.key) }, &ack));
     try std.testing.expect(ack.accepted);
     var heartbeat: HeartbeatResult = .{};
     try std.testing.expectEqual(Status.ok, table.lifecycle.?.heartbeat.?(table.lifecycle.?.context.?, &heartbeat));
