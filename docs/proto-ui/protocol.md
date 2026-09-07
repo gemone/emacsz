@@ -404,6 +404,28 @@ These messages are reserved for tools, debug, and explicitly negotiated fallback
 
 Resource payload requirements:
 
+### String resource v1 (implemented adapter contract)
+
+All integers are little-endian. `STRING_DEFINE` is:
+
+```text
+u32 resource_id      1..=0xffffffff, nonzero
+u32 generation       1..=0xffffffff, nonzero
+u32 byte_length      1..=4096
+u8  bytes[byte_len]  valid UTF-8, no NUL byte
+```
+
+The decoder rejects truncation, trailing bytes, oversize, zero identity,
+NUL bytes, and invalid UTF-8. `STRING_DELETE` is exactly two nonzero
+little-endian `u32` values: `resource_id` then `generation`.
+
+The frontend scene accepts these messages only at the next contiguous
+session sequence. A define owns at most 64 active string payloads. A new
+resource ID or a strictly newer generation is required; equal or older
+generations are rejected without mutation. Delete must name the exact live
+generation and marks the shared resource registry deleted while releasing the
+owned payload. Resync, frame destroy, and scene teardown release all strings.
+
 ### Face resource
 
 Must include foreground, background, underline, overline, strike-through, box, inverse video, extend, stipple reference, font reference, and line-spacing fields where present.

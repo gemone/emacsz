@@ -163,6 +163,116 @@ const max_text_columns: usize = 120;
 const resource_record_size: usize = 16;
 pub const ResourceDeclaration = lifecycle.Resource;
 pub const max_resources = lifecycle.max_resources;
+pub const max_string_resources: usize = 64;
+
+pub const StringResource = struct {
+    resource_id: u32,
+    generation: u32,
+    bytes: []u8,
+};
+
+pub const StringResourceCounters = struct {
+    defines: u64 = 0,
+    replacements: u64 = 0,
+    deletes: u64 = 0,
+    rejections: u64 = 0,
+};
+
+pub const StringResources = struct {
+    strings: [max_string_resources]StringResource = undefined,
+    len: usize = 0,
+    counters: StringResourceCounters = .{},
+
+    fn find(self: StringResources, resource_id: u32) ?usize {
+        for (self.strings[0..self.len], 0..) |resource, index| {
+            if (resource.resource_id == resource_id) return index;
+        }
+        return null;
+    }
+
+    pub fn lookup(self: StringResources, resource_id: u32) ?StringResource {
+        const index = self.find(resource_id) orelse return null;
+        return self.strings[index];
+    }
+
+    fn define(
+        self: *StringResources,
+        allocator: std.mem.Allocator,
+        resources: *lifecycle.ResourceRegistry,
+        payload: protocol.StringDefine,
+    ) Error!void {
+        const existing_index = self.find(payload.resource_id);
+        if (existing_index) |index| {
+            if (payload.generation <= self.strings[index].generation) {
+                self.counters.rejections += 1;
+                return Error.StaleGeneration;
+            }
+        }
+
+        // Allocate the only new owner before either registry or scene table
+        // mutation.  Every later failure leaves the previous payload active.
+        const owned = try allocator.dupe(u8, payload.bytes);
+        errdefer allocator.free(owned);
+
+        try resources.declareAll(&[_]lifecycle.Resource{.{
+            .kind = .string,
+            .id = payload.resource_id,
+            .generation = payload.generation,
+            .status = .live,
+        }});
+
+        if (existing_index) |index| {
+            const old = self.strings[index];
+            allocator.free(old.bytes);
+            self.strings[index] = .{
+                .resource_id = payload.resource_id,
+                .generation = payload.generation,
+                .bytes = owned,
+            };
+            self.counters.replacements += 1;
+        } else {
+            self.strings[self.len] = .{
+                .resource_id = payload.resource_id,
+                .generation = payload.generation,
+                .bytes = owned,
+            };
+            self.len += 1;
+            self.counters.defines += 1;
+        }
+    }
+
+    fn delete(
+        self: *StringResources,
+        allocator: std.mem.Allocator,
+        resources: *lifecycle.ResourceRegistry,
+        payload: protocol.StringDelete,
+    ) Error!void {
+        const index = self.find(payload.resource_id) orelse {
+            self.counters.rejections += 1;
+            return Error.ResourceNotLive;
+        };
+        if (self.strings[index].generation != payload.generation) {
+            self.counters.rejections += 1;
+            return Error.StaleGeneration;
+        }
+        try resources.delete(.string, payload.resource_id, payload.generation);
+        allocator.free(self.strings[index].bytes);
+        if (index + 1 < self.len) {
+            std.mem.copyForwards(StringResource, self.strings[index .. self.len - 1], self.strings[index + 1 .. self.len]);
+        }
+        self.len -= 1;
+        self.counters.deletes += 1;
+    }
+
+    fn clear(self: *StringResources, allocator: std.mem.Allocator) void {
+        for (self.strings[0..self.len]) |resource| allocator.free(resource.bytes);
+        self.* = .{};
+    }
+
+    fn deinit(self: *StringResources, allocator: std.mem.Allocator) void {
+        self.clear(allocator);
+    }
+};
 
 fn putU16(out: *std.ArrayList(u8), a: std.mem.Allocator, value: u16) !void {
     var bytes: [2]u8 = undefined;
@@ -538,6 +648,7 @@ pub const Scene = struct {
     frame_header: ?protocol.FrameUpdateHeader = null,
     windows: std.ArrayList(Window) = .empty,
     rows: std.ArrayList(Row) = .empty,
+    strings: StringResources = .{},
     cursor: ?Cursor = null,
     damage: std.ArrayList(Rect) = .empty,
     text: std.ArrayList(TextLine) = .empty,
@@ -553,11 +664,13 @@ pub const Scene = struct {
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
         self.damage.deinit(self.allocator);
+        self.strings.deinit(self.allocator);
         for (self.text.items) |line| self.allocator.free(line.bytes);
         self.text.deinit(self.allocator);
         self.windows = .empty;
         self.rows = .empty;
         self.damage = .empty;
+        self.strings = .{};
         self.text = .empty;
         self.session_id = null;
         self.next_sequence = null;
@@ -594,6 +707,8 @@ pub const Scene = struct {
             protocol.Message.frame_visibility => try self.applyFrameVisibility(payload),
             protocol.Message.frame_focus => try self.applyFrameFocus(payload),
             protocol.Message.frame_destroy => try self.applyFrameDestroy(payload.envelope, payload.bytes),
+            protocol.Message.string_define => try self.applyStringDefine(payload),
+            protocol.Message.string_delete => try self.applyStringDelete(payload),
             else => self.stats.control_messages += 1,
         }
         self.next_sequence = next_sequence;
@@ -622,6 +737,7 @@ pub const Scene = struct {
         const generation = std.mem.readInt(u32, bytes[4..8], .little);
         if (frame_id == 0 or generation == 0 or envelope.frame_id != frame_id) return Error.InvalidMessage;
         try self.frames.destroy(frame_id, generation);
+        self.strings.clear(self.allocator);
         if (self.frame) |frame| {
             if (frame.frame_id == frame_id and frame.generation == generation) self.frame = null;
         }
@@ -640,6 +756,18 @@ pub const Scene = struct {
         const focus = try protocol.decodeFrameFocus(payload.bytes);
         try protocol.validateFrameFocusEnvelope(focus, payload.envelope);
         try self.frames.setFocus(focus.frame_id, focus.frame_generation, focus.focused);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyStringDefine(self: *Scene, payload: protocol.Payload) Error!void {
+        const string = try protocol.decodeStringDefine(payload.bytes);
+        try self.strings.define(self.allocator, &self.resources, string);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyStringDelete(self: *Scene, payload: protocol.Payload) Error!void {
+        const string = try protocol.decodeStringDelete(payload.bytes);
+        try self.strings.delete(self.allocator, &self.resources, string);
         self.stats.control_messages += 1;
     }
 
@@ -1381,6 +1509,208 @@ test "scene atomically validates resource generation declarations" {
     try std.testing.expectError(Error.StaleGeneration, scene.apply(stale));
     try std.testing.expectEqual(@as(u32, 2), scene.resources.lookup(.font, 12).?.generation);
     try std.testing.expectEqual(@as(u64, 2), scene.stats.frame_updates);
+}
+
+fn stringMessage(
+    a: std.mem.Allocator,
+    message_type: u16,
+    sequence: u64,
+    payload: []const u8,
+) ![]u8 {
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = message_type,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .timestamp_ns = sequence,
+    }, payload, &message);
+    return message.toOwnedSlice(a);
+}
+
+test "scene owns replaces looks up and deletes bounded string resources" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    var ascii_payload: std.ArrayList(u8) = .empty;
+    defer ascii_payload.deinit(a);
+    try protocol.encodeStringDefine(a, .{ .resource_id = 12, .generation = 1, .bytes = "hello" }, &ascii_payload);
+    const ascii = try stringMessage(a, protocol.Message.string_define, 2, ascii_payload.items);
+    defer a.free(ascii);
+    try scene.apply(ascii);
+    try std.testing.expectEqualStrings("hello", scene.strings.lookup(12).?.bytes);
+    try std.testing.expectEqual(lifecycle.ResourceStatus.live, scene.resources.lookup(.string, 12).?.status);
+
+    ascii_payload.clearRetainingCapacity();
+    try protocol.encodeStringDefine(a, .{ .resource_id = 12, .generation = 2, .bytes = "é🎉" }, &ascii_payload);
+    const unicode = try stringMessage(a, protocol.Message.string_define, 3, ascii_payload.items);
+    defer a.free(unicode);
+    try scene.apply(unicode);
+    try std.testing.expectEqual(@as(u32, 2), scene.strings.lookup(12).?.generation);
+    try std.testing.expectEqualStrings("é🎉", scene.strings.lookup(12).?.bytes);
+    try std.testing.expectEqual(@as(u64, 1), scene.strings.counters.defines);
+    try std.testing.expectEqual(@as(u64, 1), scene.strings.counters.replacements);
+
+    ascii_payload.clearRetainingCapacity();
+    try protocol.encodeStringDelete(a, .{ .resource_id = 12, .generation = 2 }, &ascii_payload);
+    const deletion = try stringMessage(a, protocol.Message.string_delete, 4, ascii_payload.items);
+    defer a.free(deletion);
+    try scene.apply(deletion);
+    try std.testing.expect(scene.strings.lookup(12) == null);
+    try std.testing.expectEqual(lifecycle.ResourceStatus.deleted, scene.resources.lookup(.string, 12).?.status);
+
+    const duplicate = try stringMessage(a, protocol.Message.string_delete, 5, ascii_payload.items);
+    defer a.free(duplicate);
+    try std.testing.expectError(Error.ResourceNotLive, scene.apply(duplicate));
+    try std.testing.expectEqual(@as(u64, 5), scene.next_sequence.?);
+    try std.testing.expectEqual(@as(u64, 1), scene.strings.counters.rejections);
+}
+
+test "scene rejects stale equal and malformed string resources without sequence drift" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeStringDefine(a, .{ .resource_id = 20, .generation = 5, .bytes = "live" }, &payload);
+    const first = try stringMessage(a, protocol.Message.string_define, 2, payload.items);
+    defer a.free(first);
+    try scene.apply(first);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeStringDefine(a, .{ .resource_id = 20, .generation = 5, .bytes = "equal" }, &payload);
+    const equal = try stringMessage(a, protocol.Message.string_define, 3, payload.items);
+    defer a.free(equal);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(equal));
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+    try std.testing.expectEqualStrings("live", scene.strings.lookup(20).?.bytes);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeStringDelete(a, .{ .resource_id = 20, .generation = 4 }, &payload);
+    const wrong_generation = try stringMessage(a, protocol.Message.string_delete, 3, payload.items);
+    defer a.free(wrong_generation);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(wrong_generation));
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+    try std.testing.expectEqualStrings("live", scene.strings.lookup(20).?.bytes);
+
+    var malformed: [14]u8 = undefined;
+    std.mem.writeInt(u32, malformed[0..4], 21, .little);
+    std.mem.writeInt(u32, malformed[4..8], 1, .little);
+    std.mem.writeInt(u32, malformed[8..12], 2, .little);
+    @memcpy(malformed[12..14], "\xff\xfe");
+    const invalid_utf8 = try stringMessage(a, protocol.Message.string_define, 3, &malformed);
+    defer a.free(invalid_utf8);
+    try std.testing.expectError(Error.InvalidUtf8, scene.apply(invalid_utf8));
+
+    malformed[12] = 'a';
+    malformed[13] = 0;
+    const nul = try stringMessage(a, protocol.Message.string_define, 3, &malformed);
+    defer a.free(nul);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(nul));
+
+    const truncated = try stringMessage(a, protocol.Message.string_define, 3, malformed[0..11]);
+    defer a.free(truncated);
+    try std.testing.expectError(Error.InvalidTable, scene.apply(truncated));
+
+    var trailing_payload: [15]u8 = undefined;
+    @memcpy(trailing_payload[0..malformed.len], &malformed);
+    trailing_payload[malformed.len] = 'x';
+    const trailing = try stringMessage(a, protocol.Message.string_define, 3, &trailing_payload);
+    defer a.free(trailing);
+    try std.testing.expectError(Error.InvalidTable, scene.apply(trailing));
+
+    var oversized: [12]u8 = undefined;
+    std.mem.writeInt(u32, oversized[0..4], 22, .little);
+    std.mem.writeInt(u32, oversized[4..8], 1, .little);
+    std.mem.writeInt(u32, oversized[8..12], protocol.max_string_bytes + 1, .little);
+    const over = try stringMessage(a, protocol.Message.string_define, 3, &oversized);
+    defer a.free(over);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(over));
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeStringDefine(a, .{ .resource_id = 22, .generation = 1, .bytes = "ok" }, &payload);
+    const valid = try stringMessage(a, protocol.Message.string_define, 3, payload.items);
+    defer a.free(valid);
+    try scene.apply(valid);
+    try std.testing.expectEqualStrings("ok", scene.strings.lookup(22).?.bytes);
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+}
+
+test "string resync cleanup and capacity remain bounded" {
+    const a = std.testing.allocator;
+    {
+        var scene = Scene.init(a);
+        defer scene.deinit();
+        const create = try createMessage(a, 1, 7, 7);
+        defer a.free(create);
+        try scene.apply(create);
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(a);
+        try protocol.encodeStringDefine(a, .{ .resource_id = 30, .generation = 1, .bytes = "before" }, &payload);
+        const before = try stringMessage(a, protocol.Message.string_define, 2, payload.items);
+        defer a.free(before);
+        try scene.apply(before);
+        scene.resetForResync();
+        try std.testing.expect(scene.strings.lookup(30) == null);
+        try std.testing.expectEqual(@as(usize, 0), scene.resources.len);
+        try std.testing.expect(scene.session_id == null);
+        try scene.apply(create);
+        try std.testing.expectEqual(@as(u64, 2), scene.next_sequence.?);
+    }
+
+    {
+        var scene = Scene.init(a);
+        defer scene.deinit();
+        const create = try createMessage(a, 1, 7, 7);
+        defer a.free(create);
+        try scene.apply(create);
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(a);
+        for (1..max_string_resources + 1) |id| {
+            const resource_id: u32 = @intCast(id);
+            payload.clearRetainingCapacity();
+            try protocol.encodeStringDefine(a, .{
+                .resource_id = resource_id,
+                .generation = 1,
+                .bytes = "value",
+            }, &payload);
+            const message = try stringMessage(
+                a,
+                protocol.Message.string_define,
+                @intCast(id + 1),
+                payload.items,
+            );
+            defer a.free(message);
+            try scene.apply(message);
+        }
+        try std.testing.expectEqual(max_string_resources, scene.strings.len);
+
+        payload.clearRetainingCapacity();
+        try protocol.encodeStringDefine(a, .{ .resource_id = max_string_resources + 1, .generation = 1, .bytes = "over" }, &payload);
+        const overflow = try stringMessage(a, protocol.Message.string_define, max_string_resources + 2, payload.items);
+        defer a.free(overflow);
+        try std.testing.expectError(Error.ResourceTableFull, scene.apply(overflow));
+        try std.testing.expectEqual(max_string_resources, scene.strings.len);
+        try std.testing.expectEqual(@as(u64, max_string_resources + 2), scene.next_sequence.?);
+
+        payload.clearRetainingCapacity();
+        try protocol.encodeStringDefine(a, .{ .resource_id = max_string_resources, .generation = 2, .bytes = "replacement" }, &payload);
+        const replacement = try stringMessage(a, protocol.Message.string_define, max_string_resources + 2, payload.items);
+        defer a.free(replacement);
+        try scene.apply(replacement);
+        try std.testing.expectEqual(max_string_resources, scene.strings.len);
+        try std.testing.expectEqualStrings("replacement", scene.strings.lookup(max_string_resources).?.bytes);
+    }
 }
 
 fn updateWithResources(a: std.mem.Allocator, sequence: u64, resource_records: []const u8) ![]u8 {

@@ -12,6 +12,7 @@ pub const Error = error{
     InvalidMessage,
     InvalidResource,
     InvalidTable,
+    InvalidUtf8,
     InvalidSequence,
     TrailingBytes,
     Unsupported,
@@ -47,6 +48,8 @@ pub const Message = struct {
     pub const frame_focus: u16 = 0x0210;
     pub const resource_request: u16 = 0x0510;
     pub const resource_evict: u16 = 0x0511;
+    pub const string_define: u16 = 0x050e;
+    pub const string_delete: u16 = 0x050f;
     pub const key_event: u16 = 0x0600;
     pub const text_input: u16 = 0x0601;
     pub const pointer_event: u16 = 0x0602;
@@ -157,6 +160,79 @@ pub const ResourceEvict = struct {
 };
 
 pub const max_resource_requests: usize = 64;
+pub const max_string_bytes: usize = 4096;
+
+pub const StringDefine = struct {
+    resource_id: u32,
+    generation: u32,
+    /// Borrowed from the caller's/decoded buffer; never NUL-terminated.
+    bytes: []const u8,
+};
+
+pub const StringDelete = struct {
+    resource_id: u32,
+    generation: u32,
+};
+
+fn validateStringIdentity(resource_id: u32, generation: u32) Error!void {
+    if (resource_id == 0 or generation == 0) return Error.InvalidMessage;
+}
+
+fn validateStringBytes(bytes: []const u8) Error!void {
+    if (bytes.len == 0 or bytes.len > max_string_bytes) return Error.InvalidMessage;
+    if (std.mem.indexOfScalar(u8, bytes, 0) != null) return Error.InvalidMessage;
+    if (!std.unicode.utf8ValidateSlice(bytes)) return Error.InvalidUtf8;
+}
+
+pub fn encodeStringDefine(
+    a: std.mem.Allocator,
+    payload: StringDefine,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateStringIdentity(payload.resource_id, payload.generation);
+    try validateStringBytes(payload.bytes);
+    try putU32(out, a, payload.resource_id);
+    try putU32(out, a, payload.generation);
+    try putU32(out, a, @intCast(payload.bytes.len));
+    try out.appendSlice(a, payload.bytes);
+}
+
+pub fn decodeStringDefine(data: []const u8) Error!StringDefine {
+    if (data.len < 12) return Error.InvalidTable;
+    const payload = StringDefine{
+        .resource_id = std.mem.readInt(u32, data[0..4], .little),
+        .generation = std.mem.readInt(u32, data[4..8], .little),
+        .bytes = data[12..],
+    };
+    const byte_length = std.mem.readInt(u32, data[8..12], .little);
+    if (byte_length > max_string_bytes) return Error.InvalidMessage;
+    if (data.len != 12 + @as(usize, byte_length)) return Error.InvalidTable;
+    try validateStringIdentity(payload.resource_id, payload.generation);
+    try validateStringBytes(payload.bytes);
+    return payload;
+}
+
+pub fn encodeStringDelete(
+    a: std.mem.Allocator,
+    payload: StringDelete,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateStringIdentity(payload.resource_id, payload.generation);
+    var bytes: [8]u8 = undefined;
+    std.mem.writeInt(u32, bytes[0..4], payload.resource_id, .little);
+    std.mem.writeInt(u32, bytes[4..8], payload.generation, .little);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeStringDelete(data: []const u8) Error!StringDelete {
+    if (data.len != 8) return Error.InvalidTable;
+    const payload = StringDelete{
+        .resource_id = std.mem.readInt(u32, data[0..4], .little),
+        .generation = std.mem.readInt(u32, data[4..8], .little),
+    };
+    try validateStringIdentity(payload.resource_id, payload.generation);
+    return payload;
+}
 
 pub const Capability = struct {
     /// `name` and `value` borrow bytes from the encoded input.  The caller
@@ -900,6 +976,60 @@ test "resource request and evict codecs enforce strict wire form" {
     bytes.items[15] = 1;
     try std.testing.expectError(Error.InvalidTable, decodeResourceEvict(bytes.items));
     try std.testing.expectError(Error.InvalidMessage, encodeResourceEvict(a, .{ .kind = .face, .id = 0, .generation = 1, .reason = .explicit }, &bytes));
+}
+
+test "string resource codecs enforce UTF-8 and bounded exact payloads" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    const ascii = StringDefine{ .resource_id = 12, .generation = 3, .bytes = "hello" };
+    try encodeStringDefine(a, ascii, &bytes);
+    const decoded_ascii = try decodeStringDefine(bytes.items);
+    try std.testing.expectEqual(ascii.resource_id, decoded_ascii.resource_id);
+    try std.testing.expectEqual(ascii.generation, decoded_ascii.generation);
+    try std.testing.expectEqualStrings(ascii.bytes, decoded_ascii.bytes);
+
+    bytes.clearRetainingCapacity();
+    const unicode = StringDefine{ .resource_id = 13, .generation = 4, .bytes = "é🎉" };
+    try encodeStringDefine(a, unicode, &bytes);
+    const decoded_unicode = try decodeStringDefine(bytes.items);
+    try std.testing.expectEqualStrings(unicode.bytes, decoded_unicode.bytes);
+
+    bytes.clearRetainingCapacity();
+    const oversized = StringDefine{ .resource_id = 1, .generation = 1, .bytes = &[_]u8{'x'} ** (max_string_bytes + 1) };
+    try std.testing.expectError(Error.InvalidMessage, encodeStringDefine(a, oversized, &bytes));
+    var bad_length: [16]u8 = undefined;
+    std.mem.writeInt(u32, bad_length[0..4], 1, .little);
+    std.mem.writeInt(u32, bad_length[4..8], 1, .little);
+    std.mem.writeInt(u32, bad_length[8..12], max_string_bytes + 1, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeStringDefine(&bad_length));
+
+    bytes.clearRetainingCapacity();
+    try encodeStringDefine(a, ascii, &bytes);
+    try std.testing.expectError(Error.InvalidTable, decodeStringDefine(bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeStringDefine(bytes.items));
+    bytes.clearRetainingCapacity();
+    try encodeStringDefine(a, ascii, &bytes);
+    bytes.items[12] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeStringDefine(bytes.items));
+    bytes.items[12] = 'h';
+    bytes.items[13] = 0xff;
+    try std.testing.expectError(Error.InvalidUtf8, decodeStringDefine(bytes.items));
+    bytes.items[13] = 'e';
+    bytes.items[0] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeStringDefine(bytes.items));
+
+    bytes.clearRetainingCapacity();
+    const deletion = StringDelete{ .resource_id = 14, .generation = 2 };
+    try encodeStringDelete(a, deletion, &bytes);
+    try std.testing.expectEqual(deletion, try decodeStringDelete(bytes.items));
+    bytes.items[4] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeStringDelete(bytes.items));
+    bytes.items[7] = 2;
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeStringDelete(bytes.items));
 }
 
 test "optional and required message policy follows EUP classes" {

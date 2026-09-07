@@ -600,7 +600,7 @@ Tasks:
 2. Implement font define/metrics/delete.
 3. Implement image metadata and payload fragmentation.
 4. Implement fringe bitmap publication.
-5. Implement icon/string resources.
+5. Implement icon/string resources. *(W6-a covers bounded string define/delete only.)*
 6. Implement generation invalidation.
 7. Implement resource request handling.
 8. Add cache limit diagnostics.
@@ -617,6 +617,24 @@ Review gates:
 1. Resource lifecycle correctness.
 2. Transport reliability.
 3. Memory bounds.
+
+#### W6-a status
+
+Status: W6-a complete as a bounded adapter/frontend resource contract.
+
+`STRING_DEFINE` (`0x050e`) carries a nonzero resource ID and generation,
+a byte length of 1..4096, and exactly that many non-NUL UTF-8 bytes.
+`STRING_DELETE` (`0x050f`) is exactly two nonzero little-endian `u32` values.
+The decoder rejects truncation, trailing bytes, oversize, invalid UTF-8, NUL,
+and invalid identity.
+
+The frontend scene enforces normal session and contiguous-sequence rules, owns
+at most 64 string payloads, synchronizes identity/generation through the
+existing resource registry, allocates before mutation, rejects equal/stale
+generations atomically, releases exact-generation deletes, and clears strings
+on destroy/resync/deinit. `resource.string_v1` is degraded and non-negotiable
+with `proto-ui-unit` evidence. `resource.v1` and face/font/image resources
+remain pending; no renderer claim is made.
 
 ### W7 — Transport and recovery
 
