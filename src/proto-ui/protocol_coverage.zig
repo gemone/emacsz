@@ -80,7 +80,7 @@ const ranges = [_]Range{
     .{ .low = 0x0210, .high = 0x0210, .status = .implemented_codec, .domain = .frame, .family = "frame-focus", .note = "state codec, Scene registry, bridge conformance" },
     .{ .low = 0x0211, .high = 0x0211, .status = .implemented_codec, .domain = .frame, .family = "frame-size-hints", .note = "min/max, increment, and aspect-ratio hints; Scene state with SDL min/max/aspect, increments pending" },
     .{ .low = 0x0212, .high = 0x0212, .status = .implemented_codec, .domain = .frame, .family = "frame-z-order", .note = "raise/lower/top/bottom/above/below codec, Scene state, SDL always-on-top probe" },
-    .{ .low = 0x0213, .high = 0x0213, .status = .planned, .domain = .frame, .family = "frame-parent", .note = "nullable parent/modal child-frame payload pending" },
+    .{ .low = 0x0213, .high = 0x0213, .status = .implemented_codec, .domain = .frame, .family = "frame-parent", .note = "nullable parent/modal codec, Scene state, SDL unparent probe; linked child windows pending" },
     .{ .low = 0x0214, .high = 0x0214, .status = .implemented_codec, .domain = .frame, .family = "frame-decorations", .note = "undecorated/decorated codec, Scene state, SDL probe" },
     .{ .low = 0x0300, .high = 0x030a, .status = .planned, .domain = .window, .family = "window-tree", .note = "authoritative window-tree messages pending" },
     .{ .low = 0x0400, .high = 0x0404, .status = .planned, .domain = .render, .family = "render-debug", .note = "granular render boundary/row messages pending" },

@@ -1280,6 +1280,7 @@ pub const Scene = struct {
     icon: ?protocol.FrameIconPayload = null,
     size_hints: ?protocol.FrameSizeHintsPayload = null,
     z_order: ?protocol.FrameZOrderPayload = null,
+    parent: ?protocol.FrameParentPayload = null,
     present: ?PresentHint = null,
     viewport: ?Viewport = null,
     window_tree: ?protocol.WindowTreeSnapshot = null,
@@ -1312,6 +1313,7 @@ pub const Scene = struct {
         self.icon = null;
         self.size_hints = null;
         self.z_order = null;
+        self.parent = null;
         self.windows = .empty;
         self.rows = .empty;
         self.glyph_runs = .empty;
@@ -1406,6 +1408,7 @@ pub const Scene = struct {
             protocol.Message.frame_icon => try self.applyFrameIcon(payload),
             protocol.Message.frame_size_hints => try self.applyFrameSizeHints(payload),
             protocol.Message.frame_z_order => try self.applyFrameZOrder(payload),
+            protocol.Message.frame_parent => try self.applyFrameParent(payload),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.font_define => try self.applyFontDefine(payload),
@@ -1434,6 +1437,7 @@ pub const Scene = struct {
         self.icon = null;
         self.size_hints = null;
         self.z_order = null;
+        self.parent = null;
         self.clearGlyphRuns();
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
@@ -1733,6 +1737,27 @@ pub const Scene = struct {
                 return Error.InvalidMessage;
         }
         self.z_order = z_order;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFrameParent(self: *Scene, payload: protocol.Payload) Error!void {
+        const parent = try protocol.decodeFrameParent(payload.bytes);
+        try protocol.validateFrameParentEnvelope(parent, payload.envelope);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != parent.child_frame_generation)
+            return Error.InvalidMessage;
+
+        const has_parent = parent.flags & protocol.FrameParentFlags.present != 0;
+        if (has_parent) {
+            if (parent.parent_frame_id == frame.frame_id) return Error.InvalidMessage;
+            const parent_frame = self.frames.lookup(parent.parent_frame_id) orelse
+                return Error.FrameNotActive;
+            if (parent_frame.status != .active or
+                parent_frame.generation != parent.parent_frame_generation)
+                return Error.InvalidMessage;
+        }
+        self.parent = parent;
         self.stats.control_messages += 1;
     }
 
@@ -2571,6 +2596,29 @@ fn frameZOrderMessage(
         .frame_id = envelope_frame,
         .timestamp_ns = sequence,
     }, z_order_payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
+fn frameParentMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    envelope_frame: u32,
+    payload: protocol.FrameParentPayload,
+) ![]u8 {
+    var parent_payload: std.ArrayList(u8) = .empty;
+    defer parent_payload.deinit(a);
+    try protocol.encodeFrameParent(a, payload, &parent_payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_parent,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = envelope_frame,
+        .timestamp_ns = sequence,
+    }, parent_payload.items, &message);
     return message.toOwnedSlice(a);
 }
 
@@ -3910,6 +3958,121 @@ test "scene applies z-order only for valid identities and targets" {
 
     scene.resetForResync();
     try std.testing.expect(scene.z_order == null);
+}
+
+test "scene applies parent state only for valid identities and targets" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    const unparent = try frameParentMessage(a, 2, 7, .{
+        .child_frame_generation = 1,
+    });
+    defer a.free(unparent);
+    try scene.apply(unparent);
+    try std.testing.expectEqual(@as(u32, 1), scene.parent.?.child_frame_generation);
+
+    const self_parent = try frameParentMessage(a, 3, 7, .{
+        .flags = protocol.FrameParentFlags.present,
+        .parent_frame_id = 7,
+        .parent_frame_generation = 1,
+        .child_frame_generation = 1,
+    });
+    defer a.free(self_parent);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(self_parent));
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+    try std.testing.expect(scene.parent != null);
+    try std.testing.expectEqual(
+        @as(u32, 0),
+        scene.parent.?.parent_frame_id,
+    );
+
+    const stale_parent = try frameParentMessage(a, 3, 7, .{
+        .flags = protocol.FrameParentFlags.present,
+        .parent_frame_id = 8,
+        .parent_frame_generation = 2,
+        .child_frame_generation = 1,
+    });
+    defer a.free(stale_parent);
+    try std.testing.expectError(Error.FrameNotActive, scene.apply(stale_parent));
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+
+    try scene.frames.createObserved(8, 1, .visible, true);
+    const wrong_generation = try frameParentMessage(a, 3, 7, .{
+        .flags = protocol.FrameParentFlags.present,
+        .parent_frame_id = 8,
+        .parent_frame_generation = 2,
+        .child_frame_generation = 1,
+    });
+    defer a.free(wrong_generation);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_generation));
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+
+    const linked = try frameParentMessage(a, 3, 7, .{
+        .flags = protocol.FrameParentFlags.present | protocol.FrameParentFlags.modal,
+        .parent_frame_id = 8,
+        .parent_frame_generation = 1,
+        .child_frame_generation = 1,
+    });
+    defer a.free(linked);
+    try scene.apply(linked);
+    try std.testing.expectEqual(@as(u32, 8), scene.parent.?.parent_frame_id);
+    try std.testing.expectEqual(
+        protocol.FrameParentFlags.present | protocol.FrameParentFlags.modal,
+        scene.parent.?.flags,
+    );
+
+    const wrong_child = try frameParentMessage(a, 4, 7, .{
+        .flags = protocol.FrameParentFlags.present,
+        .parent_frame_id = 8,
+        .parent_frame_generation = 1,
+        .child_frame_generation = 2,
+    });
+    defer a.free(wrong_child);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_child));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+    try std.testing.expectEqual(@as(u32, 8), scene.parent.?.parent_frame_id);
+
+    const wrong_envelope = try frameParentMessage(a, 4, 8, .{
+        .flags = protocol.FrameParentFlags.present,
+        .parent_frame_id = 7,
+        .parent_frame_generation = 1,
+        .child_frame_generation = 1,
+    });
+    defer a.free(wrong_envelope);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_envelope));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const duplicate = try frameParentMessage(a, 3, 7, .{
+        .child_frame_generation = 1,
+    });
+    defer a.free(duplicate);
+    try std.testing.expectError(Error.InvalidSequence, scene.apply(duplicate));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    var destroy_payload: [8]u8 = undefined;
+    std.mem.writeInt(u32, destroy_payload[0..4], 7, .little);
+    std.mem.writeInt(u32, destroy_payload[4..8], 1, .little);
+    var destroy: std.ArrayList(u8) = .empty;
+    defer destroy.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_destroy,
+        .sequence = 4,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 7,
+        .timestamp_ns = 4,
+    }, &destroy_payload, &destroy);
+    try scene.apply(destroy.items);
+    try std.testing.expect(scene.parent == null);
+
+    scene.resetForResync();
+    try std.testing.expect(scene.parent == null);
 }
 
 test "scene applies standard session control and pauses frame traffic" {

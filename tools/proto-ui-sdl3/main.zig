@@ -72,6 +72,7 @@ extern fn SDL_GetWindowBordersSize(window: *SDL_Window, top: *c_int, left: *c_in
 extern fn SDL_SetWindowIcon(window: *SDL_Window, icon: *SDL_Surface) bool;
 extern fn SDL_CreateSurfaceFrom(width: c_int, height: c_int, format: SDL_PixelFormat, pixels: ?*anyopaque, pitch: c_int) ?*SDL_Surface;
 extern fn SDL_DestroySurface(surface: *SDL_Surface) void;
+extern fn SDL_SetWindowParent(window: *SDL_Window, parent: ?*SDL_Window) bool;
 extern fn SDL_SetWindowMinimumSize(window: *SDL_Window, min_w: c_int, min_h: c_int) bool;
 extern fn SDL_SetWindowMaximumSize(window: *SDL_Window, max_w: c_int, max_h: c_int) bool;
 extern fn SDL_SetWindowAspectRatio(window: *SDL_Window, min_aspect: f32, max_aspect: f32) bool;
@@ -2501,6 +2502,26 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (scene.z_order == null or scene.z_order.?.operation != .top)
         return error.RuntimeBridgeZOrderInvalid;
 
+    var parent_payload: std.ArrayList(u8) = .empty;
+    defer parent_payload.deinit(gpa);
+    try protocol.encodeFrameParent(gpa, .{
+        .child_frame_generation = bridge.eup_frame_generation,
+    }, &parent_payload);
+    var parent: std.ArrayList(u8) = .empty;
+    defer parent.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_parent,
+        .sequence = 22,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, parent_payload.items, &parent);
+    try scene.apply(parent.items);
+    if (scene.parent == null or scene.parent.?.flags & protocol.FrameParentFlags.present != 0)
+        return error.RuntimeBridgeParentInvalid;
+
     if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
         scene.glyph_runs.items.len != 1 or scene.cursor == null)
         return error.RuntimeBridgeSceneInvalid;
@@ -2527,6 +2548,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         return sdlFail("SDL_CreateWindow");
     defer SDL_DestroyWindow(window);
     SDL_SetWindowTitle(window, scene.title.?.ptr);
+    const parent_unparented = SDL_SetWindowParent(window, null);
+    if (!parent_unparented) return sdlFail("SDL_SetWindowParent");
     var icon_applied = false;
     if (scene.icon) |icon_state| {
         if (icon_state.flags & protocol.FrameIconFlags.present != 0) {
@@ -2822,12 +2845,13 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,
             size_hints_supported,
             z_order_supported,
+            parent_unparented,
             opacity_supported,
             decorations_supported,
             scale_supported,

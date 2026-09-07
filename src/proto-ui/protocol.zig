@@ -79,6 +79,7 @@ pub const Message = struct {
     pub const frame_decorations: u16 = 0x0214;
     pub const frame_size_hints: u16 = 0x0211;
     pub const frame_z_order: u16 = 0x0212;
+    pub const frame_parent: u16 = 0x0213;
     pub const frame_scale: u16 = 0x020f;
     pub const frame_fullscreen: u16 = 0x020b;
     pub const frame_geometry: u16 = 0x0207;
@@ -1255,6 +1256,22 @@ pub const FrameZOrderPayload = struct {
     relative_frame_id: u32 = 0,
     relative_frame_generation: u32 = 0,
     reserved_tail: u32 = 0,
+};
+
+pub const FrameParentFlags = struct {
+    pub const present: u8 = 1 << 0;
+    pub const modal: u8 = 1 << 1;
+    pub const known: u8 = present | modal;
+};
+
+pub const FrameParentPayload = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    parent_frame_id: u32 = 0,
+    parent_frame_generation: u32 = 0,
+    child_frame_generation: u32,
+    reserved_tail: [8]u8 = .{ 0, 0, 0, 0, 0, 0, 0, 0 },
 };
 
 pub const PresentDamageKind = enum(u8) {
@@ -2510,6 +2527,62 @@ pub fn validateFrameZOrderEnvelope(payload: FrameZOrderPayload, envelope: Envelo
     if (envelope.frame_id == 0) return Error.InvalidMessage;
 }
 
+fn validateFrameParent(payload: FrameParentPayload) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or
+        payload.flags & ~FrameParentFlags.known != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0)) return Error.InvalidMessage;
+    if (payload.child_frame_generation == 0) return Error.InvalidMessage;
+
+    const has_parent = payload.flags & FrameParentFlags.present != 0;
+    const modal = payload.flags & FrameParentFlags.modal != 0;
+    const parent_values_present = payload.parent_frame_id != 0 and
+        payload.parent_frame_generation != 0;
+    const parent_values_absent = payload.parent_frame_id == 0 and
+        payload.parent_frame_generation == 0;
+    if (has_parent and !parent_values_present) return Error.InvalidMessage;
+    if (!has_parent and !parent_values_absent) return Error.InvalidMessage;
+    if (modal and !has_parent) return Error.InvalidMessage;
+}
+
+pub fn encodeFrameParent(
+    a: std.mem.Allocator,
+    payload: FrameParentPayload,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameParent(payload);
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &bytes, payload.schema, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, payload.flags);
+    try out.append(a, payload.reserved);
+    var word: [4]u8 = undefined;
+    inline for (.{ payload.parent_frame_id, payload.parent_frame_generation, payload.child_frame_generation }) |value| {
+        std.mem.writeInt(u32, &word, value, .little);
+        try out.appendSlice(a, &word);
+    }
+    try out.appendSlice(a, &payload.reserved_tail);
+}
+
+pub fn decodeFrameParent(data: []const u8) Error!FrameParentPayload {
+    if (data.len != 24) return Error.InvalidTable;
+    const payload = FrameParentPayload{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .parent_frame_id = std.mem.readInt(u32, data[4..8], .little),
+        .parent_frame_generation = std.mem.readInt(u32, data[8..12], .little),
+        .child_frame_generation = std.mem.readInt(u32, data[12..16], .little),
+        .reserved_tail = data[16..24][0..8].*,
+    };
+    try validateFrameParent(payload);
+    return payload;
+}
+
+pub fn validateFrameParentEnvelope(payload: FrameParentPayload, envelope: Envelope) Error!void {
+    try validateFrameParent(payload);
+    if (envelope.frame_id == 0) return Error.InvalidMessage;
+}
+
 pub fn encodeResourceRequests(a: std.mem.Allocator, requests: []const ResourceRequest, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
     if (requests.len > max_resource_requests) return Error.Unsupported;
     try putU32(out, a, @intCast(requests.len));
@@ -3742,6 +3815,59 @@ test "frame z-order payload enforces operation and relative identity" {
     invalid = relative;
     invalid.frame_generation = 0;
     try std.testing.expectError(Error.InvalidMessage, encodeFrameZOrder(a, invalid, &bytes));
+}
+
+test "frame parent payload enforces nullable and modal relations" {
+    const a = std.testing.allocator;
+    const child = FrameParentPayload{ .child_frame_generation = 3 };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFrameParent(a, child, &bytes);
+    try std.testing.expectEqual(@as(usize, 24), bytes.items.len);
+    try std.testing.expectEqual(child, try decodeFrameParent(bytes.items));
+
+    const linked = FrameParentPayload{
+        .flags = FrameParentFlags.present | FrameParentFlags.modal,
+        .parent_frame_id = 7,
+        .parent_frame_generation = 1,
+        .child_frame_generation = 3,
+    };
+    var no_parent_generation = linked;
+    no_parent_generation.flags = FrameParentFlags.present;
+    no_parent_generation.parent_frame_generation = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameParent(a, no_parent_generation, &bytes));
+
+    bytes.clearRetainingCapacity();
+    try encodeFrameParent(a, linked, &bytes);
+    try std.testing.expectEqual(linked, try decodeFrameParent(bytes.items));
+
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameParent(bytes.items));
+    bytes.items[0] = 1;
+    bytes.items[2] = FrameParentFlags.modal;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameParent(bytes.items));
+    bytes.items[2] = FrameParentFlags.present | FrameParentFlags.modal;
+    bytes.items[2] = 4;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameParent(bytes.items));
+    bytes.items[2] = FrameParentFlags.present | FrameParentFlags.modal;
+    bytes.items[12] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameParent(bytes.items));
+    bytes.items[12] = 3;
+    bytes.items[4] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameParent(bytes.items));
+    bytes.items[4] = 7;
+    bytes.items[8] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameParent(bytes.items));
+    bytes.items[8] = 1;
+    bytes.items[20] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameParent(bytes.items));
+    bytes.items[20] = 0;
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFrameParent(bytes.items));
+
+    var invalid = child;
+    invalid.child_frame_generation = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameParent(a, invalid, &bytes));
 }
 
 test "resource request and evict codecs enforce strict wire form" {

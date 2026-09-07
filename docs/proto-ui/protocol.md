@@ -385,6 +385,39 @@ only `top` to SDL's always-on-top flag, verifies it, and restores the normal
 state. Raise/lower mapping is WM-dependent, bottom has no portable SDL
 operation, and relative above/below remain pending.
 
+#### Frame parent state
+
+`FRAME_PARENT` (`0x0213`) carries a nullable parent-frame relation in exactly
+24 little-endian bytes:
+
+| Offset | Size | Field | Rule |
+|---|---:|---|---|
+| 0 | 2 | `schema` | `1` |
+| 2 | 1 | `flags` | bit `0=parent present`; bit `1=modal`; other bits zero |
+| 3 | 1 | `reserved` | zero |
+| 4 | 4 | `parent_frame_id` | nonzero only when parent-present |
+| 8 | 4 | `parent_frame_generation` | nonzero only when parent-present |
+| 12 | 4 | `child_frame_generation` | nonzero |
+| 16 | 8 | `reserved_tail` | zero |
+
+The envelope frame ID identifies the child and its active frame generation must
+equal `child_frame_generation`. Parent-present requires both parent fields;
+unparent requires both fields to be zero, and `modal` requires parent-present.
+`Scene` rejects self-parenting and stores a linked relation only for another
+active frame with the exact generation. It stores the relation policy and
+clears it on frame destruction, authenticated resync, or scene teardown. The
+diagnostic SDL bridge applies and verifies the nullable unparent path. Linked
+SDL child surfaces, modal propagation, and Emacs child-frame parity remain
+pending.
+
+The envelope frame ID identifies the child and its active frame generation must
+equal `child_frame_generation`. When `parent-present` is set, the parent ID and
+generation must be nonzero; `modal` requires a parent. When absent, the parent
+fields must be zero. `Scene` stores the relation policy and clears it on frame
+destruction, authenticated resync, or scene teardown. The diagnostic SDL bridge
+applies and verifies the nullable unparent path. Linked SDL child surfaces,
+modal propagation, and Emacs child-frame parity remain pending.
+
 ## 11. Window messages
 
 | ID | Name | Direction | Payload | Semantics |

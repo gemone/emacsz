@@ -206,8 +206,8 @@ Priorities:
 | Maximize horizontal/vertical | P1 | Degraded | EUP `FRAME_MAXIMIZE` v1 carries independent axis flags; SDL probes/restores both-axis maximization, while single-axis mapping, geometry adaptation, and PGTK parity remain pending |
 | Undecorated frame | P1 | Degraded | EUP `FRAME_DECORATIONS` v1 maps decorated/undecorated policy to the diagnostic SDL border flag; persistence, parent/tooltip policies, and PGTK parity remain pending |
 | Override redirect | P2 | Pending | W12/W16 PGTK parity gate not met |
-| Parent frame | P2 | Pending | W12/W16 PGTK parity gate not met |
-| Child frame | P2 | Pending | W12/W16 PGTK parity gate not met |
+| Parent frame | P2 | Degraded | EUP `FRAME_PARENT` v1 models nullable parent relation and modal policy; Scene validates active-parent identity and the SDL probe verifies unparent path, while linked child-window ownership remains pending |
+| Child frame | P2 | Pending | EUP relation policy exists, but linked SDL child ownership, visibility propagation, tooltip behavior, and Emacs child-frame parity remain pending |
 | Tooltip frame | P2 | Pending | W12/W16 PGTK parity gate not met |
 | Title/name | P0 | Degraded | EUP `FRAME_TITLE` v1 resolves a generation-qualified string and sets the diagnostic SDL window title; Emacs title publication and frame-parameter parity remain pending |
 | Icon | P1 | Degraded | `FRAME_ICON` v1 references a complete RGBA image and SDL applies an icon surface; multi-resolution, animated, and taskbar parity remain pending |
@@ -468,7 +468,7 @@ parity.
 
 | Layer | Working now | Still required for parity | Evidence |
 |---|---|---|---|
-| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 53 implemented codecs, 3 partial, and 108 planned; no unassigned or unclassified ID | Production implementation of the 108 planned IDs |
+| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 54 implemented codecs, 3 partial, and 107 planned; no unassigned or unclassified ID | Production implementation of the 107 planned IDs |
 | Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry, deterministic ordered/resync/ACK-loss/ERP1 convergence differential with
 `RESOURCE_SNAPSHOT`-aware concrete face/font/string/image fingerprints, bounded EPXL capability negotiation/status manifest, frame visibility/focus state codec, bounded resource payload cache/eviction policy, request/evict codecs, bounded string define/delete, fixed-layout face/font/image define/data/delete, and atomic concrete `RESOURCE_SNAPSHOT` v1 restore with frontend ownership, optional host frame-state ABI seam, terminal-lifecycle core, generated read-only C adapter, dynamically linkable observation library, bounded host-frame to EUP-frame service mapping, deterministic atomic capture batches, deterministic protocol fuzz hardening, and bounded process-level frontend crash isolation, and negotiated strict focus/window observation | General resource/widget capability coverage, arbitrary recovery, remote safety, runtime terminal registration | `proto-ui-conformance`, `proto-ui-unit`, `proto-ui-fuzz`, `proto-ui-recovery-diff`, `proto-ui-crash-isolation`, `proto-ui-shim-conformance`, `proto-ui-shim-library-conformance`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
 | Emacs observation | Real Emacs process publishes public frame/window geometry, bounded printable-ASCII text, point/cursor, and viewport facts; W12c creates/deletes one real display-backed frame and synchronizes one EUP/SDL3 frame lifecycle; W10e renders that public-facts marker through the bounded glyph-run debug fallback | Redisplay-owned rows/glyphs/faces/fonts, full window tree, `output_proto`-owned frame creation/deletion, runtime visibility/focus events | `proto-ui-module-smoke`, `sdl3-emacs-smoke`, `sdl3-epxl-facts-smoke`, `sdl3-frame-smoke` |
