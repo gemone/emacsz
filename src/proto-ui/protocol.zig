@@ -2713,7 +2713,7 @@ pub fn validateFrameFlushEnvelope(payload: FrameFlushPayload, envelope: Envelope
     if (envelope.frame_id == 0) return Error.InvalidMessage;
 }
 
-fn validateRenderHint(payload: RenderHintPayload) Error!void {
+pub fn validateRenderHint(payload: RenderHintPayload) Error!void {
     if (payload.schema != 1 or payload.flags & ~@as(u8, RenderHintFlags.known) != 0 or
         payload.reserved != 0 or
         !std.mem.allEqual(u8, &payload.reserved_after_workload, 0) or

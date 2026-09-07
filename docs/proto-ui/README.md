@@ -192,7 +192,8 @@ exclusions.  A marker, config finding, or oversized unreviewed text file fails
 the gate.
 
 P13 render-control preparation adds exact 40-byte `FLUSH` and 32-byte
-`RENDER_HINT` EUP v1 payloads.  `Scene` validates the fixed wire form and
+`RENDER_HINT` EUP v1 payloads.  The runtime bridge emits `FLUSH` only for the
+latest captured frame sequence; `Scene` validates the fixed wire form and
 active frame generation, retains the present boundary and renderer preference,
 and the SDL runtime-bridge smoke proves acceptance after a frame update.  This
 is adapter protocol state; core redisplay emission and renderer pacing remain

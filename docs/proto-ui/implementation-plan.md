@@ -3208,10 +3208,12 @@ owner/geometry validation and SDL rendering evidence.  Cursor styles,
 IME-coupled caret behavior, and redisplay-owned cursor semantics remain
 pending.
 P13 render-control preparation adds strict fixed-width `FLUSH` and
-`RENDER_HINT` codecs.  The Scene validates active frame identity, stores the
-present boundary and renderer preference, and the SDL runtime-bridge smoke
-proves acceptance after a real frame update.  Core redisplay emission,
-adaptive pacing, and guaranteed renderer-mode switching remain pending.
+`RENDER_HINT` codecs.  The runtime bridge emits `FLUSH` only for the latest
+captured frame sequence and emits the configured hint through the same EUP
+stream.  The Scene validates active frame identity, stores the present boundary
+and renderer preference, and the SDL runtime-bridge smoke proves acceptance
+after a real frame update.  Core redisplay emission, adaptive pacing, and
+guaranteed renderer-mode switching remain pending.
 P12 maximize preparation adds `FRAME_MAXIMIZE` v1 for horizontal and vertical
 axis flags.  The diagnostic SDL bridge applies and restores both-axis
 maximization; single-axis mapping and redisplay adaptation remain pending.

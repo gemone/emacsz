@@ -2549,53 +2549,24 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (scene.cursor == null or scene.cursor.?.x != 16)
         return error.RuntimeBridgeCursorUpdateInvalid;
 
-    const frame_header = scene.frame_header orelse return error.RuntimeBridgeFrameHeaderInvalid;
-    var flush_payload: std.ArrayList(u8) = .empty;
-    defer flush_payload.deinit(gpa);
-    try protocol.encodeFrameFlush(gpa, .{
-        .flags = protocol.FrameFlushFlags.present_required,
-        .frame_generation = bridge.eup_frame_generation,
-        .redisplay_generation = frame_header.redisplay_generation,
-        .frame_sequence = frame_header.sequence,
-        .deadline_ns = 1,
-        .damage_kind = .partial,
-    }, &flush_payload);
+    if (scene.frame_header == null) return error.RuntimeBridgeFrameHeaderInvalid;
+    try bridge.setRenderHint(.{
+        .mode = .mailbox,
+        .workload = .typing,
+        .damage_only_allowed = true,
+        .deadline_ns = 2,
+    });
+    try bridge.flush();
     var flush: std.ArrayList(u8) = .empty;
     defer flush.deinit(gpa);
-    try protocol.encodeEnvelope(gpa, .{
-        .flags = 0,
-        .message_type = protocol.Message.flush,
-        .sequence = 24,
-        .ack_sequence = 0,
-        .session_id = capability.session_id,
-        .frame_id = @intCast(bridge.frame.id),
-        .timestamp_ns = 1,
-    }, flush_payload.items, &flush);
+    try bridge.encodeFlush(gpa, 24, capability.session_id, 1, &flush);
     try scene.apply(flush.items);
-    if (scene.flush == null or scene.flush.?.damage_kind != .partial)
+    if (scene.flush == null or scene.flush.?.damage_kind != .full)
         return error.RuntimeBridgeFlushInvalid;
 
-    var render_hint_payload: std.ArrayList(u8) = .empty;
-    defer render_hint_payload.deinit(gpa);
-    try protocol.encodeRenderHint(gpa, .{
-        .flags = protocol.RenderHintFlags.damage_only_allowed |
-            protocol.RenderHintFlags.deadline_present,
-        .preferred_mode = .mailbox,
-        .workload = .typing,
-        .frame_generation = bridge.eup_frame_generation,
-        .deadline_ns = 2,
-    }, &render_hint_payload);
     var render_hint: std.ArrayList(u8) = .empty;
     defer render_hint.deinit(gpa);
-    try protocol.encodeEnvelope(gpa, .{
-        .flags = 0,
-        .message_type = protocol.Message.render_hint,
-        .sequence = 25,
-        .ack_sequence = 0,
-        .session_id = capability.session_id,
-        .frame_id = @intCast(bridge.frame.id),
-        .timestamp_ns = 1,
-    }, render_hint_payload.items, &render_hint);
+    try bridge.encodeRenderHint(gpa, 25, capability.session_id, 1, &render_hint);
     try scene.apply(render_hint.items);
     if (scene.render_hint == null or scene.render_hint.?.preferred_mode != .mailbox)
         return error.RuntimeBridgeRenderHintInvalid;

@@ -86,6 +86,14 @@ pub const Counts = struct {
     damage: usize = 0,
 };
 
+pub const RenderHintRequest = struct {
+    mode: protocol.RenderHintMode = .auto,
+    workload: protocol.RenderHintWorkload = .unspecified,
+    damage_only_allowed: bool = false,
+    refresh_interval_ns: u64 = 0,
+    deadline_ns: u64 = 0,
+};
+
 pub const Bridge = struct {
     table: runtime_host.PureRuntimeHostV1,
     state: State = .idle,
@@ -105,6 +113,9 @@ pub const Bridge = struct {
     input_states: [max_tracked_inputs]InputState = undefined,
     input_count: usize = 0,
     lifecycle: LifecycleCounters = .{},
+    last_frame_sequence: u64 = 0,
+    last_flushed_frame_sequence: u64 = 0,
+    render_hint: ?protocol.RenderHintPayload = null,
     frame_state: ?FrameRuntimeState = null,
     frame_geometry: ?runtime_host.adapter.Geometry = null,
 
@@ -443,7 +454,7 @@ pub const Bridge = struct {
     }
 
     pub fn encodeFrameUpdate(
-        self: *const Bridge,
+        self: *Bridge,
         gpa: std.mem.Allocator,
         sequence: u64,
         session_id: u64,
@@ -553,6 +564,86 @@ pub const Bridge = struct {
             .ack_sequence = 0,
             .session_id = session_id,
             .frame_id = frame_id,
+            .timestamp_ns = timestamp_ns,
+        }, payload.items, out);
+        self.last_frame_sequence = sequence;
+    }
+
+    pub fn setRenderHint(self: *Bridge, request: RenderHintRequest) Error!void {
+        switch (self.state) {
+            .frame_registered, .capturing, .captured => {},
+            else => return error.InvalidState,
+        }
+        const payload: protocol.RenderHintPayload = .{
+            .flags = (if (request.damage_only_allowed) protocol.RenderHintFlags.damage_only_allowed else 0) |
+                (if (request.deadline_ns != 0) protocol.RenderHintFlags.deadline_present else 0) |
+                (if (request.refresh_interval_ns != 0) protocol.RenderHintFlags.refresh_interval_present else 0),
+            .preferred_mode = request.mode,
+            .workload = request.workload,
+            .frame_generation = self.eup_frame_generation,
+            .refresh_interval_ns = request.refresh_interval_ns,
+            .deadline_ns = request.deadline_ns,
+        };
+        try protocol.validateRenderHint(payload);
+        self.render_hint = payload;
+    }
+
+    pub fn encodeFlush(
+        self: *Bridge,
+        gpa: std.mem.Allocator,
+        sequence: u64,
+        session_id: u64,
+        timestamp_ns: u64,
+        out: *std.ArrayList(u8),
+    ) Error!void {
+        try self.requireState(.captured);
+        if (self.last_frame_sequence == 0 or
+            self.last_flushed_frame_sequence == self.last_frame_sequence)
+            return error.InvalidState;
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(gpa);
+        try protocol.encodeFrameFlush(gpa, .{
+            .flags = protocol.FrameFlushFlags.present_required,
+            .frame_generation = self.eup_frame_generation,
+            .redisplay_generation = self.redisplay_generation,
+            .frame_sequence = self.last_frame_sequence,
+            .deadline_ns = 0,
+            .damage_kind = .full,
+        }, &payload);
+        try protocol.encodeEnvelope(gpa, .{
+            .flags = 0,
+            .message_type = protocol.Message.flush,
+            .sequence = sequence,
+            .ack_sequence = 0,
+            .session_id = session_id,
+            .frame_id = @intCast(self.frame.id),
+            .timestamp_ns = timestamp_ns,
+        }, payload.items, out);
+        self.last_flushed_frame_sequence = self.last_frame_sequence;
+    }
+
+    pub fn encodeRenderHint(
+        self: *const Bridge,
+        gpa: std.mem.Allocator,
+        sequence: u64,
+        session_id: u64,
+        timestamp_ns: u64,
+        out: *std.ArrayList(u8),
+    ) Error!void {
+        try self.requireState(.captured);
+        const payload_state = self.render_hint orelse return error.InvalidState;
+        if (payload_state.frame_generation != self.eup_frame_generation)
+            return error.InvalidFrameIdentity;
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(gpa);
+        try protocol.encodeRenderHint(gpa, payload_state, &payload);
+        try protocol.encodeEnvelope(gpa, .{
+            .flags = 0,
+            .message_type = protocol.Message.render_hint,
+            .sequence = sequence,
+            .ack_sequence = 0,
+            .session_id = session_id,
+            .frame_id = @intCast(self.frame.id),
             .timestamp_ns = timestamp_ns,
         }, payload.items, out);
     }
@@ -851,14 +942,40 @@ test "pure runtime bridge produces a valid bounded EUP frame lifecycle" {
     try std.testing.expectEqual(@as(usize, 1), scene.rows.items.len);
     try std.testing.expect(scene.cursor != null);
 
+    try bridge.setRenderHint(.{
+        .mode = .adaptive_vsync,
+        .workload = .typing,
+        .damage_only_allowed = true,
+        .refresh_interval_ns = 16_666_667,
+        .deadline_ns = 2,
+    });
+    try bridge.flush();
     var visibility: std.ArrayList(u8) = .empty;
     defer visibility.deinit(gpa);
-    try bridge.encodeFrameVisibility(gpa, 3, 9, 3, &visibility);
+    try bridge.encodeFlush(gpa, 3, 9, 3, &visibility);
     try scene.apply(visibility.items);
+    try std.testing.expect(scene.flush != null);
+    try std.testing.expectEqual(@as(u64, 2), scene.flush.?.frame_sequence);
+    try std.testing.expectEqual(protocol.FrameFlushDamageKind.full, scene.flush.?.damage_kind);
+
+    var duplicate_flush: std.ArrayList(u8) = .empty;
+    defer duplicate_flush.deinit(gpa);
+    try std.testing.expectError(error.InvalidState, bridge.encodeFlush(gpa, 3, 9, 3, &duplicate_flush));
+
+    var hint: std.ArrayList(u8) = .empty;
+    defer hint.deinit(gpa);
+    try bridge.encodeRenderHint(gpa, 4, 9, 4, &hint);
+    try scene.apply(hint.items);
+    try std.testing.expectEqual(protocol.RenderHintMode.adaptive_vsync, scene.render_hint.?.preferred_mode);
+
+    var visibility_next: std.ArrayList(u8) = .empty;
+    defer visibility_next.deinit(gpa);
+    try bridge.encodeFrameVisibility(gpa, 5, 9, 5, &visibility_next);
+    try scene.apply(visibility_next.items);
 
     var focus: std.ArrayList(u8) = .empty;
     defer focus.deinit(gpa);
-    try bridge.encodeFrameFocus(gpa, 4, 9, 4, &focus);
+    try bridge.encodeFrameFocus(gpa, 6, 9, 6, &focus);
     try scene.apply(focus.items);
     try std.testing.expectEqual(
         protocol.FrameVisibilityState.visible,
@@ -868,7 +985,7 @@ test "pure runtime bridge produces a valid bounded EUP frame lifecycle" {
 
     var run: std.ArrayList(u8) = .empty;
     defer run.deinit(gpa);
-    try bridge.encodeRun(gpa, 0, 5, 9, 5, &run);
+    try bridge.encodeRun(gpa, 0, 7, 9, 7, &run);
     try scene.apply(run.items);
     try std.testing.expectEqual(@as(usize, 1), scene.glyph_runs.items.len);
     try std.testing.expectEqualStrings("Emacs", scene.glyph_runs.items[0].text);
@@ -876,7 +993,7 @@ test "pure runtime bridge produces a valid bounded EUP frame lifecycle" {
     try bridge.destroy();
     var destroy: std.ArrayList(u8) = .empty;
     defer destroy.deinit(gpa);
-    try bridge.encodeFrameDestroy(gpa, 6, 9, 6, &destroy);
+    try bridge.encodeFrameDestroy(gpa, 8, 9, 8, &destroy);
     try scene.apply(destroy.items);
     try std.testing.expectEqual(State.destroyed, bridge.state);
     try std.testing.expectEqual(@as(usize, 0), scene.windows.items.len);
