@@ -55,6 +55,9 @@ pub const Message = struct {
     pub const face_delete: u16 = 0x0502;
     pub const font_define: u16 = 0x0503;
     pub const font_delete: u16 = 0x0506;
+    pub const image_define: u16 = 0x0507;
+    pub const image_data: u16 = 0x0508;
+    pub const image_delete: u16 = 0x0509;
     pub const string_define: u16 = 0x050e;
     pub const string_delete: u16 = 0x050f;
     pub const key_event: u16 = 0x0600;
@@ -170,9 +173,15 @@ pub const max_resource_requests: usize = 64;
 pub const max_string_bytes: usize = 4096;
 pub const face_record_size: usize = 96;
 pub const font_record_size: usize = 224;
+pub const image_record_size: usize = 72;
+pub const image_data_header_size: usize = 16;
 pub const max_font_family_bytes: usize = 64;
 pub const max_font_foundry_bytes: usize = 32;
 pub const max_font_style_bytes: usize = 32;
+pub const max_image_dimension: u32 = 8192;
+pub const max_image_bytes: usize = 4 * 1024 * 1024;
+pub const max_image_fragments: u16 = 256;
+pub const max_image_fragment_bytes: usize = 65536;
 
 pub const FaceStyle = enum(u8) {
     unspecified = 0,
@@ -326,6 +335,72 @@ pub const FontDelete = struct {
     generation: u32,
 };
 
+pub const ImagePixelFormat = enum(u16) {
+    rgba8_premultiplied = 1,
+};
+
+pub const ImageColorSpace = enum(u16) {
+    srgb = 1,
+};
+
+pub const ImageAlphaMode = enum(u16) {
+    premultiplied = 1,
+};
+
+pub const ImageScalingFilter = enum(u16) {
+    nearest = 1,
+    linear = 2,
+};
+
+pub const ImageTransform = enum(u16) {
+    identity = 1,
+};
+
+pub const ImageCachePolicy = enum(u16) {
+    lru = 1,
+    pinned = 2,
+};
+
+/// Fixed-layout IMAGE_DEFINE v1.  It describes at most one static RGBA8
+/// image; pixel bytes arrive through ordered IMAGE_DATA fragments.
+pub const ImageDefine = struct {
+    image_id: u32,
+    generation: u32,
+    width: u32,
+    height: u32,
+    total_byte_count: u32,
+    format: ImagePixelFormat = .rgba8_premultiplied,
+    color_space: ImageColorSpace = .srgb,
+    alpha_mode: ImageAlphaMode = .premultiplied,
+    scaling_filter: ImageScalingFilter = .nearest,
+    transform: ImageTransform = .identity,
+    cache_policy: ImageCachePolicy = .lru,
+    animation_frame_count: u16 = 1,
+    animation_duration_ns: u32 = 0,
+};
+
+pub const ImageData = struct {
+    image_id: u32,
+    generation: u32,
+    fragment_index: u16,
+    fragment_count: u16,
+    bytes: []const u8,
+};
+
+pub const ImageDelete = struct {
+    image_id: u32,
+    generation: u32,
+};
+
+fn validateImageDefine(payload: ImageDefine) Error!void {
+    if (payload.image_id == 0 or payload.generation == 0) return Error.InvalidMessage;
+    if (payload.width < 1 or payload.width > max_image_dimension or
+        payload.height < 1 or payload.height > max_image_dimension) return Error.InvalidMessage;
+    const required: u64 = @as(u64, payload.width) * @as(u64, payload.height) * 4;
+    if (required > max_image_bytes or payload.total_byte_count != required) return Error.InvalidMessage;
+    if (payload.animation_frame_count != 1 or payload.animation_duration_ns != 0) return Error.InvalidMessage;
+}
+
 fn validateFontMetadata(
     bytes: []const u8,
     used_len: usize,
@@ -433,6 +508,123 @@ pub fn decodeStringDelete(data: []const u8) Error!StringDelete {
         .generation = std.mem.readInt(u32, data[4..8], .little),
     };
     try validateStringIdentity(payload.resource_id, payload.generation);
+    return payload;
+}
+
+pub fn encodeImageDefineBytes(payload: ImageDefine) Error![image_record_size]u8 {
+    try validateImageDefine(payload);
+    var bytes: [image_record_size]u8 = @splat(0);
+    std.mem.writeInt(u32, bytes[0..4], payload.image_id, .little);
+    std.mem.writeInt(u32, bytes[4..8], payload.generation, .little);
+    std.mem.writeInt(u32, bytes[8..12], payload.width, .little);
+    std.mem.writeInt(u32, bytes[12..16], payload.height, .little);
+    std.mem.writeInt(u32, bytes[16..20], payload.total_byte_count, .little);
+    std.mem.writeInt(u16, bytes[20..22], @intFromEnum(payload.format), .little);
+    std.mem.writeInt(u16, bytes[22..24], @intFromEnum(payload.color_space), .little);
+    std.mem.writeInt(u16, bytes[24..26], @intFromEnum(payload.alpha_mode), .little);
+    std.mem.writeInt(u16, bytes[26..28], @intFromEnum(payload.scaling_filter), .little);
+    std.mem.writeInt(u16, bytes[28..30], @intFromEnum(payload.transform), .little);
+    std.mem.writeInt(u16, bytes[30..32], @intFromEnum(payload.cache_policy), .little);
+    std.mem.writeInt(u16, bytes[32..34], payload.animation_frame_count, .little);
+    std.mem.writeInt(u32, bytes[34..38], payload.animation_duration_ns, .little);
+    return bytes;
+}
+
+pub fn encodeImageDefine(a: std.mem.Allocator, payload: ImageDefine, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    const bytes = try encodeImageDefineBytes(payload);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeImageDefine(data: []const u8) Error!ImageDefine {
+    if (data.len != image_record_size) return Error.InvalidTable;
+    for (data[38..]) |byte| {
+        if (byte != 0) return Error.InvalidReserved;
+    }
+    const payload = ImageDefine{
+        .image_id = std.mem.readInt(u32, data[0..4], .little),
+        .generation = std.mem.readInt(u32, data[4..8], .little),
+        .width = std.mem.readInt(u32, data[8..12], .little),
+        .height = std.mem.readInt(u32, data[12..16], .little),
+        .total_byte_count = std.mem.readInt(u32, data[16..20], .little),
+        .format = switch (std.mem.readInt(u16, data[20..22], .little)) {
+            1 => .rgba8_premultiplied,
+            else => return Error.InvalidStyle,
+        },
+        .color_space = switch (std.mem.readInt(u16, data[22..24], .little)) {
+            1 => .srgb,
+            else => return Error.InvalidStyle,
+        },
+        .alpha_mode = switch (std.mem.readInt(u16, data[24..26], .little)) {
+            1 => .premultiplied,
+            else => return Error.InvalidStyle,
+        },
+        .scaling_filter = switch (std.mem.readInt(u16, data[26..28], .little)) {
+            1 => .nearest,
+            2 => .linear,
+            else => return Error.InvalidStyle,
+        },
+        .transform = switch (std.mem.readInt(u16, data[28..30], .little)) {
+            1 => .identity,
+            else => return Error.InvalidStyle,
+        },
+        .cache_policy = switch (std.mem.readInt(u16, data[30..32], .little)) {
+            1 => .lru,
+            2 => .pinned,
+            else => return Error.InvalidStyle,
+        },
+        .animation_frame_count = std.mem.readInt(u16, data[32..34], .little),
+        .animation_duration_ns = std.mem.readInt(u32, data[34..38], .little),
+    };
+    try validateImageDefine(payload);
+    return payload;
+}
+
+pub fn encodeImageData(a: std.mem.Allocator, payload: ImageData, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    if (payload.image_id == 0 or payload.generation == 0) return Error.InvalidMessage;
+    if (payload.fragment_count < 1 or payload.fragment_count > max_image_fragments or
+        payload.fragment_index >= payload.fragment_count) return Error.InvalidMessage;
+    if (payload.bytes.len < 1 or payload.bytes.len > max_image_fragment_bytes) return Error.InvalidMessage;
+    try putU32(out, a, payload.image_id);
+    try putU32(out, a, payload.generation);
+    try putU16(out, a, payload.fragment_index);
+    try putU16(out, a, payload.fragment_count);
+    try putU32(out, a, @intCast(payload.bytes.len));
+    try out.appendSlice(a, payload.bytes);
+}
+
+pub fn decodeImageData(data: []const u8) Error!ImageData {
+    if (data.len < image_data_header_size) return Error.InvalidTable;
+    const byte_length = std.mem.readInt(u32, data[12..16], .little);
+    if (byte_length < 1 or byte_length > max_image_fragment_bytes) return Error.InvalidMessage;
+    if (data.len != image_data_header_size + @as(usize, byte_length)) return Error.InvalidTable;
+    const payload = ImageData{
+        .image_id = std.mem.readInt(u32, data[0..4], .little),
+        .generation = std.mem.readInt(u32, data[4..8], .little),
+        .fragment_index = std.mem.readInt(u16, data[8..10], .little),
+        .fragment_count = std.mem.readInt(u16, data[10..12], .little),
+        .bytes = data[image_data_header_size..],
+    };
+    if (payload.image_id == 0 or payload.generation == 0) return Error.InvalidMessage;
+    if (payload.fragment_count < 1 or payload.fragment_count > max_image_fragments or
+        payload.fragment_index >= payload.fragment_count) return Error.InvalidMessage;
+    return payload;
+}
+
+pub fn encodeImageDelete(a: std.mem.Allocator, payload: ImageDelete, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    if (payload.image_id == 0 or payload.generation == 0) return Error.InvalidMessage;
+    var bytes: [8]u8 = undefined;
+    std.mem.writeInt(u32, bytes[0..4], payload.image_id, .little);
+    std.mem.writeInt(u32, bytes[4..8], payload.generation, .little);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeImageDelete(data: []const u8) Error!ImageDelete {
+    if (data.len != 8) return Error.InvalidTable;
+    const payload = ImageDelete{
+        .image_id = std.mem.readInt(u32, data[0..4], .little),
+        .generation = std.mem.readInt(u32, data[4..8], .little),
+    };
+    if (payload.image_id == 0 or payload.generation == 0) return Error.InvalidMessage;
     return payload;
 }
 
@@ -1911,4 +2103,58 @@ test "face codecs preserve the fixed v1 wire subset" {
     try std.testing.expectError(Error.InvalidMessage, decodeFaceDelete(bytes.items));
     try bytes.append(a, 0);
     try std.testing.expectError(Error.InvalidTable, decodeFaceDelete(bytes.items));
+}
+
+fn imageFixture(id: u32, generation: u32) ImageDefine {
+    return .{
+        .image_id = id,
+        .generation = generation,
+        .width = 2,
+        .height = 2,
+        .total_byte_count = 16,
+    };
+}
+
+test "image codecs validate fixed metadata, fragments, and deletes" {
+    const metadata = imageFixture(7, 2);
+    const wire = try encodeImageDefineBytes(metadata);
+    try std.testing.expectEqual(image_record_size, wire.len);
+    try std.testing.expectEqual(metadata, try decodeImageDefine(&wire));
+
+    var reserved = wire;
+    reserved[38] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeImageDefine(&reserved));
+
+    var bad_total = imageFixture(7, 2);
+    bad_total.total_byte_count = 15;
+    try std.testing.expectError(Error.InvalidMessage, encodeImageDefineBytes(bad_total));
+
+    var oversized_dimension = imageFixture(7, 2);
+    oversized_dimension.width = max_image_dimension;
+    oversized_dimension.height = max_image_dimension;
+    try std.testing.expectError(Error.InvalidMessage, encodeImageDefineBytes(oversized_dimension));
+
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(std.testing.allocator);
+    try encodeImageData(std.testing.allocator, .{
+        .image_id = 7,
+        .generation = 2,
+        .fragment_index = 0,
+        .fragment_count = 2,
+        .bytes = "ABCD",
+    }, &bytes);
+    const data = try decodeImageData(bytes.items);
+    try std.testing.expectEqualSlices(u8, "ABCD", data.bytes);
+    bytes.items[image_data_header_size] = 0;
+    try std.testing.expectEqual(@as(u8, 0), data.bytes[0]);
+
+    try bytes.append(std.testing.allocator, 'x');
+    try std.testing.expectError(Error.InvalidTable, decodeImageData(bytes.items));
+    bytes.items[bytes.items.len - 1] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeImageData(bytes.items));
+
+    bytes.clearRetainingCapacity();
+    try encodeImageDelete(std.testing.allocator, .{ .image_id = 7, .generation = 2 }, &bytes);
+    try std.testing.expectEqual(@as(u32, 7), (try decodeImageDelete(bytes.items)).image_id);
+    try std.testing.expectError(Error.InvalidTable, decodeImageDelete(bytes.items[0..7]));
 }

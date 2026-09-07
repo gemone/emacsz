@@ -166,6 +166,7 @@ pub const max_resources = lifecycle.max_resources;
 pub const max_string_resources: usize = 64;
 pub const max_face_resources: usize = 64;
 pub const max_font_resources: usize = 64;
+pub const max_image_resources: usize = 8;
 
 pub const FaceResource = struct {
     face_id: u32,
@@ -461,6 +462,182 @@ pub const FontResources = struct {
         }
         self.len -= 1;
         self.counters.deletes += 1;
+    }
+};
+
+pub const ImageResource = struct {
+    image_id: u32,
+    generation: u32,
+    metadata: protocol.ImageDefine,
+    bytes: []u8 = &.{},
+    bytes_received: usize = 0,
+    fragments_received: u16 = 0,
+    complete: bool = false,
+};
+
+pub const ImageResourceCounters = struct {
+    defines: u64 = 0,
+    replacements: u64 = 0,
+    complete: u64 = 0,
+    deletes: u64 = 0,
+    rejections: u64 = 0,
+};
+
+/// Images are protocol-global bounded resources.  They survive frame destroy
+/// so a replacement frame can reference the same pixel generation; explicit
+/// deletion, authenticated resync, or scene teardown removes them.
+pub const ImageResources = struct {
+    images: [max_image_resources]ImageResource = undefined,
+    len: usize = 0,
+    declared_bytes: usize = 0,
+    counters: ImageResourceCounters = .{},
+
+    fn find(self: ImageResources, image_id: u32) ?usize {
+        for (self.images[0..self.len], 0..) |resource, index| {
+            if (resource.image_id == image_id) return index;
+        }
+        return null;
+    }
+
+    pub fn lookup(self: ImageResources, image_id: u32) ?ImageResource {
+        const index = self.find(image_id) orelse return null;
+        return self.images[index];
+    }
+
+    fn define(
+        self: *ImageResources,
+        allocator: std.mem.Allocator,
+        resources: *lifecycle.ResourceRegistry,
+        metadata: protocol.ImageDefine,
+    ) Error!void {
+        const existing_index = self.find(metadata.image_id);
+        if (existing_index) |index| {
+            if (metadata.generation <= self.images[index].generation) {
+                self.counters.rejections += 1;
+                return Error.StaleGeneration;
+            }
+        }
+
+        const existing_declared = if (existing_index) |index| self.images[index].metadata.total_byte_count else 0;
+        const next_declared = self.declared_bytes - existing_declared + metadata.total_byte_count;
+        if (next_declared > protocol.max_image_bytes) {
+            self.counters.rejections += 1;
+            return Error.ResourcePayloadBudgetExceeded;
+        }
+        if (existing_index == null and
+            (self.len == max_image_resources or resources.len == lifecycle.max_resources))
+        {
+            self.counters.rejections += 1;
+            return Error.ResourceTableFull;
+        }
+
+        try resources.declareAll(&[_]lifecycle.Resource{.{
+            .kind = .image,
+            .id = metadata.image_id,
+            .generation = metadata.generation,
+            .status = .live,
+        }});
+
+        if (existing_index) |index| {
+            allocator.free(self.images[index].bytes);
+            self.images[index] = .{
+                .image_id = metadata.image_id,
+                .generation = metadata.generation,
+                .metadata = metadata,
+            };
+            self.counters.replacements += 1;
+        } else {
+            self.images[self.len] = .{
+                .image_id = metadata.image_id,
+                .generation = metadata.generation,
+                .metadata = metadata,
+            };
+            self.len += 1;
+            self.counters.defines += 1;
+        }
+        self.declared_bytes = next_declared;
+    }
+
+    fn data(
+        self: *ImageResources,
+        allocator: std.mem.Allocator,
+        payload: protocol.ImageData,
+    ) Error!void {
+        const index = self.find(payload.image_id) orelse {
+            self.counters.rejections += 1;
+            return Error.ResourceNotLive;
+        };
+        const image = &self.images[index];
+        if (image.generation != payload.generation) {
+            self.counters.rejections += 1;
+            return Error.StaleGeneration;
+        }
+        if (payload.fragment_index != image.fragments_received) {
+            self.counters.rejections += 1;
+            return Error.InvalidSequence;
+        }
+        const fragment_len = payload.bytes.len;
+        if (@as(u64, image.fragments_received) + 1 > payload.fragment_count) {
+            self.counters.rejections += 1;
+            return Error.InvalidSequence;
+        }
+        const next_received: u64 = @as(u64, image.bytes_received) + fragment_len;
+        if (fragment_len > image.metadata.total_byte_count or
+            next_received > image.metadata.total_byte_count)
+        {
+            self.counters.rejections += 1;
+            return Error.ResourcePayloadTooLarge;
+        }
+        const is_final = @as(u64, image.fragments_received) + 1 == payload.fragment_count;
+        if (is_final and next_received != image.metadata.total_byte_count) {
+            self.counters.rejections += 1;
+            return Error.InvalidMessage;
+        }
+        if (image.bytes.len == 0 and image.fragments_received == 0 and !image.complete) {
+            image.bytes = allocator.alloc(u8, image.metadata.total_byte_count) catch {
+                self.counters.rejections += 1;
+                return Error.OutOfMemory;
+            };
+        }
+
+        const copy_start = image.bytes_received;
+        @memcpy(image.bytes[copy_start..][0..fragment_len], payload.bytes);
+        image.bytes_received = copy_start + fragment_len;
+        image.fragments_received += 1;
+
+        if (is_final) {
+            image.complete = true;
+            self.counters.complete += 1;
+        }
+    }
+
+    fn delete(
+        self: *ImageResources,
+        allocator: std.mem.Allocator,
+        resources: *lifecycle.ResourceRegistry,
+        payload: protocol.ImageDelete,
+    ) Error!void {
+        const index = self.find(payload.image_id) orelse {
+            self.counters.rejections += 1;
+            return Error.ResourceNotLive;
+        };
+        if (self.images[index].generation != payload.generation) {
+            self.counters.rejections += 1;
+            return Error.StaleGeneration;
+        }
+        try resources.delete(.image, payload.image_id, payload.generation);
+        self.declared_bytes -= self.images[index].metadata.total_byte_count;
+        allocator.free(self.images[index].bytes);
+        if (index + 1 < self.len) {
+            std.mem.copyForwards(ImageResource, self.images[index .. self.len - 1], self.images[index + 1 .. self.len]);
+        }
+        self.len -= 1;
+        self.counters.deletes += 1;
+    }
+
+    fn clear(self: *ImageResources, allocator: std.mem.Allocator) void {
+        for (self.images[0..self.len]) |resource| allocator.free(resource.bytes);
+        self.* = .{};
     }
 };
 
@@ -841,6 +1018,7 @@ pub const Scene = struct {
     strings: StringResources = .{},
     faces: FaceResources = .{},
     fonts: FontResources = .{},
+    images: ImageResources = .{},
     cursor: ?Cursor = null,
     damage: std.ArrayList(Rect) = .empty,
     text: std.ArrayList(TextLine) = .empty,
@@ -859,6 +1037,7 @@ pub const Scene = struct {
         self.strings.deinit(self.allocator);
         self.faces = .{};
         self.fonts = .{};
+        self.images.clear(self.allocator);
         for (self.text.items) |line| self.allocator.free(line.bytes);
         self.text.deinit(self.allocator);
         self.windows = .empty;
@@ -909,6 +1088,9 @@ pub const Scene = struct {
             protocol.Message.font_delete => try self.applyFontDelete(payload),
             protocol.Message.string_define => try self.applyStringDefine(payload),
             protocol.Message.string_delete => try self.applyStringDelete(payload),
+            protocol.Message.image_define => try self.applyImageDefine(payload),
+            protocol.Message.image_data => try self.applyImageData(payload),
+            protocol.Message.image_delete => try self.applyImageDelete(payload),
             else => self.stats.control_messages += 1,
         }
         self.next_sequence = next_sequence;
@@ -992,6 +1174,24 @@ pub const Scene = struct {
     fn applyFontDelete(self: *Scene, payload: protocol.Payload) Error!void {
         const font = try protocol.decodeFontDelete(payload.bytes);
         try self.fonts.delete(&self.resources, font);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyImageDefine(self: *Scene, payload: protocol.Payload) Error!void {
+        const image = try protocol.decodeImageDefine(payload.bytes);
+        try self.images.define(self.allocator, &self.resources, image);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyImageData(self: *Scene, payload: protocol.Payload) Error!void {
+        const image = try protocol.decodeImageData(payload.bytes);
+        try self.images.data(self.allocator, image);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyImageDelete(self: *Scene, payload: protocol.Payload) Error!void {
+        const image = try protocol.decodeImageDelete(payload.bytes);
+        try self.images.delete(self.allocator, &self.resources, image);
         self.stats.control_messages += 1;
     }
 
@@ -2318,4 +2518,333 @@ test "font resources survive frame destroy and clear on resync and deinit" {
         try std.testing.expect(scene.resources.lookup(.font, 21) == null);
         scene.deinit();
     }
+}
+
+fn frontendImageFixture(id: u32, generation: u32) protocol.ImageDefine {
+    return .{
+        .image_id = id,
+        .generation = generation,
+        .width = 2,
+        .height = 2,
+        .total_byte_count = 16,
+    };
+}
+
+fn imageMessage(
+    a: std.mem.Allocator,
+    message_type: u16,
+    sequence: u64,
+    payload: []const u8,
+) ![]u8 {
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = message_type,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .timestamp_ns = sequence,
+    }, payload, &message);
+    return message.toOwnedSlice(a);
+}
+
+test "image resources assemble ordered fragments and enforce generation lifecycle" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+
+    try protocol.encodeImageDefine(a, frontendImageFixture(10, 1), &payload);
+    const define = try imageMessage(a, protocol.Message.image_define, 2, payload.items);
+    defer a.free(define);
+    try scene.apply(define);
+    try std.testing.expect(!scene.images.lookup(10).?.complete);
+
+    const equal = try imageMessage(a, protocol.Message.image_define, 3, payload.items);
+    defer a.free(equal);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(equal));
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageData(a, .{
+        .image_id = 10,
+        .generation = 1,
+        .fragment_index = 0,
+        .fragment_count = 2,
+        .bytes = "ABCD",
+    }, &payload);
+    const ascii_fragment = try imageMessage(a, protocol.Message.image_data, 3, payload.items);
+    defer a.free(ascii_fragment);
+    try scene.apply(ascii_fragment);
+
+    const binary = [_]u8{ 0, 255, 1, 254, 2, 253, 3, 252, 4, 251, 5, 250 };
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageData(a, .{
+        .image_id = 10,
+        .generation = 1,
+        .fragment_index = 1,
+        .fragment_count = 2,
+        .bytes = &binary,
+    }, &payload);
+    const binary_fragment = try imageMessage(a, protocol.Message.image_data, 4, payload.items);
+    defer a.free(binary_fragment);
+    try scene.apply(binary_fragment);
+    try std.testing.expect(scene.images.lookup(10).?.complete);
+    try std.testing.expectEqual(@as(usize, 16), scene.images.lookup(10).?.bytes.len);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageData(a, .{
+        .image_id = 10,
+        .generation = 2,
+        .fragment_index = 0,
+        .fragment_count = 1,
+        .bytes = "wrong-generation",
+    }, &payload);
+    const wrong_generation = try imageMessage(a, protocol.Message.image_data, 5, payload.items);
+    defer a.free(wrong_generation);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(wrong_generation));
+    try std.testing.expectEqual(@as(u64, 5), scene.next_sequence.?);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageDefine(a, frontendImageFixture(10, 2), &payload);
+    const replacement = try imageMessage(a, protocol.Message.image_define, 5, payload.items);
+    defer a.free(replacement);
+    try scene.apply(replacement);
+    try std.testing.expectEqual(@as(usize, 0), scene.images.lookup(10).?.bytes.len);
+    try std.testing.expect(!scene.images.lookup(10).?.complete);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageData(a, .{
+        .image_id = 10,
+        .generation = 2,
+        .fragment_index = 0,
+        .fragment_count = 1,
+        .bytes = "ABCDEFGHIJKLMNOP",
+    }, &payload);
+    const complete_replacement = try imageMessage(a, protocol.Message.image_data, 6, payload.items);
+    defer a.free(complete_replacement);
+    try scene.apply(complete_replacement);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageDelete(a, .{ .image_id = 10, .generation = 2 }, &payload);
+    const deleted = try imageMessage(a, protocol.Message.image_delete, 7, payload.items);
+    defer a.free(deleted);
+    try scene.apply(deleted);
+    const duplicate = try imageMessage(a, protocol.Message.image_delete, 8, payload.items);
+    defer a.free(duplicate);
+    try std.testing.expectError(Error.ResourceNotLive, scene.apply(duplicate));
+    try std.testing.expectEqual(@as(u64, 8), scene.next_sequence.?);
+    scene.deinit();
+}
+
+test "image deletion covers complete and incomplete payloads and cleanup remains safe" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+
+    try protocol.encodeImageDefine(a, .{
+        .image_id = 11,
+        .generation = 1,
+        .width = 1,
+        .height = 1,
+        .total_byte_count = 4,
+    }, &payload);
+    const define = try imageMessage(a, protocol.Message.image_define, 2, payload.items);
+    defer a.free(define);
+    try scene.apply(define);
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageData(a, .{
+        .image_id = 11,
+        .generation = 1,
+        .fragment_index = 0,
+        .fragment_count = 1,
+        .bytes = "done",
+    }, &payload);
+    const data = try imageMessage(a, protocol.Message.image_data, 3, payload.items);
+    defer a.free(data);
+    try scene.apply(data);
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageDelete(a, .{ .image_id = 11, .generation = 1 }, &payload);
+    const complete_delete = try imageMessage(a, protocol.Message.image_delete, 4, payload.items);
+    defer a.free(complete_delete);
+    try scene.apply(complete_delete);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageDefine(a, .{
+        .image_id = 12,
+        .generation = 1,
+        .width = 1,
+        .height = 2,
+        .total_byte_count = 8,
+    }, &payload);
+    const second_define = try imageMessage(a, protocol.Message.image_define, 5, payload.items);
+    defer a.free(second_define);
+    try scene.apply(second_define);
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageData(a, .{
+        .image_id = 12,
+        .generation = 1,
+        .fragment_index = 0,
+        .fragment_count = 2,
+        .bytes = "half",
+    }, &payload);
+    const partial = try imageMessage(a, protocol.Message.image_data, 6, payload.items);
+    defer a.free(partial);
+    try scene.apply(partial);
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageDelete(a, .{ .image_id = 12, .generation = 1 }, &payload);
+    const incomplete_delete = try imageMessage(a, protocol.Message.image_delete, 7, payload.items);
+    defer a.free(incomplete_delete);
+    try scene.apply(incomplete_delete);
+
+    try std.testing.expectEqual(@as(usize, 0), scene.images.len);
+    try std.testing.expectEqual(@as(usize, 0), scene.images.declared_bytes);
+    scene.resetForResync();
+    scene.deinit();
+}
+
+test "image fragment order totals malformed records and limits fail closed" {
+    const a = std.testing.allocator;
+    var resources = lifecycle.ResourceRegistry{};
+    var images = ImageResources{};
+
+    try images.define(a, &resources, .{
+        .image_id = 20,
+        .generation = 1,
+        .width = 1,
+        .height = 2,
+        .total_byte_count = 8,
+    });
+    try images.data(a, .{
+        .image_id = 20,
+        .generation = 1,
+        .fragment_index = 0,
+        .fragment_count = 2,
+        .bytes = "half",
+    });
+    try std.testing.expectError(Error.InvalidSequence, images.data(a, .{
+        .image_id = 20,
+        .generation = 1,
+        .fragment_index = 0,
+        .fragment_count = 2,
+        .bytes = "dup!",
+    }));
+    try std.testing.expectError(Error.InvalidSequence, images.data(a, .{
+        .image_id = 20,
+        .generation = 1,
+        .fragment_index = 1,
+        .fragment_count = 1,
+        .bytes = "half",
+    }));
+    try images.data(a, .{
+        .image_id = 20,
+        .generation = 1,
+        .fragment_index = 1,
+        .fragment_count = 2,
+        .bytes = "tail",
+    });
+    try std.testing.expect(images.lookup(20).?.complete);
+
+    try images.define(a, &resources, .{
+        .image_id = 21,
+        .generation = 1,
+        .width = 1,
+        .height = 2,
+        .total_byte_count = 8,
+    });
+    try std.testing.expectError(Error.InvalidSequence, images.data(a, .{
+        .image_id = 21,
+        .generation = 1,
+        .fragment_index = 1,
+        .fragment_count = 2,
+        .bytes = "gap!",
+    }));
+    try images.define(a, &resources, .{
+        .image_id = 21,
+        .generation = 2,
+        .width = 1,
+        .height = 2,
+        .total_byte_count = 8,
+    });
+    try std.testing.expectEqual(@as(u16, 0), images.lookup(21).?.fragments_received);
+    try std.testing.expectError(Error.InvalidMessage, images.data(a, .{
+        .image_id = 21,
+        .generation = 2,
+        .fragment_index = 0,
+        .fragment_count = 1,
+        .bytes = "wrong",
+    }));
+    try images.delete(a, &resources, .{ .image_id = 21, .generation = 2 });
+    try images.delete(a, &resources, .{ .image_id = 20, .generation = 1 });
+
+    try images.define(a, &resources, .{
+        .image_id = 22,
+        .generation = 1,
+        .width = 1024,
+        .height = 1024,
+        .total_byte_count = protocol.max_image_bytes,
+    });
+    try std.testing.expectError(Error.ResourcePayloadBudgetExceeded, images.define(a, &resources, .{
+        .image_id = 23,
+        .generation = 1,
+        .width = 1,
+        .height = 1,
+        .total_byte_count = 4,
+    }));
+    try images.delete(a, &resources, .{ .image_id = 22, .generation = 1 });
+
+    for (0..max_image_resources) |index| {
+        try images.define(a, &resources, .{
+            .image_id = @intCast(100 + index),
+            .generation = 1,
+            .width = 1,
+            .height = 1,
+            .total_byte_count = 4,
+        });
+    }
+    try std.testing.expectError(Error.ResourceTableFull, images.define(a, &resources, .{
+        .image_id = 999,
+        .generation = 1,
+        .width = 1,
+        .height = 1,
+        .total_byte_count = 4,
+    }));
+    try images.define(a, &resources, .{
+        .image_id = 100,
+        .generation = 2,
+        .width = 1,
+        .height = 1,
+        .total_byte_count = 4,
+    });
+    images.clear(a);
+
+    var scene = Scene.init(a);
+    var malformed: [protocol.image_record_size]u8 = @splat(0);
+    const malformed_message = try imageMessage(a, protocol.Message.image_define, 2, &malformed);
+    defer a.free(malformed_message);
+    try std.testing.expectError(Error.InvalidStyle, scene.apply(malformed_message));
+
+    var oversized: [protocol.image_data_header_size + 8]u8 = @splat(0);
+    std.mem.writeInt(u32, oversized[12..16], protocol.max_image_fragment_bytes + 1, .little);
+    const oversized_message = try imageMessage(a, protocol.Message.image_data, 2, &oversized);
+    defer a.free(oversized_message);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(oversized_message));
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageData(a, .{
+        .image_id = 30,
+        .generation = 1,
+        .fragment_index = 0,
+        .fragment_count = 1,
+        .bytes = "abcd",
+    }, &payload);
+    const truncated_payload = payload.items[0 .. payload.items.len - 1];
+    const truncated = try imageMessage(a, protocol.Message.image_data, 2, truncated_payload);
+    defer a.free(truncated);
+    try std.testing.expectError(Error.InvalidTable, scene.apply(truncated));
+    scene.deinit();
 }

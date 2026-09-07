@@ -109,6 +109,14 @@ retention, and resync/teardown cleanup are tested.  This is not shaping,
 rasterization, rendering, redisplay font capture, Emacs font parity, or runtime
 enablement; `resource.v1` remains pending.
 
+W6-d adds the bounded `IMAGE_DEFINE`/`IMAGE_DATA`/`IMAGE_DELETE` v1 contract
+and its frontend-owned image table.  It covers a strict 72-byte static RGBA8
+metadata record, ordered fragmented payload assembly, a 4 MiB aggregate
+declared-byte budget, at most 8 active images, exact generation replacement and
+deletion, and resync/teardown cleanup.  It is not image decoding, color
+management, texture upload, scaling, rendering, redisplay image capture, Emacs
+image parity, or runtime enablement; `resource.v1` remains pending.
+
 W4c-b1-p0 adds the executable EUP v1 codec, including envelope, capability, message-ID, and FRAME_UPDATE section conformance.  W4c-b1-t0 adds bounded memory-sink sequencing and ERP1 replay-file conformance.  W4c-b1-b0 adds the versioned adapter ABI, a fake-host conformance harness, and generated ABI artifacts under `zig-out/include/proto-ui`; none introduces runtime integration.  Inherited C/Lisp changes in the rollback patch are restoration-only and return Proto-UI runtime files to their pre-Proto-UI state.  The adapter source is the authoritative ownership manifest; generated JSON is only a non-normative ABI summary.
 
 The documentation in this directory is the source of truth for the implementation workstreams.

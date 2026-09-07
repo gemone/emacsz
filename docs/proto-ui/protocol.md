@@ -385,9 +385,9 @@ These messages are reserved for tools, debug, and explicitly negotiated fallback
 | `0x0504` | `FONT_PATCH` | C→F | Descriptor patch | Update font |
 | `0x0505` | `FONT_METRICS` | C→F | Metric update | Authoritative metrics |
 | `0x0506` | `FONT_DELETE` | C→F | ID/generation | Invalidate bounded v1 font |
-| `0x0507` | `IMAGE_DEFINE` | C→F | Metadata/layout | Create image |
-| `0x0508` | `IMAGE_DATA` | C→F | Inline or fragmented pixels | Provide pixels |
-| `0x0509` | `IMAGE_DELETE` | C→F | ID/generation | Invalidate image |
+| `0x0507` | `IMAGE_DEFINE` | C→F | Fixed 72-byte static image subset (v1) | Create/replace incomplete image |
+| `0x0508` | `IMAGE_DATA` | C→F | Ordered RGBA8 fragments | Provide bounded pixels |
+| `0x0509` | `IMAGE_DELETE` | C→F | ID/generation | Invalidate bounded v1 image |
 | `0x050a` | `FRINGE_BITMAP_DEFINE` | C→F | Bits/geometry | Define fringe |
 | `0x050b` | `FRINGE_BITMAP_DELETE` | C→F | ID/generation | Invalidate fringe |
 | `0x050c` | `ICON_DEFINE` | C→F | Metadata/payload | Define icon |
@@ -523,7 +523,62 @@ protocol-global: frame destroy retains them, while resync and scene teardown
 clear them.  The active table is bounded to 64; replacement remains available
 at capacity.
 
-### Face resource
+### Image resource v1 (implemented bounded adapter contract)
+
+`IMAGE_DEFINE` is a fixed, little-endian 72-byte record.  It declares an
+incomplete static image and is **not** an Emacs image-object, decoding,
+scaling, animation, or rendering parity contract.  Payload layout:
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 4 | `image_id` | nonzero |
+| 4 | 4 | `generation` | nonzero |
+| 8 | 4 | `width` | 1..8192 pixels |
+| 12 | 4 | `height` | 1..8192 pixels |
+| 16 | 4 | `total_byte_count` | exactly `width * height * 4`, at most 4 MiB |
+| 20 | 2 | format | `rgba8_premultiplied=1` only |
+| 22 | 2 | color space | `srgb=1` only |
+| 24 | 2 | alpha mode | `premultiplied=1` only |
+| 26 | 2 | scaling filter | `nearest=1` or `linear=2` |
+| 28 | 2 | transform | `identity=1` only |
+| 30 | 2 | cache policy | `lru=1` or `pinned=2` |
+| 32 | 2 | animation frame count | exactly 1 |
+| 34 | 4 | animation duration ns | exactly 0 |
+| 38 | 34 | reserved | all zero |
+
+The width-times-height-times-four calculation is performed in 64-bit arithmetic
+before the 4 MiB check.  Decoders reject wrong size, invalid identity, invalid
+dimensions or totals, unsupported tags, animation fields, and nonzero reserved
+bytes.
+
+`IMAGE_DATA` is a little-endian 16-byte header followed by exact payload bytes:
+
+```text
+u32 image_id          nonzero
+u32 generation        nonzero
+u16 fragment_index    zero based and less than fragment_count
+u16 fragment_count    1..256
+u32 byte_length       1..65536
+u8  bytes[length]     exact wire payload
+```
+
+The frontend requires fragments beginning at index zero, with no gap or
+duplicate, for the exact declared generation.  A fragment must fit the declared
+total.  The final expected fragment is accepted only when the assembled byte
+count equals `total_byte_count`; otherwise the whole image remains incomplete
+and the message is rejected.  Decoders reject truncation, trailing bytes, zero
+identity, invalid fragment ranges, and oversized chunks.
+
+`IMAGE_DELETE` is exactly two nonzero little-endian `u32` values: `image_id`
+then `generation`.  A define needs a new image ID or strictly newer generation;
+equal/stale defines do not mutate state and replacement resets all fragment
+state.  Delete requires the exact live generation, works for complete or
+incomplete payloads, frees owned bytes, and marks the shared registry deleted.
+Images are protocol-global: frame destroy retains them, while resync and scene
+teardown clear them.  At most 8 images are active, and the sum of their
+declared pixel-byte totals is at most 4 MiB.
+
+### Face resource (full model, pending)
 
 Must include foreground, background, underline, overline, strike-through, box, inverse video, extend, stipple reference, font reference, and line-spacing fields where present.
 
@@ -531,7 +586,7 @@ Must include foreground, background, underline, overline, strike-through, box, i
 
 Must include family, foundry, slant, weight, width, pixel/point size, DPI, spacing, ascent, descent, line height, average/space/max/min width, baseline offset, underline metrics, scalable flag, feature tags, variation axes, and fallback chain when available.
 
-### Image resource
+### Image resource (full model, pending)
 
 Must include dimensions, stride, pixel format, color space, alpha mode, transform, scaling filter, cache policy, animation frame count/duration, and payload location.
 

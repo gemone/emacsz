@@ -678,6 +678,37 @@ wire subset, not shaping, rasterization, rendering, redisplay font capture, or
 Emacs font parity; `resource.v1`, images, full resource model, and
 `output_proto` remain pending.
 
+#### W6-d status
+
+Status: W6-d complete as a bounded adapter/frontend image resource contract.
+
+`IMAGE_DEFINE` (`0x0507`) is a fixed little-endian 72-byte record with
+nonzero identity/generation, dimensions bounded to 1..8192, an exact
+64-bit-checked `width * height * 4` total capped at 4 MiB, RGBA8
+premultiplied/sRGB/premultiplied-alpha tags only, nearest or linear scaling,
+identity transform, LRU or pinned cache policy, and exactly one zero-duration
+animation frame.  All reserved bytes are zero.
+
+`IMAGE_DATA` (`0x0508`) has a 16-byte little-endian header and exact payload
+bytes.  It permits 1..256 fragments of 1..65536 bytes, ordered without gaps or
+duplicates, for the exact declared generation.  Allocation is bounded by the
+declared total before fragment copying; the final fragment is accepted only
+when the assembled byte count exactly equals the declared total.  Wrong totals,
+oversized chunks, wrong generations, malformed metadata, duplicate/out-of-order
+fragments, truncation, and trailing bytes reject without sequence advance.
+
+`IMAGE_DELETE` (`0x0509`) uses exact nonzero identity/generation, works for
+complete or incomplete payloads, frees owned bytes, and synchronizes the image
+registry to `deleted`.  The frontend owns at most 8 active images and enforces
+an aggregate declared byte budget of 4 MiB.  A strictly newer generation may
+replace at capacity and resets prior fragments.  Images survive frame destroy
+intentionally; resync and scene teardown clear them.  `resource.image_v1` is
+degraded and non-negotiable with `proto-ui-unit` evidence.
+
+Limits: no actual image decoding, color management, texture upload, scaling,
+animation, rendering, redisplay image capture, Emacs image parity,
+`resource.v1`, host registration, or `output_proto` runtime is claimed.
+
 ### W7 — Transport and recovery
 
 Goal: support real frontend IPC and deterministic recovery.
