@@ -13,6 +13,7 @@ const renderer_policy = proto_ui.renderer;
 const input_policy = proto_ui.input;
 const protocol = proto_ui.protocol;
 const capability = proto_ui.capability;
+const session_codec = proto_ui.session;
 const transport = proto_ui.transport;
 const live = proto_ui.live;
 const runtime_bridge = proto_ui.runtime_bridge;
@@ -1042,17 +1043,19 @@ fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
         if (!negotiated.effective.contains(.session_control_v1))
             return error.SessionControlCapabilityNotNegotiated;
         const base_sequence = acks.next_sequence orelse return error.InvalidSequence;
-        const resumed_next_sequence = std.math.add(u64, base_sequence, 3) catch return error.InvalidSequence;
+        // The smoke sends exactly eight sequence values after replay.  Reject
+        // the sequence base before using any of the offsets below.
+        _ = std.math.add(u64, base_sequence, 7) catch return error.InvalidSequence;
         const sequences = [4]u64{
             base_sequence,
             base_sequence + 1,
             base_sequence + 2,
-            resumed_next_sequence,
+            base_sequence + 3,
         };
         var suspend_payload: [4]u8 = .{ 4, 0, 0, 0 };
         var resume_payload: [4]u8 = .{ 1, 0, 0, 0 };
         var resumed_payload: [8]u8 = undefined;
-        std.mem.writeInt(u64, &resumed_payload, resumed_next_sequence, .little);
+        std.mem.writeInt(u64, &resumed_payload, base_sequence + 3, .little);
 
         const control_messages = [_]struct { sequence: u64, message_type: u16, payload: []const u8 }{
             .{ .sequence = sequences[0], .message_type = protocol.Message.session_suspend, .payload = &suspend_payload },
@@ -1060,24 +1063,18 @@ fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
             .{ .sequence = sequences[2], .message_type = protocol.Message.session_resumed, .payload = &resumed_payload },
         };
         for (control_messages) |item| {
-            var message: std.ArrayList(u8) = .empty;
-            defer message.deinit(gpa);
-            try protocol.encodeEnvelope(gpa, .{
-                .flags = 0,
-                .message_type = item.message_type,
-                .sequence = item.sequence,
-                .ack_sequence = 0,
-                .session_id = capability.session_id,
-                .timestamp_ns = item.sequence,
-            }, item.payload, &message);
-            try acks.markSent(item.sequence);
-            try live.writeFrame(&writer.interface, message.items);
-            try writer.interface.flush();
-            var control_bytes: [live.control_size]u8 = undefined;
-            try reader.interface.readSliceAll(&control_bytes);
-            const control = try live.decodeControl(&control_bytes);
-            if (control.kind != .ack or control.sequence != item.sequence) return error.ExpectedAck;
-            try acks.ack(control.sequence);
+            try sendStandardEupFrame(
+                gpa,
+                &reader.interface,
+                &writer.interface,
+                &acks,
+                item.sequence,
+                item.message_type,
+                0,
+                0,
+                item.sequence,
+                item.payload,
+            );
         }
 
         var last_update: ?usize = null;
@@ -1093,26 +1090,84 @@ fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
         var update_payload: std.ArrayList(u8) = .empty;
         defer update_payload.deinit(gpa);
         try protocol.encodeFrameUpdate(gpa, update, &update_payload);
-        var cloned_update: std.ArrayList(u8) = .empty;
-        defer cloned_update.deinit(gpa);
-        try protocol.encodeEnvelope(gpa, .{
-            .flags = encoded_update.envelope.flags,
-            .message_type = encoded_update.envelope.message_type,
-            .sequence = sequences[3],
-            .ack_sequence = 0,
-            .session_id = encoded_update.envelope.session_id,
-            .frame_id = encoded_update.envelope.frame_id,
-            .timestamp_ns = encoded_update.envelope.timestamp_ns,
-        }, update_payload.items, &cloned_update);
-        try acks.markSent(sequences[3]);
-        try live.writeFrame(&writer.interface, cloned_update.items);
-        try writer.interface.flush();
-        var control_bytes: [live.control_size]u8 = undefined;
-        try reader.interface.readSliceAll(&control_bytes);
-        const control = try live.decodeControl(&control_bytes);
-        if (control.kind != .ack or control.sequence != sequences[3]) return error.ExpectedAck;
-        try acks.ack(control.sequence);
-        std.debug.print("sdl3-live-smoke: standard EUP suspend/resume carried over EPXL frames\n", .{});
+        try sendStandardEupFrame(
+            gpa,
+            &reader.interface,
+            &writer.interface,
+            &acks,
+            sequences[3],
+            encoded_update.envelope.message_type,
+            encoded_update.envelope.flags,
+            encoded_update.envelope.frame_id,
+            encoded_update.envelope.timestamp_ns,
+            update_payload.items,
+        );
+
+        var ping_payload: [8]u8 = undefined;
+        std.mem.writeInt(u64, &ping_payload, 42, .little);
+        try sendStandardEupFrame(
+            gpa,
+            &reader.interface,
+            &writer.interface,
+            &acks,
+            base_sequence + 4,
+            protocol.Message.ping,
+            0,
+            0,
+            base_sequence + 4,
+            &ping_payload,
+        );
+        var pong_payload: [8]u8 = undefined;
+        std.mem.writeInt(u64, &pong_payload, 42, .little);
+        try sendStandardEupFrame(
+            gpa,
+            &reader.interface,
+            &writer.interface,
+            &acks,
+            base_sequence + 5,
+            protocol.Message.pong,
+            0,
+            0,
+            base_sequence + 5,
+            &pong_payload,
+        );
+
+        var error_payload: std.ArrayList(u8) = .empty;
+        defer error_payload.deinit(gpa);
+        try session_codec.encodeSessionError(gpa, .{
+            .code = 101,
+            .severity = .recoverable,
+            .recoverable = true,
+            .message_resource_id = 12,
+            .detail = "recoverable",
+        }, &error_payload);
+        try sendStandardEupFrame(
+            gpa,
+            &reader.interface,
+            &writer.interface,
+            &acks,
+            base_sequence + 6,
+            protocol.Message.session_error,
+            0,
+            0,
+            base_sequence + 6,
+            error_payload.items,
+        );
+
+        const close_payload: [4]u8 = .{ 1, 0, 0, 0 };
+        try sendStandardEupFrame(
+            gpa,
+            &reader.interface,
+            &writer.interface,
+            &acks,
+            base_sequence + 7,
+            protocol.Message.session_close,
+            0,
+            0,
+            base_sequence + 7,
+            &close_payload,
+        );
+        std.debug.print("sdl3-live-smoke: standard EUP suspend/resume/liveness/error/close carried over EPXL frames\n", .{});
     }
 }
 
@@ -1909,6 +1964,39 @@ fn encodeSessionControlEnvelope(
     return message.toOwnedSlice(gpa);
 }
 
+fn sendStandardEupFrame(
+    gpa: std.mem.Allocator,
+    reader: anytype,
+    writer: anytype,
+    acks: *live.AckTracker,
+    sequence: u64,
+    message_type: u16,
+    flags: u16,
+    frame_id: u32,
+    timestamp_ns: u64,
+    payload: []const u8,
+) !void {
+    var message: std.ArrayList(u8) = .empty;
+    defer message.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = flags,
+        .message_type = message_type,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = frame_id,
+        .timestamp_ns = timestamp_ns,
+    }, payload, &message);
+    try acks.markSent(sequence);
+    try live.writeFrame(writer, message.items);
+    try writer.flush();
+    var control_bytes: [live.control_size]u8 = undefined;
+    try reader.readSliceAll(&control_bytes);
+    const control = try live.decodeControl(&control_bytes);
+    if (control.kind != .ack or control.sequence != sequence) return error.ExpectedAck;
+    try acks.ack(sequence);
+}
+
 fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     var host: runtime_host.FakeHost = undefined;
     const table = runtime_host.fakeTable(&host);
@@ -2476,6 +2564,8 @@ fn runLiveFrontend(
     var zero_token: live.Token = [_]u8{0} ** live.token_len;
     if (!live.tokenEql(&zero_token, &ready.token)) return error.InvalidHandshake;
     const negotiated = try negotiateFrontendSide(gpa, &reader.interface, &writer.interface);
+    if (config.standard_session_control and !negotiated.effective.contains(.session_control_v1))
+        return error.SessionControlCapabilityNotNegotiated;
     syncDeliveryCapabilities(delivery, negotiated.effective);
     if (negotiated.effective.contains(.platform_focus_window_events) != delivery.platform_negotiated)
         return error.CapabilityJournalMismatch;
@@ -4417,6 +4507,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             break :blk loaded;
         },
         .live => blk: {
+            // The publisher below always sends the standard-control sequence.
+            // Mark it on the parent before starting the frontend so capability
+            // enforcement and final-state assertions cannot be skipped.
+            config.standard_session_control = true;
             var token_bytes: [8]u8 = undefined;
             try io.randomSecure(&token_bytes);
             try io.randomSecure(&config.token);
@@ -4440,6 +4534,16 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             const loaded = try runLiveFrontend(gpa, io, &config, &delivery);
             const term = try child.wait(io);
             if (term != .exited or term.exited != 0) return error.PublisherFailed;
+            if (config.standard_session_control) {
+                if (loaded.control.stage != .closed or loaded.control.close_reason != .normal)
+                    return error.SessionControlNotClosed;
+                if (loaded.control.outstanding_ping_ns != 0)
+                    return error.SessionLivenessNotResolved;
+                if (loaded.control.recoverable_error_count != 1 or
+                    loaded.control.last_error_code != 101 or
+                    loaded.control.last_error_severity != .recoverable)
+                    return error.SessionErrorNotRecovered;
+            }
             std.Io.Dir.cwd().deleteTree(io, private_dir) catch {};
             gpa.free(private_dir);
             break :blk loaded;

@@ -198,10 +198,11 @@ is `u16 code` (nonzero), `u8 severity` (`1=info`, `2=warning`,
 `VERSION_MISMATCH` is `u16 required-major`, `u16 required-minor`,
 `u16 observed-major`, `u16 observed-minor`. It is always fatal control state.
 The standard setup state machine and bounded control state machine are
-implemented. EPXL's authenticated frame stream now carries and ACKs the
-suspend/resume/resumed sequence; close, liveness, error, and version-mismatch
-controls remain codec/state-machine coverage until their runtime owners are
-wired.
+implemented. EPXL's authenticated frame stream now carries and ACKs
+suspend/resume/resumed, PING/PONG, a recoverable ERROR, and normal
+SESSION_CLOSE. When standard control is requested, both transport peers reject
+the session unless `session.control_v1` was negotiated. VERSION_MISMATCH
+transport and an automatic frontend PONG responder remain runtime wiring work.
 
 ## 10. Frame messages
 

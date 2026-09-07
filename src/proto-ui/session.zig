@@ -737,6 +737,14 @@ test "session control state machine enforces ordered lifecycle" {
     try control.apply(protocol.Message.pong, &.{ 21, 0, 0, 0, 0, 0, 0, 0 });
     try std.testing.expectEqual(@as(u64, 0), control.outstanding_ping_ns);
 
+    try control.apply(protocol.Message.session_error, &.{
+        101, 0, 3, 1, 12, 0, 0, 0, 5, 0, 0, 0, 'r', 'e', 't', 'r', 'y',
+    });
+    try std.testing.expectEqual(ControlStage.active, control.stage);
+    try std.testing.expectEqual(@as(u16, 101), control.last_error_code);
+    try std.testing.expectEqual(ErrorSeverity.recoverable, control.last_error_severity);
+    try std.testing.expectEqual(@as(u64, 1), control.recoverable_error_count);
+
     try control.apply(protocol.Message.session_close, &.{ 1, 0, 0, 0 });
     try std.testing.expectEqual(ControlStage.closed, control.stage);
     try std.testing.expectError(error.InvalidSessionStage, control.apply(protocol.Message.ping, &.{ 22, 0, 0, 0, 0, 0, 0, 0 }));

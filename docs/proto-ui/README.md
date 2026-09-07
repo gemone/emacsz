@@ -82,10 +82,11 @@ W12c-ctl adds standard EUP `SESSION_SUSPEND`, `SESSION_RESUME`,
 `SESSION_RESUMED`, `SESSION_CLOSE`, `PING`, `PONG`, `ERROR`, and
 `VERSION_MISMATCH` codecs with a bounded control state machine.  `Scene` now
 blocks frame traffic while suspended and resumes only after `SESSION_RESUMED`,
-honoring that message's authoritative next sequence.  The SDL bridge proves
-suspend/resume recovery; terminal and liveness controls remain codec/state
-coverage.  `sdl3-live-smoke` now carries that suspend/resume sequence over
-authenticated EPXL frames.
+honoring that message's authoritative next sequence.  `sdl3-live-smoke` now
+carries suspend/resume, PING/PONG, a recoverable ERROR, and normal close over
+authenticated EPXL frames, then asserts the frontend reached a clean closed
+state and requires the control capability on both peers.  An automatic PONG
+responder and `VERSION_MISMATCH` transport remain pending.
 
 W12e adds a bounded adapter-owned resource payload cache with LRU eviction and
 strict wire contracts for `RESOURCE_REQUEST` and `RESOURCE_EVICT`.  The cache
