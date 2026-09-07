@@ -84,7 +84,8 @@ W12c-ctl adds standard EUP `SESSION_SUSPEND`, `SESSION_RESUME`,
 blocks frame traffic while suspended and resumes only after `SESSION_RESUMED`,
 honoring that message's authoritative next sequence.  The SDL bridge proves
 suspend/resume recovery; terminal and liveness controls remain codec/state
-coverage.  EPXL does not yet carry these standard messages.
+coverage.  `sdl3-live-smoke` now carries that suspend/resume sequence over
+authenticated EPXL frames.
 
 W12e adds a bounded adapter-owned resource payload cache with LRU eviction and
 strict wire contracts for `RESOURCE_REQUEST` and `RESOURCE_EVICT`.  The cache

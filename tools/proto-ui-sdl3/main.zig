@@ -362,6 +362,7 @@ const Config = struct {
     facts_path: []const u8 = "",
     auto_quit_ms: u32 = 250,
     resync_sessions: u32 = 1,
+    standard_session_control: bool = false,
     auto_input: ?[]const u8 = null,
     auto_key: ?frontend.KeyAction = null,
     renderer_request: []const u8 = "auto",
@@ -1020,7 +1021,7 @@ fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
     live.encodeHandshake(.{ .kind = .server_ready }, &ready);
     try writer.interface.writeAll(&ready);
     try writer.interface.flush();
-    _ = try negotiatePublisherSide(gpa, &reader.interface, &writer.interface);
+    const negotiated = try negotiatePublisherSide(gpa, &reader.interface, &writer.interface);
 
     const messages = try transport.readReplay(gpa, io, config.replay_path);
     defer transport.freeReplay(gpa, messages);
@@ -1035,6 +1036,83 @@ fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
         const control = try live.decodeControl(&control_bytes);
         if (control.kind != .ack) return error.ExpectedAck;
         try acks.ack(control.sequence);
+    }
+
+    if (config.standard_session_control) {
+        if (!negotiated.effective.contains(.session_control_v1))
+            return error.SessionControlCapabilityNotNegotiated;
+        const base_sequence = acks.next_sequence orelse return error.InvalidSequence;
+        const resumed_next_sequence = std.math.add(u64, base_sequence, 3) catch return error.InvalidSequence;
+        const sequences = [4]u64{
+            base_sequence,
+            base_sequence + 1,
+            base_sequence + 2,
+            resumed_next_sequence,
+        };
+        var suspend_payload: [4]u8 = .{ 4, 0, 0, 0 };
+        var resume_payload: [4]u8 = .{ 1, 0, 0, 0 };
+        var resumed_payload: [8]u8 = undefined;
+        std.mem.writeInt(u64, &resumed_payload, resumed_next_sequence, .little);
+
+        const control_messages = [_]struct { sequence: u64, message_type: u16, payload: []const u8 }{
+            .{ .sequence = sequences[0], .message_type = protocol.Message.session_suspend, .payload = &suspend_payload },
+            .{ .sequence = sequences[1], .message_type = protocol.Message.session_resume, .payload = &resume_payload },
+            .{ .sequence = sequences[2], .message_type = protocol.Message.session_resumed, .payload = &resumed_payload },
+        };
+        for (control_messages) |item| {
+            var message: std.ArrayList(u8) = .empty;
+            defer message.deinit(gpa);
+            try protocol.encodeEnvelope(gpa, .{
+                .flags = 0,
+                .message_type = item.message_type,
+                .sequence = item.sequence,
+                .ack_sequence = 0,
+                .session_id = capability.session_id,
+                .timestamp_ns = item.sequence,
+            }, item.payload, &message);
+            try acks.markSent(item.sequence);
+            try live.writeFrame(&writer.interface, message.items);
+            try writer.interface.flush();
+            var control_bytes: [live.control_size]u8 = undefined;
+            try reader.interface.readSliceAll(&control_bytes);
+            const control = try live.decodeControl(&control_bytes);
+            if (control.kind != .ack or control.sequence != item.sequence) return error.ExpectedAck;
+            try acks.ack(control.sequence);
+        }
+
+        var last_update: ?usize = null;
+        for (messages, 0..) |message, index| {
+            if ((try protocol.decodeEnvelope(message)).envelope.message_type == protocol.Message.frame_update)
+                last_update = index;
+        }
+        const update_index = last_update orelse return error.NoFrameUpdate;
+        const encoded_update = try protocol.decodeEnvelope(messages[update_index]);
+        var update = try protocol.decodeFrameUpdate(gpa, encoded_update.bytes);
+        defer protocol.freeFrameUpdate(gpa, &update);
+        update.header.sequence = base_sequence + 3;
+        var update_payload: std.ArrayList(u8) = .empty;
+        defer update_payload.deinit(gpa);
+        try protocol.encodeFrameUpdate(gpa, update, &update_payload);
+        var cloned_update: std.ArrayList(u8) = .empty;
+        defer cloned_update.deinit(gpa);
+        try protocol.encodeEnvelope(gpa, .{
+            .flags = encoded_update.envelope.flags,
+            .message_type = encoded_update.envelope.message_type,
+            .sequence = sequences[3],
+            .ack_sequence = 0,
+            .session_id = encoded_update.envelope.session_id,
+            .frame_id = encoded_update.envelope.frame_id,
+            .timestamp_ns = encoded_update.envelope.timestamp_ns,
+        }, update_payload.items, &cloned_update);
+        try acks.markSent(sequences[3]);
+        try live.writeFrame(&writer.interface, cloned_update.items);
+        try writer.interface.flush();
+        var control_bytes: [live.control_size]u8 = undefined;
+        try reader.interface.readSliceAll(&control_bytes);
+        const control = try live.decodeControl(&control_bytes);
+        if (control.kind != .ack or control.sequence != sequences[3]) return error.ExpectedAck;
+        try acks.ack(control.sequence);
+        std.debug.print("sdl3-live-smoke: standard EUP suspend/resume carried over EPXL frames\n", .{});
     }
 }
 
@@ -4049,6 +4127,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .live;
         } else if (std.mem.eql(u8, arg, "--publisher")) {
             config.mode = .publisher;
+        } else if (std.mem.eql(u8, arg, "--standard-control")) {
+            config.standard_session_control = true;
         } else if (std.mem.eql(u8, arg, "--emacs")) {
             try setString(gpa, &config.emacs_path, args.next() orelse return error.MissingEmacsPath);
         } else if (std.mem.eql(u8, arg, "--module")) {
@@ -4354,7 +4434,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             try writeTokenFile(io, config.token_path, &config.token);
             var delivery: input_policy.DeliveryJournal = .{};
             var child = try std.process.spawn(io, .{
-                .argv = &.{ config.self_exe, "--publisher", "--replay", config.replay_path, "--endpoint", config.endpoint, "--token-file", config.token_path },
+                .argv = &.{ config.self_exe, "--publisher", "--standard-control", "--replay", config.replay_path, "--endpoint", config.endpoint, "--token-file", config.token_path },
             });
             errdefer child.kill(io);
             const loaded = try runLiveFrontend(gpa, io, &config, &delivery);

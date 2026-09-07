@@ -76,7 +76,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 47 implemented codecs, 3 partial, 114 planned; prevents an unclassified or overclaimed protocol table |
 | Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
 | P12-prep EUP session setup | Implemented standard HELLO/HELLO_ACK/SESSION_READY/READY_ACK codecs and bounded state machine; not yet wired to EPXL transport |
-| P12-prep EUP session control | Implemented suspend/resume/close/ping/pong/error/version-mismatch codecs, Scene integration, and SDL bridge evidence; EPXL transport wiring remains pending |
+| P12-prep EUP session control | Implemented suspend/resume/close/ping/pong/error/version-mismatch codecs, Scene integration, and EPXL suspend/resume evidence; other controls lack transport wiring |
 
 | P9-prep authoritative geometry | Implemented in runtime bridge with host rectangle caching and frame/window/damage bounds; real monitor/DPI events pending |
 | P10-prep face-bound debug runs | Implemented with GLYPH_RUN v2, exact live-face validation, and colored SDL fallback; not production face/shaping parity |
@@ -3137,7 +3137,8 @@ error, and version-mismatch codecs plus a bounded control state machine.  The
 state machine enforces ordered suspend/resume and fatal close/error states, but
 `Scene` now rejects frame traffic while suspended and restores it only after
 `SESSION_RESUMED`.  The SDL bridge proves that blocking and recovery sequence;
-EPXL does not yet carry the standard control messages.
+`sdl3-live-smoke` carries that sequence over authenticated EPXL frames and ACKs
+each control like ordinary EUP traffic.
 P12 title preparation adds `FRAME_TITLE` v1: a 16-byte, generation-qualified
 reference to a live string resource.  The Scene resolves and owns the title and
 the diagnostic SDL bridge applies it to its window; this does not register a
