@@ -230,7 +230,7 @@ normal positive-path session closes.
 | `0x020f` | `FRAME_SCALE` | C→F | Scale and DPI | Scale change |
 | `0x0210` | `FRAME_FOCUS` | C→F | Focused flag | Focus state |
 | `0x0211` | `FRAME_SIZE_HINTS` | C→F | Min/max/increment/aspect | Resize constraints |
-| `0x0212` | `FRAME_Z_ORDER` | C→F | Above/below/top/bottom | Stack state |
+| `0x0212` | `FRAME_Z_ORDER` | C→F | Raise/lower/top/bottom/above/below | Stack state |
 | `0x0213` | `FRAME_PARENT` | C→F | Parent frame or null | Child-frame relation |
 | `0x0214` | `FRAME_DECORATIONS` | C→F | Decorated/undecorated | Window decoration policy |
 
@@ -358,6 +358,32 @@ denominator values must be nonzero and min must not exceed max; ordering uses
 128-bit cross multiplication. The diagnostic SDL bridge applies min/max and
 aspect constraints; size increments and redisplay geometry adaptation remain
 pending.
+
+#### Frame z-order state
+
+`FRAME_Z_ORDER` (`0x0212`) carries exactly 24 little-endian bytes:
+
+| Offset | Size | Field | Rule |
+|---|---:|---|---|
+| 0 | 2 | `schema` | `1` |
+| 2 | 1 | `flags` | `0` |
+| 3 | 1 | `reserved` | `0` |
+| 4 | 1 | `operation` | `1=raise`, `2=lower`, `3=top`, `4=bottom`, `5=above`, `6=below` |
+| 5 | 3 | `reserved_after_operation` | zero |
+| 8 | 4 | `frame_generation` | nonzero |
+| 12 | 4 | `relative_frame_id` | nonzero only for `above`/`below` |
+| 16 | 4 | `relative_frame_generation` | nonzero only for `above`/`below` |
+| 20 | 4 | `reserved_tail` | zero |
+
+The `above` and `below` operations require both relative fields; all other
+operations require both fields to be zero.
+
+`Scene` stores the authoritative request and validates that a relative target
+is another active frame with the exact generation. A failed request leaves the
+previous stored z-order and sequence unchanged. The diagnostic SDL bridge maps
+only `top` to SDL's always-on-top flag, verifies it, and restores the normal
+state. Raise/lower mapping is WM-dependent, bottom has no portable SDL
+operation, and relative above/below remain pending.
 
 ## 11. Window messages
 

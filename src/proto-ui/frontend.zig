@@ -1279,6 +1279,7 @@ pub const Scene = struct {
     geometry: ?protocol.FrameGeometryPayload = null,
     icon: ?protocol.FrameIconPayload = null,
     size_hints: ?protocol.FrameSizeHintsPayload = null,
+    z_order: ?protocol.FrameZOrderPayload = null,
     present: ?PresentHint = null,
     viewport: ?Viewport = null,
     window_tree: ?protocol.WindowTreeSnapshot = null,
@@ -1310,6 +1311,7 @@ pub const Scene = struct {
         self.geometry = null;
         self.icon = null;
         self.size_hints = null;
+        self.z_order = null;
         self.windows = .empty;
         self.rows = .empty;
         self.glyph_runs = .empty;
@@ -1403,6 +1405,7 @@ pub const Scene = struct {
             protocol.Message.frame_geometry => try self.applyFrameGeometry(payload),
             protocol.Message.frame_icon => try self.applyFrameIcon(payload),
             protocol.Message.frame_size_hints => try self.applyFrameSizeHints(payload),
+            protocol.Message.frame_z_order => try self.applyFrameZOrder(payload),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.font_define => try self.applyFontDefine(payload),
@@ -1430,6 +1433,7 @@ pub const Scene = struct {
         self.geometry = null;
         self.icon = null;
         self.size_hints = null;
+        self.z_order = null;
         self.clearGlyphRuns();
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
@@ -1708,6 +1712,27 @@ pub const Scene = struct {
             frame.generation != hints.frame_generation)
             return Error.InvalidMessage;
         self.size_hints = hints;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFrameZOrder(self: *Scene, payload: protocol.Payload) Error!void {
+        const z_order = try protocol.decodeFrameZOrder(payload.bytes);
+        try protocol.validateFrameZOrderEnvelope(z_order, payload.envelope);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != z_order.frame_generation)
+            return Error.InvalidMessage;
+
+        const needs_relative = z_order.operation == .above or z_order.operation == .below;
+        if (needs_relative) {
+            const relative = self.frames.lookup(z_order.relative_frame_id) orelse
+                return Error.FrameNotActive;
+            if (relative.status != .active or
+                relative.generation != z_order.relative_frame_generation or
+                relative.id == frame.frame_id)
+                return Error.InvalidMessage;
+        }
+        self.z_order = z_order;
         self.stats.control_messages += 1;
     }
 
@@ -2523,6 +2548,29 @@ fn frameSizeHintsMessage(
         .frame_id = envelope_frame,
         .timestamp_ns = sequence,
     }, hints_payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
+fn frameZOrderMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    envelope_frame: u32,
+    payload: protocol.FrameZOrderPayload,
+) ![]u8 {
+    var z_order_payload: std.ArrayList(u8) = .empty;
+    defer z_order_payload.deinit(a);
+    try protocol.encodeFrameZOrder(a, payload, &z_order_payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_z_order,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = envelope_frame,
+        .timestamp_ns = sequence,
+    }, z_order_payload.items, &message);
     return message.toOwnedSlice(a);
 }
 
@@ -3787,6 +3835,81 @@ test "scene applies size hints only to the active frame generation" {
 
     scene.resetForResync();
     try std.testing.expect(scene.size_hints == null);
+}
+
+test "scene applies z-order only for valid identities and targets" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    const raise = try frameZOrderMessage(a, 2, 7, .{
+        .operation = .raise,
+        .frame_generation = 1,
+    });
+    defer a.free(raise);
+    try scene.apply(raise);
+    try std.testing.expectEqual(protocol.FrameZOrderOperation.raise, scene.z_order.?.operation);
+
+    const above = try frameZOrderMessage(a, 3, 7, .{
+        .operation = .above,
+        .frame_generation = 1,
+        .relative_frame_id = 7,
+        .relative_frame_generation = 1,
+    });
+    defer a.free(above);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(above));
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+    try std.testing.expectEqual(
+        protocol.FrameZOrderOperation.raise,
+        scene.z_order.?.operation,
+    );
+
+    try scene.frames.createObserved(8, 1, .visible, true);
+
+    const stale_target = try frameZOrderMessage(a, 3, 7, .{
+        .operation = .above,
+        .frame_generation = 1,
+        .relative_frame_id = 8,
+        .relative_frame_generation = 2,
+    });
+    defer a.free(stale_target);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(stale_target));
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+
+    const current = try frameZOrderMessage(a, 3, 7, .{
+        .operation = .above,
+        .frame_generation = 1,
+        .relative_frame_id = 8,
+        .relative_frame_generation = 1,
+    });
+    defer a.free(current);
+    try scene.apply(current);
+    try std.testing.expectEqual(protocol.FrameZOrderOperation.above, scene.z_order.?.operation);
+    try std.testing.expectEqual(@as(u32, 8), scene.z_order.?.relative_frame_id);
+
+    var destroy_payload: [8]u8 = undefined;
+    std.mem.writeInt(u32, destroy_payload[0..4], 7, .little);
+    std.mem.writeInt(u32, destroy_payload[4..8], 1, .little);
+    var destroy: std.ArrayList(u8) = .empty;
+    defer destroy.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_destroy,
+        .sequence = 4,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 7,
+        .timestamp_ns = 4,
+    }, &destroy_payload, &destroy);
+    try scene.apply(destroy.items);
+    try std.testing.expect(scene.z_order == null);
+
+    scene.resetForResync();
+    try std.testing.expect(scene.z_order == null);
 }
 
 test "scene applies standard session control and pauses frame traffic" {

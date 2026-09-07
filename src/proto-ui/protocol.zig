@@ -78,6 +78,7 @@ pub const Message = struct {
     pub const frame_focus: u16 = 0x0210;
     pub const frame_decorations: u16 = 0x0214;
     pub const frame_size_hints: u16 = 0x0211;
+    pub const frame_z_order: u16 = 0x0212;
     pub const frame_scale: u16 = 0x020f;
     pub const frame_fullscreen: u16 = 0x020b;
     pub const frame_geometry: u16 = 0x0207;
@@ -1233,6 +1234,27 @@ pub const FrameSizeHintsPayload = struct {
     aspect_min_denominator: u32 = 0,
     aspect_max_numerator: u32 = 0,
     aspect_max_denominator: u32 = 0,
+};
+
+pub const FrameZOrderOperation = enum(u8) {
+    raise = 1,
+    lower = 2,
+    top = 3,
+    bottom = 4,
+    above = 5,
+    below = 6,
+};
+
+pub const FrameZOrderPayload = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    operation: FrameZOrderOperation,
+    reserved_after_operation: [3]u8 = .{ 0, 0, 0 },
+    frame_generation: u32,
+    relative_frame_id: u32 = 0,
+    relative_frame_generation: u32 = 0,
+    reserved_tail: u32 = 0,
 };
 
 pub const PresentDamageKind = enum(u8) {
@@ -2421,6 +2443,70 @@ pub fn decodeFrameSizeHints(data: []const u8) Error!FrameSizeHintsPayload {
 
 pub fn validateFrameSizeHintsEnvelope(payload: FrameSizeHintsPayload, envelope: Envelope) Error!void {
     try validateFrameSizeHints(payload);
+    if (envelope.frame_id == 0) return Error.InvalidMessage;
+}
+
+fn validateFrameZOrder(payload: FrameZOrderPayload) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or payload.reserved != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_after_operation, 0) or
+        payload.reserved_tail != 0) return Error.InvalidMessage;
+    if (payload.frame_generation == 0) return Error.InvalidMessage;
+    const needs_relative = payload.operation == .above or payload.operation == .below;
+    const has_relative = payload.relative_frame_id != 0 and payload.relative_frame_generation != 0;
+    if (needs_relative != has_relative) return Error.InvalidMessage;
+}
+
+pub fn encodeFrameZOrder(
+    a: std.mem.Allocator,
+    payload: FrameZOrderPayload,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameZOrder(payload);
+    var bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &bytes, payload.schema, .little);
+    try out.appendSlice(a, &bytes);
+    try out.append(a, payload.flags);
+    try out.append(a, payload.reserved);
+    try out.append(a, @intFromEnum(payload.operation));
+    try out.appendSlice(a, &payload.reserved_after_operation);
+    var word: [4]u8 = undefined;
+    std.mem.writeInt(u32, &word, payload.frame_generation, .little);
+    try out.appendSlice(a, &word);
+    std.mem.writeInt(u32, &word, payload.relative_frame_id, .little);
+    try out.appendSlice(a, &word);
+    std.mem.writeInt(u32, &word, payload.relative_frame_generation, .little);
+    try out.appendSlice(a, &word);
+    std.mem.writeInt(u32, &word, payload.reserved_tail, .little);
+    try out.appendSlice(a, &word);
+}
+
+pub fn decodeFrameZOrder(data: []const u8) Error!FrameZOrderPayload {
+    if (data.len != 24) return Error.InvalidTable;
+    const payload = FrameZOrderPayload{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .operation = switch (data[4]) {
+            1 => .raise,
+            2 => .lower,
+            3 => .top,
+            4 => .bottom,
+            5 => .above,
+            6 => .below,
+            else => return Error.InvalidMessage,
+        },
+        .reserved_after_operation = data[5..8][0..3].*,
+        .frame_generation = std.mem.readInt(u32, data[8..12], .little),
+        .relative_frame_id = std.mem.readInt(u32, data[12..16], .little),
+        .relative_frame_generation = std.mem.readInt(u32, data[16..20], .little),
+        .reserved_tail = std.mem.readInt(u32, data[20..24], .little),
+    };
+    try validateFrameZOrder(payload);
+    return payload;
+}
+
+pub fn validateFrameZOrderEnvelope(payload: FrameZOrderPayload, envelope: Envelope) Error!void {
+    try validateFrameZOrder(payload);
     if (envelope.frame_id == 0) return Error.InvalidMessage;
 }
 
@@ -3613,6 +3699,49 @@ test "frame size hints enforce flags values and aspect ordering" {
     try std.testing.expectError(Error.InvalidMessage, encodeFrameSizeHints(a, invalid, &bytes));
     try bytes.append(a, 0);
     try std.testing.expectError(Error.InvalidTable, decodeFrameSizeHints(bytes.items));
+}
+
+test "frame z-order payload enforces operation and relative identity" {
+    const a = std.testing.allocator;
+    const relative = FrameZOrderPayload{
+        .operation = .above,
+        .frame_generation = 2,
+        .relative_frame_id = 8,
+        .relative_frame_generation = 1,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeFrameZOrder(a, relative, &bytes);
+    try std.testing.expectEqual(@as(usize, 24), bytes.items.len);
+    try std.testing.expectEqual(relative, try decodeFrameZOrder(bytes.items));
+
+    const top = FrameZOrderPayload{ .operation = .top, .frame_generation = 2 };
+    bytes.clearRetainingCapacity();
+    try encodeFrameZOrder(a, top, &bytes);
+    try std.testing.expectEqual(top, try decodeFrameZOrder(bytes.items));
+
+    bytes.items[4] = 9;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameZOrder(bytes.items));
+    bytes.items[4] = @intFromEnum(FrameZOrderOperation.top);
+    bytes.items[4] = @intFromEnum(FrameZOrderOperation.above);
+    bytes.items[12] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameZOrder(bytes.items));
+    bytes.items[4] = @intFromEnum(FrameZOrderOperation.above);
+    bytes.items[12] = 8;
+    bytes.items[16] = 2;
+    bytes.items[12] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameZOrder(bytes.items));
+    bytes.items[12] = 8;
+    bytes.items[4] = @intFromEnum(FrameZOrderOperation.top);
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFrameZOrder(bytes.items));
+
+    var invalid = relative;
+    invalid.relative_frame_id = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameZOrder(a, invalid, &bytes));
+    invalid = relative;
+    invalid.frame_generation = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameZOrder(a, invalid, &bytes));
 }
 
 test "resource request and evict codecs enforce strict wire form" {
