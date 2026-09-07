@@ -22,6 +22,7 @@ pub const Target = enum {
     resource_request_evict,
     input_codecs,
     glyph_run_debug_v1,
+    glyph_run_delete_v1,
     frontend_scene_apply,
 
     pub const count = @typeInfo(Target).@"enum".fields.len;
@@ -92,6 +93,12 @@ fn shapeFor(target: Target, variant: usize) Shape {
             .{ .identity_offset = 8, .type_offset = 12, .reserved_offset = 1 },
         .input_codecs => .{ .length_offset = 0, .type_offset = 0, .reserved_offset = 12 },
         .glyph_run_debug_v1 => .{
+            .length_offset = 14,
+            .identity_offset = 42,
+            .type_offset = 10,
+            .reserved_offset = 46,
+        },
+        .glyph_run_delete_v1 => .{
             .length_offset = 14,
             .identity_offset = 42,
             .type_offset = 10,
@@ -403,6 +410,23 @@ fn seedGlyphRun(allocator: std.mem.Allocator, variant: usize) ![]u8 {
     return finishList(allocator, &list);
 }
 
+fn seedGlyphRunDelete(allocator: std.mem.Allocator, variant: usize) ![]u8 {
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(allocator);
+    try frontend.encodeGlyphRunDelete(allocator, .{
+        .run_id = 9,
+        .generation = if (variant % 4 == 3) 2 else 1,
+        .window_id = 1001,
+        .row_index = 0,
+    }, &payload);
+    var list: std.ArrayList(u8) = .empty;
+    errdefer list.deinit(allocator);
+    try envelope(allocator, payload.items, protocol.Message.glyph_run_delete, 1, 3, &list);
+    if (variant % 4 == 1) list.items[list.items.len - 1] = 0;
+    if (variant % 4 == 2) try list.append(allocator, 'x');
+    return finishList(allocator, &list);
+}
+
 fn seedScene(allocator: std.mem.Allocator, variant: usize) ![]u8 {
     var payload: [8]u8 = undefined;
     std.mem.writeInt(u32, payload[0..4], 7, .little);
@@ -422,6 +446,7 @@ fn makeSeed(allocator: std.mem.Allocator, target: Target, iteration: usize) ![]u
         .resource_request_evict => seedResources(allocator, iteration),
         .input_codecs => seedInputs(allocator, iteration),
         .glyph_run_debug_v1 => seedGlyphRun(allocator, iteration),
+        .glyph_run_delete_v1 => seedGlyphRunDelete(allocator, iteration),
         .frontend_scene_apply => seedScene(allocator, iteration),
     };
 }
@@ -507,6 +532,11 @@ fn applyTarget(
             scene.apply(input_bytes) catch |err| {
                 return applyError(err);
             };
+            return true;
+        },
+        .glyph_run_delete_v1 => {
+            if (input_bytes.len < protocol.header_size) return false;
+            _ = frontend.decodeGlyphRunDelete(input_bytes[protocol.header_size..]) catch return false;
             return true;
         },
         .input_codecs => switch (variant % 4) {

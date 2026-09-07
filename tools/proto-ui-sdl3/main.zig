@@ -1553,6 +1553,28 @@ fn sendSnapshotMessages(
     }
 }
 
+fn glyphRunDeleteMessage(
+    gpa: std.mem.Allocator,
+    delete: frontend.GlyphRunDeleteWire,
+    sequence: u64,
+) ![]u8 {
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(gpa);
+    try frontend.encodeGlyphRunDelete(gpa, delete, &payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = protocol.Flags.debug,
+        .message_type = protocol.Message.glyph_run_delete,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = 1,
+        .timestamp_ns = sequence,
+    }, payload.items, &message);
+    return message.toOwnedSlice(gpa);
+}
+
 fn runGlyphRunSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     var scene = frontend.Scene.init(gpa);
     defer scene.deinit();
@@ -1697,19 +1719,65 @@ fn runGlyphRunSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     var draw_list: renderer_policy.DrawList = .{ .allocator = gpa };
     defer draw_list.deinit();
     try buildSceneDrawList(&scene, &draw_list, 240, 96);
-    var rendered = false;
+    var run_rendered = false;
     var stale_text_rendered = false;
     for (draw_list.commands.items) |command| {
         switch (command) {
             .text => |text| {
-                rendered = text.x == 8 and text.y == 2 and std.mem.eql(u8, text.bytes, "Emacs");
+                if (text.x == 8 and text.y == 2 and std.mem.eql(u8, text.bytes, "Emacs"))
+                    run_rendered = true;
                 if (std.mem.indexOf(u8, text.bytes, "stale facts text") != null)
                     stale_text_rendered = true;
             },
             else => {},
         }
     }
-    if (!rendered or stale_text_rendered) return error.GlyphRunNotRendered;
+    const active_run_rendered = run_rendered;
+    const active_facts_suppressed = !stale_text_rendered;
+    if (!run_rendered or stale_text_rendered) return error.GlyphRunNotRendered;
+
+    const mismatch = try glyphRunDeleteMessage(gpa, .{
+        .run_id = 9,
+        .generation = 2,
+        .window_id = 100,
+        .row_index = 0,
+    }, 4);
+    defer gpa.free(mismatch);
+    if (scene.apply(mismatch)) |_| {
+        return error.GlyphRunMismatchedDeleteAccepted;
+    } else |_| {}
+    if (scene.next_sequence.? != 4 or scene.glyph_runs.items.len != 1 or
+        !std.mem.eql(u8, scene.glyph_runs.items[0].text, "Emacs"))
+        return error.GlyphRunMismatchedDeleteMutatedScene;
+
+    const delete_message = try glyphRunDeleteMessage(gpa, .{
+        .run_id = 9,
+        .generation = 1,
+        .window_id = 100,
+        .row_index = 0,
+    }, 4);
+    defer gpa.free(delete_message);
+    try scene.apply(delete_message);
+    if (scene.next_sequence.? != 5 or scene.glyph_runs.items.len != 0)
+        return error.GlyphRunDeleteFailed;
+
+    run_rendered = false;
+    stale_text_rendered = false;
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .text => |text| {
+                if (text.x == 8 and text.y == 2 and std.mem.eql(u8, text.bytes, "Emacs"))
+                    run_rendered = true;
+                if (std.mem.indexOf(u8, text.bytes, "stale facts text") != null)
+                    stale_text_rendered = true;
+            },
+            else => {},
+        }
+    }
+    if (active_run_rendered and active_facts_suppressed and
+        (run_rendered or !stale_text_rendered))
+        return error.GlyphRunDeleteFallbackFailed;
 
     try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
     var quit = false;
@@ -1724,7 +1792,7 @@ fn runGlyphRunSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     }
     if (frame_counters.text_commands_total == 0) return error.GlyphRunNotRendered;
     std.debug.print(
-        "sdl3-glyph-run-smoke: {{\"kind\":\"sdl3-glyph-run-smoke\",\"active_runs\":1,\"text\":\"Emacs\",\"rendered\":true,\"auto_closed\":true,\"result\":\"pass\"}}\n",
+        "sdl3-glyph-run-smoke: {{\"kind\":\"sdl3-glyph-run-smoke\",\"active_runs\":0,\"text\":\"Emacs\",\"delete\":\"exact\",\"facts_fallback\":true,\"rendered\":true,\"auto_closed\":true,\"result\":\"pass\"}}\n",
         .{},
     );
 }
@@ -4096,6 +4164,26 @@ fn runFrameLifecycleSmoke(
         active_run.width != glyph_run.width or active_run.height != glyph_run.height)
         return error.GlyphRunSceneStateInvalid;
 
+    const delete_message = try glyphRunDeleteMessage(gpa, .{
+        .run_id = active_run.run_id,
+        .generation = active_run.generation,
+        .window_id = active_run.window_id,
+        .row_index = active_run.row_index,
+    }, 8);
+    defer gpa.free(delete_message);
+    try producer_scene.apply(delete_message);
+    try scene.apply(delete_message);
+    if (producer_scene.next_sequence != 9 or scene.next_sequence != 9 or
+        scene.glyph_runs.items.len != 0 or !sceneHasText(&scene, marker))
+        return error.GlyphRunDeleteFailed;
+    try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+    var marker_rendered = false;
+    for (draw_list.commands.items) |command| {
+        if (command == .text and std.mem.eql(u8, command.text.bytes, marker))
+            marker_rendered = true;
+    }
+    if (!marker_rendered) return error.GlyphRunFactsFallbackFailed;
+
     // Atomic delete request; the Emacs client consumes it before deleting.
     try atomicWriteFile(gpa, io, delete_path, "delete");
     try waitForFilePrefix(gpa, io, deleted_path, "deleted", 12000);
@@ -4112,15 +4200,15 @@ fn runFrameLifecycleSmoke(
     try protocol.encodeEnvelope(gpa, .{
         .flags = 0,
         .message_type = protocol.Message.frame_destroy,
-        .sequence = 8,
+        .sequence = 9,
         .ack_sequence = 0,
         .session_id = capability.session_id,
         .frame_id = 1,
-        .timestamp_ns = 8,
+        .timestamp_ns = 9,
     }, &destroy_payload, &destroy_message);
     try producer_scene.apply(destroy_message.items);
     try scene.apply(destroy_message.items);
-    if (producer_scene.next_sequence != 9 or scene.next_sequence != 9)
+    if (producer_scene.next_sequence != 10 or scene.next_sequence != 10)
         return error.FrameLifecycleRoundTripFailed;
     if (scene.frame != null or scene.frames.len != 1 or
         scene.frames.frames[0].status != .destroyed or scene.windows.items.len != 0)

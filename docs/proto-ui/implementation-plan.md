@@ -101,6 +101,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W10c-c bounded text-region clipping | Approved |
 | W10d bounded GLYPH_RUN debug fallback | Approved |
 | W10e real-frame public-facts glyph marker | Approved |
+| W10f explicit bounded glyph-run delete | Approved |
 | W12a EPXL capability/status manifest | Approved |
 | W12b frame lifecycle/resource generation contract | Approved |
 | W12c real-frame lifecycle bridge smoke | Approved |
@@ -2322,6 +2323,45 @@ zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke --summary all
 
 Status: approved. Three completed review rounds covered lifecycle/order,
 renderer/regression, and boundary/docs/status. No inherited Emacs C, H, or Lisp
+source changed.
+
+#### W10f — Explicit bounded glyph-run delete (approved)
+
+Goal: make the diagnostic fallback's temporary text replacement explicit and
+reversible without claiming redisplay ownership.
+
+1. Implement `GLYPH_RUN_DELETE = 0x0406` as an exact 24-byte little-endian
+   identity payload (`run_id`, `generation`, `window_id`, `row_index`, and zero
+   reserved bytes).
+2. Require active-frame ownership and matching window/row context.  Accept only
+   an exact four-field identity match; reject missing, mismatched, stale,
+   malformed, and reserved input before mutation and without sequence advance.
+3. On success, free the run's owned text, remove exactly that run, advance the
+   sequence, and restore legacy facts text rendering for that row.
+4. Extend `sdl3-glyph-run-smoke` with mismatch rejection, exact deletion, zero
+   active runs, and facts fallback.  Move the real-frame lifecycle delete to
+   sequence 8 and `FRAME_DESTROY` to sequence 9 with sequence 10 asserted.
+5. Add deterministic codec/Scene tests and a bounded `glyph_run_delete_v1` fuzz
+   target.
+
+Non-goals: this remains bounded diagnostic ASCII fallback, not redisplay
+ownership, shaped text, BiDi, faces, fonts, glyph atlas/images/widgets,
+production glyph rendering, Emacs capture, `output_proto`, or an R7 bypass.
+
+Acceptance:
+
+```sh
+zig fmt --check src/proto-ui/protocol.zig src/proto-ui/frontend.zig src/proto-ui/fuzz.zig tools/proto-ui-sdl3/main.zig
+git diff --check
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true proto-ui-boundary --summary all
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-glyph-run-smoke --summary all
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-frame-smoke --summary all
+```
+
+Status: approved. Three completed review rounds covered codec/security, Scene
+and lifecycle, and renderer/docs/boundary. No inherited Emacs C, H, or Lisp
 source changed.
 
 ### W11 — Desktop integration

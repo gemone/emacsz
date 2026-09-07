@@ -162,8 +162,9 @@ Outside that audited PGTK count, W10d additionally reports
 `sdl3-glyph-run-smoke`; it is a transport/render diagnostic and does not change
 the pending `redisplay.glyph_rows` or any PGTK status above.  W10e also uses
 that bounded path in `sdl3-frame-smoke` to render the public-facts marker
-`Emacs Proto-UI`; this remains diagnostic fallback, not redisplay-owned capture,
-shaped text, face/font rendering, or `output_proto`.
+`Emacs Proto-UI`, and W10f adds its exact-delete lifecycle and facts fallback;
+this remains diagnostic fallback, not redisplay-owned capture, shaped text,
+face/font rendering, or `output_proto`.
 
 Priorities:
 

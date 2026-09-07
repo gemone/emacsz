@@ -414,6 +414,32 @@ teardown free all owned text.
 This schema has no shaping, cluster, BiDi reorder, font, face, atlas, image,
 widget, Emacs capture, or `output_proto` semantics.
 
+### 13.2 `GLYPH_RUN_DELETE` debug-fallback v1 (implemented bounded adapter contract)
+
+`GLYPH_RUN_DELETE = 0x0406` is the exact identity delete for the bounded W10d
+run.  The payload is exactly 24 bytes of little-endian data; truncated,
+trailing, or reserved input is invalid.  It is schema-free: unlike
+`GLYPH_RUN`, it carries no schema/flags header because its sole role is to
+match and remove one active diagnostic run.
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 4 | `run_id` | nonzero |
+| 4 | 4 | `generation` | nonzero and equal to the active run generation |
+| 8 | 8 | `window_id` | nonzero, exists in the active frame context |
+| 16 | 4 | `row_index` | exists and is owned by `window_id` |
+| 20 | 4 | `reserved` | zero |
+
+The EUP envelope frame must name the frontend's single active frame.  A delete
+succeeds only when the four identity fields exactly match one active run and
+the row/window context remains valid.  It frees that run's owned text and
+removes exactly that run; legacy facts text for the row resumes as the visual
+fallback.  A missing active run, wrong identity, generation mismatch, invalid
+context, or reserved byte is rejected atomically before mutation and does not
+advance the expected sequence.  This message has no redisplay ownership,
+shaping, BiDi, face/font, atlas, image, widget, Emacs capture, or
+`output_proto` semantics.
+
 ## 14. Resource messages
 
 | ID | Name | Direction | Payload | Semantics |

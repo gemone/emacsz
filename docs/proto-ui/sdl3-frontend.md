@@ -219,9 +219,11 @@ W10e uses this fallback in the real-frame lifecycle smoke.  After the public
 `FRAME_CREATE`/`FRAME_UPDATE` pair, the smoke derives one `GLYPH_RUN` for
 `Emacs Proto-UI` from the frontend scene's actual window/row geometry, renders
 it with the same debug-text origin, suppresses duplicate facts text on that
-row, and validates it before the real Emacs frame is deleted.  This does not
-capture redisplay rows or make SDL3 the frame owner; it is not shaped text and
-does not render faces/fonts or register `output_proto`.
+row, and validates it before the real Emacs frame is deleted.  W10f then sends
+the exact `GLYPH_RUN_DELETE`, restores facts-text rendering for that row, and
+moves `FRAME_DESTROY` after the explicit run teardown.  This does not capture
+redisplay rows or make SDL3 the frame owner; it is not shaped text and does not
+render faces/fonts or register `output_proto`.
 
 ### 8.4 Images
 
@@ -600,7 +602,9 @@ The final frontend supports at least:
 `--renderer` may also name an SDL driver; an unavailable named driver is an error.
 `--renderer=gpu` is the only request with automatic software fallback.
 `--glyph-run-smoke` opens an active one-window/one-row diagnostic frame, sends
-one valid `GLYPH_RUN` v1, asserts scene and draw-list state, and auto-closes.
+one valid `GLYPH_RUN` v1, asserts scene and draw-list state, rejects a
+mismatched `GLYPH_RUN_DELETE` without sequence drift, accepts the exact delete,
+asserts facts-text fallback, and auto-closes.
 
 ## 18. Acceptance criteria
 

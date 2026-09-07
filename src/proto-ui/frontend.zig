@@ -82,6 +82,7 @@ pub const TextLine = struct {
 pub const max_glyph_text_bytes: usize = 120;
 pub const max_glyph_runs: usize = 64;
 pub const glyph_record_size: usize = 60;
+pub const glyph_delete_record_size: usize = 24;
 pub const glyph_debug_fallback: u16 = 1 << 0;
 
 pub const GlyphRun = struct {
@@ -116,6 +117,13 @@ pub const GlyphRunWire = struct {
         return self.run_id != 0 and self.generation != 0 and self.window_id != 0 and
             self.x >= 0 and self.y >= 0 and self.width >= 0 and self.height >= 0;
     }
+};
+
+pub const GlyphRunDeleteWire = struct {
+    run_id: u32,
+    generation: u32,
+    window_id: u64,
+    row_index: u32,
 };
 
 pub fn encodeGlyphRun(a: std.mem.Allocator, run: GlyphRunWire, out: *std.ArrayList(u8)) !void {
@@ -171,6 +179,34 @@ pub fn decodeGlyphRun(bytes: []const u8) Error!GlyphRunWire {
     if (!std.mem.allEqual(u8, header[52..60], 0)) return Error.InvalidReserved;
     if (!run.valid() or !validGlyphRunText(text)) return Error.InvalidMessage;
     return run;
+}
+
+pub fn encodeGlyphRunDelete(
+    a: std.mem.Allocator,
+    delete: GlyphRunDeleteWire,
+    out: *std.ArrayList(u8),
+) !void {
+    if (delete.run_id == 0 or delete.generation == 0 or delete.window_id == 0)
+        return Error.InvalidMessage;
+    try putU32(out, a, delete.run_id);
+    try putU32(out, a, delete.generation);
+    try putU64(out, a, delete.window_id);
+    try putU32(out, a, delete.row_index);
+    try putU32(out, a, 0);
+}
+
+pub fn decodeGlyphRunDelete(bytes: []const u8) Error!GlyphRunDeleteWire {
+    if (bytes.len != glyph_delete_record_size) return Error.InvalidTable;
+    const delete: GlyphRunDeleteWire = .{
+        .run_id = std.mem.readInt(u32, bytes[0..4], .little),
+        .generation = std.mem.readInt(u32, bytes[4..8], .little),
+        .window_id = std.mem.readInt(u64, bytes[8..16], .little),
+        .row_index = std.mem.readInt(u32, bytes[16..20], .little),
+    };
+    if (!std.mem.allEqual(u8, bytes[20..24], 0)) return Error.InvalidReserved;
+    if (delete.run_id == 0 or delete.generation == 0 or delete.window_id == 0)
+        return Error.InvalidMessage;
+    return delete;
 }
 
 fn validGlyphRunText(text: []const u8) bool {
@@ -1194,6 +1230,7 @@ pub const Scene = struct {
             protocol.Message.frame_create => try self.applyFrameCreate(payload.envelope, payload.bytes),
             protocol.Message.frame_update => try self.applyFrameUpdate(payload),
             protocol.Message.glyph_run => try self.applyGlyphRun(payload),
+            protocol.Message.glyph_run_delete => try self.applyGlyphRunDelete(payload),
             protocol.Message.frame_visibility => try self.applyFrameVisibility(payload),
             protocol.Message.frame_focus => try self.applyFrameFocus(payload),
             protocol.Message.frame_destroy => try self.applyFrameDestroy(payload.envelope, payload.bytes),
@@ -1292,6 +1329,36 @@ pub const Scene = struct {
             try self.glyph_runs.append(self.allocator, next);
         }
         self.stats.control_messages += 1;
+    }
+
+    fn applyGlyphRunDelete(self: *Scene, payload: protocol.Payload) Error!void {
+        const wire = try decodeGlyphRunDelete(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (payload.envelope.frame_id != frame.frame_id) return Error.InvalidMessage;
+        if (self.frame_header == null) return Error.FrameNotActive;
+
+        var window: ?Window = null;
+        for (self.windows.items) |candidate| {
+            if (candidate.id == wire.window_id) {
+                window = candidate;
+                break;
+            }
+        }
+        const owner = window orelse return Error.InvalidMessage;
+        if (wire.row_index >= self.rows.items.len) return Error.InvalidMessage;
+        if (self.rows.items[wire.row_index].window_id != owner.id) return Error.InvalidMessage;
+
+        for (self.glyph_runs.items, 0..) |active, index| {
+            if (active.run_id != wire.run_id or active.window_id != wire.window_id or
+                active.row_index != wire.row_index) continue;
+            if (active.generation != wire.generation) return Error.StaleGeneration;
+            const owned = active.text;
+            _ = self.glyph_runs.orderedRemove(index);
+            self.allocator.free(owned);
+            self.stats.control_messages += 1;
+            return;
+        }
+        return Error.InvalidMessage;
     }
 
     fn applyFrameDestroy(self: *Scene, envelope: protocol.Envelope, bytes: []const u8) Error!void {
@@ -2019,6 +2086,28 @@ fn glyphRunMessage(
     return message.toOwnedSlice(a);
 }
 
+fn glyphRunDeleteMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    delete: GlyphRunDeleteWire,
+) ![]u8 {
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeGlyphRunDelete(a, delete, &payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = protocol.Flags.debug,
+        .message_type = protocol.Message.glyph_run_delete,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 7,
+        .timestamp_ns = sequence,
+    }, payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
 test "glyph run debug fallback codec is exact and bounded" {
     const a = std.testing.allocator;
     var wire: std.ArrayList(u8) = .empty;
@@ -2043,6 +2132,37 @@ test "glyph run debug fallback codec is exact and bounded" {
     try wire.append(a, 0);
     try std.testing.expectError(Error.InvalidMessage, decodeGlyphRun(wire.items));
 }
+
+test "glyph run delete codec is exact identity-shaped" {
+    const a = std.testing.allocator;
+    var wire: std.ArrayList(u8) = .empty;
+    defer wire.deinit(a);
+    try encodeGlyphRunDelete(a, .{ .run_id = 9, .generation = 3, .window_id = 100, .row_index = 4 }, &wire);
+    try std.testing.expectEqual(glyph_delete_record_size, wire.items.len);
+    const decoded = try decodeGlyphRunDelete(wire.items);
+    try std.testing.expectEqual(@as(u32, 9), decoded.run_id);
+    try std.testing.expectEqual(@as(u32, 3), decoded.generation);
+    try std.testing.expectEqual(@as(u64, 100), decoded.window_id);
+    try std.testing.expectEqual(@as(u32, 4), decoded.row_index);
+
+    try wire.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeGlyphRunDelete(wire.items));
+    wire.items[wire.items.len - 1] = 1;
+    wire.items[20] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeGlyphRunDelete(wire.items[0..24]));
+    wire.items[20] = 0;
+
+    try std.testing.expectError(Error.InvalidMessage, encodeGlyphRunDelete(a, .{ .run_id = 0, .generation = 3, .window_id = 100, .row_index = 0 }, &wire));
+    try std.testing.expectError(Error.InvalidMessage, encodeGlyphRunDelete(a, .{ .run_id = 9, .generation = 0, .window_id = 100, .row_index = 0 }, &wire));
+    try std.testing.expectError(Error.InvalidMessage, encodeGlyphRunDelete(a, .{ .run_id = 9, .generation = 3, .window_id = 0, .row_index = 0 }, &wire));
+}
+
+const default_glyph_delete: GlyphRunDeleteWire = .{
+    .run_id = 9,
+    .generation = 2,
+    .window_id = 100,
+    .row_index = 0,
+};
 
 test "scene validates glyph context and replaces by strictly newer generation" {
     const a = std.testing.allocator;
@@ -2076,6 +2196,50 @@ test "scene validates glyph context and replaces by strictly newer generation" {
     defer a.free(next_update);
     try scene.apply(next_update);
     try std.testing.expectEqual(@as(usize, 0), scene.glyph_runs.items.len);
+}
+
+test "glyph run delete requires exact identity and advances only on success" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    const run = try glyphRunMessage(a, 3, 2, "Emacs");
+    defer a.free(run);
+    try scene.apply(run);
+    const control_after_run = scene.stats.control_messages;
+
+    const stale = try glyphRunDeleteMessage(a, 4, .{ .generation = 1, .run_id = 9, .window_id = 100, .row_index = 0 });
+    defer a.free(stale);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(stale));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const wrong_run = try glyphRunDeleteMessage(a, 4, .{ .run_id = 10, .generation = 2, .window_id = 100, .row_index = 0 });
+    defer a.free(wrong_run);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_run));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const wrong_row = try glyphRunDeleteMessage(a, 4, .{ .run_id = 9, .generation = 2, .window_id = 100, .row_index = 1 });
+    defer a.free(wrong_row);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_row));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const exact = try glyphRunDeleteMessage(a, 4, default_glyph_delete);
+    defer a.free(exact);
+    try scene.apply(exact);
+    try std.testing.expectEqual(@as(u64, 5), scene.next_sequence.?);
+    try std.testing.expectEqual(control_after_run + 1, scene.stats.control_messages);
+    try std.testing.expectEqual(@as(usize, 0), scene.glyph_runs.items.len);
+
+    const missing = try glyphRunDeleteMessage(a, 5, default_glyph_delete);
+    defer a.free(missing);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(missing));
+    try std.testing.expectEqual(@as(u64, 5), scene.next_sequence.?);
 }
 
 test "key event codec validates bounded editing actions" {
