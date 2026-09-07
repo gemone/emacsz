@@ -165,7 +165,8 @@ capabilities must keep the relevant capability pending and block W16.
 | P0. Freeze this target | Documents and gates agree that PGTK is reference-only | This file plus consistent status manifests/docs |
 | P1. PGTK semantic inventory and differential plan | Every PGTK capability row maps to an owner, EUP record, SDL action, fallback, and gate; 48 concrete differential cases remain planned | `proto-ui-pgtk-parity-plan` emits and audits `pgtk_parity_manifest.json` |
 | P2. R7 registration proposal and decision | A source-authoritative proposal is ready for review, then explicitly approved or denied | `r7_proposal.json`, proposal gate, signed-off host registration contract, and review metadata |
-| P3. Terminal registration | `output_proto` can exist as a real terminal without PGTK initialization | Fake-host plus live terminal lifecycle tests |
+| P3. Runtime host ABI preparation | All five required callback groups have a versioned C-ABI table, validator, fake-host conformance, and manifest | `proto-ui-runtime-host`; live terminal registration still requires R7 approval |
+| P4. Terminal registration | `output_proto` can exist as a real terminal without PGTK initialization | Fake-host plus live terminal lifecycle tests after explicit R7 approval |
 | P4. First pure frame | Emacs creates `window-system = proto`; SDL creates the visible surface | One local command creates, focuses, resizes, deletes the frame |
 | P5. Redisplay-owned display | Rows/runs/cursor/damage come from Emacs redisplay | ASCII/CJK/BiDi/face fixtures compare against PGTK baselines |
 | P6. Resources | Faces/fonts/images/strings are versioned, requested, evicted, and recovered | Snapshot/replay/eviction/resource-request suites pass |
@@ -178,6 +179,12 @@ P1 preparation adds `proto-ui-pgtk-parity-plan`.  The generated manifest is a
 planned differential suite, not parity evidence; all cases remain `planned` and
 the aggregate result remains `not_implemented`.  It is distinct from the future
 `sdl3-pgtk-parity` runtime acceptance gate.
+
+P3 preparation adds `proto-ui-runtime-host`: a versioned
+`PureRuntimeHostV1` ABI now defines all terminal, frame, redisplay, input, and
+lifecycle callbacks with required nested contexts, fake-host conformance, and a
+deterministic manifest.  This is an unlinked adapter contract; it does not
+approve R7 or register `output_proto`.
 
 P2 preparation adds `proto-ui-r7-proposal`, which emits
 `zig-out/proto-ui/r7_proposal.json`.  The proposal is **ready for review** while

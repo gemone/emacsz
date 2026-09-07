@@ -905,6 +905,50 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&install_pgtk_parity.step);
         boundary_step.dependOn(&run_pgtk_parity_gate.step);
 
+        // P3 preparation: the full runtime ABI is executable and conformance
+        // tested, but remains unlinked to Emacs until R7 is explicitly approved.
+        const runtime_host_gen_tool = b.addExecutable(.{
+            .name = "proto-ui-runtime-host-gen",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/runtime_host_gen.zig"),
+            }),
+        });
+        runtime_host_gen_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_runtime_host_gen = b.addRunArtifact(runtime_host_gen_tool);
+        const runtime_host_artifact = run_runtime_host_gen.addOutputFileArg(
+            "pure_runtime_host_manifest.json",
+        );
+        const install_runtime_host = b.addInstallFile(
+            runtime_host_artifact,
+            "proto-ui/pure_runtime_host_manifest.json",
+        );
+
+        const runtime_host_gate_tool = b.addExecutable(.{
+            .name = "proto-ui-runtime-host-gate",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/runtime_host_gate.zig"),
+            }),
+        });
+        runtime_host_gate_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_runtime_host_gate = b.addRunArtifact(runtime_host_gate_tool);
+        run_runtime_host_gate.addFileArg(runtime_host_artifact);
+        run_runtime_host_gate.step.dependOn(&run_runtime_host_gen.step);
+
+        const runtime_host_step = b.step(
+            "proto-ui-runtime-host",
+            "Validate the versioned pure-SDL3 runtime host ABI contract",
+        );
+        runtime_host_step.dependOn(&run_runtime_host_gen.step);
+        runtime_host_step.dependOn(&install_runtime_host.step);
+        runtime_host_step.dependOn(&run_runtime_host_gate.step);
+
+        boundary_step.dependOn(&install_runtime_host.step);
+        boundary_step.dependOn(&run_runtime_host_gate.step);
+
         // R2: source-authoritative runtime manifest plus an independent
         // machine-readable gate.  Audit mode succeeds only by reporting
         // unavailability; require mode is deliberately nonzero.

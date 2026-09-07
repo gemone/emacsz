@@ -494,7 +494,9 @@ Proto frame.  The target ownership model, PGTK responsibility matrix, protocol
 gaps, differential gates, and final acceptance rules are defined in
 [`sdl3-pgtk-parity.md`](sdl3-pgtk-parity.md).
 
-`proto-ui-pgtk-parity-plan` emits a 48-case planned PGTK/SDL differential
+`proto-ui-runtime-host` defines and conformance-tests a versioned five-group
+PureRuntimeHostV1 ABI while keeping runtime unavailable.  It does not register a
+terminal or claim output_proto.  `proto-ui-pgtk-parity-plan` emits a 48-case planned PGTK/SDL differential
 matrix; it is planning policy, not parity evidence.  R7 host-registration
 decision infrastructure is implemented, and `proto-ui-r7-proposal` emits a
 source-authoritative pure-SDL3 registration proposal with `ready_for_review`
