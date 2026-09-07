@@ -58,8 +58,9 @@ same generated shim as `zig-out/lib/libproto-ui-shim.so` and validates it
 through the host dynamic loader. R5 adds bounded host-frame to EUP-frame
 identity/state/delete mapping, and R6 adds deterministic atomic
 window/row/cursor/damage capture batches with replay byte-stability evidence.
-Runtime registration and a real `output_proto` frame remain explicitly
-unavailable.
+R7 adds a source-authoritative, machine-checkable host-registration decision
+contract. Its current decision is pending, so runtime registration and a real
+`output_proto` frame remain explicitly unavailable.
 
 W4c-b1-p0 adds the executable EUP v1 codec, including envelope, capability, message-ID, and FRAME_UPDATE section conformance.  W4c-b1-t0 adds bounded memory-sink sequencing and ERP1 replay-file conformance.  W4c-b1-b0 adds the versioned adapter ABI, a fake-host conformance harness, and generated ABI artifacts under `zig-out/include/proto-ui`; none introduces runtime integration.  Inherited C/Lisp changes in the rollback patch are restoration-only and return Proto-UI runtime files to their pre-Proto-UI state.  The adapter source is the authoritative ownership manifest; generated JSON is only a non-normative ABI summary.
 

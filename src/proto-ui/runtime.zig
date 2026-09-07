@@ -121,6 +121,15 @@ pub const EvidenceGate = struct {
 
 pub const evidence_gate = EvidenceGate{};
 
+pub const HostContractSummary = struct {
+    artifact: []const u8 = "proto-ui/host_registration_contract.json",
+    contract_schema_version: u32 = 1,
+    decision_status: []const u8 = "pending",
+    reason_code: []const u8 = reason_code,
+};
+
+pub const host_contract_summary = HostContractSummary{};
+
 pub fn validateState() ?[]const u8 {
     if (runtime_state.runtime_available) return "runtime unexpectedly available";
     if (!runtime_state.fail_closed) return "runtime is not fail-closed";
@@ -137,6 +146,10 @@ pub fn validateState() ?[]const u8 {
         "frame.service_mapping",
         "capture.atomic_batches",
     };
+    if (!std.mem.eql(u8, host_contract_summary.decision_status, "pending"))
+        return "runtime host-contract decision changed";
+    if (!std.mem.eql(u8, host_contract_summary.reason_code, reason_code))
+        return "runtime host-contract reason changed";
     if (implemented_groundwork.len != expected_groundwork.len)
         return "unexpected groundwork count";
     for (implemented_groundwork, 0..) |item, index| {
@@ -148,7 +161,7 @@ pub fn validateState() ?[]const u8 {
     return null;
 }
 
-fn appendJsonString(gpa: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
+pub fn appendJsonStringPublic(gpa: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
     try out.append(gpa, '"');
     for (value) |byte| {
         if (byte == '"' or byte == '\\' or byte < 0x20) return Error.InvalidRuntimeManifest;
@@ -157,11 +170,11 @@ fn appendJsonString(gpa: std.mem.Allocator, out: *std.ArrayList(u8), value: []co
     try out.append(gpa, '"');
 }
 
-fn appendJsonStringArray(gpa: std.mem.Allocator, out: *std.ArrayList(u8), values: []const []const u8) !void {
+pub fn appendJsonStringArrayPublic(gpa: std.mem.Allocator, out: *std.ArrayList(u8), values: []const []const u8) !void {
     try out.append(gpa, '[');
     for (values, 0..) |value, index| {
         if (index != 0) try out.append(gpa, ',');
-        try appendJsonString(gpa, out, value);
+        try appendJsonStringPublic(gpa, out, value);
     }
     try out.append(gpa, ']');
 }
@@ -177,45 +190,53 @@ pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
     try out.appendSlice(gpa, "\"reason\":{\"code\":\"");
     try out.appendSlice(gpa, reason_code);
     try out.appendSlice(gpa, "\",\"message\":");
-    try appendJsonString(gpa, out, fail_closed_reason);
+    try appendJsonStringPublic(gpa, out, fail_closed_reason);
+    try out.appendSlice(gpa, "},\"host_contract\":{\"contract_schema_version\":");
+    try out.print(gpa, "{d}", .{host_contract_summary.contract_schema_version});
+    try out.appendSlice(gpa, ",\"artifact\":");
+    try appendJsonStringPublic(gpa, out, host_contract_summary.artifact);
+    try out.appendSlice(gpa, ",\"decision_status\":");
+    try appendJsonStringPublic(gpa, out, host_contract_summary.decision_status);
+    try out.appendSlice(gpa, ",\"reason_code\":");
+    try appendJsonStringPublic(gpa, out, host_contract_summary.reason_code);
     try out.appendSlice(gpa, "},\"required_callback_groups\":[");
     for (callback_groups, 0..) |group, group_index| {
         if (group_index != 0) try out.append(gpa, ',');
         try out.appendSlice(gpa, "{\"name\":\"");
         try out.appendSlice(gpa, @tagName(group));
         try out.appendSlice(gpa, "\",\"required\":true,\"operations\":");
-        try appendJsonStringArray(gpa, out, group.operations());
+        try appendJsonStringArrayPublic(gpa, out, group.operations());
         try out.appendSlice(gpa, ",\"ownership\":");
-        try appendJsonString(gpa, out, group.ownership());
+        try appendJsonStringPublic(gpa, out, group.ownership());
         try out.append(gpa, '}');
     }
     try out.appendSlice(gpa, "],\"implemented_groundwork\":[");
     for (implemented_groundwork, 0..) |item, index| {
         if (index != 0) try out.append(gpa, ',');
         try out.appendSlice(gpa, "{\"name\":");
-        try appendJsonString(gpa, out, item.name);
+        try appendJsonStringPublic(gpa, out, item.name);
         try out.appendSlice(gpa, ",\"status\":");
-        try appendJsonString(gpa, out, item.status);
+        try appendJsonStringPublic(gpa, out, item.status);
         try out.appendSlice(gpa, ",\"evidence\":");
-        try appendJsonString(gpa, out, item.evidence);
+        try appendJsonStringPublic(gpa, out, item.evidence);
         try out.appendSlice(gpa, ",\"owner\":");
-        try appendJsonString(gpa, out, item.owner);
+        try appendJsonStringPublic(gpa, out, item.owner);
         try out.appendSlice(gpa, ",\"boundary\":");
-        try appendJsonString(gpa, out, item.boundary);
+        try appendJsonStringPublic(gpa, out, item.boundary);
         try out.append(gpa, '}');
     }
     try out.appendSlice(gpa, "],\"ownership_summary\":{\"emacs\":");
-    try appendJsonStringArray(gpa, out, ownership_summary.emacs);
+    try appendJsonStringArrayPublic(gpa, out, ownership_summary.emacs);
     try out.appendSlice(gpa, ",\"adapter\":");
-    try appendJsonStringArray(gpa, out, ownership_summary.adapter);
+    try appendJsonStringArrayPublic(gpa, out, ownership_summary.adapter);
     try out.appendSlice(gpa, ",\"frontend\":");
-    try appendJsonStringArray(gpa, out, ownership_summary.frontend);
+    try appendJsonStringArrayPublic(gpa, out, ownership_summary.frontend);
     try out.appendSlice(gpa, "},\"evidence_gate\":{\"required\":true,\"command\":");
-    try appendJsonString(gpa, out, evidence_gate.command);
+    try appendJsonStringPublic(gpa, out, evidence_gate.command);
     try out.appendSlice(gpa, ",\"expected_result\":");
-    try appendJsonString(gpa, out, evidence_gate.expected_result);
+    try appendJsonStringPublic(gpa, out, evidence_gate.expected_result);
     try out.appendSlice(gpa, ",\"reason_code\":");
-    try appendJsonString(gpa, out, evidence_gate.reason_code);
+    try appendJsonStringPublic(gpa, out, evidence_gate.reason_code);
     try out.appendSlice(gpa, "}}\n");
 }
 
@@ -252,6 +273,8 @@ test "runtime manifest is valid, deterministic, and never enables runtime" {
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"runtime_available\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"fail_closed\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"host_registration_contract_missing\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"host_contract\":{\"contract_schema_version\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"decision_status\":\"pending\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"terminal.lifecycle_state_machine\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"frame.service_mapping\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "runtime_available\":true") == null);

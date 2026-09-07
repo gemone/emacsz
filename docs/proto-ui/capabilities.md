@@ -451,9 +451,9 @@ verified bounded subset and the parity gap that remains.
 
 ### 12.3 Minimum next milestone
 
-With R6 atomic capture batches complete, the next adapter-first milestone is
-the R7 host registration contract decision before a real terminal can be
-built.  Without that reviewed extension contract, runtime remains fail closed.
+R7 host-registration decision infrastructure is complete.  The source decision
+remains `pending` with `host_registration_contract_missing`, so no terminal can
+be registered and runtime remains fail closed.
 The authoritative task split and fail-closed runtime contract are defined in
 [`output-proto-runtime.md`](output-proto-runtime.md).
 

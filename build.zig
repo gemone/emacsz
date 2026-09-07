@@ -624,6 +624,51 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&run_shim_library_conformance.step);
         boundary_step.dependOn(&run_boundary_audit.step);
 
+        // R7: the host registration decision is source-authoritative policy.
+        // Pending is valid, but it neither approves integration nor enables
+        // runtime; the independent gate audits schema and fail-closed policy.
+        const host_contract_gen_tool = b.addExecutable(.{
+            .name = "proto-ui-host-contract-gen",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/host_contract_gen.zig"),
+            }),
+        });
+        host_contract_gen_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_host_contract_gen = b.addRunArtifact(host_contract_gen_tool);
+        const host_contract_artifact = run_host_contract_gen.addOutputFileArg(
+            "host_registration_contract.json",
+        );
+        const install_host_contract = b.addInstallFile(
+            host_contract_artifact,
+            "proto-ui/host_registration_contract.json",
+        );
+
+        const host_contract_gate_tool = b.addExecutable(.{
+            .name = "proto-ui-host-contract-gate",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/host_contract_gate.zig"),
+            }),
+        });
+        host_contract_gate_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_host_contract_gate = b.addRunArtifact(host_contract_gate_tool);
+        run_host_contract_gate.addFileArg(host_contract_artifact);
+        run_host_contract_gate.step.dependOn(&run_host_contract_gen.step);
+
+        const host_contract_step = b.step(
+            "proto-ui-host-contract",
+            "Generate and audit the pending host registration decision contract",
+        );
+        host_contract_step.dependOn(&run_host_contract_gen.step);
+        host_contract_step.dependOn(&install_host_contract.step);
+        host_contract_step.dependOn(&run_host_contract_gate.step);
+
+        boundary_step.dependOn(&install_host_contract.step);
+        boundary_step.dependOn(&run_host_contract_gate.step);
+
         // R2: source-authoritative runtime manifest plus an independent
         // machine-readable gate.  Audit mode succeeds only by reporting
         // unavailability; require mode is deliberately nonzero.
@@ -672,6 +717,7 @@ pub fn build(b: *std.Build) void {
             const run_runtime_gate_require = b.addRunArtifact(runtime_gate_tool);
             run_runtime_gate_require.addFileArg(runtime_manifest);
             run_runtime_gate_require.addArg("require");
+            run_runtime_gate_require.step.dependOn(&run_runtime_gen.step);
             // Force the fail-closed contract onto the adapter boundary.  This
             // nonzero dependency is the R2 contract; it never adds a runtime.
             boundary_step.dependOn(&run_runtime_gate_require.step);
@@ -5598,6 +5644,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true proto-ui-shim-library - build/install the shared C shim
         \\  zig build -Dproto-ui=true proto-ui-shim-library-conformance - dlopen ABI/export tests
         \\
+        \\  zig build -Dproto-ui=true proto-ui-host-contract - pending registration decision audit
         \\  zig build -Dproto-ui=true proto-ui-runtime-manifest - fail-closed runtime manifest audit
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module - Emacs dynamic-module seam
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke - verify module seam in batch Emacs

@@ -75,6 +75,11 @@ src/proto-ui/
   live.zig              EPXL local handshake and bounded stream frames
   conformance.zig       fake-host ABI conformance
   abi_gen.zig           generated C header, ABI summary, and thin shim
+  runtime_gen.zig       fail-closed runtime manifest generator
+  runtime_gate.zig      runtime fail-closed audit/require gate
+  host_contract.zig     source-authoritative registration decision policy
+  host_contract_gen.zig deterministic registration decision generator
+  host_contract_gate.zig registration schema/policy gate
   boundary_audit.zig    changed-path boundary classifier
   root.zig              module/test aggregator
 
@@ -90,6 +95,7 @@ Generated content is written only to:
 zig-out/lib/
 zig-out/bin/
 zig-out/include/proto-ui/
+zig-out/proto-ui/
 ```
 
 ### 4.2 Build phases
@@ -105,7 +111,11 @@ zig-out/include/proto-ui/
 5. **Boundary audit.**  Validate paths, symbols, exported ABI, and feature
    isolation.
 6. **Conformance gate.**  Run adapter contract tests against a fake host.
-7. **Optional integration.**  Attach the adapter to an existing stable Emacs
+7. **Decision gate.**  `proto-ui-host-contract` audits the pending registration
+   decision.  An approved decision also requires complete review metadata, all
+   callback groups, evidence gates, rollback/disable/isolation guarantees, and
+   no forbidden mechanism.
+8. **Optional integration.**  Attach the adapter to an existing stable Emacs
    extension point.  If no stable point exists, mark the feature unavailable.
 
 ### 4.3 Generated shim rules

@@ -62,6 +62,7 @@ pub const Feature = enum {
     adapter_generated_c_shim,
     adapter_host_shim_library,
     capture_atomic_batches,
+    policy_host_registration_contract,
 
     pub fn name(self: Feature) []const u8 {
         return switch (self) {
@@ -92,6 +93,7 @@ pub const Feature = enum {
             .adapter_generated_c_shim => "adapter.generated_c_shim",
             .adapter_host_shim_library => "adapter.host_shim_library",
             .capture_atomic_batches => "capture.atomic_batches",
+            .policy_host_registration_contract => "policy.host_registration_contract",
         };
     }
 
@@ -112,6 +114,7 @@ pub const Feature = enum {
             .adapter_generated_c_shim => false,
             .adapter_host_shim_library => false,
             .capture_atomic_batches => false,
+            .policy_host_registration_contract => false,
             .host_frame_state_seam => false,
             else => true,
         };
@@ -152,6 +155,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .adapter_generated_c_shim, .status = .degraded, .evidence = "proto-ui-shim-conformance" },
     .{ .feature = .adapter_host_shim_library, .status = .degraded, .evidence = "proto-ui-shim-library-conformance" },
     .{ .feature = .capture_atomic_batches, .status = .degraded, .evidence = "proto-ui-unit" },
+    .{ .feature = .policy_host_registration_contract, .status = .degraded, .evidence = "proto-ui-host-contract" },
 };
 
 pub const feature_count = @typeInfo(Feature).@"enum".fields.len;

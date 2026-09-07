@@ -110,6 +110,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W12i generated C shim and linkable observation library | Approved |
 | W12j R5 frame service mapping | Approved |
 | W12k R6 atomic capture batches | Approved |
+| W12l R7 host-registration decision contract | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
@@ -2289,9 +2290,10 @@ Acceptance:
 zig build -Dproto-ui=true proto-ui-boundary --summary all
 ```
 
-Status: normative design.  Runtime tasks R1-R6 are implemented through the
-bounded frame-service mapping and deterministic capture-batch encoder; R7-R9
-remain unimplemented.  The boundary gate and documentation links remain green.
+Status: normative design.  Runtime tasks R1-R7 infrastructure are implemented
+through bounded frame-service mapping, deterministic capture-batch encoding,
+and the pending host-registration decision contract; R8-R9 remain
+unimplemented.  The boundary gate and documentation links remain green.
 
 ##### R2 evidence
 
@@ -2339,6 +2341,17 @@ section order and deterministic envelopes, verifies them through
 `frontend.Scene`, guards commit against stale host generations, and proves
 ERP1 replay round trips preserve bytes exactly.  It does not install redisplay
 hooks or claim redisplay-owned output.
+
+##### R7 evidence
+
+R7 adds `src/proto-ui/host_contract.zig`, its deterministic generator and gate,
+and `zig-out/proto-ui/host_registration_contract.json`.  The schema records
+decision status and review metadata, acceptable and forbidden integration
+mechanisms, required callback groups and evidence gates, rollback/disable
+guarantees, default-build isolation, and the rule that the frontend never
+evaluates Elisp or owns layout.  The source decision remains `pending` with
+`host_registration_contract_missing`; the runtime manifest references this
+decision and remains fail closed.
 
 1. Implement child and tooltip frame protocol.
 2. Implement multi-frame focus isolation.
