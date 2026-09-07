@@ -287,7 +287,7 @@ const SDL_FRect = extern struct {
     h: f32,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_edit, emacs_epxl_sequence, input_translation, emacs_interactive, clipboard };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, emacs_interactive, clipboard };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -2583,6 +2583,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
             config.synthetic_pointer = true;
+        } else if (std.mem.eql(u8, arg, "--emacs-frame-smoke")) {
+            config.mode = .frame_lifecycle;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-interactive-smoke")) {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
@@ -2799,6 +2801,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .emacs_epxl_input => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_edit => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_sequence => try runEmacsEpxlSession(gpa, io, &config, 1),
+        .frame_lifecycle => {
+            try runFrameLifecycleSmoke(gpa, io, &config);
+            return;
+        },
         .facts_publisher => unreachable,
     };
     defer scene.deinit();
@@ -2894,6 +2900,318 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             if (quit) "closed by quit event" else "auto timeout",
         },
     );
+}
+
+fn atomicWriteFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8, data: []const u8) !void {
+    const temporary = try std.fmt.allocPrint(gpa, "{s}.tmp", .{path});
+    defer gpa.free(temporary);
+    _ = std.Io.Dir.cwd().deleteFile(io, temporary) catch {};
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = temporary, .data = data });
+    errdefer _ = std.Io.Dir.cwd().deleteFile(io, temporary) catch {};
+    try std.Io.Dir.rename(std.Io.Dir.cwd(), temporary, std.Io.Dir.cwd(), path, io);
+}
+
+fn waitForFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8, timeout_ms: u32) !void {
+    _ = gpa;
+    var waited: u32 = 0;
+    while (waited < timeout_ms) : (waited += 20) {
+        _ = std.Io.Dir.cwd().statFile(io, path, .{}) catch {
+            try io.sleep(.fromMilliseconds(20), .awake);
+            continue;
+        };
+        return;
+    }
+    return error.FrameLifecycleTimeout;
+}
+
+fn waitForFilePrefix(gpa: std.mem.Allocator, io: std.Io, path: []const u8, prefix: []const u8, timeout_ms: u32) !void {
+    var waited: u32 = 0;
+    while (waited < timeout_ms) : (waited += 20) {
+        const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64)) catch {
+            try io.sleep(.fromMilliseconds(20), .awake);
+            waited += 20;
+            continue;
+        };
+        defer gpa.free(bytes);
+        if (std.mem.startsWith(u8, bytes, prefix)) return;
+        try io.sleep(.fromMilliseconds(20), .awake);
+        waited += 20;
+    }
+    return error.FrameLifecycleTimeout;
+}
+
+fn emacsClientOnce(
+    io: std.Io,
+    emacsclient_path: []const u8,
+    socket_path: []const u8,
+    eval: []const u8,
+) !std.process.Child.Term {
+    var child = try std.process.spawn(io, .{
+        .argv = &.{
+            emacsclient_path,
+            "-a",
+            "",
+            "--socket-name",
+            socket_path,
+            "-e",
+            eval,
+        },
+    });
+    return child.wait(io);
+}
+
+fn runFrameLifecycleSmoke(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    config: *const Config,
+) !void {
+    var token_bytes: [8]u8 = undefined;
+    try io.randomSecure(&token_bytes);
+    const suffix = std.fmt.bytesToHex(token_bytes, .lower);
+    const private_dir = try std.fmt.allocPrint(gpa, "/tmp/proto-ui-frame-{s}", .{suffix});
+    errdefer gpa.free(private_dir);
+    const directory_permissions: std.Io.Dir.Permissions = if (native_os == .windows)
+        .default_dir
+    else
+        @enumFromInt(0o700);
+    try std.Io.Dir.cwd().createDir(io, private_dir, directory_permissions);
+    errdefer std.Io.Dir.cwd().deleteTree(io, private_dir) catch {};
+
+    const socket_path = try std.fmt.allocPrint(gpa, "{s}/emacs.sock", .{private_dir});
+    defer gpa.free(socket_path);
+    const facts_path = try std.fmt.allocPrint(gpa, "{s}/facts.json", .{private_dir});
+    defer gpa.free(facts_path);
+    const ready_path = try std.fmt.allocPrint(gpa, "{s}/created", .{private_dir});
+    defer gpa.free(ready_path);
+    const delete_path = try std.fmt.allocPrint(gpa, "{s}/delete", .{private_dir});
+    defer gpa.free(delete_path);
+    const deleted_path = try std.fmt.allocPrint(gpa, "{s}/deleted", .{private_dir});
+    defer gpa.free(deleted_path);
+    const emacs_dir = std.fs.path.dirname(config.emacs_path) orelse ".";
+    const emacsclient_path = try std.fmt.allocPrint(gpa, "{s}/emacsclient", .{emacs_dir});
+    defer gpa.free(emacsclient_path);
+
+    _ = std.Io.Dir.cwd().deleteFile(io, facts_path) catch {};
+    _ = std.Io.Dir.cwd().deleteFile(io, ready_path) catch {};
+    _ = std.Io.Dir.cwd().deleteFile(io, delete_path) catch {};
+    _ = std.Io.Dir.cwd().deleteFile(io, deleted_path) catch {};
+
+    const display_ptr = std.c.getenv("DISPLAY") orelse "wayland-0";
+    const display: []const u8 = std.mem.span(display_ptr);
+    var daemon = try std.process.spawn(io, .{
+        .argv = &.{ config.emacs_path, "-Q", "-d", display, try std.fmt.allocPrint(gpa, "--fg-daemon={s}", .{socket_path}) },
+        .environ_map = null,
+    });
+    var daemon_running = true;
+    defer if (daemon_running) daemon.kill(io);
+    try waitForFile(gpa, io, socket_path, 10000);
+
+    // Bounded daemon readiness ping.  The empty alternate editor ensures this
+    // cannot fall back to launching a second or user Emacs instance.
+    var daemon_ready = false;
+    var attempt: usize = 0;
+    while (attempt < 20) : (attempt += 1) {
+        if (emacsClientOnce(io, emacsclient_path, socket_path, "(+ 1 1)")) |term| {
+            if (term == .exited and term.exited == 0) {
+                daemon_ready = true;
+                break;
+            }
+        } else |err| return err;
+        try io.sleep(.fromMilliseconds(250), .awake);
+    }
+    if (!daemon_ready) return error.FrameLifecycleTimeout;
+
+    const current_dir = try std.process.currentPathAlloc(io, gpa);
+    defer gpa.free(current_dir);
+    const absolute_module = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ current_dir, config.module_path });
+    defer gpa.free(absolute_module);
+    const module_eval = try std.fmt.allocPrint(
+        gpa,
+        "(progn (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) t)",
+        .{absolute_module},
+    );
+    defer gpa.free(module_eval);
+    const module_term = try emacsClientOnce(io, emacsclient_path, socket_path, module_eval);
+    if (module_term != .exited or module_term.exited != 0) return error.ModuleLoadFailed;
+
+    const lifecycle_eval = try std.fmt.allocPrint(
+        gpa,
+        \\(let* ((frame (make-frame-on-display (format "%s" (format "{s}")) (quote ((width . 30) (height . 10) (left . 20) (top . 20)))))
+        \\       (facts-file (expand-file-name (format "%s" (format "{s}"))))
+        \\       (ready-file (expand-file-name (format "%s" (format "{s}"))))
+        \\       (delete-file-name (expand-file-name (format "%s" (format "{s}"))))
+        \\       (deleted-file (expand-file-name (format "%s" (format "{s}")))))
+        \\  (unless (and (frame-live-p frame) (frame-visible-p frame))
+        \\    (error "Proto-UI lifecycle frame is not visible"))
+        \\  (redisplay t)
+        \\  (let* ((window (frame-selected-window frame))
+        \\         (buffer (window-buffer window))
+        \\         (deadline (+ (float-time) 8.0))
+        \\         (previous (cons (frame-pixel-width frame)
+        \\                         (frame-pixel-height frame)))
+        \\         (matching-samples 1))
+        \\    (while (< matching-samples 3)
+        \\      (sleep-for 0.15)
+        \\      (when (>= (float-time) deadline)
+        \\        (error "Proto-UI lifecycle frame geometry settle timed out"))
+        \\      (let ((sample (cons (frame-pixel-width frame)
+        \\                          (frame-pixel-height frame))))
+        \\        (if (and (= (car previous) (car sample))
+        \\                 (= (cdr previous) (cdr sample)))
+        \\            (setq matching-samples (+ matching-samples 1))
+        \\          (setq previous sample
+        \\                matching-samples 1))))
+        \\      (with-current-buffer (get-buffer-create "*Proto-UI Lifecycle*")
+        \\        (erase-buffer)
+        \\        (insert "Emacs Proto-UI")
+        \\        (set-window-buffer window (current-buffer)))
+        \\      (redisplay t)
+        \\      (let ((facts-temp (make-temp-file "proto-ui-facts")))
+        \\        (with-temp-file facts-temp
+        \\          (insert (proto-ui-frame-facts frame)))
+        \\        (rename-file facts-temp facts-file t))
+        \\      (let ((ready-temp (make-temp-file "proto-ui-ready")))
+        \\        (with-temp-file ready-temp (insert "created"))
+        \\        (rename-file ready-temp ready-file t))
+        \\      (let ((deadline (+ (float-time) 12)))
+        \\        (while (and (not (file-exists-p delete-file-name))
+        \\                    (< (float-time) deadline))
+        \\          (sit-for 0.1 t)))
+        \\      (unless (file-exists-p delete-file-name)
+        \\        (error "Proto-UI frame delete request timed out"))
+        \\      (delete-file delete-file-name)
+        \\      (delete-frame frame)
+        \\      (let ((deleted-temp (make-temp-file "proto-ui-deleted")))
+        \\        (with-temp-file deleted-temp (insert "deleted"))
+        \\        (rename-file deleted-temp deleted-file t))))))
+    ,
+        .{ display, facts_path, ready_path, delete_path, deleted_path },
+    );
+    defer gpa.free(lifecycle_eval);
+
+    var client = try std.process.spawn(io, .{
+        .argv = &.{
+            emacsclient_path,
+            "-a",
+            "",
+            "--socket-name",
+            socket_path,
+            "-e",
+            lifecycle_eval,
+        },
+        .environ_map = null,
+    });
+    var client_running = true;
+    defer if (client_running) client.kill(io);
+
+    try waitForFile(gpa, io, facts_path, 15000);
+    try waitForFile(gpa, io, ready_path, 1000);
+    const facts_bytes = std.Io.Dir.cwd().readFileAlloc(io, facts_path, gpa, .limited(64 * 1024)) catch return error.NoEmacsFacts;
+    defer gpa.free(facts_bytes);
+    const frame_facts = try facts.parse(gpa, facts_bytes);
+    if (frame_facts.frame_width <= 0 or frame_facts.frame_height <= 0)
+        return error.FrameLifecycleRoundTripFailed;
+
+    if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
+    defer SDL_Quit();
+    const window = SDL_CreateWindow("Emacs Proto-UI Frame Lifecycle", 720, 480, SDL_WINDOW_RESIZABLE) orelse return sdlFail("SDL_CreateWindow");
+    defer SDL_DestroyWindow(window);
+    const selected_renderer = try createRenderer(gpa, window, config.renderer_request, config.present_mode);
+    defer destroyRenderer(selected_renderer);
+    std.debug.print("sdl3-frame-smoke: renderer {s} tier={s}\n", .{ selected_renderer.name, @tagName(selected_renderer.tier) });
+
+    var producer_scene = frontend.Scene.init(gpa);
+    defer producer_scene.deinit();
+    var scene = frontend.Scene.init(gpa);
+    defer scene.deinit();
+    var draw_list: renderer_policy.DrawList = .{ .allocator = gpa };
+    defer draw_list.deinit();
+    var frame_gate: renderer_policy.FrameGate = .{};
+    var frame_counters: renderer_policy.FrameCounters = .{};
+    producer_scene.next_sequence = 5; // reserve W12a control/capability sequences 1..4
+    scene.next_sequence = 5;
+
+    var messages: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (messages.items) |message| gpa.free(message);
+        messages.deinit(gpa);
+    }
+    try facts.appendWireSnapshot(
+        gpa,
+        frame_facts,
+        &.{"Emacs Proto-UI"},
+        .{ .line = 1, .column = 0 },
+        .{ .start_line = 1, .line_count = 1 },
+        &producer_scene,
+        &messages,
+    );
+    if (messages.items.len != 2) return error.FrameLifecycleRoundTripFailed;
+    for (messages.items, 0..) |message, index| {
+        try scene.apply(message);
+        if (index == 0) {
+            if (!SDL_SetRenderDrawColor(selected_renderer.handle, 0x10, 0x12, 0x18, 255)) return sdlFail("SDL_SetRenderDrawColor");
+            if (!SDL_RenderClear(selected_renderer.handle)) return sdlFail("SDL_RenderClear");
+            if (!SDL_RenderPresent(selected_renderer.handle)) return sdlFail("SDL_RenderPresent");
+            SDL_Delay(250);
+        } else {
+            try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+        }
+    }
+    if (scene.stats.frame_updates != 1 or scene.frame == null or
+        scene.frames.len != 1 or scene.frames.frames[0].status != .active)
+        return error.FrameLifecycleRoundTripFailed;
+
+    // Atomic delete request; the Emacs client consumes it before deleting.
+    try atomicWriteFile(gpa, io, delete_path, "delete");
+    try waitForFilePrefix(gpa, io, deleted_path, "deleted", 12000);
+    const client_term = try client.wait(io);
+    client_running = false;
+    if (client_term != .exited or client_term.exited != 0)
+        return error.FrameLifecycleRoundTripFailed;
+
+    var destroy_payload: [8]u8 = undefined;
+    std.mem.writeInt(u32, destroy_payload[0..4], 1, .little);
+    std.mem.writeInt(u32, destroy_payload[4..8], 1, .little);
+    var destroy_message: std.ArrayList(u8) = .empty;
+    defer destroy_message.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_destroy,
+        .sequence = 7,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = 1,
+        .timestamp_ns = 7,
+    }, &destroy_payload, &destroy_message);
+    try producer_scene.apply(destroy_message.items);
+    try scene.apply(destroy_message.items);
+    if (scene.frame != null or scene.frames.len != 1 or
+        scene.frames.frames[0].status != .destroyed or scene.windows.items.len != 0)
+        return error.FrameLifecycleRoundTripFailed;
+    if (producer_scene.frame != null or producer_scene.frames.len != 1 or
+        producer_scene.frames.frames[0].status != .destroyed)
+        return error.FrameLifecycleRoundTripFailed;
+
+    var width: c_int = 0;
+    var height: c_int = 0;
+    SDL_GetWindowSize(window, &width, &height);
+    if (!SDL_SetRenderDrawColor(selected_renderer.handle, 0x10, 0x12, 0x18, 255)) return sdlFail("SDL_SetRenderDrawColor");
+    if (!SDL_RenderClear(selected_renderer.handle)) return sdlFail("SDL_RenderClear");
+    if (!SDL_RenderPresent(selected_renderer.handle)) return sdlFail("SDL_RenderPresent");
+    SDL_Delay(250);
+
+    const stop_term = try emacsClientOnce(io, emacsclient_path, socket_path, "(kill-emacs 0)");
+    if (stop_term != .exited or stop_term.exited != 0) return error.FrameLifecycleCleanupFailed;
+    const daemon_term = try daemon.wait(io);
+    daemon_running = false;
+    if (daemon_term != .exited and daemon_term != .signal) return error.FrameLifecycleCleanupFailed;
+
+    std.debug.print(
+        "sdl3-frame-smoke: real Emacs frame {d}x{d} created, rendered, and deleted through SDL3; lifecycle OK\n",
+        .{ frame_facts.frame_width, frame_facts.frame_height },
+    );
+    std.Io.Dir.cwd().deleteTree(io, private_dir) catch {};
+    gpa.free(private_dir);
 }
 
 fn buildDisplayEnvironment(gpa: std.mem.Allocator) !std.process.Environ.Map {

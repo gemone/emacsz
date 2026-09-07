@@ -822,6 +822,28 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_epxl_interactive_step.dependOn(&run_sdl3_epxl_interactive.step);
 
+        const run_sdl3_frame = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-frame-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+        });
+        run_sdl3_frame.setCwd(b.path("."));
+        run_sdl3_frame.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_frame.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_frame.step.dependOn(step);
+        const sdl3_frame_step = b.step(
+            "sdl3-frame-smoke",
+            "Create, render, and delete a real Emacs frame through SDL3",
+        );
+        sdl3_frame_step.dependOn(&run_sdl3_frame.step);
+
         const run_sdl3_pointer = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/proto-ui-sdl3",
             "--emacs-pointer-smoke",

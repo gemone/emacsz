@@ -26,6 +26,14 @@ The repository contains the complete English design baseline.  Historical W1-W4c
 
 W10a adds adapter-owned SDL renderer negotiation: the frontend reports the actual renderer tier, supports explicit software/GPU/named-driver selection, and falls back from GPU to software when required. W10b-a adds change-aware full-frame presentation with frontend full-frame-path and present/skip counters. W10b-b1 adds a reusable backend-neutral clear/fill/text draw list executed by SDL software and GPU-backed renderers. It also adds bounded SDL key/text translation, cursor/backspace artifact actions, and explicit monotonic reverse-input sequencing with one in-flight EPXL intent, exact transport ACK matching, and an Emacs apply-ACK before that transport ACK. Glyph atlas, image cache, blend/scissor, rectangle damage, native GPU counters, and full interactive-frame compatibility remain pending; persistent EPXL input subsequently arrived through W8c/W8d and now supports bounded pointer sessions. W11a adds the first bounded desktop clipboard paste path: Ctrl+V captures printable SDL clipboard text through the same validated input queue. W11b adds the matching bounded copy path: Ctrl+C observes an Emacs smoke buffer, publishes the validated first line through a local artifact, and SDL3 installs it in the platform clipboard; Unicode, rich text, MIME negotiation, and selection ownership remain pending. W10b-b2a adds a bounded adapter-owned glyph-atlas placement/LRU policy with hit/miss/eviction counters. W10c-a adds conservative initial/cursor/viewport/unchanged damage classification and counters; unchanged scene states skip presentation. W10c-b uses a bounded old/new cursor clip for cursor-only changes to avoid a full clear/redraw. W10c-c extends the retained target to bounded ASCII line/cursor region clips, while viewport, oversized, incomplete, and resource-level damage remain conservative full-frame work; GPU timestamps and partial present remain pending. Texture allocation and glyph-run rendering remain pending. W12a adds bounded EPXL capability negotiation with required-feature intersection, SHA-256 effective-set verification, and a generated machine-readable status manifest; full EUP-wide feature negotiation remains pending. W12b adds bounded frame create/update/destroy state and resource-generation declarations with atomic stale-generation rejection; real frame teardown and resource payloads remain pending.
 
+W12c adds the first real-frame lifecycle bridge smoke: an isolated PGTK Emacs
+daemon creates one visible display-backed frame, the smoke waits for stable
+public pixel geometry and bounded facts, a producer scene emits EUP
+`FRAME_CREATE`/`FRAME_UPDATE`, a separate frontend scene applies them, SDL3
+renders the created/active states, and an atomic delete marker tears down the
+exact Emacs frame followed by EUP `FRAME_DESTROY`.  This is not `output_proto`
+frame ownership and does not stream redisplay-owned glyphs or full input.
+
 W4c-b1-p0 adds the executable EUP v1 codec, including envelope, capability, message-ID, and FRAME_UPDATE section conformance.  W4c-b1-t0 adds bounded memory-sink sequencing and ERP1 replay-file conformance.  W4c-b1-b0 adds the versioned adapter ABI, a fake-host conformance harness, and generated ABI artifacts under `zig-out/include/proto-ui`; none introduces runtime integration.  Inherited C/Lisp changes in the rollback patch are restoration-only and return Proto-UI runtime files to their pre-Proto-UI state.  The adapter source is the authoritative ownership manifest; generated JSON is only a non-normative ABI summary.
 
 The documentation in this directory is the source of truth for the implementation workstreams.
@@ -41,9 +49,11 @@ Available:
 | [`zig-build-adapter.md`](zig-build-adapter.md) | Normative Zig-build adapter runtime, versioned ABI, generated shim rules, and streaming redesign |
 | [`protocol.md`](protocol.md) | Complete EUP v1 wire protocol, envelope, message IDs, payload semantics, and state machines |
 | [`capabilities.md`](capabilities.md) | Backend, frontend, renderer, widget, and PGTK parity capability matrices |
+| [`frame-lifecycle-smoke.md`](frame-lifecycle-smoke.md) | Current real-frame lifecycle bridge smoke, scope, environment, and acceptance |
 | `sdl3-frontend.md` | SDL3 process model, window handling, input bridge, rendering pipeline, and platform integration |
 | `performance.md` | Performance tiers, budgets, test scenarios, instrumentation, and regression gates |
 | `implementation-plan.md` | Workstreams, concrete tasks, acceptance gates, and final definition of done |
+| [`runbook.md`](runbook.md) | Current build/test commands, expected smoke behavior, and troubleshooting boundary |
 
 ## 4. Core principle
 
@@ -87,19 +97,21 @@ The target build entry points are:
 # Build Emacs with the headless proto-ui terminal backend.
 zig build -Dproto-ui=true
 
-# Run protocol, replay, and headless UI tests.
+# Run protocol and adapter boundary tests.
 zig build -Dproto-ui=true proto-ui-unit
-zig build -Dproto-ui=true proto-ui-smoke
-zig build -Dproto-ui=true proto-ui-replay-test
+zig build -Dproto-ui=true proto-ui-boundary
 
 # Build the independent SDL3 frontend.
 zig build -Dproto-ui=true -Dsdl3-frontend=true
 
-# Run the real frontend acceptance test.
+# Run current frontend and real-frame lifecycle smoke tests.
 zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-frame-smoke
 ```
 
-Exact step names may be refined during implementation, but the final build must expose these capabilities.
+Additional facts, input, clipboard, recovery, renderer, and interactive smoke
+steps are listed in [`implementation-plan.md`](implementation-plan.md).  The
+final full-frame acceptance build remains future work.
 
 ## 7. Compatibility rule
 

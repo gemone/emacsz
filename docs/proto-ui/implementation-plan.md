@@ -60,8 +60,9 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | `output_proto` terminal | Rolled back with runtime integration |
 | Redisplay capture | Rolled back; adapter ABI v1 contract only |
 | Resource model | Not implemented |
-| SDL3 frontend | Partial: token-authenticated EPXL facts streaming with producer coalescing and initial-session resync; bounded ASCII input bridge only; no redisplay streaming, keyboard/keymap/IME input, faces, or full recovery |
-| Real SDL3 Emacs smoke test | Not achieved |
+| SDL3 frontend | Partial: EUP replay/live rendering, renderer tiers, damage classes, bounded facts, ASCII/key/pointer/wheel/clipboard bridges, and EPXL recovery; no redisplay streaming, full keyboard/keymap/IME input, faces, fonts, images, widgets, or production frame ownership |
+| Bounded real-frame lifecycle bridge | Implemented by W12c: one real PGTK observation frame and one EUP/SDL3 frame are created, rendered, and deleted |
+| Final real `output_proto` SDL3 Emacs frame | Not achieved |
 | Adapter-first C boundary | Required; no new inherited-C Proto-UI edits |
 | W9a independent SDL3 lifecycle smoke | Approved |
 | W9b SDL3 EUP replay scene renderer | Approved |
@@ -100,6 +101,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W10c-c bounded text-region clipping | Approved |
 | W12a EPXL capability/status manifest | Approved |
 | W12b frame lifecycle/resource generation contract | Approved |
+| W12c real-frame lifecycle bridge smoke | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
@@ -2091,6 +2093,51 @@ zig build check
 
 Status: approved. The dedicated reviewer completed correctness, integration/runtime, and boundary/docs/status passes; approved fixes added non-recycled single-active-frame enforcement, initial-generation checks, resource capacity preflight, duplicate/non-live declaration rejection, exact frame destroy cleanup, and precise bounded-status documentation.
 
+#### W12c — Real-frame lifecycle bridge smoke (approved)
+
+Goal: prove that one real display-backed Emacs frame and one EUP/SDL3 frame can
+be created, updated, and destroyed in a deterministic order without modifying
+inherited Emacs C/Lisp.
+
+1. Start an isolated foreground Emacs daemon with a private 0700 runtime
+   directory and socket; never attach to a user daemon.
+2. Load the adapter-owned dynamic module and run a bounded daemon readiness
+   ping.
+3. Create one visible PGTK frame with `make-frame-on-display` from an
+   `emacsclient -e` lifecycle program.
+4. Require live/visible state and three consecutive equal pixel-geometry
+   samples, 150 ms apart, within an eight-second settle deadline.
+5. Observe bounded public frame/window/text/cursor/viewport facts atomically.
+6. Encode EUP sequences 5 (`FRAME_CREATE`) and 6 (`FRAME_UPDATE`) with a
+   producer scene; apply them to a separate frontend scene; render created and
+   active SDL3 states.
+7. Consume an atomic private delete marker, call `delete-frame` on the retained
+   frame, publish the atomic deleted marker, apply EUP sequence 7
+   (`FRAME_DESTROY`), and present the explicit cleared destroyed state.
+8. Stop and reap the daemon/client, release renderer and scene allocations, and
+   remove the private runtime directory on success and failure.
+
+Implemented limits: this is a process/public-API lifecycle bridge, not
+`output_proto` terminal integration.  It does not create a `window-system .
+proto` frame, own redisplay rows, transport resources, support multiple EUP
+frames, or provide full input/focus/visibility events.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-frame-smoke
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-live-smoke
+```
+
+Status: approved. The dedicated reviewer completed geometry correctness,
+lifecycle/producer-frontend sequence separation, cleanup/error handling, and
+regression/build passes; approved fixes added bounded geometry settling and
+separated producer and frontend scene sequence state. Local Linux validation
+covered 89/89 adapter unit tests, three successful frame-smoke runs before the
+final cleanup pass, the post-cleanup frame smoke, live smoke, and the built-in
+check before cleanup.
+
 Tasks:
 
 1. Implement child and tooltip frame protocol.
@@ -2311,7 +2358,7 @@ Step names may be adjusted during W1/W2, but each listed verification must have 
 | Performance baseline | Done |
 | Workstream plan | Done |
 | Protocol schema examples | Done (adapter-only) |
-| User runbook | Pending W9 |
+| User runbook | Done for current bounded smoke scope; update with each runtime milestone |
 | Troubleshooting guide | Pending W13 |
 | Final capability status report | Pending W12/W16 |
 

@@ -113,7 +113,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .damage_retained_clip, .status = .degraded, .evidence = "sdl3-pointer-smoke and sdl3-epxl-interactive-smoke" },
     .{ .feature = .renderer_sdl3, .status = .degraded, .evidence = "sdl3-renderer-smoke" },
     .{ .feature = .frame_output_proto, .status = .pending, .evidence = "W12/W16 real proto frame acceptance pending" },
-    .{ .feature = .frame_lifecycle, .status = .degraded, .evidence = "proto-ui-unit frame lifecycle contract" },
+    .{ .feature = .frame_lifecycle, .status = .degraded, .evidence = "proto-ui-unit frame lifecycle contract and sdl3-frame-smoke" },
     .{ .feature = .resource_generation_contract, .status = .degraded, .evidence = "proto-ui-unit resource generation contract" },
     .{ .feature = .redisplay_glyph_rows, .status = .pending, .evidence = "W12 redisplay capture pending" },
     .{ .feature = .resource_v1, .status = .pending, .evidence = "W12 resource model pending" },
