@@ -2503,12 +2503,14 @@ Review gates:
 
 Goal: prove protocol robustness.
 
-Status: W13-a and W13-b complete.  The deterministic protocol fuzz gate covers
+Status: W13-a, W13-b, and W13-c complete.  The deterministic protocol fuzz gate covers
 envelope, frame-update, capability, visibility/focus, resource, input-codec,
 and frontend `Scene.apply` seeds.  The recovery differential gate compares
 ordered application, authenticated resync, ACK-loss retry, and ERP1 replay to
-one canonical final `Scene` digest.  It remains adapter-only and does not open
-a socket, start Emacs, or enable `output_proto`.
+one canonical final `Scene` digest.  W13-c makes every route restore the same
+bounded face, font, string, and complete RGBA8 image state; authenticated
+resync restores them atomically from `RESOURCE_SNAPSHOT`.  It remains
+adapter-only and does not open a socket, start Emacs, or enable `output_proto`.
 
 Tasks:
 
@@ -2519,8 +2521,10 @@ Tasks:
 5. Add missing-resource tests.
 6. Add reconnect/replay tests. *(W13-b covers resync and ERP1 replay.)*
 7. Add frontend crash isolation tests.
-8. Add deterministic snapshot comparison. *(W13-b covers canonical final-state
-   fingerprints and deliberate mismatch rejection.)*
+8. Add deterministic snapshot comparison. *(W13-b/W13-c cover canonical
+   final-state and concrete-resource fingerprints, `RESOURCE_SNAPSHOT`
+   recovery, payload-mutation mismatch, identity mismatch, and deliberate
+   mismatch rejection.)*
 
 Acceptance:
 

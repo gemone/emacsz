@@ -1344,7 +1344,7 @@ must be nonzero; repeated runs with the same options produce identical counts.
 
 `proto-ui-recovery-diff` is an adapter-only convergence gate.  It compares
 four routes to the same final public `Scene`: ordered live application,
-authenticated `RESYNC_REQUEST` → `RESYNC_BEGIN` → replay → `RESYNC_COMPLETE`,
+authenticated `RESYNC_REQUEST` → `RESYNC_BEGIN` → `RESOURCE_SNAPSHOT` → remaining display state → `RESYNC_COMPLETE`,
 ACK-loss retry through the bounded delivery journal, and ERP1
 `writeReplay`/`readReplay` round trip.  The resync controls use contiguous
 sequence numbers and a local constant-time MAC in the in-process fixture; this
@@ -1356,12 +1356,15 @@ original sequence after resync, invokes the publisher once, and accepts the
 transport ACK exactly once.  Duplicate journal and `AckTracker` ACKs are
 rejected.  The canonical SHA-256 fingerprint covers frame identity, retained
 frame registry state, windows, rows, ordered text, cursor, damage, present
-hint, viewport, and resource identity/generation/status.  Sequence numbers,
+hint, viewport, concrete face attributes, concrete font descriptors/metrics,
+string bytes, image metadata, and exact image bytes.  A separate resource
+subdigest is canonicalized by resource kind and ID.  Sequence numbers,
 timestamps, and ACK bookkeeping are excluded because they are delivery
 metadata rather than display truth.
 
 The executable emits one deterministic JSON object with all four per-path
-digests, one common final digest, accepted-operation count, and `pass`.  Any
+digests, one common final digest, the concrete resource digest, resource
+counts, accepted-operation count, and `pass`.  Any
 digest difference, malformed control order, duplicate side effect, or invalid
 token fails.  The gate has no socket, no Emacs process, no transport listener,
 and no `output_proto` activation.

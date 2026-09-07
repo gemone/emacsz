@@ -375,9 +375,10 @@ The boundary report must show:
 5. Default-build symbol and behavior isolation remain clean.
 6. `protocol.fuzz_hardening` reports degraded/non-negotiable with
    `proto-ui-fuzz` evidence and a deterministic bounded run.
-7. `recovery.differential_gate` reports degraded/non-negotiable with
-   `proto-ui-recovery-diff` evidence, and all four recovery paths report the
-   same canonical final digest.
+7. `recovery.differential_gate` and `recovery.resource_snapshot_gate` report
+   degraded/non-negotiable with `proto-ui-recovery-diff` evidence; all four
+   recovery paths report the same canonical final digest and concrete
+   face/font/string/image resource digest.
 8. `performance.adapter_hotpath_benchmark` reports degraded/non-negotiable
    with opt-in `proto-ui-bench` evidence; benchmark timing is never a pass/fail
    boundary gate.

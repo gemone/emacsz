@@ -11,6 +11,7 @@ const frontend = @import("frontend.zig");
 const facts = @import("facts.zig");
 const input = @import("input.zig");
 const live = @import("live.zig");
+const lifecycle = @import("lifecycle.zig");
 const protocol = @import("protocol.zig");
 const transport = @import("transport.zig");
 
@@ -50,14 +51,26 @@ pub const PathResult = struct {
 pub const Summary = struct {
     paths: [@typeInfo(PathName).@"enum".fields.len]PathResult,
     digest: Digest,
+    resource_digest: Digest,
     accepted_count: u64,
+    resource_counts: ResourceCounts,
+    resource_snapshot: bool = true,
     result: []const u8 = "pass",
 
     pub fn eql(left: Summary, right: Summary) bool {
         return std.mem.eql(u8, &left.digest, &right.digest) and
+            std.mem.eql(u8, &left.resource_digest, &right.resource_digest) and
             left.accepted_count == right.accepted_count and
-            std.meta.eql(left.paths, right.paths);
+            std.meta.eql(left.paths, right.paths) and
+            std.meta.eql(left.resource_counts, right.resource_counts);
     }
+};
+
+pub const ResourceCounts = struct {
+    faces: usize = 0,
+    fonts: usize = 0,
+    strings: usize = 0,
+    images: usize = 0,
 };
 
 const Messages = struct {
@@ -107,8 +120,9 @@ fn appendSnapshot(
     gpa: std.mem.Allocator,
     snapshot: Snapshot,
     scene: *frontend.Scene,
-    messages: *Messages,
-) !void {
+) ![]const u8 {
+    var generated: Messages = .{};
+    errdefer generated.deinit(gpa);
     try facts.appendWireSnapshot(
         gpa,
         frameFacts(),
@@ -116,11 +130,17 @@ fn appendSnapshot(
         .{ .line = snapshot.cursor_line, .column = snapshot.cursor_column },
         .{ .start_line = snapshot.viewport_start, .line_count = snapshot.viewport_count },
         scene,
-        &messages.items,
+        &generated.items,
     );
+    const owned = try generated.items.toOwnedSlice(gpa);
+    if (owned.len != 1) return error.InvalidFrameFacts;
+    const copy = try gpa.dupe(u8, owned[0]);
+    for (owned) |message| gpa.free(message);
+    gpa.free(owned);
+    return copy;
 }
 
-fn createMessage(gpa: std.mem.Allocator) ![]const u8 {
+fn createMessage(gpa: std.mem.Allocator, sequence: u64) ![]const u8 {
     var payload: [8]u8 = undefined;
     std.mem.writeInt(u32, payload[0..4], 1, .little);
     std.mem.writeInt(u32, payload[4..8], 1, .little);
@@ -129,33 +149,196 @@ fn createMessage(gpa: std.mem.Allocator) ![]const u8 {
     try protocol.encodeEnvelope(gpa, .{
         .flags = 0,
         .message_type = protocol.Message.frame_create,
-        .sequence = 1,
+        .sequence = sequence,
         .ack_sequence = 0,
         .session_id = 0x1001,
         .frame_id = 1,
-        .timestamp_ns = 1,
+        .timestamp_ns = sequence,
     }, &payload, &message);
     return message.toOwnedSlice(gpa);
 }
 
-/// One FRAME_CREATE plus one final FRAME_UPDATE keeps the differential input
-/// minimal and avoids depending on replacement-update allocation behavior.
-fn buildMessages(gpa: std.mem.Allocator) !Messages {
+const Fixture = struct {
+    direct: Messages = .{},
+    snapshot: []const u8 = &.{},
+    display: []const u8 = &.{},
+    resource_digest: Digest,
+    counts: ResourceCounts,
+
+    fn deinit(self: *Fixture, gpa: std.mem.Allocator) void {
+        self.direct.deinit(gpa);
+        if (self.snapshot.len != 0) gpa.free(self.snapshot);
+        if (self.display.len != 0) gpa.free(self.display);
+        self.* = undefined;
+    }
+};
+
+const face_fixture = protocol.FaceDefine{
+    .face_id = 21,
+    .generation = 3,
+    .presence = .{ .foreground = true, .background = true, .underline_color = true },
+    .underline = .color,
+    .foreground = .{ 0x10, 0x20, 0x30, 0xff },
+    .background = .{ 0xf0, 0xe0, 0xd0, 0xff },
+    .underline_color = .{ 0xaa, 0x55, 0x11, 0xff },
+};
+
+const font_fixture = blk: {
+    var payload = protocol.FontDefine{
+        .font_id = 31,
+        .generation = 4,
+        .family_len = 4,
+        .foundry_len = 5,
+        .style_len = 5,
+        .slant = .roman,
+        .spacing = .mono,
+        .scalable = true,
+        .fixed_pitch = true,
+        .pixel_size = 16,
+        .point_size_tenths = 120,
+        .x_dpi = 96,
+        .y_dpi = 96,
+        .ascent = 10,
+        .descent = 4,
+        .line_height = 14,
+        .average_advance = 8,
+        .space_advance = 8,
+        .max_advance = 10,
+        .min_advance = 6,
+        .baseline_offset = 10,
+        .underline_position = -2,
+        .underline_thickness = 1,
+    };
+    @memcpy(payload.family[0..4], "Test");
+    @memcpy(payload.foundry[0..5], "found");
+    @memcpy(payload.style[0..5], "Book1");
+    break :blk payload;
+};
+
+const string_fixture = "resource";
+const image_metadata_fixture = protocol.ImageDefine{
+    .image_id = 41,
+    .generation = 5,
+    .width = 2,
+    .height = 1,
+    .total_byte_count = 8,
+    .scaling_filter = .linear,
+    .cache_policy = .pinned,
+};
+const image_bytes_fixture = "pixelsXY";
+
+fn encodeResourceMessage(
+    gpa: std.mem.Allocator,
+    message_type: u16,
+    sequence: u64,
+    payload: []const u8,
+) ![]const u8 {
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = message_type,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 0x1001,
+        .frame_id = 1,
+        .timestamp_ns = sequence,
+    }, payload, &message);
+    return message.toOwnedSlice(gpa);
+}
+
+fn buildResourceMessages(gpa: std.mem.Allocator) !Messages {
     var messages: Messages = .{};
     errdefer messages.deinit(gpa);
-    try messages.items.append(gpa, try createMessage(gpa));
+    try messages.items.append(gpa, try createMessage(gpa, 1));
 
-    var generator = frontend.Scene.init(gpa);
-    defer generator.deinit();
-    try generator.apply(messages.items.items[0]);
-    try appendSnapshot(gpa, final_snapshot, &generator, &messages);
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(gpa);
+    try protocol.encodeFaceDefine(gpa, face_fixture, &payload);
+    try messages.items.append(gpa, try encodeResourceMessage(gpa, protocol.Message.face_define, 2, payload.items));
+    payload.clearRetainingCapacity();
+
+    try protocol.encodeFontDefine(gpa, font_fixture, &payload);
+    try messages.items.append(gpa, try encodeResourceMessage(gpa, protocol.Message.font_define, 3, payload.items));
+    payload.clearRetainingCapacity();
+
+    try protocol.encodeStringDefine(gpa, .{ .resource_id = 51, .generation = 6, .bytes = string_fixture }, &payload);
+    try messages.items.append(gpa, try encodeResourceMessage(gpa, protocol.Message.string_define, 4, payload.items));
+    payload.clearRetainingCapacity();
+
+    try protocol.encodeImageDefine(gpa, image_metadata_fixture, &payload);
+    try messages.items.append(gpa, try encodeResourceMessage(gpa, protocol.Message.image_define, 5, payload.items));
+    payload.clearRetainingCapacity();
+
+    try protocol.encodeImageData(gpa, .{
+        .image_id = 41,
+        .generation = 5,
+        .fragment_index = 0,
+        .fragment_count = 1,
+        .bytes = image_bytes_fixture,
+    }, &payload);
+    try messages.items.append(gpa, try encodeResourceMessage(gpa, protocol.Message.image_data, 6, payload.items));
     return messages;
+}
+
+const SnapshotMutation = enum { none, string_byte, string_generation };
+
+fn buildSnapshotMessage(gpa: std.mem.Allocator, mutation: SnapshotMutation) ![]const u8 {
+    const face_wire = try protocol.encodeFaceDefineBytes(face_fixture);
+    const font_wire = try protocol.encodeFontDefineBytes(font_fixture);
+    const image_wire = try protocol.encodeImageDefineBytes(image_metadata_fixture);
+    var complete_image: [protocol.image_record_size + image_bytes_fixture.len]u8 = undefined;
+    @memcpy(complete_image[0..protocol.image_record_size], &image_wire);
+    @memcpy(complete_image[protocol.image_record_size..], image_bytes_fixture);
+    const string_bytes: []const u8 = if (mutation == .string_byte) "resourceX" else string_fixture;
+    const string_generation: u32 = if (mutation == .string_generation) 7 else 6;
+    const entries = [_]protocol.ResourceSnapshotEntry{
+        .{ .kind = .face, .status = .live, .resource_id = face_fixture.face_id, .generation = face_fixture.generation, .payload = &face_wire },
+        .{ .kind = .font, .status = .live, .resource_id = font_fixture.font_id, .generation = font_fixture.generation, .payload = &font_wire },
+        .{ .kind = .image, .status = .live, .resource_id = image_metadata_fixture.image_id, .generation = image_metadata_fixture.generation, .payload = &complete_image },
+        .{ .kind = .string, .status = .live, .resource_id = 51, .generation = string_generation, .payload = string_bytes },
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(gpa);
+    try protocol.encodeResourceSnapshot(gpa, .{ .entries = &entries }, &payload);
+    return encodeResourceMessage(gpa, protocol.Message.resource_snapshot, 5, payload.items);
+}
+
+fn buildFixture(gpa: std.mem.Allocator) !Fixture {
+    var direct = try buildResourceMessages(gpa);
+    errdefer direct.deinit(gpa);
+    const snapshot = try buildSnapshotMessage(gpa, .none);
+    errdefer gpa.free(snapshot);
+
+    var display_generator = frontend.Scene.init(gpa);
+    defer display_generator.deinit();
+    _ = try applyAll(&display_generator, direct.items.items);
+    const display = try appendSnapshot(gpa, final_snapshot, &display_generator);
+    errdefer gpa.free(display);
+    try direct.items.append(gpa, try gpa.dupe(u8, display));
+
+    var scene = frontend.Scene.init(gpa);
+    defer scene.deinit();
+    for (direct.items.items) |message| try scene.apply(message);
+    const resource_digest = try resourceFingerprint(gpa, &scene, null);
+    return .{
+        .direct = direct,
+        .snapshot = snapshot,
+        .display = display,
+        .resource_digest = resource_digest,
+        .counts = .{
+            .faces = scene.faces.len,
+            .fonts = scene.fonts.len,
+            .strings = scene.strings.len,
+            .images = scene.images.len,
+        },
+    };
 }
 
 fn putScalar(hasher: *std.crypto.hash.sha2.Sha256, value: anytype) void {
     const T = @TypeOf(value);
     switch (@typeInfo(T)) {
-        .@"enum" => hasher.update(&.{@intFromEnum(value)}),
+        .@"enum" => putScalar(hasher, @intFromEnum(value)),
         .bool => hasher.update(&.{@intFromBool(value)}),
         .int => {
             comptime std.debug.assert(@typeInfo(T).int.bits % 8 == 0);
@@ -173,6 +356,159 @@ fn putText(hasher: *std.crypto.hash.sha2.Sha256, text: []const u8) void {
 
 fn putOptional(hasher: *std.crypto.hash.sha2.Sha256, present: bool) void {
     putScalar(hasher, present);
+}
+
+fn hashResourceValue(hasher: *std.crypto.hash.sha2.Sha256, value: anytype) void {
+    const T = @TypeOf(value);
+    switch (@typeInfo(T)) {
+        .bool, .int, .@"enum" => putScalar(hasher, value),
+        .array => for (value) |item| hashResourceValue(hasher, item),
+        .@"struct" => {
+            inline for (std.meta.fields(T)) |field| {
+                hashResourceValue(hasher, @field(value, field.name));
+            }
+        },
+        else => @compileError("unsupported resource fingerprint type"),
+    }
+}
+
+fn sortedFaceIndices(gpa: std.mem.Allocator, faces: []const frontend.FaceResource) ![]u32 {
+    const index = try gpa.alloc(u32, faces.len);
+    for (index, 0..) |*value, ordinal| value.* = @intCast(ordinal);
+    std.mem.sort(u32, index, faces, struct {
+        fn less(context: []const frontend.FaceResource, lhs: u32, rhs: u32) bool {
+            return context[lhs].face_id < context[rhs].face_id;
+        }
+    }.less);
+    return index;
+}
+
+fn sortedFontIndices(gpa: std.mem.Allocator, fonts: []const frontend.FontResource) ![]u32 {
+    const index = try gpa.alloc(u32, fonts.len);
+    for (index, 0..) |*value, ordinal| value.* = @intCast(ordinal);
+    std.mem.sort(u32, index, fonts, struct {
+        fn less(context: []const frontend.FontResource, lhs: u32, rhs: u32) bool {
+            return context[lhs].font_id < context[rhs].font_id;
+        }
+    }.less);
+    return index;
+}
+
+fn sortedStringIndices(gpa: std.mem.Allocator, strings: []const frontend.StringResource) ![]u32 {
+    const index = try gpa.alloc(u32, strings.len);
+    for (index, 0..) |*value, ordinal| value.* = @intCast(ordinal);
+    std.mem.sort(u32, index, strings, struct {
+        fn less(context: []const frontend.StringResource, lhs: u32, rhs: u32) bool {
+            return context[lhs].resource_id < context[rhs].resource_id;
+        }
+    }.less);
+    return index;
+}
+
+fn sortedImageIndices(gpa: std.mem.Allocator, images: []const frontend.ImageResource) ![]u32 {
+    const index = try gpa.alloc(u32, images.len);
+    for (index, 0..) |*value, ordinal| value.* = @intCast(ordinal);
+    std.mem.sort(u32, index, images, struct {
+        fn less(context: []const frontend.ImageResource, lhs: u32, rhs: u32) bool {
+            return context[lhs].image_id < context[rhs].image_id;
+        }
+    }.less);
+    return index;
+}
+
+fn sortedRegistryIndices(gpa: std.mem.Allocator, resources: []const lifecycle.Resource) ![]u32 {
+    const index = try gpa.alloc(u32, resources.len);
+    for (index, 0..) |*value, ordinal| value.* = @intCast(ordinal);
+    std.mem.sort(u32, index, resources, struct {
+        fn less(context: []const lifecycle.Resource, lhs: u32, rhs: u32) bool {
+            const left = context[lhs];
+            const right = context[rhs];
+            if (@intFromEnum(left.kind) != @intFromEnum(right.kind)) return @intFromEnum(left.kind) < @intFromEnum(right.kind);
+            return left.id < right.id;
+        }
+    }.less);
+    return index;
+}
+
+/// Hashes concrete protocol payloads and frontend-owned image bytes, not only
+/// registry identities.  Resource tables are sorted by stable kind/ID so the
+/// digest does not depend on recovery-route ordering.
+fn resourceFingerprint(
+    gpa: std.mem.Allocator,
+    scene: *const frontend.Scene,
+    counts: ?*ResourceCounts,
+) !Digest {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update("PROTO-UI-RESOURCE-RECOVERY-V1" ++ [1]u8{0});
+
+    const face_index = try sortedFaceIndices(gpa, scene.faces.faces[0..scene.faces.len]);
+    defer gpa.free(face_index);
+    putScalar(&hasher, @as(u64, face_index.len));
+    for (face_index) |ordinal| {
+        const resource = scene.faces.faces[ordinal];
+        putScalar(&hasher, lifecycle.ResourceKind.face);
+        putScalar(&hasher, resource.face_id);
+        putScalar(&hasher, resource.generation);
+        hashResourceValue(&hasher, resource.payload);
+    }
+
+    const font_index = try sortedFontIndices(gpa, scene.fonts.fonts[0..scene.fonts.len]);
+    defer gpa.free(font_index);
+    putScalar(&hasher, @as(u64, font_index.len));
+    for (font_index) |ordinal| {
+        const resource = scene.fonts.fonts[ordinal];
+        putScalar(&hasher, lifecycle.ResourceKind.font);
+        putScalar(&hasher, resource.font_id);
+        putScalar(&hasher, resource.generation);
+        hashResourceValue(&hasher, resource.payload);
+    }
+
+    const string_index = try sortedStringIndices(gpa, scene.strings.strings[0..scene.strings.len]);
+    defer gpa.free(string_index);
+    putScalar(&hasher, @as(u64, string_index.len));
+    for (string_index) |ordinal| {
+        const resource = scene.strings.strings[ordinal];
+        putScalar(&hasher, lifecycle.ResourceKind.string);
+        putScalar(&hasher, resource.resource_id);
+        putScalar(&hasher, resource.generation);
+        putText(&hasher, resource.bytes);
+    }
+
+    const image_index = try sortedImageIndices(gpa, scene.images.images[0..scene.images.len]);
+    defer gpa.free(image_index);
+    putScalar(&hasher, @as(u64, image_index.len));
+    for (image_index) |ordinal| {
+        const resource = scene.images.images[ordinal];
+        putScalar(&hasher, lifecycle.ResourceKind.image);
+        putScalar(&hasher, resource.image_id);
+        putScalar(&hasher, resource.generation);
+        putScalar(&hasher, resource.complete);
+        putScalar(&hasher, @as(u64, resource.bytes_received));
+        putScalar(&hasher, @as(u64, resource.fragments_received));
+        hashResourceValue(&hasher, resource.metadata);
+        putText(&hasher, resource.bytes[0..resource.bytes_received]);
+    }
+
+    const registry_index = try sortedRegistryIndices(gpa, scene.resources.resources[0..scene.resources.len]);
+    defer gpa.free(registry_index);
+    putScalar(&hasher, @as(u64, registry_index.len));
+    for (registry_index) |ordinal| {
+        const resource = scene.resources.resources[ordinal];
+        putScalar(&hasher, resource.kind);
+        putScalar(&hasher, resource.id);
+        putScalar(&hasher, resource.generation);
+        putScalar(&hasher, resource.status);
+    }
+
+    if (counts) |destination| destination.* = .{
+        .faces = scene.faces.len,
+        .fonts = scene.fonts.len,
+        .strings = scene.strings.len,
+        .images = scene.images.len,
+    };
+    var digest: Digest = undefined;
+    hasher.final(&digest);
+    return digest;
 }
 
 fn hashFrame(hasher: *std.crypto.hash.sha2.Sha256, frame: ?frontend.FrameIdentity) void {
@@ -276,13 +612,8 @@ pub fn fingerprint(gpa: std.mem.Allocator, scene: *const frontend.Scene) !Digest
         putScalar(&hasher, viewport.line_count);
     }
 
-    putScalar(&hasher, @as(u64, scene.resources.len));
-    for (scene.resources.resources[0..scene.resources.len]) |resource| {
-        putScalar(&hasher, resource.kind);
-        putScalar(&hasher, resource.id);
-        putScalar(&hasher, resource.generation);
-        putScalar(&hasher, resource.status);
-    }
+    const resource_digest = try resourceFingerprint(gpa, scene, null);
+    hasher.update(&resource_digest);
 
     var digest: Digest = undefined;
     hasher.final(&digest);
@@ -364,22 +695,21 @@ fn decodeTokenizedControl(
     return try expectControl(bytes[0..live.control_size], expected_kind, expected_sequence);
 }
 
-fn directPath(gpa: std.mem.Allocator, messages: *const Messages) !PathResult {
+fn directPath(gpa: std.mem.Allocator, fixture: *const Fixture) !PathResult {
     var scene = frontend.Scene.init(gpa);
     defer scene.deinit();
-    const accepted = try applyAll(&scene, messages.items.items);
+    const accepted = try applyAll(&scene, fixture.direct.items.items);
     return .{ .path = .direct_ordered, .digest = try fingerprint(gpa, &scene), .accepted_count = accepted };
 }
 
-fn resyncPath(gpa: std.mem.Allocator, messages: *const Messages) !PathResult {
+fn resyncPath(gpa: std.mem.Allocator, fixture: *const Fixture) !PathResult {
     var scene = frontend.Scene.init(gpa);
     defer scene.deinit();
     var controller: ResyncController = .{};
     if (!controller.authenticated()) return Error.RecoveryTokenMismatch;
 
-    const stale_accepted = try applyAll(&scene, messages.items.items);
-    // A normal same-session replay is rejected before recovery is authorized.
-    const same_sequence_accepted = scene.apply(messages.items.items[0]);
+    const stale_accepted = try applyAll(&scene, fixture.direct.items.items);
+    const same_sequence_accepted = scene.apply(fixture.direct.items.items[0]);
     if (same_sequence_accepted) |_| return Error.ControlSequenceMismatch else |_| {}
 
     var controls: std.ArrayList(u8) = .empty;
@@ -395,7 +725,15 @@ fn resyncPath(gpa: std.mem.Allocator, messages: *const Messages) !PathResult {
     offset += 52;
     accepted += try decodeTokenizedControl(gpa, controls.items[offset..][0..52], .resync_begin, 8);
     try controller.begin(8, &scene);
-    accepted += try applyAll(&scene, messages.items.items);
+
+    // RESOURCE_SNAPSHOT is the first post-BEGIN state.  It restores every
+    // concrete family before any display update is replayed.
+    accepted += try applyAll(&scene, &.{fixture.snapshot});
+    const create = try createMessage(gpa, 6);
+    defer gpa.free(create);
+    accepted += try applyAll(&scene, &.{ create, fixture.display });
+    _ = try resourceFingerprint(gpa, &scene, null);
+
     offset += 52;
     accepted += try decodeTokenizedControl(gpa, controls.items[offset..][0..52], .resync_complete, 9);
     try controller.complete(9);
@@ -418,26 +756,30 @@ const Applier = struct {
     }
 };
 
-fn ackLossPath(gpa: std.mem.Allocator) !PathResult {
+fn ackLossPath(gpa: std.mem.Allocator, fixture: *const Fixture) !PathResult {
     var scene = frontend.Scene.init(gpa);
     defer scene.deinit();
-    const create = try createMessage(gpa);
-    defer gpa.free(create);
-    try scene.apply(create);
-
-    var baseline: Messages = .{};
-    defer baseline.deinit(gpa);
-    try baseline.items.append(gpa, try gpa.dupe(u8, create));
+    const accepted = try applyAll(&scene, fixture.direct.items.items);
+    var observed: ResourceCounts = .{};
+    const preflight = try resourceFingerprint(gpa, &scene, &observed);
+    if (!std.mem.eql(u8, &preflight, &fixture.resource_digest) or !std.meta.eql(observed, fixture.counts))
+        return Error.DigestMismatch;
 
     var journal: input.DeliveryJournal = .{};
     var applier: Applier = .{};
     try journal.pushText("beta");
-    const first = (try journal.take()) orelse return Error.IdempotenceMismatch; // ACK lost
+    const first = (try journal.take()) orelse return Error.IdempotenceMismatch;
 
     var controller: ResyncController = .{};
     try controller.request(1);
     try controller.begin(2, &scene);
-    _ = try applyAll(&scene, baseline.items.items);
+    const snapshot_create = try createMessage(gpa, 6);
+    defer gpa.free(snapshot_create);
+    _ = try applyAll(&scene, &.{ fixture.snapshot, snapshot_create });
+    const restored = try resourceFingerprint(gpa, &scene, null);
+    if (!std.mem.eql(u8, &restored, &fixture.resource_digest)) {
+        return Error.DigestMismatch;
+    }
     try controller.complete(3);
 
     journal.beginRetry();
@@ -446,14 +788,13 @@ fn ackLossPath(gpa: std.mem.Allocator) !PathResult {
         !std.mem.eql(u8, retry.event.text.bytes(), first.event.text.bytes()) or
         !std.mem.eql(u8, retry.event.text.bytes(), "beta")) return Error.IdempotenceMismatch;
 
-    // The publisher observes the retry, but only the first post-resync delivery
-    // is allowed to request the authoritative update.
     const applied_once = applier.applyOnce(first.sequence);
     const applied_on_retry = applier.applyOnce(retry.sequence);
 
     var final_messages: Messages = .{};
     defer final_messages.deinit(gpa);
-    if (applied_once) try appendSnapshot(gpa, final_snapshot, &scene, &final_messages);
+    if (applied_once) try final_messages.items.append(gpa, try gpa.dupe(u8, fixture.display));
+    _ = try applyAll(&scene, final_messages.items.items);
 
     var tracker = live.AckTracker.init(1);
     try tracker.markSent(scene.frame_header.?.sequence);
@@ -470,15 +811,15 @@ fn ackLossPath(gpa: std.mem.Allocator) !PathResult {
     return .{
         .path = .ack_loss_retry,
         .digest = try fingerprint(gpa, &scene),
-        .accepted_count = 1 + baseline.items.items.len + 3 + final_messages.items.items.len + 1 + 1 + 1,
+        .accepted_count = accepted + 2 + 3 + final_messages.items.items.len + 1 + 1 + 1,
     };
 }
 
-fn replayPath(gpa: std.mem.Allocator, io: std.Io, messages: *const Messages, replay_path: []const u8) !PathResult {
-    try transport.writeReplay(gpa, io, replay_path, messages.items.items);
+fn replayPath(gpa: std.mem.Allocator, io: std.Io, fixture: *const Fixture, replay_path: []const u8) !PathResult {
+    try transport.writeReplay(gpa, io, replay_path, fixture.direct.items.items);
     const loaded = try transport.readReplay(gpa, io, replay_path);
     defer transport.freeReplay(gpa, loaded);
-    if (loaded.len != messages.items.items.len) return Error.DigestMismatch;
+    if (loaded.len != fixture.direct.items.items.len) return Error.DigestMismatch;
     var scene = frontend.Scene.init(gpa);
     defer scene.deinit();
     const accepted = try applyAll(&scene, loaded);
@@ -486,13 +827,13 @@ fn replayPath(gpa: std.mem.Allocator, io: std.Io, messages: *const Messages, rep
 }
 
 pub fn run(gpa: std.mem.Allocator, io: std.Io, replay_path: []const u8) !Summary {
-    var messages = try buildMessages(gpa);
-    defer messages.deinit(gpa);
+    var fixture = try buildFixture(gpa);
+    defer fixture.deinit(gpa);
     var paths: [4]PathResult = undefined;
-    paths[0] = try directPath(gpa, &messages);
-    paths[1] = try resyncPath(gpa, &messages);
-    paths[2] = try ackLossPath(gpa);
-    paths[3] = try replayPath(gpa, io, &messages, replay_path);
+    paths[0] = try directPath(gpa, &fixture);
+    paths[1] = try resyncPath(gpa, &fixture);
+    paths[2] = try ackLossPath(gpa, &fixture);
+    paths[3] = try replayPath(gpa, io, &fixture, replay_path);
 
     const digest = paths[0].digest;
     var accepted_count: u64 = 0;
@@ -500,7 +841,13 @@ pub fn run(gpa: std.mem.Allocator, io: std.Io, replay_path: []const u8) !Summary
         if (!std.mem.eql(u8, &path.digest, &digest)) return Error.DigestMismatch;
         accepted_count += path.accepted_count;
     }
-    return .{ .paths = paths, .digest = digest, .accepted_count = accepted_count };
+    return .{
+        .paths = paths,
+        .digest = digest,
+        .resource_digest = fixture.resource_digest,
+        .accepted_count = accepted_count,
+        .resource_counts = fixture.counts,
+    };
 }
 
 fn mismatchedRun(gpa: std.mem.Allocator, io: std.Io, replay_path: []const u8) !Summary {
@@ -510,7 +857,8 @@ fn mismatchedRun(gpa: std.mem.Allocator, io: std.Io, replay_path: []const u8) !S
 }
 
 pub fn compare(left: Summary, right: Summary) Error!void {
-    if (!std.mem.eql(u8, &left.digest, &right.digest)) return Error.DigestMismatch;
+    if (!std.mem.eql(u8, &left.digest, &right.digest) or
+        !std.meta.eql(left.resource_counts, right.resource_counts)) return Error.DigestMismatch;
     for (left.paths, right.paths) |left_path, right_path| {
         if (left_path.path != right_path.path or
             !std.mem.eql(u8, &left_path.digest, &right_path.digest) or
@@ -547,11 +895,18 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     _ = minimal;
 
     const digest_hex = printDigestHex(summary.digest);
+    const resource_digest_hex = printDigestHex(summary.resource_digest);
     var output: std.ArrayList(u8) = .empty;
     defer output.deinit(gpa);
     try output.appendSlice(arena,
-        \\{"summary":"proto-ui-recovery-diff","paths":[
+        \\{"summary":"proto-ui-recovery-diff","resource_snapshot":true,"resource_counts":{"faces":
     );
+    try output.print(arena, "{d},\"fonts\":{d},\"strings\":{d},\"images\":{d}}},\"paths\":[", .{
+        summary.resource_counts.faces,
+        summary.resource_counts.fonts,
+        summary.resource_counts.strings,
+        summary.resource_counts.images,
+    });
     for (summary.paths, 0..) |path, index| {
         const path_digest = printDigestHex(path.digest);
         try output.print(arena, "{s}{{\"name\":\"{s}\",\"digest\":\"{s}\",\"accepted\":{d}}}", .{
@@ -561,8 +916,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             path.accepted_count,
         });
     }
-    try output.print(arena, "],\"final_digest\":\"{s}\",\"accepted_count\":{d},\"result\":\"pass\"}}\n", .{
+    try output.print(arena, "],\"final_digest\":\"{s}\",\"resource_digest\":\"{s}\",\"accepted_count\":{d},\"result\":\"pass\"}}\n", .{
         &digest_hex,
+        &resource_digest_hex,
         summary.accepted_count,
     });
     try std.Io.File.stdout().writeStreamingAll(io, output.items);
@@ -572,30 +928,28 @@ test "canonical fingerprint is stable and detects changed scene state" {
     const gpa = std.testing.allocator;
     var scene = frontend.Scene.init(gpa);
     defer scene.deinit();
-    const create = try createMessage(gpa);
+    const create = try createMessage(gpa, 1);
     defer gpa.free(create);
     try scene.apply(create);
     var messages: Messages = .{};
     defer messages.deinit(gpa);
-    try appendSnapshot(gpa, final_snapshot, &scene, &messages);
+    const display = try appendSnapshot(gpa, final_snapshot, &scene);
+    defer gpa.free(display);
 
     const first = try fingerprint(gpa, &scene);
     const second = try fingerprint(gpa, &scene);
     try std.testing.expectEqualSlices(u8, &first, &second);
 
-    const altered_update = try gpa.dupe(u8, messages.items.items[0]);
+    const altered_update = try gpa.dupe(u8, display);
     defer gpa.free(altered_update);
     altered_update[altered_update.len - 8] ^= 0x01;
     try std.testing.expectError(protocol.Error.InvalidEnvelope, scene.apply(altered_update));
-
-    // Sensitivity is checked without another replacement allocation: the next
-    // authoritative update would change this public viewport value.
     scene.viewport.?.line_count += 1;
     const changed = try fingerprint(gpa, &scene);
     try std.testing.expect(!std.mem.eql(u8, &first, &changed));
 }
 
-test "four paths converge through direct, resync, ACK retry, and replay" {
+test "four resource-aware paths converge with concrete counts" {
     const gpa = std.testing.allocator;
     var io_threaded: std.Io.Threaded = .init_single_threaded;
     const io = io_threaded.io();
@@ -603,25 +957,76 @@ test "four paths converge through direct, resync, ACK retry, and replay" {
     defer std.Io.Dir.cwd().deleteFile(io, replay_path) catch {};
     const summary = try run(gpa, io, replay_path);
     try std.testing.expectEqualStrings("pass", summary.result);
-    try std.testing.expectEqual(@as(u64, 21), summary.accepted_count);
+    try std.testing.expect(summary.resource_snapshot);
+    try std.testing.expectEqual(ResourceCounts{ .faces = 1, .fonts = 1, .strings = 1, .images = 1 }, summary.resource_counts);
+    try std.testing.expectEqual(@as(u64, 44), summary.accepted_count);
+    try std.testing.expect(!std.mem.eql(u8, &summary.digest, &summary.resource_digest));
 
     const replayed = try transport.readReplay(gpa, io, replay_path);
     defer transport.freeReplay(gpa, replayed);
-    try std.testing.expectEqual(@as(usize, 2), replayed.len);
+    try std.testing.expectEqual(@as(usize, 7), replayed.len);
+}
+
+test "altered snapshot payload changes the canonical fingerprint" {
+    const gpa = std.testing.allocator;
+    var normal = try buildFixture(gpa);
+    defer normal.deinit(gpa);
+    const altered_snapshot = try buildSnapshotMessage(gpa, .string_byte);
+    defer gpa.free(altered_snapshot);
+    var scene = frontend.Scene.init(gpa);
+    defer scene.deinit();
+    try scene.apply(altered_snapshot);
+    const altered_digest = try resourceFingerprint(gpa, &scene, null);
+    try std.testing.expect(!std.mem.eql(u8, &normal.resource_digest, &altered_digest));
+    try std.testing.expectEqualStrings("resourceX", scene.strings.lookup(51).?.bytes);
+}
+
+test "altered snapshot generation changes the canonical fingerprint" {
+    const gpa = std.testing.allocator;
+    var normal = try buildFixture(gpa);
+    defer normal.deinit(gpa);
+    const altered_snapshot = try buildSnapshotMessage(gpa, .string_generation);
+    defer gpa.free(altered_snapshot);
+    var scene = frontend.Scene.init(gpa);
+    defer scene.deinit();
+    try scene.apply(altered_snapshot);
+    const altered_digest = try resourceFingerprint(gpa, &scene, null);
+    try std.testing.expect(!std.mem.eql(u8, &normal.resource_digest, &altered_digest));
+    try std.testing.expectEqual(@as(u32, 7), scene.strings.lookup(51).?.generation);
+}
+
+test "identity mismatch fails before partial resource mutation" {
+    const gpa = std.testing.allocator;
+    var scene = frontend.Scene.init(gpa);
+    defer scene.deinit();
+    const create = try createMessage(gpa, 1);
+    defer gpa.free(create);
+    try scene.apply(create);
+    var string_payload: std.ArrayList(u8) = .empty;
+    defer string_payload.deinit(gpa);
+    try protocol.encodeStringDefine(gpa, .{ .resource_id = 51, .generation = 1, .bytes = "kept" }, &string_payload);
+    const string_message = try encodeResourceMessage(gpa, protocol.Message.string_define, 2, string_payload.items);
+    defer gpa.free(string_message);
+    try scene.apply(string_message);
+
+    const face_wire = try protocol.encodeFaceDefineBytes(face_fixture);
+    var entries = [_]protocol.ResourceSnapshotEntry{
+        .{ .kind = .face, .status = .live, .resource_id = 99, .generation = face_fixture.generation, .payload = &face_wire },
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(gpa);
+    try std.testing.expectError(protocol.Error.InvalidResource, protocol.encodeResourceSnapshot(gpa, .{ .entries = &entries }, &payload));
+    try std.testing.expectEqualStrings("kept", scene.strings.lookup(51).?.bytes);
+    try std.testing.expectEqual(@as(usize, 1), scene.strings.len);
 }
 
 test "ACK-loss retry is accepted once and duplicate ACKs are rejected" {
     const gpa = std.testing.allocator;
     var scene = frontend.Scene.init(gpa);
     defer scene.deinit();
-    const create = try createMessage(gpa);
+    const create = try createMessage(gpa, 1);
     defer gpa.free(create);
     try scene.apply(create);
-
-    var baseline: Messages = .{};
-    defer baseline.deinit(gpa);
-    try baseline.items.append(gpa, try gpa.dupe(u8, create));
-
     var journal: input.DeliveryJournal = .{};
     try journal.pushText("beta");
     const first = (try journal.take()).?;
