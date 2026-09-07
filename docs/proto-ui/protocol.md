@@ -1130,3 +1130,29 @@ fresh memory, and no scene state survives an iteration.  The emitted one-line
 JSON summary names the seed, iteration count, accepted/rejected counts,
 targets, and pass result.  `--iterations` is capped at 100000 and `--seed`
 must be nonzero; repeated runs with the same options produce identical counts.
+
+#### Deterministic recovery differential
+
+`proto-ui-recovery-diff` is an adapter-only convergence gate.  It compares
+four routes to the same final public `Scene`: ordered live application,
+authenticated `RESYNC_REQUEST` → `RESYNC_BEGIN` → replay → `RESYNC_COMPLETE`,
+ACK-loss retry through the bounded delivery journal, and ERP1
+`writeReplay`/`readReplay` round trip.  The resync controls use contiguous
+sequence numbers and a local constant-time MAC in the in-process fixture; this
+does not replace a production transport token.  `RESYNC_BEGIN` is the only
+reset point and `RESYNC_COMPLETE` only releases replay.
+
+The ACK-loss route retains one bounded printable-ASCII intent, retries its
+original sequence after resync, invokes the publisher once, and accepts the
+transport ACK exactly once.  Duplicate journal and `AckTracker` ACKs are
+rejected.  The canonical SHA-256 fingerprint covers frame identity, retained
+frame registry state, windows, rows, ordered text, cursor, damage, present
+hint, viewport, and resource identity/generation/status.  Sequence numbers,
+timestamps, and ACK bookkeeping are excluded because they are delivery
+metadata rather than display truth.
+
+The executable emits one deterministic JSON object with all four per-path
+digests, one common final digest, accepted-operation count, and `pass`.  Any
+digest difference, malformed control order, duplicate side effect, or invalid
+token fails.  The gate has no socket, no Emacs process, no transport listener,
+and no `output_proto` activation.

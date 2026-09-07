@@ -14,6 +14,7 @@ pub const runtime = @import("runtime.zig");
 pub const capture_service = @import("capture_service.zig");
 pub const host_contract = @import("host_contract.zig");
 pub const fuzz = @import("fuzz.zig");
+pub const recovery_diff = @import("recovery_diff.zig");
 
 test {
     _ = protocol;
@@ -32,4 +33,5 @@ test {
     _ = capture_service;
     _ = host_contract;
     _ = fuzz;
+    _ = recovery_diff;
 }

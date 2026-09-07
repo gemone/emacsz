@@ -2386,9 +2386,12 @@ Review gates:
 
 Goal: prove protocol robustness.
 
-Status: W13-a complete.  The deterministic protocol fuzz gate covers envelope,
-frame-update, capability, visibility/focus, resource, input-codec, and frontend
-`Scene.apply` seeds.  Replay-specific differential coverage remains W13 scope.
+Status: W13-a and W13-b complete.  The deterministic protocol fuzz gate covers
+envelope, frame-update, capability, visibility/focus, resource, input-codec,
+and frontend `Scene.apply` seeds.  The recovery differential gate compares
+ordered application, authenticated resync, ACK-loss retry, and ERP1 replay to
+one canonical final `Scene` digest.  It remains adapter-only and does not open
+a socket, start Emacs, or enable `output_proto`.
 
 Tasks:
 
@@ -2397,15 +2400,16 @@ Tasks:
 3. Add sequence-gap tests.
 4. Add stale-generation tests.
 5. Add missing-resource tests.
-6. Add reconnect/replay tests.
+6. Add reconnect/replay tests. *(W13-b covers resync and ERP1 replay.)*
 7. Add frontend crash isolation tests.
-8. Add deterministic snapshot comparison.
+8. Add deterministic snapshot comparison. *(W13-b covers canonical final-state
+   fingerprints and deliberate mismatch rejection.)*
 
 Acceptance:
 
 ```sh
 zig build -Dproto-ui=true proto-ui-conformance
-zig build -Dproto-ui=true proto-ui-replay-test
+zig build -Dproto-ui=true proto-ui-recovery-diff
 zig build -Dproto-ui=true proto-ui-fuzz
 ```
 

@@ -130,6 +130,7 @@ zig build -Dproto-ui=true
 zig build -Dproto-ui=true proto-ui-unit
 zig build -Dproto-ui=true proto-ui-boundary
 zig build -Dproto-ui=true proto-ui-fuzz
+zig build -Dproto-ui=true proto-ui-recovery-diff
 
 # Build the independent SDL3 frontend.
 zig build -Dproto-ui=true -Dsdl3-frontend=true

@@ -529,6 +529,24 @@ pub fn build(b: *std.Build) void {
         );
         fuzz_step.dependOn(&run_fuzz.step);
 
+        // W13-b: deterministic recovery replay/live differential gate.  It
+        // exercises Scene convergence and control/idempotence policy only; no
+        // socket, Emacs runtime, or output_proto activation is involved.
+        const recovery_diff_tool = b.addExecutable(.{
+            .name = "proto-ui-recovery-diff",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/recovery_diff.zig"),
+            }),
+        });
+        const run_recovery_diff = b.addRunArtifact(recovery_diff_tool);
+        const recovery_diff_step = b.step(
+            "proto-ui-recovery-diff",
+            "Compare ordered, resync, ACK-loss, and ERP1 recovery paths",
+        );
+        recovery_diff_step.dependOn(&run_recovery_diff.step);
+
         // R3: compile generated C directly in the build graph and test it
         // through the tracked Zig host harness.  No generated C is copied
         // into tracked inherited source.
@@ -642,6 +660,7 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&run_shim_library_conformance.step);
         boundary_step.dependOn(&run_boundary_audit.step);
         boundary_step.dependOn(&run_fuzz.step);
+        boundary_step.dependOn(&run_recovery_diff.step);
 
         // R7: the host registration decision is source-authoritative policy.
         // Pending is valid, but it neither approves integration nor enables
@@ -5663,6 +5682,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true proto-ui-shim-library - build/install the shared C shim
         \\  zig build -Dproto-ui=true proto-ui-shim-library-conformance - dlopen ABI/export tests
         \\  zig build -Dproto-ui=true proto-ui-fuzz - deterministic bounded EUP protocol fuzzing
+        \\  zig build -Dproto-ui=true proto-ui-recovery-diff - replay/recovery differential gate
         \\
         \\  zig build -Dproto-ui=true proto-ui-host-contract - pending registration decision audit
         \\  zig build -Dproto-ui=true proto-ui-runtime-manifest - fail-closed runtime manifest audit
