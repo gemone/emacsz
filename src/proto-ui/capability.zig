@@ -47,6 +47,7 @@ pub const Feature = enum {
     input_key_full_v2,
     input_pointer_bounded,
     input_pointer_v2,
+    input_pointer_selection_left,
     input_wheel_line,
     platform_focus_window_events,
     clipboard_ascii_bounded,
@@ -96,6 +97,7 @@ pub const Feature = enum {
             .input_key_full_v2 => "input.key_full_v2",
             .input_pointer_bounded => "input.pointer_bounded",
             .input_pointer_v2 => "input.pointer_v2",
+            .input_pointer_selection_left => "input.pointer_selection_left",
             .input_wheel_line => "input.wheel_line",
             .platform_focus_window_events => "platform.focus_window_events",
             .clipboard_ascii_bounded => "clipboard.ascii_bounded",
@@ -196,6 +198,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .input_key_full_v2, .status = .degraded, .evidence = "sdl3-epxl-key-v2-smoke" },
     .{ .feature = .input_pointer_bounded, .status = .degraded, .evidence = "sdl3-pointer-smoke" },
     .{ .feature = .input_pointer_v2, .status = .degraded, .evidence = "sdl3-pointer-v2-smoke" },
+    .{ .feature = .input_pointer_selection_left, .status = .degraded, .evidence = "sdl3-pointer-selection-smoke" },
     .{ .feature = .input_wheel_line, .status = .degraded, .evidence = "sdl3-wheel-smoke" },
     .{ .feature = .platform_focus_window_events, .status = .degraded, .evidence = "sdl3-focus-window-smoke" },
     .{ .feature = .clipboard_ascii_bounded, .status = .degraded, .evidence = "sdl3-clipboard-smoke" },
@@ -531,4 +534,17 @@ test "full key v2 remains optional for ASCII-only peers" {
     const effective = try negotiate(all, ascii_only);
     try std.testing.expect(effective.effective.contains(.input_key_bounded));
     try std.testing.expect(!effective.effective.contains(.input_key_full_v2));
+}
+
+test "left pointer selection remains optional for v2-only peers" {
+    const all = backendSupported();
+    const negotiated = try negotiate(all, all);
+    try std.testing.expect(negotiated.effective.contains(.input_pointer_v2));
+    try std.testing.expect(negotiated.effective.contains(.input_pointer_selection_left));
+
+    var transport_only = all;
+    transport_only.bits[@intFromEnum(Feature.input_pointer_selection_left)] = false;
+    const effective = try negotiate(all, transport_only);
+    try std.testing.expect(effective.effective.contains(.input_pointer_v2));
+    try std.testing.expect(!effective.effective.contains(.input_pointer_selection_left));
 }

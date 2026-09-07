@@ -1817,6 +1817,34 @@ Acceptance:
 zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-pointer-v2-smoke --summary all
 ```
 
+### W9o — Bounded left-drag selection (approved)
+
+Goal: prove one negotiated Pointer Event v2 semantic without extending the
+protocol or claiming full mouse parity.
+
+1. Add optional, negotiable, degraded `input.pointer_selection_left`, evidenced
+   by `sdl3-pointer-selection-smoke`; it requires `input.pointer_v2`.
+2. Reuse the v2 codec, capability negotiation, delivery journal, one-in-flight
+   EPXL ACK flow, public facts path, and clipboard artifact. Add no record.
+3. In the real-Emacs smoke, translate deterministic SDL left press, drag, and
+   release through the existing v2 path. Press uses public `posn-at-x-y` to set
+   an active mark; drag moves point; release moves point.
+4. On release, the adapter executes only the bounded selection: at most 120
+   printable-ASCII characters from the active region are copied with
+   `kill-ring-save` to the existing clipboard artifact. The smoke fails unless
+   release is ACKed and the exact first-line substring `Emacs` arrives.
+5. Other buttons/phases remain observed/no-execution. Right-click menus,
+   middle-click PRIMARY paste, touch/pen, multi-window hit testing, overlays,
+   and variable-pitch hit testing remain out of scope.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true proto-ui-boundary --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-selection-smoke --summary all
+```
+
 ### W9l — Public point and dynamic cursor (approved)
 
 Goal: replace the fixed facts-profile cursor with public Emacs point observation

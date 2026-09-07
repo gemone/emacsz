@@ -1354,6 +1354,14 @@ duplicate `KEY_EVENT`, `TEXT_INPUT`, `POINTER_EVENT`, `WHEEL_EVENT`,
 `FOCUS_EVENT`, or `WINDOW_REQUEST` sequence must not be applied twice, and a
 new sequence may not advance until the prior sequence has been acknowledged.
 
+`input.pointer_selection_left` is an optional, degraded adapter semantic above
+this unchanged v2 record.  When it and `input.pointer_v2` are both negotiated,
+one bounded smoke action may execute left press/drag/release: press establishes
+the public mark through `posn-at-x-y`, drag moves point, and release moves point
+and copies an already selected printable-ASCII region of at most 120 characters
+with `kill-ring-save`.  No other button, phase, window, overlay, variable-pitch,
+touch, pen, or general selection semantic is implied.
+
 W9m defines two strict, negotiated platform observation payloads.
 
 `FOCUS_EVENT` (`0x0606`) is exactly 20 bytes:

@@ -466,6 +466,14 @@ same EPXL sequence and ACK rules. Emacs maps accepted press/release endpoints
 through public `posn-at-x-y` / `posn-point` and republishes the resulting
 point; intermediate drag motion is not text-selection semantics.
 
+With both `input.pointer_v2` and `input.pointer_selection_left` negotiated, the
+opt-in `sdl3-pointer-selection-smoke` executes one additional bounded left-drag
+subset. Press sets an active mark at public `posn-at-x-y` point, drag moves
+point, and release moves point before `kill-ring-save` copies at most 120
+printable-ASCII characters to the existing validated clipboard artifact. This
+is not full mouse parity: no right-click menu, middle-click PRIMARY paste,
+touch/pen, multi-window hit testing, overlays, or variable-pitch hit testing.
+
 The frontend classifies scene changes as initial, cursor-only, bounded
 text-only, mixed text/cursor region, viewport, or unchanged. It uses SHA-256
 text/structure signatures, per-line hashes and rectangles for up to 32 bounded
