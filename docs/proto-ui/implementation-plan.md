@@ -73,7 +73,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P6-prep reverse input bridge | Implemented for bounded SDL key/text intents through PureRuntimeHostV1 delivery/result/completion; not keymap/command parity |
 | P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
 | P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
-| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 57 implemented codecs, 3 partial, 104 planned; prevents an unclassified or overclaimed protocol table |
+| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 58 implemented codecs, 3 partial, 103 planned; prevents an unclassified or overclaimed protocol table |
 | Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
 | P12-prep EUP session setup | Implemented standard HELLO/HELLO_ACK/SESSION_READY/READY_ACK codecs and bounded state machine; not yet wired to EPXL transport |
 | P12-prep EUP session control | Implemented all eight standard-control codecs, automatic PONG, Scene integration, and EPXL transport for every control, including fatal VERSION_MISMATCH |
@@ -84,6 +84,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P12-prep frame z-order | Implemented operation codec, relative-frame validation, Scene state, and SDL always-on-top probe; bottom/relative stacking and redisplay adaptation pending |
 | P12-prep frame parent | Implemented nullable parent/modal codec, child/active-parent identity validation, Scene state, and SDL unparent probe; linked/modal child windows pending |
 | P12-prep window patch | Implemented bounded geometry/parent/visibility/face/depth patch with cycle and depth validation; zones/scroll pending |
+| P12-prep cursor update | Implemented dedicated cursor codec, Scene owner/geometry validation, and SDL render evidence; cursor styles/IME pending |
 
 | P9-prep authoritative geometry | Implemented in runtime bridge with host rectangle caching and frame/window/damage bounds; real monitor/DPI events pending |
 | P10-prep face-bound debug runs | Implemented with GLYPH_RUN v2, exact live-face validation, and colored SDL fallback; not production face/shaping parity |
@@ -3135,7 +3136,7 @@ bounds, and observation validation in `runtime_bridge`; real monitor and scale
 events remain pending.
 Protocol coverage preparation adds `proto-ui-protocol-coverage`: every assigned
 EUP ID now has one honest status and evidence/gap classification.  The current
-counts are 57 implemented codecs, 3 partial, and 104 planned.
+counts are 58 implemented codecs, 3 partial, and 103 planned.
 P12 session-setup preparation adds concrete standard EUP HELLO, HELLO_ACK,
 SESSION_READY, and READY_ACK codecs with a bounded frontend state machine.  The
 authenticated EPXL handshake remains the current transport path.
@@ -3202,6 +3203,10 @@ P12 window-patch preparation adds a bounded `WINDOW_PATCH` record for geometry,
 parent, visibility, default-face, and depth changes.  The Scene rejects cycles,
 missing parents, invalid depth, and out-of-order lifecycle transitions; window
 zones, faces, scroll state, and mouse-highlight records remain pending.
+P12 cursor-update preparation adds a dedicated `CURSOR_UPDATE` record with
+owner/geometry validation and SDL rendering evidence.  Cursor styles,
+IME-coupled caret behavior, and redisplay-owned cursor semantics remain
+pending.
 P12 maximize preparation adds `FRAME_MAXIMIZE` v1 for horizontal and vertical
 axis flags.  The diagnostic SDL bridge applies and restores both-axis
 maximization; single-axis mapping and redisplay adaptation remain pending.

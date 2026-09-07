@@ -63,6 +63,17 @@ pub const Cursor = struct {
     fn valid(self: Cursor) bool {
         return self.window_id != 0 and self.width >= 0 and self.height >= 0;
     }
+
+    fn bounded(self: Cursor) bool {
+        return self.valid() and self.width > 0 and self.height > 0;
+    }
+
+    fn withOwner(self: Cursor, owner: Window) Error!Cursor {
+        if (!self.bounded()) return Error.InvalidMessage;
+        if (!inside(self.x, self.width, owner.width) or
+            !inside(self.y, self.height, owner.height)) return Error.InvalidMessage;
+        return self;
+    }
 };
 
 pub const Rect = struct {
@@ -1062,6 +1073,35 @@ pub fn decodeCursor(bytes: []const u8) Error!Cursor {
     return cursor;
 }
 
+pub const cursor_update_header_size: usize = 8;
+pub const cursor_update_size: usize = cursor_update_header_size + cursor_record_size;
+pub const cursor_update_schema: u16 = 1;
+
+pub fn encodeCursorUpdate(
+    a: std.mem.Allocator,
+    frame_generation: u32,
+    cursor: Cursor,
+    out: *std.ArrayList(u8),
+) !void {
+    if (frame_generation == 0 or !cursor.bounded()) return Error.InvalidMessage;
+    var header: [cursor_update_header_size]u8 = [_]u8{0} ** cursor_update_header_size;
+    std.mem.writeInt(u16, header[0..2], cursor_update_schema, .little);
+    std.mem.writeInt(u32, header[4..8], frame_generation, .little);
+    try out.appendSlice(a, &header);
+    try encodeCursor(a, cursor, out);
+}
+
+pub fn decodeCursorUpdate(data: []const u8) Error!struct { frame_generation: u32, cursor: Cursor } {
+    if (data.len != cursor_update_size) return Error.InvalidTable;
+    var reader: Reader = .{ .bytes = data };
+    if (try reader.readU16() != cursor_update_schema) return Error.InvalidTable;
+    try reader.expectZeros(2);
+    const frame_generation = try reader.readU32();
+    const cursor = try decodeCursor(data[cursor_update_header_size..]);
+    if (frame_generation == 0 or !cursor.bounded()) return Error.InvalidMessage;
+    return .{ .frame_generation = frame_generation, .cursor = cursor };
+}
+
 pub fn encodeRect(a: std.mem.Allocator, rect: Rect, out: *std.ArrayList(u8)) !void {
     if (!rect.valid()) return Error.InvalidMessage;
     try putI32(out, a, rect.x);
@@ -1418,6 +1458,7 @@ pub const Scene = struct {
             protocol.Message.window_create => try self.applyWindowCreate(payload),
             protocol.Message.window_delete => try self.applyWindowDelete(payload),
             protocol.Message.window_patch => try self.applyWindowPatch(payload),
+            protocol.Message.cursor_update => try self.applyCursorUpdate(payload),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.font_define => try self.applyFontDefine(payload),
@@ -1914,7 +1955,24 @@ pub const Scene = struct {
                 ancestor_id = ancestor.parent_id;
             }
         }
+        if (self.cursor) |cursor| {
+            if (cursor.window_id == updated.id) _ = try cursor.withOwner(updated);
+        }
         self.windows.items[window_index] = updated;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyCursorUpdate(self: *Scene, payload: protocol.Payload) Error!void {
+        const update = try decodeCursorUpdate(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (self.frame_header == null) return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != update.frame_generation)
+            return Error.InvalidMessage;
+        const owner = findWindow(self.windows.items, update.cursor.window_id) orelse
+            return Error.InvalidMessage;
+        _ = try update.cursor.withOwner(owner);
+        self.cursor = update.cursor;
         self.stats.control_messages += 1;
     }
 
@@ -2367,6 +2425,126 @@ test "window row cursor and damage records round trip" {
     try encodeRect(a, .{ .x = 0, .y = 0, .width = 30, .height = 20 }, &out);
     const rect = try decodeRect(out.items);
     try std.testing.expectEqual(@as(i32, 30), rect.width);
+}
+
+test "cursor update has exact little-endian wire layout" {
+    const a = std.testing.allocator;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(a);
+    const cursor: Cursor = .{ .window_id = 100, .x = 3, .y = 4, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true };
+    try encodeCursorUpdate(a, 7, cursor, &out);
+    try std.testing.expectEqual(cursor_update_size, out.items.len);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 0 }, out.items[0..2]);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0 }, out.items[2..4]);
+    try std.testing.expectEqual(@as(u32, 7), std.mem.readInt(u32, out.items[4..8], .little));
+    var expected_record: [cursor_record_size]u8 = @splat(0xaa);
+    {
+        var record: std.ArrayList(u8) = .empty;
+        defer record.deinit(a);
+        try encodeCursor(a, cursor, &record);
+        @memcpy(&expected_record, record.items);
+    }
+    try std.testing.expectEqualSlices(u8, out.items[8..], &expected_record);
+    const decoded = try decodeCursorUpdate(out.items);
+    try std.testing.expectEqual(@as(u32, 7), decoded.frame_generation);
+    try std.testing.expectEqual(cursor, decoded.cursor);
+
+    for (out.items[0..4]) |*byte| {
+        const original = byte.*;
+        byte.* = 0xff;
+        try std.testing.expectError(Error.InvalidTable, decodeCursorUpdate(out.items));
+        byte.* = original;
+    }
+    out.items[4] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeCursorUpdate(out.items));
+    out.items[4] = 7;
+    try std.testing.expectError(Error.InvalidTable, decodeCursorUpdate(out.items[0 .. out.items.len - 1]));
+}
+
+test "scene validates cursor update against active frame and owner" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    const valid: Cursor = .{ .window_id = 100, .x = 76, .y = 52, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeCursorUpdate(a, 1, valid, &payload);
+    var message: std.ArrayList(u8) = .empty;
+    defer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{ .flags = 0, .message_type = protocol.Message.cursor_update, .sequence = 3, .ack_sequence = 0, .session_id = 9, .frame_id = 7, .timestamp_ns = 3 }, payload.items, &message);
+    try scene.apply(message.items);
+    try std.testing.expectEqual(valid, scene.cursor.?);
+
+    payload.clearRetainingCapacity();
+    try encodeCursorUpdate(a, 2, valid, &payload);
+    const stale = try windowLifecycleMessage(a, protocol.Message.cursor_update, 4, 7, payload.items);
+    defer a.free(stale);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(stale));
+    try std.testing.expectEqual(valid, scene.cursor.?);
+
+    const missing: Cursor = .{ .window_id = 999, .x = 0, .y = 0, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true };
+    payload.clearRetainingCapacity();
+    try encodeCursorUpdate(a, 1, missing, &payload);
+    const missing_owner = try windowLifecycleMessage(a, protocol.Message.cursor_update, 4, 7, payload.items);
+    defer a.free(missing_owner);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(missing_owner));
+
+    const outside: Cursor = .{ .window_id = 100, .x = 80, .y = 0, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true };
+    payload.clearRetainingCapacity();
+    try encodeCursorUpdate(a, 1, outside, &payload);
+    const outside_owner = try windowLifecycleMessage(a, protocol.Message.cursor_update, 4, 7, payload.items);
+    defer a.free(outside_owner);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(outside_owner));
+    try std.testing.expectEqual(valid, scene.cursor.?);
+
+    var wrong_envelope: std.ArrayList(u8) = .empty;
+    defer wrong_envelope.deinit(a);
+    try protocol.encodeEnvelope(a, .{ .flags = 0, .message_type = protocol.Message.cursor_update, .sequence = 4, .ack_sequence = 0, .session_id = 9, .frame_id = 8, .timestamp_ns = 4 }, payload.items, &wrong_envelope);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_envelope.items));
+    try std.testing.expectEqual(valid, scene.cursor.?);
+}
+
+test "window patch rejects a shrink that would orphan the cursor" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var cursor_payload: std.ArrayList(u8) = .empty;
+    defer cursor_payload.deinit(a);
+    try encodeCursorUpdate(a, 1, .{ .window_id = 100, .x = 76, .y = 52, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true }, &cursor_payload);
+    const cursor_message = try windowLifecycleMessage(a, protocol.Message.cursor_update, 3, 7, cursor_payload.items);
+    defer a.free(cursor_message);
+    try scene.apply(cursor_message);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeWindowPatch(a, .{
+        .flags = protocol.WindowPatchFlags.width | protocol.WindowPatchFlags.height,
+        .frame_id = 7,
+        .frame_generation = 1,
+        .window_id = 100,
+        .width = 40,
+        .height = 20,
+    }, &payload);
+    const patch = try windowLifecycleMessage(a, protocol.Message.window_patch, 4, 7, payload.items);
+    defer a.free(patch);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(patch));
+    try std.testing.expectEqual(@as(i32, 80), scene.windows.items[0].width);
+    try std.testing.expectEqual(@as(i32, 60), scene.windows.items[0].height);
+    try std.testing.expectEqual(@as(i32, 76), scene.cursor.?.x);
 }
 
 test "scene applies lifecycle and atomically validates update" {

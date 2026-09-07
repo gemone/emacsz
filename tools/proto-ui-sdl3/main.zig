@@ -2522,6 +2522,33 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (scene.parent == null or scene.parent.?.flags & protocol.FrameParentFlags.present != 0)
         return error.RuntimeBridgeParentInvalid;
 
+    var cursor_update_payload: std.ArrayList(u8) = .empty;
+    defer cursor_update_payload.deinit(gpa);
+    try frontend.encodeCursorUpdate(gpa, bridge.eup_frame_generation, .{
+        .window_id = 10,
+        .x = 16,
+        .y = 12,
+        .width = 2,
+        .height = 8,
+        .kind = 1,
+        .visible = true,
+        .active = true,
+    }, &cursor_update_payload);
+    var cursor_update: std.ArrayList(u8) = .empty;
+    defer cursor_update.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.cursor_update,
+        .sequence = 23,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, cursor_update_payload.items, &cursor_update);
+    try scene.apply(cursor_update.items);
+    if (scene.cursor == null or scene.cursor.?.x != 16)
+        return error.RuntimeBridgeCursorUpdateInvalid;
+
     if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
         scene.glyph_runs.items.len != 1 or scene.cursor == null)
         return error.RuntimeBridgeSceneInvalid;
@@ -2715,11 +2742,15 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     try buildSceneDrawList(&scene, &draw_list, 240, 96);
     var run_rendered = false;
     var face_background = false;
+    var cursor_update_rendered = false;
     for (draw_list.commands.items) |command| {
         switch (command) {
             .fill => |fill| {
                 if (fill.rect.x == 20 and fill.rect.y == 16 and fill.color.r == 0x20 and fill.color.g == 0x28 and fill.color.b == 0x38)
                     face_background = true;
+                if (fill.rect.x == 24 and fill.rect.y == 20 and
+                    fill.color.r == 0xff and fill.color.g == 0xd5 and fill.color.b == 0x4d)
+                    cursor_update_rendered = true;
             },
             .text => |text| {
                 if (text.x == 20 and text.y == 16 and text.color != null and
@@ -2730,7 +2761,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
             else => {},
         }
     }
-    if (!face_background or !run_rendered) return error.RuntimeBridgeNotRendered;
+    if (!face_background or !run_rendered or !cursor_update_rendered)
+        return error.RuntimeBridgeNotRendered;
 
     var frame_gate: renderer_policy.FrameGate = .{};
     var frame_counters: renderer_policy.FrameCounters = .{};
@@ -2845,13 +2877,14 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,
             size_hints_supported,
             z_order_supported,
             parent_unparented,
+            cursor_update_rendered,
             opacity_supported,
             decorations_supported,
             scale_supported,

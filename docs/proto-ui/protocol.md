@@ -663,6 +663,25 @@ These messages are reserved for tools, debug, and explicitly negotiated fallback
 | `0x040e` | `FLUSH` | C→F | Present boundary |
 | `0x040f` | `RENDER_HINT` | C→F | Renderer preference |
 
+#### Cursor update v1 (implemented bounded adapter contract)
+
+`CURSOR_UPDATE` (`0x0407`) is an exact 64-byte little-endian payload.  It
+permits a cursor move or state change without a full `FRAME_UPDATE`, but only
+after an active frame update has established the Scene geometry.
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 2 | `schema` | `u16`, little-endian, must be `1` |
+| 2 | 2 | reserved | zero |
+| 4 | 4 | `frame_generation` | `u32`, little-endian, nonzero and equal to the active frame |
+| 8 | 56 | cursor record | the canonical 56-byte cursor record above |
+
+The cursor must name a live window in the active Scene, have positive width and
+height, and fit entirely inside that window.  A `WINDOW_PATCH` that would move
+the cursor outside its shrunken owner is rejected without changing the window.
+`cursor_kind` is transported as an opaque v1 value; cursor styles, IME-coupled
+caret behavior, and redisplay-owned cursor semantics remain pending.
+
 ### 13.1 `GLYPH_RUN` debug-fallback v1 (implemented bounded adapter contract)
 
 `GLYPH_RUN = 0x0405` has one explicit normative v1 encoding: an exact

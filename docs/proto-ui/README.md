@@ -117,6 +117,15 @@ relation with modal policy.  The Scene validates child and active-parent
 identity; the SDL bridge proves the nullable unparent path.  Linked child
 windows and modal propagation remain pending.
 
+W12f-window-patch adds `WINDOW_PATCH` v1 for bounded geometry, parent,
+visibility, default-face, and depth changes with cycle and depth validation.
+Window zones, scroll state, and mouse-highlight records remain pending.
+
+W12f-cursor adds `CURSOR_UPDATE` v1 as a dedicated 64-byte cursor-state update
+with owner/geometry validation and SDL render evidence.  Cursor styles,
+IME-coupled caret behavior, and redisplay-owned cursor semantics remain
+pending.
+
 W12e adds a bounded adapter-owned resource payload cache with LRU eviction and
 strict wire contracts for `RESOURCE_REQUEST` and `RESOURCE_EVICT`.  The cache
 accepts at most 32 entries, 4096 bytes per payload, and 16 KiB total; existing

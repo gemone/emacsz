@@ -95,6 +95,7 @@ pub const Message = struct {
     pub const face_delete: u16 = 0x0502;
     pub const glyph_run: u16 = 0x0405;
     pub const glyph_run_delete: u16 = 0x0406;
+    pub const cursor_update: u16 = 0x0407;
     pub const font_define: u16 = 0x0503;
     pub const font_delete: u16 = 0x0506;
     pub const image_define: u16 = 0x0507;
