@@ -214,7 +214,7 @@ pub const FeatureDescriptor = struct {
 pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .protocol_v1, .status = .implemented, .evidence = "proto-ui-conformance" },
     .{ .feature = .capability_negotiation, .status = .implemented, .evidence = "proto-ui-unit and sdl3-epxl-facts-smoke" },
-    .{ .feature = .session_control_v1, .status = .degraded, .evidence = "codecs, proto-ui-unit terminal states, and sdl3-live-smoke EPXL suspend/resume/liveness/error/close transport; automatic frontend PONG response and VERSION_MISMATCH transport pending" },
+    .{ .feature = .session_control_v1, .status = .degraded, .evidence = "codecs, proto-ui-unit terminal states, automatic frontend PONG, and sdl3-live-smoke EPXL suspend/resume/liveness/error/close transport; VERSION_MISMATCH transport pending" },
     .{ .feature = .transport_epxl_local, .status = .implemented, .evidence = "sdl3-live-smoke" },
     .{ .feature = .session_resync, .status = .implemented, .evidence = "sdl3-epxl-resync-smoke" },
     .{ .feature = .frame_facts_profile, .status = .degraded, .evidence = "sdl3-epxl-facts-smoke" },

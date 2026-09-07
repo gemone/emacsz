@@ -200,9 +200,12 @@ is `u16 code` (nonzero), `u8 severity` (`1=info`, `2=warning`,
 The standard setup state machine and bounded control state machine are
 implemented. EPXL's authenticated frame stream now carries and ACKs
 suspend/resume/resumed, PING/PONG, a recoverable ERROR, and normal
-SESSION_CLOSE. When standard control is requested, both transport peers reject
-the session unless `session.control_v1` was negotiated. VERSION_MISMATCH
-transport and an automatic frontend PONG responder remain runtime wiring work.
+SESSION_CLOSE. The frontend automatically replies to PING with a
+reverse-direction PONG whose payload echoes the PING timestamp; its envelope
+carries the responder's monotonic send time. When standard control is
+requested, both transport peers reject the session unless
+`session.control_v1` was negotiated.
+VERSION_MISMATCH transport remains runtime wiring work.
 
 ## 10. Frame messages
 

@@ -34,6 +34,9 @@ const SDL_EVENT_MOUSE_BUTTON_UP: c_uint = 0x402;
 const SDL_EVENT_MOUSE_WHEEL: c_uint = 0x403;
 const SDL_BUTTON_LMASK: u32 = 1;
 const SDL_MOUSEWHEEL_NORMAL: u32 = 0;
+/// EUP sequences 1..4 are consumed by capability/setup.  Reverse-direction
+/// PONGs start at the first ordinary frontend producer sequence.
+const frontend_pong_sequence_start: u64 = 5;
 
 const SDL_Window = opaque {};
 const SDL_Renderer = opaque {};
@@ -1043,9 +1046,10 @@ fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
         if (!negotiated.effective.contains(.session_control_v1))
             return error.SessionControlCapabilityNotNegotiated;
         const base_sequence = acks.next_sequence orelse return error.InvalidSequence;
-        // The smoke sends exactly eight sequence values after replay.  Reject
-        // the sequence base before using any of the offsets below.
-        _ = std.math.add(u64, base_sequence, 7) catch return error.InvalidSequence;
+        // The backend sends seven sequence values after replay.  Reject the
+        // sequence base before using any of the offsets below.  The frontend's
+        // PONG uses a separate reverse-direction sequence.
+        _ = std.math.add(u64, base_sequence, 6) catch return error.InvalidSequence;
         const sequences = [4]u64{
             base_sequence,
             base_sequence + 1,
@@ -1117,20 +1121,25 @@ fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
             base_sequence + 4,
             &ping_payload,
         );
-        var pong_payload: [8]u8 = undefined;
-        std.mem.writeInt(u64, &pong_payload, 42, .little);
-        try sendStandardEupFrame(
-            gpa,
-            &reader.interface,
-            &writer.interface,
-            &acks,
-            base_sequence + 5,
-            protocol.Message.pong,
-            0,
-            0,
-            base_sequence + 5,
-            &pong_payload,
-        );
+
+        // The frontend automatically answers PING.  Read that reverse-direction
+        // EUP frame, verify the echoed probe, and ACK it like every control.
+        // The PONG payload owns the echoed timestamp; the envelope owns the
+        // responder's monotonic send time.
+        const pong_message = (try live.readFrame(&reader.interface, gpa)) orelse return error.ExpectedPong;
+        defer gpa.free(pong_message);
+        const pong = try protocol.decodeEnvelope(pong_message);
+        if (pong.envelope.message_type != protocol.Message.pong or
+            pong.envelope.flags != 0 or
+            pong.envelope.sequence != frontend_pong_sequence_start or
+            pong.envelope.ack_sequence != 0 or
+            pong.envelope.session_id != capability.session_id or
+            pong.envelope.frame_id != 0) return error.ExpectedPong;
+        const pong_value = try session_codec.decodePong(pong.bytes);
+        if (pong_value.original_timestamp_ns != 42) return error.ExpectedPong;
+        if (pong.envelope.timestamp_ns == 0) return error.ExpectedPong;
+        try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = pong.envelope.sequence });
+        try writer.interface.flush();
 
         var error_payload: std.ArrayList(u8) = .empty;
         defer error_payload.deinit(gpa);
@@ -1146,11 +1155,11 @@ fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
             &reader.interface,
             &writer.interface,
             &acks,
-            base_sequence + 6,
+            base_sequence + 5,
             protocol.Message.session_error,
             0,
             0,
-            base_sequence + 6,
+            base_sequence + 5,
             error_payload.items,
         );
 
@@ -1160,14 +1169,14 @@ fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
             &reader.interface,
             &writer.interface,
             &acks,
-            base_sequence + 7,
+            base_sequence + 6,
             protocol.Message.session_close,
             0,
             0,
-            base_sequence + 7,
+            base_sequence + 6,
             &close_payload,
         );
-        std.debug.print("sdl3-live-smoke: standard EUP suspend/resume/liveness/error/close carried over EPXL frames\n", .{});
+        std.debug.print("sdl3-live-smoke: standard EUP suspend/resume, automatic PONG, recoverable error, and ordered close carried over EPXL frames\n", .{});
     }
 }
 
@@ -2601,6 +2610,7 @@ fn runLiveFrontend(
         config.mode == .emacs_epxl_key_v2 or config.mode == .emacs_epxl_sequence;
     var scene = frontend.Scene.init(gpa);
     errdefer scene.deinit();
+    var frontend_sequence: u64 = frontend_pong_sequence_start;
     var resync_complete = false;
     var input_ack_lost = false;
     if (use_resync) {
@@ -2643,6 +2653,40 @@ fn runLiveFrontend(
         }
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
+        if (envelope.message_type == protocol.Message.ping and
+            negotiated.effective.contains(.session_control_v1))
+        {
+            if (frontend_sequence == std.math.maxInt(u64)) return error.InvalidSequence;
+            const ping_wire = try protocol.decodeEnvelope(message);
+            const ping = try session_codec.decodePing(ping_wire.bytes);
+            var pong_payload: std.ArrayList(u8) = .empty;
+            defer pong_payload.deinit(gpa);
+            try session_codec.encodePong(gpa, .{ .original_timestamp_ns = ping.timestamp_ns }, &pong_payload);
+            // Keep the liveness correlation in the PONG payload.  The envelope
+            // timestamp remains a fresh monotonic sender timestamp as required
+            // by the EUP envelope contract.
+            const pong_timestamp_ns: u64 = @intCast(
+                std.Io.Timestamp.now(io, .awake).nanoseconds,
+            );
+            try scene.control.apply(protocol.Message.pong, pong_payload.items);
+            var pong: std.ArrayList(u8) = .empty;
+            defer pong.deinit(gpa);
+            try protocol.encodeEnvelope(gpa, .{
+                .flags = 0,
+                .message_type = protocol.Message.pong,
+                .sequence = frontend_sequence,
+                .ack_sequence = 0,
+                .session_id = envelope.session_id,
+                .frame_id = 0,
+                .timestamp_ns = pong_timestamp_ns,
+            }, pong_payload.items, &pong);
+            try live.writeFrame(&writer.interface, pong.items);
+            try writer.interface.flush();
+            const pong_ack = try readControlExact(&reader);
+            if (pong_ack.kind != .ack or pong_ack.sequence != frontend_sequence)
+                return error.ExpectedPongAck;
+            frontend_sequence += 1;
+        }
         if (use_resync and !resync_complete) return error.IncompleteResync;
     }
     if (use_resync and !resync_complete) return error.IncompleteResync;
