@@ -53,6 +53,8 @@ pub const Message = struct {
     pub const resource_evict: u16 = 0x0511;
     pub const face_define: u16 = 0x0500;
     pub const face_delete: u16 = 0x0502;
+    pub const font_define: u16 = 0x0503;
+    pub const font_delete: u16 = 0x0506;
     pub const string_define: u16 = 0x050e;
     pub const string_delete: u16 = 0x050f;
     pub const key_event: u16 = 0x0600;
@@ -167,6 +169,10 @@ pub const ResourceEvict = struct {
 pub const max_resource_requests: usize = 64;
 pub const max_string_bytes: usize = 4096;
 pub const face_record_size: usize = 96;
+pub const font_record_size: usize = 224;
+pub const max_font_family_bytes: usize = 64;
+pub const max_font_foundry_bytes: usize = 32;
+pub const max_font_style_bytes: usize = 32;
 
 pub const FaceStyle = enum(u8) {
     unspecified = 0,
@@ -263,6 +269,113 @@ pub const StringDelete = struct {
     generation: u32,
 };
 
+pub const FontSlant = enum(u8) {
+    unspecified = 0,
+    roman = 1,
+    italic = 2,
+    oblique = 3,
+};
+
+pub const FontSpacing = enum(u8) {
+    unspecified = 0,
+    mono = 1,
+    proportional = 2,
+};
+
+pub const FontDefine = struct {
+    font_id: u32,
+    generation: u32,
+    family: [max_font_family_bytes]u8 = @splat(0),
+    family_len: usize = 0,
+    foundry: [max_font_foundry_bytes]u8 = @splat(0),
+    foundry_len: usize = 0,
+    style: [max_font_style_bytes]u8 = @splat(0),
+    style_len: usize = 0,
+    slant: FontSlant = .unspecified,
+    spacing: FontSpacing = .unspecified,
+    scalable: bool = false,
+    fixed_pitch: bool = false,
+    /// CSS weight, 1..1000.
+    weight: u16 = 400,
+    /// Percentage, 50..200.
+    width_percent: u16 = 100,
+    /// Zero means unspecified.
+    pixel_size: u32 = 0,
+    /// Points multiplied by ten; zero means unspecified.
+    point_size_tenths: u32 = 0,
+    x_dpi: u32 = 0,
+    y_dpi: u32 = 0,
+    ascent: i32 = 0,
+    descent: i32 = 0,
+    line_height: u32 = 0,
+    average_advance: u32 = 0,
+    space_advance: u32 = 0,
+    max_advance: u32 = 0,
+    min_advance: u32 = 0,
+    baseline_offset: i32 = 0,
+    underline_position: i32 = 0,
+    underline_thickness: u32 = 0,
+    /// v1 explicitly encodes zero; extension counts are not accepted here.
+    feature_count: u16 = 0,
+    variation_axis_count: u16 = 0,
+    fallback_count: u16 = 0,
+};
+
+pub const FontDelete = struct {
+    font_id: u32,
+    generation: u32,
+};
+
+fn validateFontMetadata(
+    bytes: []const u8,
+    used_len: usize,
+) Error!void {
+    if (used_len == 0 or used_len > bytes.len) return Error.InvalidMessage;
+    const used = bytes[0..used_len];
+    if (std.mem.indexOfScalar(u8, used, 0) != null) return Error.InvalidMessage;
+    if (!std.unicode.utf8ValidateSlice(used)) return Error.InvalidUtf8;
+    for (bytes[used_len..]) |byte| {
+        if (byte != 0) return Error.InvalidReserved;
+    }
+}
+
+const max_font_metric: i64 = 1 << 20;
+
+fn fontMetricInRange(value: i64) bool {
+    return value >= 0 and value <= max_font_metric;
+}
+
+fn validateFontDefine(payload: FontDefine) Error!void {
+    if (payload.font_id == 0 or payload.generation == 0) return Error.InvalidMessage;
+    try validateFontMetadata(&payload.family, payload.family_len);
+    try validateFontMetadata(&payload.foundry, payload.foundry_len);
+    try validateFontMetadata(&payload.style, payload.style_len);
+    if (payload.weight < 1 or payload.weight > 1000) return Error.InvalidMessage;
+    if (payload.width_percent < 50 or payload.width_percent > 200) return Error.InvalidMessage;
+    if (payload.pixel_size > max_font_metric or payload.point_size_tenths > max_font_metric or
+        payload.x_dpi > 4096 or payload.y_dpi > 4096) return Error.InvalidMessage;
+    if ((payload.x_dpi == 0) != (payload.y_dpi == 0)) return Error.InvalidMessage;
+    if (payload.fixed_pitch and payload.spacing == .proportional) return Error.InvalidMessage;
+    if (payload.spacing == .mono and !payload.fixed_pitch) return Error.InvalidMessage;
+
+    if (!fontMetricInRange(payload.ascent) or !fontMetricInRange(payload.descent) or
+        !fontMetricInRange(payload.line_height) or !fontMetricInRange(payload.average_advance) or
+        !fontMetricInRange(payload.space_advance) or !fontMetricInRange(payload.max_advance) or
+        !fontMetricInRange(payload.min_advance) or payload.baseline_offset < 0 or
+        payload.baseline_offset > payload.ascent or
+        @as(i64, payload.underline_position) < -payload.ascent or
+        @as(i64, payload.underline_position) > payload.ascent or
+        !fontMetricInRange(payload.underline_thickness)) return Error.InvalidMessage;
+    if (payload.max_advance < payload.min_advance or
+        payload.average_advance > payload.max_advance or
+        payload.space_advance > payload.max_advance) return Error.InvalidMessage;
+    if (payload.line_height < @as(u32, @intCast(payload.ascent)) +
+        @as(u32, @intCast(payload.descent))) return Error.InvalidMessage;
+    if (payload.underline_thickness > payload.line_height) return Error.InvalidMessage;
+    if (payload.feature_count != 0 or payload.variation_axis_count != 0 or
+        payload.fallback_count != 0) return Error.Unsupported;
+}
+
 fn validateStringIdentity(resource_id: u32, generation: u32) Error!void {
     if (resource_id == 0 or generation == 0) return Error.InvalidMessage;
 }
@@ -320,6 +433,130 @@ pub fn decodeStringDelete(data: []const u8) Error!StringDelete {
         .generation = std.mem.readInt(u32, data[4..8], .little),
     };
     try validateStringIdentity(payload.resource_id, payload.generation);
+    return payload;
+}
+
+/// Fixed-layout FONT_DEFINE v1.  Strings are exact-length UTF-8; unused
+/// metadata and all reserved bytes are zero.  This is a bounded descriptor and
+/// is not a text-shaping or rendering contract.
+pub fn encodeFontDefineBytes(payload: FontDefine) Error![font_record_size]u8 {
+    try validateFontDefine(payload);
+    var bytes: [font_record_size]u8 = @splat(0);
+    std.mem.writeInt(u32, bytes[0..4], payload.font_id, .little);
+    std.mem.writeInt(u32, bytes[4..8], payload.generation, .little);
+    bytes[8] = @intCast(payload.family_len);
+    bytes[9] = @intCast(payload.foundry_len);
+    bytes[10] = @intCast(payload.style_len);
+    bytes[11] = @intFromEnum(payload.slant);
+    bytes[12] = @intFromEnum(payload.spacing);
+    bytes[13] = @intFromBool(payload.scalable);
+    bytes[14] = @intFromBool(payload.fixed_pitch);
+    std.mem.writeInt(u16, bytes[16..18], payload.weight, .little);
+    std.mem.writeInt(u16, bytes[18..20], payload.width_percent, .little);
+    std.mem.writeInt(u32, bytes[20..24], payload.pixel_size, .little);
+    std.mem.writeInt(u32, bytes[24..28], payload.point_size_tenths, .little);
+    std.mem.writeInt(u32, bytes[28..32], payload.x_dpi, .little);
+    std.mem.writeInt(u32, bytes[32..36], payload.y_dpi, .little);
+    std.mem.writeInt(i32, bytes[36..40], payload.ascent, .little);
+    std.mem.writeInt(i32, bytes[40..44], payload.descent, .little);
+    std.mem.writeInt(u32, bytes[44..48], payload.line_height, .little);
+    std.mem.writeInt(u32, bytes[48..52], payload.average_advance, .little);
+    std.mem.writeInt(u32, bytes[52..56], payload.space_advance, .little);
+    std.mem.writeInt(u32, bytes[56..60], payload.max_advance, .little);
+    std.mem.writeInt(u32, bytes[60..64], payload.min_advance, .little);
+    std.mem.writeInt(i32, bytes[64..68], payload.baseline_offset, .little);
+    std.mem.writeInt(i32, bytes[68..72], payload.underline_position, .little);
+    std.mem.writeInt(u32, bytes[72..76], payload.underline_thickness, .little);
+    std.mem.writeInt(u16, bytes[76..78], payload.feature_count, .little);
+    std.mem.writeInt(u16, bytes[78..80], payload.variation_axis_count, .little);
+    std.mem.writeInt(u16, bytes[80..82], payload.fallback_count, .little);
+    @memcpy(bytes[96..160], &payload.family);
+    @memcpy(bytes[160..192], &payload.foundry);
+    @memcpy(bytes[192..224], &payload.style);
+    return bytes;
+}
+
+pub fn encodeFontDefine(a: std.mem.Allocator, payload: FontDefine, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    const bytes = try encodeFontDefineBytes(payload);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeFontDefine(data: []const u8) Error!FontDefine {
+    if (data.len != font_record_size) return Error.InvalidTable;
+    if (data[15] != 0) return Error.InvalidReserved;
+    for (data[82..96]) |byte| {
+        if (byte != 0) return Error.InvalidReserved;
+    }
+    if (data[13] > 1 or data[14] > 1) return Error.InvalidBoolean;
+    const payload = FontDefine{
+        .font_id = std.mem.readInt(u32, data[0..4], .little),
+        .generation = std.mem.readInt(u32, data[4..8], .little),
+        .family = data[96..160][0..max_font_family_bytes].*,
+        .family_len = data[8],
+        .foundry = data[160..192][0..max_font_foundry_bytes].*,
+        .foundry_len = data[9],
+        .style = data[192..224][0..max_font_style_bytes].*,
+        .style_len = data[10],
+        .slant = switch (data[11]) {
+            0 => .unspecified,
+            1 => .roman,
+            2 => .italic,
+            3 => .oblique,
+            else => return Error.InvalidStyle,
+        },
+        .spacing = switch (data[12]) {
+            0 => .unspecified,
+            1 => .mono,
+            2 => .proportional,
+            else => return Error.InvalidStyle,
+        },
+        .scalable = data[13] == 1,
+        .fixed_pitch = data[14] == 1,
+        .weight = std.mem.readInt(u16, data[16..18], .little),
+        .width_percent = std.mem.readInt(u16, data[18..20], .little),
+        .pixel_size = std.mem.readInt(u32, data[20..24], .little),
+        .point_size_tenths = std.mem.readInt(u32, data[24..28], .little),
+        .x_dpi = std.mem.readInt(u32, data[28..32], .little),
+        .y_dpi = std.mem.readInt(u32, data[32..36], .little),
+        .ascent = std.mem.readInt(i32, data[36..40], .little),
+        .descent = std.mem.readInt(i32, data[40..44], .little),
+        .line_height = std.mem.readInt(u32, data[44..48], .little),
+        .average_advance = std.mem.readInt(u32, data[48..52], .little),
+        .space_advance = std.mem.readInt(u32, data[52..56], .little),
+        .max_advance = std.mem.readInt(u32, data[56..60], .little),
+        .min_advance = std.mem.readInt(u32, data[60..64], .little),
+        .baseline_offset = std.mem.readInt(i32, data[64..68], .little),
+        .underline_position = std.mem.readInt(i32, data[68..72], .little),
+        .underline_thickness = std.mem.readInt(u32, data[72..76], .little),
+        .feature_count = std.mem.readInt(u16, data[76..78], .little),
+        .variation_axis_count = std.mem.readInt(u16, data[78..80], .little),
+        .fallback_count = std.mem.readInt(u16, data[80..82], .little),
+    };
+    try validateFontDefine(payload);
+    return payload;
+}
+
+/// Builds the fixed delete payload without heap allocation.
+pub fn encodeFontDeleteBytes(payload: FontDelete) Error![8]u8 {
+    if (payload.font_id == 0 or payload.generation == 0) return Error.InvalidMessage;
+    var bytes: [8]u8 = undefined;
+    std.mem.writeInt(u32, bytes[0..4], payload.font_id, .little);
+    std.mem.writeInt(u32, bytes[4..8], payload.generation, .little);
+    return bytes;
+}
+
+pub fn encodeFontDelete(a: std.mem.Allocator, payload: FontDelete, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    const bytes = try encodeFontDeleteBytes(payload);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeFontDelete(data: []const u8) Error!FontDelete {
+    if (data.len != 8) return Error.InvalidTable;
+    const payload = FontDelete{
+        .font_id = std.mem.readInt(u32, data[0..4], .little),
+        .generation = std.mem.readInt(u32, data[4..8], .little),
+    };
+    if (payload.font_id == 0 or payload.generation == 0) return Error.InvalidMessage;
     return payload;
 }
 
@@ -1234,6 +1471,160 @@ test "string resource codecs enforce UTF-8 and bounded exact payloads" {
     bytes.items[7] = 2;
     try bytes.append(a, 0);
     try std.testing.expectError(Error.InvalidTable, decodeStringDelete(bytes.items));
+}
+
+fn fontFixture() FontDefine {
+    var payload = FontDefine{
+        .font_id = 31,
+        .generation = 5,
+        .family_len = 3,
+        .foundry_len = 5,
+        .style_len = 6,
+        .slant = .italic,
+        .spacing = .mono,
+        .scalable = true,
+        .fixed_pitch = true,
+        .weight = 450,
+        .width_percent = 110,
+        .pixel_size = 16,
+        .point_size_tenths = 120,
+        .x_dpi = 96,
+        .y_dpi = 96,
+        .ascent = 10,
+        .descent = 4,
+        .line_height = 14,
+        .average_advance = 8,
+        .space_advance = 8,
+        .max_advance = 10,
+        .min_advance = 6,
+        .baseline_offset = 10,
+        .underline_position = -2,
+        .underline_thickness = 1,
+    };
+    @memcpy(payload.family[0..3], "éx");
+    @memcpy(payload.foundry[0..5], "found");
+    @memcpy(payload.style[0..6], "Book12");
+    return payload;
+}
+
+test "font resource codecs enforce fixed bounded UTF-8 metadata" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    const payload = fontFixture();
+    try encodeFontDefine(a, payload, &bytes);
+    try std.testing.expectEqual(font_record_size, bytes.items.len);
+    try std.testing.expectEqual(payload, try decodeFontDefine(bytes.items));
+
+    bytes.items[8] = 65; // family length exceeds its fixed field
+    try std.testing.expectError(Error.InvalidMessage, decodeFontDefine(bytes.items));
+    bytes.items[8] = 3;
+    bytes.items[96] = 'n';
+    bytes.items[97] = 0xff;
+    bytes.items[98] = 'x';
+    try std.testing.expectError(Error.InvalidUtf8, decodeFontDefine(bytes.items));
+    @memcpy(bytes.items[96..99], "éx");
+
+    bytes.items[97] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeFontDefine(bytes.items));
+    @memcpy(bytes.items[96..99], "éx");
+    bytes.items[100] = 1; // unused metadata tail is strict zero
+    try std.testing.expectError(Error.InvalidReserved, decodeFontDefine(bytes.items));
+    bytes.items[100] = 0;
+
+    bytes.items[15] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeFontDefine(bytes.items));
+    bytes.items[15] = 0;
+    bytes.items[90] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeFontDefine(bytes.items));
+    bytes.items[90] = 0;
+
+    try std.testing.expectError(Error.InvalidTable, decodeFontDefine(bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFontDefine(bytes.items));
+}
+
+test "font resource codecs reject invalid enums booleans ranges and extensions" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    const payload = fontFixture();
+    try encodeFontDefine(a, payload, &bytes);
+
+    bytes.items[11] = 4;
+    try std.testing.expectError(Error.InvalidStyle, decodeFontDefine(bytes.items));
+    bytes.items[11] = @intFromEnum(FontSlant.italic);
+    bytes.items[12] = 3;
+    try std.testing.expectError(Error.InvalidStyle, decodeFontDefine(bytes.items));
+    bytes.items[12] = @intFromEnum(FontSpacing.mono);
+    bytes.items[13] = 2;
+    try std.testing.expectError(Error.InvalidBoolean, decodeFontDefine(bytes.items));
+    bytes.items[13] = 1;
+    bytes.items[14] = 2;
+    try std.testing.expectError(Error.InvalidBoolean, decodeFontDefine(bytes.items));
+    bytes.items[14] = 1;
+
+    std.mem.writeInt(u16, bytes.items[16..18], 1001, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFontDefine(bytes.items));
+    std.mem.writeInt(u16, bytes.items[16..18], payload.weight, .little);
+    std.mem.writeInt(u16, bytes.items[18..20], 49, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFontDefine(bytes.items));
+    std.mem.writeInt(u16, bytes.items[18..20], payload.width_percent, .little);
+
+    std.mem.writeInt(u32, bytes.items[28..32], 96, .little);
+    std.mem.writeInt(u32, bytes.items[32..36], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFontDefine(bytes.items));
+    std.mem.writeInt(u32, bytes.items[32..36], payload.y_dpi, .little);
+    std.mem.writeInt(u32, bytes.items[44..48], 13, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFontDefine(bytes.items));
+    std.mem.writeInt(u32, bytes.items[44..48], payload.line_height, .little);
+    std.mem.writeInt(u16, bytes.items[76..78], 1, .little);
+    try std.testing.expectError(Error.Unsupported, decodeFontDefine(bytes.items));
+    std.mem.writeInt(u16, bytes.items[76..78], 0, .little);
+    std.mem.writeInt(u16, bytes.items[78..80], 1, .little);
+    try std.testing.expectError(Error.Unsupported, decodeFontDefine(bytes.items));
+    std.mem.writeInt(u16, bytes.items[78..80], 0, .little);
+    std.mem.writeInt(u16, bytes.items[80..82], 1, .little);
+    try std.testing.expectError(Error.Unsupported, decodeFontDefine(bytes.items));
+    std.mem.writeInt(u16, bytes.items[80..82], 0, .little);
+
+    var invalid = payload;
+    invalid.weight = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeFontDefine(a, invalid, &bytes));
+    invalid = payload;
+    invalid.width_percent = 201;
+    try std.testing.expectError(Error.InvalidMessage, encodeFontDefine(a, invalid, &bytes));
+    invalid = payload;
+    invalid.pixel_size = max_font_metric + 1;
+    try std.testing.expectError(Error.InvalidMessage, encodeFontDefine(a, invalid, &bytes));
+    invalid = payload;
+    invalid.baseline_offset = payload.ascent + 1;
+    try std.testing.expectError(Error.InvalidMessage, encodeFontDefine(a, invalid, &bytes));
+    invalid = payload;
+    invalid.max_advance = payload.min_advance - 1;
+    try std.testing.expectError(Error.InvalidMessage, encodeFontDefine(a, invalid, &bytes));
+    invalid = payload;
+    invalid.spacing = .proportional;
+    try std.testing.expectError(Error.InvalidMessage, encodeFontDefine(a, invalid, &bytes));
+}
+
+test "font delete codec requires exact nonzero identity" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    const deletion = FontDelete{ .font_id = 31, .generation = 5 };
+    try encodeFontDelete(a, deletion, &bytes);
+    try std.testing.expectEqual(deletion, try decodeFontDelete(bytes.items));
+    bytes.items[0] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeFontDelete(bytes.items));
+    bytes.items[0] = 31;
+    bytes.items[4] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeFontDelete(bytes.items));
+    bytes.items[4] = 5;
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFontDelete(bytes.items));
 }
 
 test "optional and required message policy follows EUP classes" {

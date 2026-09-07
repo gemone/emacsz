@@ -99,6 +99,16 @@ and deletion, bounded capacity, and explicit resync/teardown cleanup.  It is not
 redisplay face capture, rendering, full Emacs face parity, or runtime
 enablement; `resource.v1` remains pending.
 
+W6-c adds the bounded fixed-layout `FONT_DEFINE`/`FONT_DELETE` v1 contract and
+its frontend-owned font table.  It covers a strict 224-byte descriptor with
+bounded UTF-8 family/foundry/style metadata, slant/spacing tags, weight/width,
+optional size/DPI values, authoritative vertical and advance metrics, and
+explicitly zero feature/variation/fallback counts.  Strict generation
+replacement/deletion, bounded capacity, sequence continuity, frame-destroy
+retention, and resync/teardown cleanup are tested.  This is not shaping,
+rasterization, rendering, redisplay font capture, Emacs font parity, or runtime
+enablement; `resource.v1` remains pending.
+
 W4c-b1-p0 adds the executable EUP v1 codec, including envelope, capability, message-ID, and FRAME_UPDATE section conformance.  W4c-b1-t0 adds bounded memory-sink sequencing and ERP1 replay-file conformance.  W4c-b1-b0 adds the versioned adapter ABI, a fake-host conformance harness, and generated ABI artifacts under `zig-out/include/proto-ui`; none introduces runtime integration.  Inherited C/Lisp changes in the rollback patch are restoration-only and return Proto-UI runtime files to their pre-Proto-UI state.  The adapter source is the authoritative ownership manifest; generated JSON is only a non-normative ABI summary.
 
 The documentation in this directory is the source of truth for the implementation workstreams.

@@ -381,10 +381,10 @@ These messages are reserved for tools, debug, and explicitly negotiated fallback
 | `0x0500` | `FACE_DEFINE` | C→F | Fixed 96-byte face subset (v1) | Create/replace face |
 | `0x0501` | `FACE_PATCH` | C→F | Attribute patch | Update face |
 | `0x0502` | `FACE_DELETE` | C→F | ID/generation | Invalidate bounded v1 face |
-| `0x0503` | `FONT_DEFINE` | C→F | Descriptor/metrics | Create font |
+| `0x0503` | `FONT_DEFINE` | C→F | Fixed 224-byte font subset (v1) | Create/replace font |
 | `0x0504` | `FONT_PATCH` | C→F | Descriptor patch | Update font |
 | `0x0505` | `FONT_METRICS` | C→F | Metric update | Authoritative metrics |
-| `0x0506` | `FONT_DELETE` | C→F | ID/generation | Invalidate font |
+| `0x0506` | `FONT_DELETE` | C→F | ID/generation | Invalidate bounded v1 font |
 | `0x0507` | `IMAGE_DEFINE` | C→F | Metadata/layout | Create image |
 | `0x0508` | `IMAGE_DATA` | C→F | Inline or fragmented pixels | Provide pixels |
 | `0x0509` | `IMAGE_DELETE` | C→F | ID/generation | Invalidate image |
@@ -464,11 +464,70 @@ generations are rejected without mutation. Delete must name the exact live
 generation and marks the shared resource registry deleted while releasing the
 owned payload. Resync, frame destroy, and scene teardown release all strings.
 
+### Font resource v1 (implemented bounded adapter contract)
+
+`FONT_DEFINE` is a fixed, little-endian 224-byte record.  It is a bounded
+descriptor and is **not** a font-object, shaping, rasterization, or Emacs font
+parity contract.  Payload layout:
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 4 | `font_id` | nonzero |
+| 4 | 4 | `generation` | nonzero |
+| 8 | 1 | `family_length` | 1..64 |
+| 9 | 1 | `foundry_length` | 1..32 |
+| 10 | 1 | `style_length` | 1..32 |
+| 11 | 1 | slant | unspecified=0, roman=1, italic=2, oblique=3 |
+| 12 | 1 | spacing | unspecified=0, mono=1, proportional=2 |
+| 13 | 1 | `scalable` | boolean byte, 0 or 1 |
+| 14 | 1 | `fixed_pitch` | boolean byte, 0 or 1 |
+| 15 | 1 | reserved | zero |
+| 16 | 2 | `weight` | 1..1000 |
+| 18 | 2 | `width_percent` | 50..200 |
+| 20 | 4 | `pixel_size` | 0 means unspecified; otherwise <=1,048,576 |
+| 24 | 4 | `point_size_tenths` | 0 means unspecified; otherwise <=1,048,576 |
+| 28 | 4 | `x_dpi` | 0 means unspecified; otherwise <=4096 |
+| 32 | 4 | `y_dpi` | 0 means unspecified; otherwise <=4096 |
+| 36 | 4 | `ascent` | signed; 0..1,048,576 |
+| 40 | 4 | `descent` | signed; 0..1,048,576 |
+| 44 | 4 | `line_height` | unsigned; >= `ascent + descent` |
+| 48 | 4 | `average_advance` | unsigned; <= max advance |
+| 52 | 4 | `space_advance` | unsigned; <= max advance |
+| 56 | 4 | `max_advance` | unsigned; >= min advance |
+| 60 | 4 | `min_advance` | unsigned |
+| 64 | 4 | `baseline_offset` | signed; 0..`ascent` |
+| 68 | 4 | `underline_position` | signed; absolute value <= `ascent` |
+| 72 | 4 | `underline_thickness` | unsigned; <= line height |
+| 76 | 2 | `feature_count` | zero in v1 |
+| 78 | 2 | `variation_axis_count` | zero in v1 |
+| 80 | 2 | `fallback_count` | zero in v1 |
+| 82 | 14 | reserved | zero |
+| 96 | 64 | family bytes | first exact prefix is UTF-8, no NUL; tail zero |
+| 160 | 32 | foundry bytes | first exact prefix is UTF-8, no NUL; tail zero |
+| 192 | 32 | style bytes | first exact prefix is UTF-8, no NUL; tail zero |
+
+X and Y DPI are either both unspecified or both specified.  `mono` spacing
+requires `fixed_pitch`; proportional spacing rejects it.  Advance ordering and
+the vertical metric ranges above are enforced.  Explicit v1 feature, variation,
+and fallback counts must be zero; extension schemas require a later protocol
+version.  Decoders reject wrong size, invalid identity, malformed strings,
+invalid enums/booleans, contradictory/range-invalid values, nonzero extension
+counts, and every nonzero reserved byte.
+
+`FONT_DELETE` is exactly two nonzero little-endian `u32` values: `font_id`
+then `generation`.  The frontend requires the next contiguous session sequence.
+A define needs a new font ID or strictly newer generation; equal/stale defines
+do not mutate state.  Delete requires the exact live generation, removes the
+active value, and marks the shared registry record deleted.  Fonts are
+protocol-global: frame destroy retains them, while resync and scene teardown
+clear them.  The active table is bounded to 64; replacement remains available
+at capacity.
+
 ### Face resource
 
 Must include foreground, background, underline, overline, strike-through, box, inverse video, extend, stipple reference, font reference, and line-spacing fields where present.
 
-### Font resource
+### Font resource (full model, pending)
 
 Must include family, foundry, slant, weight, width, pixel/point size, DPI, spacing, ascent, descent, line height, average/space/max/min width, baseline offset, underline metrics, scalable flag, feature tags, variation axes, and fallback chain when available.
 

@@ -655,6 +655,29 @@ non-negotiable with `proto-ui-unit` evidence. This is a face wire subset, not
 redisplay capture or Emacs face parity; `resource.v1`, fonts, images, rendering,
 and `output_proto` remain pending.
 
+#### W6-c status
+
+Status: W6-c complete as a bounded adapter/frontend font resource contract.
+
+`FONT_DEFINE` (`0x0503`) is a fixed little-endian 224-byte record with
+identity/generation, bounded UTF-8 family/foundry/style strings using exact
+length prefixes, strict slant and spacing tags, CSS-style weight, width
+percentage, strict scalable/fixed-pitch booleans, optional pixel/point/DPI
+values, authoritative vertical and advance metrics, baseline and underline
+metrics, and explicit zero feature/variation/fallback counts. All reserved and
+unused bytes are zero. Metric ranges, DPI pairing, spacing/fixed-pitch
+consistency, advance ordering, and vertical metric consistency are enforced.
+
+`FONT_DELETE` (`0x0506`) uses exact nonzero identity/generation. The frontend
+owns at most 64 active fonts, synchronizes through the font resource registry,
+rejects equal/stale generations without sequence drift, performs exact
+deletes, and permits replacement at capacity. Fonts survive frame destroy
+intentionally; resync and scene teardown clear them. `resource.font_v1` is
+degraded and non-negotiable with `proto-ui-unit` evidence. This is a descriptor
+wire subset, not shaping, rasterization, rendering, redisplay font capture, or
+Emacs font parity; `resource.v1`, images, full resource model, and
+`output_proto` remain pending.
+
 ### W7 — Transport and recovery
 
 Goal: support real frontend IPC and deterministic recovery.

@@ -165,6 +165,7 @@ pub const ResourceDeclaration = lifecycle.Resource;
 pub const max_resources = lifecycle.max_resources;
 pub const max_string_resources: usize = 64;
 pub const max_face_resources: usize = 64;
+pub const max_font_resources: usize = 64;
 
 pub const FaceResource = struct {
     face_id: u32,
@@ -362,6 +363,104 @@ pub const StringResources = struct {
 
     fn deinit(self: *StringResources, allocator: std.mem.Allocator) void {
         self.clear(allocator);
+    }
+};
+
+pub const FontResource = struct {
+    font_id: u32,
+    generation: u32,
+    payload: protocol.FontDefine,
+};
+
+pub const FontResourceCounters = struct {
+    defines: u64 = 0,
+    replacements: u64 = 0,
+    deletes: u64 = 0,
+    rejections: u64 = 0,
+};
+
+/// Fonts are protocol-global bounded resources.  They survive frame destroy
+/// so a replacement frame can reference the same descriptor; explicit
+/// deletion, authenticated resync, or scene teardown removes them.
+pub const FontResources = struct {
+    fonts: [max_font_resources]FontResource = undefined,
+    len: usize = 0,
+    counters: FontResourceCounters = .{},
+
+    fn find(self: FontResources, font_id: u32) ?usize {
+        for (self.fonts[0..self.len], 0..) |resource, index| {
+            if (resource.font_id == font_id) return index;
+        }
+        return null;
+    }
+
+    pub fn lookup(self: FontResources, font_id: u32) ?FontResource {
+        const index = self.find(font_id) orelse return null;
+        return self.fonts[index];
+    }
+
+    fn define(
+        self: *FontResources,
+        resources: *lifecycle.ResourceRegistry,
+        payload: protocol.FontDefine,
+    ) Error!void {
+        const existing_index = self.find(payload.font_id);
+        if (existing_index) |index| {
+            if (payload.generation <= self.fonts[index].generation) {
+                self.counters.rejections += 1;
+                return Error.StaleGeneration;
+            }
+        } else if (self.len == max_font_resources or resources.len == lifecycle.max_resources) {
+            self.counters.rejections += 1;
+            return Error.ResourceTableFull;
+        }
+
+        // The wire record is copied by value.  Registry validation is the only
+        // fallible step; the scene table replacement cannot fail or leak.
+        try resources.declareAll(&[_]lifecycle.Resource{.{
+            .kind = .font,
+            .id = payload.font_id,
+            .generation = payload.generation,
+            .status = .live,
+        }});
+
+        if (existing_index) |index| {
+            self.fonts[index] = .{
+                .font_id = payload.font_id,
+                .generation = payload.generation,
+                .payload = payload,
+            };
+            self.counters.replacements += 1;
+        } else {
+            self.fonts[self.len] = .{
+                .font_id = payload.font_id,
+                .generation = payload.generation,
+                .payload = payload,
+            };
+            self.len += 1;
+            self.counters.defines += 1;
+        }
+    }
+
+    fn delete(
+        self: *FontResources,
+        resources: *lifecycle.ResourceRegistry,
+        payload: protocol.FontDelete,
+    ) Error!void {
+        const index = self.find(payload.font_id) orelse {
+            self.counters.rejections += 1;
+            return Error.ResourceNotLive;
+        };
+        if (self.fonts[index].generation != payload.generation) {
+            self.counters.rejections += 1;
+            return Error.StaleGeneration;
+        }
+        try resources.delete(.font, payload.font_id, payload.generation);
+        if (index + 1 < self.len) {
+            std.mem.copyForwards(FontResource, self.fonts[index .. self.len - 1], self.fonts[index + 1 .. self.len]);
+        }
+        self.len -= 1;
+        self.counters.deletes += 1;
     }
 };
 
@@ -741,6 +840,7 @@ pub const Scene = struct {
     rows: std.ArrayList(Row) = .empty,
     strings: StringResources = .{},
     faces: FaceResources = .{},
+    fonts: FontResources = .{},
     cursor: ?Cursor = null,
     damage: std.ArrayList(Rect) = .empty,
     text: std.ArrayList(TextLine) = .empty,
@@ -758,6 +858,7 @@ pub const Scene = struct {
         self.damage.deinit(self.allocator);
         self.strings.deinit(self.allocator);
         self.faces = .{};
+        self.fonts = .{};
         for (self.text.items) |line| self.allocator.free(line.bytes);
         self.text.deinit(self.allocator);
         self.windows = .empty;
@@ -765,6 +866,7 @@ pub const Scene = struct {
         self.damage = .empty;
         self.strings = .{};
         self.faces = .{};
+        self.fonts = .{};
         self.text = .empty;
         self.session_id = null;
         self.next_sequence = null;
@@ -803,6 +905,8 @@ pub const Scene = struct {
             protocol.Message.frame_destroy => try self.applyFrameDestroy(payload.envelope, payload.bytes),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
+            protocol.Message.font_define => try self.applyFontDefine(payload),
+            protocol.Message.font_delete => try self.applyFontDelete(payload),
             protocol.Message.string_define => try self.applyStringDefine(payload),
             protocol.Message.string_delete => try self.applyStringDelete(payload),
             else => self.stats.control_messages += 1,
@@ -876,6 +980,18 @@ pub const Scene = struct {
     fn applyStringDelete(self: *Scene, payload: protocol.Payload) Error!void {
         const string = try protocol.decodeStringDelete(payload.bytes);
         try self.strings.delete(self.allocator, &self.resources, string);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFontDefine(self: *Scene, payload: protocol.Payload) Error!void {
+        const font = try protocol.decodeFontDefine(payload.bytes);
+        try self.fonts.define(&self.resources, font);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFontDelete(self: *Scene, payload: protocol.Payload) Error!void {
+        const font = try protocol.decodeFontDelete(payload.bytes);
+        try self.fonts.delete(&self.resources, font);
         self.stats.control_messages += 1;
     }
 
@@ -2025,6 +2141,181 @@ test "face resources survive frame destroy and clear on resync and deinit" {
         scene.resetForResync();
         try std.testing.expectEqual(@as(usize, 0), scene.faces.len);
         try std.testing.expect(scene.resources.lookup(.face, 21) == null);
+        scene.deinit();
+    }
+}
+
+fn frontendFontFixture(id: u32, generation: u32) protocol.FontDefine {
+    var payload = protocol.FontDefine{
+        .font_id = id,
+        .generation = generation,
+        .family_len = 5,
+        .foundry_len = 5,
+        .style_len = 6,
+        .slant = .roman,
+        .spacing = .mono,
+        .scalable = true,
+        .fixed_pitch = true,
+        .weight = 400,
+        .width_percent = 100,
+        .pixel_size = 16,
+        .point_size_tenths = 120,
+        .x_dpi = 96,
+        .y_dpi = 96,
+        .ascent = 10,
+        .descent = 4,
+        .line_height = 14,
+        .average_advance = 8,
+        .space_advance = 8,
+        .max_advance = 10,
+        .min_advance = 6,
+        .baseline_offset = 10,
+        .underline_position = -2,
+        .underline_thickness = 1,
+    };
+    @memcpy(payload.family[0..5], "Test1");
+    @memcpy(payload.foundry[0..5], "found");
+    @memcpy(payload.style[0..6], "Book12");
+    return payload;
+}
+
+test "scene owns replaces looks up and deletes bounded font resources" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    const font = frontendFontFixture(12, 1);
+    try protocol.encodeFontDefine(a, font, &payload);
+    const defined = try faceMessage(a, protocol.Message.font_define, 2, payload.items);
+    defer a.free(defined);
+    try scene.apply(defined);
+    try std.testing.expectEqual(font, scene.fonts.lookup(12).?.payload);
+    try std.testing.expectEqual(lifecycle.ResourceStatus.live, scene.resources.lookup(.font, 12).?.status);
+
+    // Equal generation is rejected before any table/registry mutation and
+    // leaves envelope sequencing continuous.
+    payload.clearRetainingCapacity();
+    try protocol.encodeFontDefine(a, font, &payload);
+    const equal = try faceMessage(a, protocol.Message.font_define, 3, payload.items);
+    defer a.free(equal);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(equal));
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+    try std.testing.expectEqual(font, scene.fonts.lookup(12).?.payload);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeFontDelete(a, .{ .font_id = 12, .generation = 9 }, &payload);
+    const wrong_delete = try faceMessage(a, protocol.Message.font_delete, 3, payload.items);
+    defer a.free(wrong_delete);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(wrong_delete));
+
+    var malformed: [protocol.font_record_size + 1]u8 = @splat(0);
+    std.mem.writeInt(u32, malformed[0..4], 13, .little);
+    std.mem.writeInt(u32, malformed[4..8], 1, .little);
+    const wrong_size = try faceMessage(a, protocol.Message.font_define, 3, &malformed);
+    defer a.free(wrong_size);
+    try std.testing.expectError(Error.InvalidTable, scene.apply(wrong_size));
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+
+    const replacement = frontendFontFixture(12, 2);
+    payload.clearRetainingCapacity();
+    try protocol.encodeFontDefine(a, replacement, &payload);
+    const replacement_message = try faceMessage(a, protocol.Message.font_define, 3, payload.items);
+    defer a.free(replacement_message);
+    try scene.apply(replacement_message);
+    try std.testing.expectEqual(@as(u32, 2), scene.fonts.lookup(12).?.generation);
+    try std.testing.expectEqual(@as(u64, 1), scene.fonts.counters.replacements);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeFontDelete(a, .{ .font_id = 12, .generation = 2 }, &payload);
+    const deletion = try faceMessage(a, protocol.Message.font_delete, 4, payload.items);
+    defer a.free(deletion);
+    try scene.apply(deletion);
+    try std.testing.expect(scene.fonts.lookup(12) == null);
+    try std.testing.expectEqual(lifecycle.ResourceStatus.deleted, scene.resources.lookup(.font, 12).?.status);
+
+    const duplicate = try faceMessage(a, protocol.Message.font_delete, 5, payload.items);
+    defer a.free(duplicate);
+    try std.testing.expectError(Error.ResourceNotLive, scene.apply(duplicate));
+    try std.testing.expectEqual(@as(u64, 5), scene.next_sequence.?);
+    try std.testing.expectEqual(@as(u64, 3), scene.fonts.counters.rejections);
+}
+
+test "font table remains bounded and permits in-place generation replacement" {
+    var resources = lifecycle.ResourceRegistry{};
+    var fonts = FontResources{};
+    for (0..max_font_resources) |index| {
+        const id: u32 = @intCast(200 + index);
+        try fonts.define(&resources, .{ .font_id = id, .generation = 1 });
+    }
+    try std.testing.expectEqual(max_font_resources, fonts.len);
+    try std.testing.expectEqual(max_font_resources, resources.len);
+    try std.testing.expectError(
+        Error.ResourceTableFull,
+        fonts.define(&resources, .{ .font_id = 999, .generation = 1 }),
+    );
+
+    try fonts.define(&resources, .{ .font_id = 200, .generation = 65 });
+    try std.testing.expectEqual(max_font_resources, fonts.len);
+    try std.testing.expectEqual(@as(u32, 65), fonts.lookup(200).?.generation);
+    try std.testing.expectEqual(@as(u64, 1), fonts.counters.replacements);
+}
+
+test "font resources survive frame destroy and clear on resync and deinit" {
+    const a = std.testing.allocator;
+    {
+        var scene = Scene.init(a);
+        const create = try createMessage(a, 1, 7, 7);
+        defer a.free(create);
+        try scene.apply(create);
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(a);
+        try protocol.encodeFontDefine(a, frontendFontFixture(20, 1), &payload);
+        const defined = try faceMessage(a, protocol.Message.font_define, 2, payload.items);
+        defer a.free(defined);
+        try scene.apply(defined);
+
+        var destroy_payload: [8]u8 = undefined;
+        std.mem.writeInt(u32, destroy_payload[0..4], 7, .little);
+        std.mem.writeInt(u32, destroy_payload[4..8], 1, .little);
+        var destroyed_message: std.ArrayList(u8) = .empty;
+        defer destroyed_message.deinit(a);
+        try protocol.encodeEnvelope(a, .{
+            .flags = 0,
+            .message_type = protocol.Message.frame_destroy,
+            .sequence = 3,
+            .ack_sequence = 0,
+            .session_id = 9,
+            .frame_id = 7,
+            .timestamp_ns = 3,
+        }, &destroy_payload, &destroyed_message);
+        const destroyed = try a.dupe(u8, destroyed_message.items);
+        defer a.free(destroyed);
+        try scene.apply(destroyed);
+        try std.testing.expect(scene.fonts.lookup(20) != null);
+        scene.deinit();
+        try std.testing.expectEqual(@as(usize, 0), scene.fonts.len);
+        try std.testing.expect(scene.resources.lookup(.font, 20) == null);
+    }
+
+    {
+        var scene = Scene.init(a);
+        const create = try createMessage(a, 1, 7, 7);
+        defer a.free(create);
+        try scene.apply(create);
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(a);
+        try protocol.encodeFontDefine(a, frontendFontFixture(21, 1), &payload);
+        const defined = try faceMessage(a, protocol.Message.font_define, 2, payload.items);
+        defer a.free(defined);
+        try scene.apply(defined);
+        scene.resetForResync();
+        try std.testing.expectEqual(@as(usize, 0), scene.fonts.len);
+        try std.testing.expect(scene.resources.lookup(.font, 21) == null);
         scene.deinit();
     }
 }
