@@ -1004,6 +1004,40 @@ equal generations are stale and reject the update atomically. Payload delivery,
 deletion messages, snapshots, eviction, missing-resource requests, and actual
 face/font/image content remain future resource-model work.
 
+W12e adds the first strict request/eviction wire forms and a bounded adapter
+payload cache policy, while leaving actual resource payload formats for their
+specific `*_DEFINE` and `*_DATA` messages.
+
+`RESOURCE_REQUEST` uses:
+
+```text
+count            u32 (at most 64)
+record[count]:
+  kind           u8   (1..6)
+  reserved       u24  (zero)
+  resource_id    u32  (nonzero)
+  generation     u32  (0 means latest)
+```
+
+Records are unique by kind/resource-id. Truncated or oversized tables, unknown
+kinds, duplicate records, zero IDs, and nonzero reserved bytes are invalid.
+
+`RESOURCE_EVICT` uses exactly one 16-byte record:
+
+```text
+kind             u8   (1..6)
+reserved         u24  (zero)
+resource_id      u32  (nonzero)
+generation       u32  (nonzero)
+reason           u8   (0=lru, 1=capacity, 2=generation, 3=explicit)
+reserved         u24  (zero)
+```
+
+The adapter-owned payload cache stores at most 32 entries and 16384 total
+bytes, with a 4096-byte per-payload ceiling. Replacement requires a strictly
+newer generation and evicts only the minimum necessary least-recently-used
+entries. This does not imply full resource transport or rendering.
+
 #### Frame visibility and focus state
 
 W12d defines the first strict state payloads for two already-assigned frame

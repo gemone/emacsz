@@ -143,8 +143,9 @@ Priority and requirement columns define the specification target. The Status and
 
 The base snapshot below records `23da8d92855`; the current revision adds W12a
 bounded capability/status negotiation, W12b bounded frame/resource generation
-contracts, W12c real-frame lifecycle bridge smoke, and W12d frame
-visibility/focus state contracts. 118 PGTK rows are audited: 21 Degraded,
+contracts, W12c real-frame lifecycle bridge smoke, W12d frame
+visibility/focus state contracts, and W12e bounded resource payload/eviction
+policy. 118 PGTK rows are audited: 21 Degraded,
 97 Pending, 0 Blocked, and 0 fully Implemented. Pending rows are not failures
 of the protocol design; they are requirements still separating the bounded
 facts bridge from W12 PGTK parity and the W16 real-frame acceptance test.
@@ -426,7 +427,7 @@ parity.
 
 | Layer | Working now | Still required for parity | Evidence |
 |---|---|---|---|
-| Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry, bounded EPXL capability negotiation/status manifest, frame visibility/focus state codec | General resource/widget capability coverage, arbitrary recovery, remote safety | `proto-ui-conformance`, `proto-ui-unit`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
+| Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry, bounded EPXL capability negotiation/status manifest, frame visibility/focus state codec, bounded resource payload cache/eviction policy, and request/evict codecs | General resource/widget capability coverage, arbitrary recovery, remote safety | `proto-ui-conformance`, `proto-ui-unit`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
 | Emacs observation | Real Emacs process publishes public frame/window geometry, bounded printable-ASCII text, point/cursor, and viewport facts; W12c creates/deletes one real display-backed frame and synchronizes one EUP/SDL3 frame lifecycle | Redisplay-owned rows/glyphs/faces/fonts, full window tree, `output_proto`-owned frame creation/deletion, runtime visibility/focus events | `proto-ui-module-smoke`, `sdl3-emacs-smoke`, `sdl3-epxl-facts-smoke`, `sdl3-frame-smoke` |
 | SDL3 rendering | Real SDL window, frame/window/row/cursor scene, software/GPU selection, clear/fill/debug-text list, retained cursor/text clips | Glyph atlas/runs, faces, images, widgets, true partial present, GPU timestamps | `sdl3-ui-smoke`, `sdl3-renderer-smoke`, `sdl3-pointer-smoke`, `sdl3-epxl-interactive-smoke` |
 | Input | Bounded ASCII insert/delete, arrows, Ctrl+C/Ctrl+V, left pointer sessions, vertical wheel | Full keymaps, Unicode/IME, focus, selection drag, pixel/horizontal scroll | `sdl3-input-translate-smoke`, `sdl3-epxl-input-smoke`, `sdl3-epxl-edit-smoke`, `sdl3-pointer-smoke`, `sdl3-wheel-smoke` |
@@ -443,14 +444,13 @@ verified bounded subset and the parity gap that remains.
 2. **Redisplay-owned rendering.** EUP carries bounded facts rows, not authoritative glyph rows, runs, faces, fonts, or redisplay damage.
 3. **Frame lifecycle and focus.** W12c proves one bounded real-frame create/update/delete bridge and W12d defines strict visibility/focus scene state, but `output_proto` frame ownership and runtime focus/visibility round trips remain absent.
 4. **Capability coverage.** The bounded EPXL profile now negotiates, but resources, widgets, and the full EUP feature table are outside that set.
-5. **Resource model.** Generation declaration/commit semantics exist, but resource payloads, deletion transport, snapshots, eviction, and faces/fonts/images remain pending.
+5. **Resource model.** Generation declarations, a bounded payload cache/eviction policy, and request/evict wire contracts exist, but actual face/font/image payload definitions, deletion integration, snapshots, recovery, rendering, and full resource parity remain pending.
 
 ### 12.3 Minimum next milestone
 
-With the W12c lifecycle bridge landed, the next adapter-first milestone is an
-`output_proto`-owned frame identity/visibility/focus seam plus a minimum
-resource payload/eviction contract before redisplay-owned rows, faces, or
-images can be transported safely.
+With the W12e resource contract landed, the next adapter-first milestone is an
+`output_proto`-owned frame identity/visibility/focus runtime seam before
+redisplay-owned rows, faces, or images can be transported safely.
 
 ## 13. Initial explicit limitations
 

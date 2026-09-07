@@ -46,6 +46,7 @@ pub const Message = struct {
     pub const frame_visibility: u16 = 0x0208;
     pub const frame_focus: u16 = 0x0210;
     pub const resource_request: u16 = 0x0510;
+    pub const resource_evict: u16 = 0x0511;
     pub const key_event: u16 = 0x0600;
     pub const text_input: u16 = 0x0601;
     pub const pointer_event: u16 = 0x0602;
@@ -126,6 +127,37 @@ pub const ResourceId = struct {
     }
 };
 
+pub const ResourceKind = enum(u8) {
+    face = 1,
+    font = 2,
+    image = 3,
+    fringe_bitmap = 4,
+    icon = 5,
+    string = 6,
+};
+
+pub const ResourceEvictionReason = enum(u8) {
+    lru = 0,
+    capacity = 1,
+    generation = 2,
+    explicit = 3,
+};
+
+pub const ResourceRequest = struct {
+    kind: ResourceKind,
+    id: u32,
+    generation: u32,
+};
+
+pub const ResourceEvict = struct {
+    kind: ResourceKind,
+    id: u32,
+    generation: u32,
+    reason: ResourceEvictionReason,
+};
+
+pub const max_resource_requests: usize = 64;
+
 pub const Capability = struct {
     /// `name` and `value` borrow bytes from the encoded input.  The caller
     /// must keep that input alive for the lifetime of the decoded table.
@@ -161,7 +193,7 @@ pub fn encodeFrameVisibility(a: std.mem.Allocator, payload: FrameVisibilityPaylo
     std.mem.writeInt(u32, &bytes, payload.frame_id, .little);
     try out.appendSlice(a, &bytes);
     std.mem.writeInt(u32, &bytes, payload.frame_generation, .little);
-    out.appendSliceAssumeCapacity(&bytes);
+    try out.appendSlice(a, &bytes);
     try out.append(a, @intFromEnum(payload.state));
     try out.appendSlice(a, &.{ 0, 0, 0 });
 }
@@ -189,7 +221,7 @@ pub fn encodeFrameFocus(a: std.mem.Allocator, payload: FrameFocusPayload, out: *
     std.mem.writeInt(u32, &bytes, payload.frame_id, .little);
     try out.appendSlice(a, &bytes);
     std.mem.writeInt(u32, &bytes, payload.frame_generation, .little);
-    out.appendSliceAssumeCapacity(&bytes);
+    try out.appendSlice(a, &bytes);
     try out.append(a, @intFromBool(payload.focused));
     try out.appendSlice(a, &.{ 0, 0, 0 });
 }
@@ -218,6 +250,87 @@ pub fn validateFrameVisibilityEnvelope(payload: FrameVisibilityPayload, envelope
 pub fn validateFrameFocusEnvelope(payload: FrameFocusPayload, envelope: Envelope) Error!void {
     try validateFrameStateIdentity(payload.frame_id, payload.frame_generation);
     if (envelope.frame_id != payload.frame_id) return Error.InvalidMessage;
+}
+
+pub fn encodeResourceRequests(a: std.mem.Allocator, requests: []const ResourceRequest, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    if (requests.len > max_resource_requests) return Error.Unsupported;
+    try putU32(out, a, @intCast(requests.len));
+    for (requests, 0..) |request, request_index| {
+        if (request.id == 0) return Error.InvalidMessage;
+        for (requests[0..request_index]) |prior| {
+            if (prior.kind == request.kind and prior.id == request.id) return Error.InvalidTable;
+        }
+        try out.append(a, @intFromEnum(request.kind));
+        try out.appendSlice(a, &.{ 0, 0, 0 });
+        try putU32(out, a, request.id);
+        try putU32(out, a, request.generation);
+    }
+}
+
+pub fn decodeResourceRequests(a: std.mem.Allocator, data: []const u8) (Error || std.mem.Allocator.Error)![]ResourceRequest {
+    if (data.len < 4) return Error.InvalidTable;
+    const count = std.mem.readInt(u32, data[0..4], .little);
+    if (count > max_resource_requests) return Error.Unsupported;
+    if (data.len != 4 + @as(usize, count) * 12) return Error.InvalidTable;
+    const result = try a.alloc(ResourceRequest, count);
+    errdefer a.free(result);
+    for (result, 0..) |*request, request_index| {
+        const offset = 4 + request_index * 12;
+        const kind_byte = data[offset];
+        if (kind_byte == 0 or kind_byte > 6) return Error.InvalidTable;
+        if (data[offset + 1] != 0 or data[offset + 2] != 0 or data[offset + 3] != 0)
+            return Error.InvalidTable;
+        request.* = .{
+            .kind = @enumFromInt(kind_byte),
+            .id = std.mem.readInt(u32, data[offset + 4 ..][0..4], .little),
+            .generation = std.mem.readInt(u32, data[offset + 8 ..][0..4], .little),
+        };
+        if (request.id == 0) return Error.InvalidTable;
+        for (result[0..request_index]) |prior| {
+            if (prior.kind == request.kind and prior.id == request.id)
+                return Error.InvalidTable;
+        }
+    }
+    return result;
+}
+
+pub fn encodeResourceEvict(a: std.mem.Allocator, evict: ResourceEvict, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    if (evict.id == 0 or evict.generation == 0) return Error.InvalidMessage;
+    try out.append(a, @intFromEnum(evict.kind));
+    try out.appendSlice(a, &.{ 0, 0, 0 });
+    try putU32(out, a, evict.id);
+    try putU32(out, a, evict.generation);
+    try out.append(a, @intFromEnum(evict.reason));
+    try out.appendSlice(a, &.{ 0, 0, 0 });
+}
+
+pub fn decodeResourceEvict(data: []const u8) Error!ResourceEvict {
+    if (data.len != 16) return Error.InvalidTable;
+    const evict = ResourceEvict{
+        .kind = switch (data[0]) {
+            1 => .face,
+            2 => .font,
+            3 => .image,
+            4 => .fringe_bitmap,
+            5 => .icon,
+            6 => .string,
+            else => return Error.InvalidTable,
+        },
+        .id = std.mem.readInt(u32, data[4..8], .little),
+        .generation = std.mem.readInt(u32, data[8..12], .little),
+        .reason = switch (data[12]) {
+            0 => .lru,
+            1 => .capacity,
+            2 => .generation,
+            3 => .explicit,
+            else => return Error.InvalidTable,
+        },
+    };
+    if (data[1] != 0 or data[2] != 0 or data[3] != 0 or
+        evict.id == 0 or evict.generation == 0 or
+        data[13] != 0 or data[14] != 0 or data[15] != 0)
+        return Error.InvalidTable;
+    return evict;
 }
 
 fn knownSectionKind(kind: u32) bool {
@@ -750,6 +863,43 @@ test "frame visibility and focus payloads enforce strict wire form" {
     try std.testing.expectError(Error.InvalidTable, decodeFrameFocus(bytes.items));
     try std.testing.expectError(Error.InvalidMessage, encodeFrameVisibility(a, .{ .frame_id = 0, .frame_generation = 1, .state = .visible }, &bytes));
     try std.testing.expectError(Error.InvalidMessage, encodeFrameFocus(a, .{ .frame_id = 7, .frame_generation = 0, .focused = false }, &bytes));
+}
+
+test "resource request and evict codecs enforce strict wire form" {
+    const a = std.testing.allocator;
+    const requests = [_]ResourceRequest{
+        .{ .kind = .font, .id = 12, .generation = 0 },
+        .{ .kind = .image, .id = 30, .generation = 4 },
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeResourceRequests(a, &requests, &bytes);
+    try std.testing.expectEqual(@as(usize, 28), bytes.items.len);
+    const decoded = try decodeResourceRequests(a, bytes.items);
+    defer a.free(decoded);
+    try std.testing.expectEqualSlices(ResourceRequest, &requests, decoded);
+
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeResourceRequests(a, bytes.items));
+    bytes.items[0] = 3;
+    try std.testing.expectError(Error.InvalidTable, decodeResourceRequests(a, bytes.items));
+    bytes.items[0] = 2;
+    bytes.items[16] = 7;
+    try std.testing.expectError(Error.InvalidTable, decodeResourceRequests(a, bytes.items));
+    const duplicate = [_]ResourceRequest{ requests[0], requests[0] };
+    try std.testing.expectError(Error.InvalidTable, encodeResourceRequests(a, &duplicate, &bytes));
+
+    bytes.clearRetainingCapacity();
+    const evict = ResourceEvict{ .kind = .face, .id = 8, .generation = 3, .reason = .capacity };
+    try encodeResourceEvict(a, evict, &bytes);
+    try std.testing.expectEqual(@as(usize, 16), bytes.items.len);
+    try std.testing.expectEqual(evict, try decodeResourceEvict(bytes.items));
+    bytes.items[12] = 4;
+    try std.testing.expectError(Error.InvalidTable, decodeResourceEvict(bytes.items));
+    bytes.items[12] = 0;
+    bytes.items[15] = 1;
+    try std.testing.expectError(Error.InvalidTable, decodeResourceEvict(bytes.items));
+    try std.testing.expectError(Error.InvalidMessage, encodeResourceEvict(a, .{ .kind = .face, .id = 0, .generation = 1, .reason = .explicit }, &bytes));
 }
 
 test "optional and required message policy follows EUP classes" {

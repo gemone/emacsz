@@ -59,7 +59,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | Automated W3c frame smoke | Rolled back with runtime integration |
 | `output_proto` terminal | Rolled back with runtime integration |
 | Redisplay capture | Rolled back; adapter ABI v1 contract only |
-| Resource model | Not implemented |
+| Resource model | Bounded identity, payload-cache/eviction, and request/evict wire contract; actual resource payload/render model not implemented |
 | SDL3 frontend | Partial: EUP replay/live rendering, renderer tiers, damage classes, bounded facts, ASCII/key/pointer/wheel/clipboard bridges, and EPXL recovery; no redisplay streaming, full keyboard/keymap/IME input, faces, fonts, images, widgets, or production frame ownership |
 | Bounded real-frame lifecycle bridge | Implemented by W12c: one real PGTK observation frame and one EUP/SDL3 frame are created, rendered, and deleted |
 | Final real `output_proto` SDL3 Emacs frame | Not achieved |
@@ -103,6 +103,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W12b frame lifecycle/resource generation contract | Approved |
 | W12c real-frame lifecycle bridge smoke | Approved |
 | W12d frame visibility/focus state contract | Approved |
+| W12e resource payload/eviction contract | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
@@ -2174,6 +2175,48 @@ Status: approved. The dedicated reviewer completed protocol, lifecycle/state,
 and regression/boundary passes; approved fixes added allocator-consistent codec
 tests and complete malformed/reserved-byte coverage. Local validation passed
 92/92 adapter unit tests, the boundary audit, and the W12c frame smoke.
+
+#### W12e — Resource payload/eviction contract (approved)
+
+Goal: establish deterministic bounded payload retention and strict
+request/eviction wire forms before transporting real faces, fonts, images, or
+glyph atlas pages.
+
+1. Add `ResourcePayloadStore` over existing resource kind/id/generation
+   identity with fixed limits of 32 entries, 4096 bytes per payload, and
+   16384 total payload bytes.
+2. Own payload bytes in the adapter, refresh LRU order on successful lookup,
+   and expose hit/miss/insert/update/eviction counters and byte totals.
+3. Require strictly newer generations for replacing an existing key; reject
+   empty, oversized, stale, equal, or zero-identity payloads without mutation.
+4. Evict least-recently-used entries only until a valid insert fits; never
+   evict the key being replaced. OOM allocation must occur before mutation.
+5. Define `RESOURCE_REQUEST` as a u32 count plus at most 64 unique 12-byte
+   records (`kind`, reserved u24, resource ID, generation where zero means
+   latest).
+6. Define `RESOURCE_EVICT` as one 16-byte record containing kind, reserved
+   u24, ID, generation, reason (`lru`, `capacity`, `generation`, or
+   `explicit`), and reserved u24.
+7. Reject malformed kinds, duplicate requests, nonzero reserved bytes, invalid
+   reasons, truncated/oversized tables, and zero identities.
+
+Implemented limits: this is adapter-owned retention and wire policy.  It does
+not define face/font/image payloads, attach resources to render items, integrate
+deletion into `FRAME_UPDATE`, recover snapshots, or render resources.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true proto-ui-boundary
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-frame-smoke
+```
+
+Status: approved. The dedicated reviewer completed protocol, cache ownership,
+failure atomicity, and regression passes; approved fixes added minimum-eviction
+replacement behavior and deterministic LRU regression coverage. Local
+validation passed 96/96 adapter unit tests, the boundary audit, and the W12c
+frame smoke.
 
 Tasks:
 

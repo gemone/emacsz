@@ -2,7 +2,7 @@
 
 Status: normative design baseline
 Protocol: EUP v1
-Implementation status: normative design baseline with adapter-first implementation in progress. Historical direct-core runtime edits were rolled back. Current work is confined to the Zig adapter/protocol/frontend, dynamic-module public-API seams, and build glue. The EUP codec, bounded transport/replay, adapter ABI, capability manifest, conservative damage classes, authenticated EPXL input/recovery paths, and SDL3 software/GPU rendering are implemented within their documented bounded scopes. W12c adds a real-PGTK-frame create/render/delete lifecycle bridge; W12d adds strict EUP frame visibility/focus scene state. Neither creates output_proto frame ownership, redisplay-owned rendering, full keymaps/IME, or complete platform input.
+Implementation status: normative design baseline with adapter-first implementation in progress. Historical direct-core runtime edits were rolled back. Current work is confined to the Zig adapter/protocol/frontend, dynamic-module public-API seams, and build glue. The EUP codec, bounded transport/replay, adapter ABI, capability manifest, conservative damage classes, authenticated EPXL input/recovery paths, and SDL3 software/GPU rendering are implemented within their documented bounded scopes. W12c adds a real-PGTK-frame create/render/delete lifecycle bridge; W12d adds strict EUP frame visibility/focus scene state; W12e adds bounded resource payload cache/eviction policy plus strict request/evict wire contracts. None of these creates output_proto frame ownership, redisplay-owned rendering, full keymaps/IME, complete platform input, or real face/font/image rendering.
 
 ## 1. Purpose
 
