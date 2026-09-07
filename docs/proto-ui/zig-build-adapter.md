@@ -170,6 +170,7 @@ The host exposes opaque capabilities to the adapter:
 | `host_size` | Size of host table for compatibility |
 | `frame_get_geometry` | Query authoritative frame geometry |
 | `window_get_geometry` | Query authoritative window geometry |
+| `read_frame_state` (optional, appended) | Query frame generation, visibility, and focus |
 | `buffer_get_display_facts` | Query display-safe row facts |
 | `face_get_public_facts` | Query face ID and public visual facts |
 | `font_get_public_metrics` | Query public font metrics |
@@ -210,6 +211,21 @@ The adapter exposes capture and lifecycle services:
 | Texture and atlas memory | Frontend | Generation-qualified cache |
 
 Callbacks must not block.  Long work is queued to the adapter transport thread.
+
+### 5.4 Frame-state compatibility
+
+`read_frame_state` is appended to the existing ABI v1 host table rather than
+introducing a new major version. A host declares its real table size in
+`size`. The adapter accepts a legacy prefix that ends after
+`read_geometry`, and treats frame-state observation as unsupported when the
+declared size does not cover the appended callback. A current-size table may
+leave the optional callback null; observation then fails closed.
+
+The callback returns one C-compatible `FrameState` record containing a nonzero
+generation, `visibility` (`hidden=0`, `visible=1`, `iconified=2`), `focused`
+(`0/1`), and six reserved bytes that must be zero. Hidden and iconified frames
+cannot report focus. The adapter converts the result to a validated read-only
+observation; it does not retain a pointer to host state.
 
 ## 6. Capture model
 

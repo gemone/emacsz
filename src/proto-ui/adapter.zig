@@ -15,6 +15,9 @@ pub const max_damage: usize = 256;
 
 pub const Error = error{
     AbiMismatch,
+    FrameStateUnsupported,
+    FrameStateFailed,
+    FrameStateInvalid,
     InvalidArgument,
     GenerationMismatch,
     CaptureActive,
@@ -32,6 +35,26 @@ pub const Geometry = extern struct {
     pub fn valid(self: Geometry) bool {
         return self.width >= 0 and self.height >= 0;
     }
+};
+
+pub const FrameVisibility = enum(u8) {
+    hidden = 0,
+    visible = 1,
+    iconified = 2,
+};
+
+pub const FrameState = extern struct {
+    generation: u64 = 0,
+    visibility: u8 = @intFromEnum(FrameVisibility.hidden),
+    focused: u8 = 0,
+    reserved: [6]u8 = [_]u8{0} ** 6,
+};
+
+pub const FrameObservation = struct {
+    frame_id: u64,
+    generation: u64,
+    visibility: FrameVisibility,
+    focused: bool,
 };
 
 pub const Row = struct {
@@ -67,6 +90,7 @@ pub const Damage = struct {
 
 pub const ReadGenerationFn = *const fn (context: *anyopaque, object_id: u64) callconv(.c) u64;
 pub const ReadGeometryFn = *const fn (context: *anyopaque, object_id: u64, geometry: *Geometry) callconv(.c) u8;
+pub const ReadFrameStateFn = *const fn (context: *anyopaque, frame_id: u64, frame_state: *FrameState) callconv(.c) u8;
 
 /// Versioned host-owned callbacks.  A host exposes only opaque handles and
 /// public display facts.  No GNU Emacs internal object crosses this boundary.
@@ -80,7 +104,12 @@ pub const HostV1 = extern struct {
     context: ?*anyopaque = null,
     read_generation: ?ReadGenerationFn = null,
     read_geometry: ?ReadGeometryFn = null,
+    read_frame_state: ?ReadFrameStateFn = null,
 };
+
+/// Size of a v1 table that ends after the two required callbacks.  New hosts
+/// may append the optional frame-state callback while retaining ABI major 1.
+pub const host_v1_legacy_size: usize = @offsetOf(HostV1, "read_frame_state");
 
 pub const Phase = enum {
     idle,
@@ -115,6 +144,7 @@ pub const integration_points = [_]IntegrationPoint{
     .{ .id = "live_transport", .owner = .adapter, .status = .partial, .summary = "EPXL v1 local Unix handshake, frames, ACK backpressure; reconnect/coalescing pending" },
     .{ .id = "live_backpressure", .owner = .adapter, .status = .partial, .summary = "one-message EPXL ACK window; reconnect/coalescing pending" },
     .{ .id = "capability_negotiation", .owner = .adapter, .status = .implemented, .summary = "bounded EPXL name/value negotiation with required-feature intersection, hash verification, and generated status manifest; full EUP feature coverage pending" },
+    .{ .id = "host_frame_state_seam", .owner = .adapter, .status = .partial, .summary = "optional ABI v1 read_frame_state callback with backward-compatible host tables and fail-closed frame state validation; output_proto runtime integration pending" },
     .{ .id = "frame_resource_contract", .owner = .adapter, .status = .partial, .summary = "bounded frame create/update/destroy state machine, real-frame lifecycle smoke, visibility/focus contract, resource-generation declaration contract, and bounded resource payload cache/eviction implemented; output_proto frame ownership, redisplay integration, resource payloads, deletion transport, snapshots, and full resource parity pending" },
     .{ .id = "adapter_abi", .owner = .adapter, .status = .partial, .summary = "versioned host and adapter tables" },
     .{ .id = "emacs_module_seam", .owner = .adapter, .status = .partial, .summary = "opt-in public frame/window fact observation, bounded viewport metadata, and EUP/SDL3 snapshot bridge; full display capture and live publishing pending" },
@@ -217,6 +247,8 @@ fn hasPathPrefix(path: []const u8, prefix: []const u8) bool {
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
     host: *const HostV1,
+    host_size: usize,
+    frame_state_available: bool = false,
     phase: Phase = .idle,
     frame_id: u64 = 0,
     generation: u64 = 0,
@@ -234,13 +266,25 @@ pub const Runtime = struct {
 
     pub fn init(allocator: std.mem.Allocator, host: *const HostV1) Error!Runtime {
         try validateHost(host);
-        return .{ .allocator = allocator, .host = host };
+        const frame_state_available = host.size >= @sizeOf(HostV1) and
+            host.read_frame_state != null;
+        return .{
+            .allocator = allocator,
+            .host = host,
+            .host_size = host.size,
+            .frame_state_available = frame_state_available,
+        };
     }
 
     pub fn deinit(self: *Runtime) void {
         self.rows.deinit(self.allocator);
         self.damage.deinit(self.allocator);
-        self.* = .{ .allocator = self.allocator, .host = self.host };
+        self.* = .{
+            .allocator = self.allocator,
+            .host = self.host,
+            .host_size = self.host_size,
+            .frame_state_available = self.frame_state_available,
+        };
     }
 
     pub fn begin(self: *Runtime, frame_id: u64) Error!void {
@@ -354,11 +398,44 @@ pub const Runtime = struct {
         self.cursor = null;
         return generation;
     }
+
+    pub fn observeFrameState(self: *Runtime, frame_id: u64) Error!FrameObservation {
+        if (frame_id == 0) return Error.InvalidArgument;
+        if (!self.frame_state_available)
+            return Error.FrameStateUnsupported;
+
+        const read_frame_state = self.host.read_frame_state.?;
+        const context = self.host.context orelse return Error.AbiMismatch;
+        var state = FrameState{};
+        const succeeded = read_frame_state(context, frame_id, &state);
+        if (succeeded != 1) return Error.FrameStateFailed;
+        if (state.generation == 0) return Error.GenerationMismatch;
+
+        const visibility = switch (state.visibility) {
+            0 => FrameVisibility.hidden,
+            1 => FrameVisibility.visible,
+            2 => FrameVisibility.iconified,
+            else => return Error.FrameStateInvalid,
+        };
+        if (state.focused > 1) return Error.FrameStateInvalid;
+        if (state.focused == 1 and visibility != .visible)
+            return Error.FrameStateInvalid;
+        for (state.reserved) |byte| {
+            if (byte != 0) return Error.FrameStateInvalid;
+        }
+
+        return .{
+            .frame_id = frame_id,
+            .generation = state.generation,
+            .visibility = visibility,
+            .focused = state.focused == 1,
+        };
+    }
 };
 
 fn validateHost(host: *const HostV1) Error!void {
     if (host.abi_version != abi_version) return Error.AbiMismatch;
-    if (host.size < @sizeOf(HostV1)) return Error.AbiMismatch;
+    if (host.size < host_v1_legacy_size) return Error.AbiMismatch;
     if (host.context == null) return Error.AbiMismatch;
     if (host.read_generation == null) return Error.AbiMismatch;
     if (host.read_geometry == null) return Error.AbiMismatch;
@@ -407,6 +484,147 @@ test "extern geometry matches the generated C ABI layout" {
     try std.testing.expectEqual(@as(usize, 4), @offsetOf(Geometry, "y"));
     try std.testing.expectEqual(@as(usize, 8), @offsetOf(Geometry, "width"));
     try std.testing.expectEqual(@as(usize, 12), @offsetOf(Geometry, "height"));
+}
+
+test "frame state matches the generated C ABI layout" {
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(FrameState));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(FrameState, "generation"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(FrameState, "visibility"));
+    try std.testing.expectEqual(@as(usize, 9), @offsetOf(FrameState, "focused"));
+    try std.testing.expectEqual(@as(usize, 10), @offsetOf(FrameState, "reserved"));
+}
+
+const FrameStateFakeHost = struct {
+    generation: u64,
+    visibility: FrameVisibility,
+    focused: bool,
+    success: u8 = 1,
+    callback_count: u64 = 0,
+    reserved_byte: u8 = 0,
+
+    fn table(self: *FrameStateFakeHost) HostV1 {
+        return .{
+            .abi_version = abi_version,
+            .size = @sizeOf(HostV1),
+            .context = self,
+            .read_generation = readGeneration,
+            .read_geometry = readGeometry,
+            .read_frame_state = readFrameState,
+        };
+    }
+
+    fn readGeneration(context: *anyopaque, object_id: u64) callconv(.c) u64 {
+        _ = object_id;
+        const self: *FrameStateFakeHost = @ptrCast(@alignCast(context));
+        return self.generation;
+    }
+
+    fn readGeometry(context: *anyopaque, object_id: u64, geometry: *Geometry) callconv(.c) u8 {
+        _ = context;
+        _ = object_id;
+        geometry.* = .{ .width = 80, .height = 60 };
+        return 1;
+    }
+
+    fn readFrameState(context: *anyopaque, frame_id: u64, frame_state: *FrameState) callconv(.c) u8 {
+        _ = frame_id;
+        const self: *FrameStateFakeHost = @ptrCast(@alignCast(context));
+        self.callback_count += 1;
+        frame_state.* = .{
+            .generation = self.generation,
+            .visibility = @intFromEnum(self.visibility),
+            .focused = @intFromBool(self.focused),
+            .reserved = [_]u8{self.reserved_byte} ** 6,
+        };
+        return self.success;
+    }
+};
+
+test "runtime observes optional host frame state" {
+    const allocator = std.testing.allocator;
+    inline for ([_]FrameVisibility{ .hidden, .visible, .iconified }) |visibility| {
+        var host = FrameStateFakeHost{
+            .generation = 42,
+            .visibility = visibility,
+            .focused = visibility == .visible,
+        };
+        var table = host.table();
+        var runtime = try Runtime.init(allocator, &table);
+        defer runtime.deinit();
+
+        const observation = try runtime.observeFrameState(10);
+        try std.testing.expectEqual(@as(u64, 10), observation.frame_id);
+        try std.testing.expectEqual(@as(u64, 42), observation.generation);
+        try std.testing.expectEqual(visibility, observation.visibility);
+        try std.testing.expectEqual(visibility == .visible, observation.focused);
+        try std.testing.expectEqual(@as(u64, 1), host.callback_count);
+    }
+}
+
+test "runtime fails closed for invalid host frame state" {
+    const allocator = std.testing.allocator;
+
+    var state_host = FrameStateFakeHost{
+        .generation = 42,
+        .visibility = .visible,
+        .focused = true,
+    };
+    var state_table = state_host.table();
+    var state_runtime = try Runtime.init(allocator, &state_table);
+    defer state_runtime.deinit();
+    try std.testing.expectError(Error.InvalidArgument, state_runtime.observeFrameState(0));
+
+    for ([_]u8{ 0, 2 }) |success| {
+        state_host.success = success;
+        try std.testing.expectError(Error.FrameStateFailed, state_runtime.observeFrameState(10));
+    }
+    state_host.success = 1;
+
+    state_host.generation = 0;
+    try std.testing.expectError(Error.GenerationMismatch, state_runtime.observeFrameState(10));
+    state_host.generation = 42;
+
+    for ([_]FrameVisibility{ .hidden, .iconified }) |visibility| {
+        state_host.visibility = visibility;
+        state_host.focused = true;
+        try std.testing.expectError(Error.FrameStateInvalid, state_runtime.observeFrameState(10));
+    }
+
+    state_host.visibility = .visible;
+    state_host.focused = true;
+    state_host.reserved_byte = 1;
+    try std.testing.expectError(Error.FrameStateInvalid, state_runtime.observeFrameState(10));
+}
+
+test "legacy host tables retain capture and do not expose frame state" {
+    const LegacyHostV1 = extern struct {
+        abi_version: u32,
+        size: usize,
+        context: *anyopaque,
+        read_generation: *const fn (*anyopaque, u64) callconv(.c) u64,
+        read_geometry: *const fn (*anyopaque, u64, *Geometry) callconv(.c) u8,
+    };
+
+    const allocator = std.testing.allocator;
+    var host = FakeHost.init(77);
+    var legacy = LegacyHostV1{
+        .abi_version = abi_version,
+        .size = @sizeOf(LegacyHostV1),
+        .context = &host,
+        .read_generation = FakeHost.readGeneration,
+        .read_geometry = FakeHost.readGeometry,
+    };
+    const legacy_table: *const HostV1 = @ptrCast(&legacy);
+    try std.testing.expectEqual(host_v1_legacy_size, legacy.size);
+    var runtime = try Runtime.init(allocator, legacy_table);
+    defer runtime.deinit();
+
+    try std.testing.expectError(Error.FrameStateUnsupported, runtime.observeFrameState(10));
+    try runtime.begin(10);
+    try runtime.captureWindow(20);
+    try runtime.captureRow(.{ .window_id = 20, .index = 0, .x = 0, .y = 0, .width = 40, .height = 10, .ascent = 8, .descent = 2, .baseline = 8, .visible_height = 10 });
+    try runtime.captureDamage(.{ .x = 0, .y = 0, .width = 40, .height = 10 });
+    try std.testing.expectEqual(@as(u64, 77), try runtime.commit());
 }
 
 test "runtime accepts complete fake host capture" {

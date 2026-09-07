@@ -21,12 +21,23 @@ const header =
     \\#define PROTO_UI_EUP_MINOR 0u
     \\#define PROTO_UI_HOST_V1_SIZE sizeof(ProtoUiHostV1)
     \\
+    \\#define PROTO_UI_FRAME_STATE_HIDDEN 0u
+    \\#define PROTO_UI_FRAME_STATE_VISIBLE 1u
+    \\#define PROTO_UI_FRAME_STATE_ICONIFIED 2u
+    \\
     \\typedef struct ProtoUiGeometry {
     \\  int32_t x;
     \\  int32_t y;
     \\  int32_t width;
     \\  int32_t height;
     \\} ProtoUiGeometry;
+    \\
+    \\typedef struct ProtoUiFrameState {
+    \\  uint64_t generation;
+    \\  uint8_t visibility;
+    \\  uint8_t focused;
+    \\  uint8_t reserved[6];
+    \\} ProtoUiFrameState;
     \\
     \\typedef struct ProtoUiHostV1 {
     \\  uint32_t abi_version;
@@ -35,6 +46,8 @@ const header =
     \\  uint64_t (*read_generation)(void *context, uint64_t object_id);
     \\  uint8_t (*read_geometry)(void *context, uint64_t object_id,
     \\                           ProtoUiGeometry *geometry);
+    \\  uint8_t (*read_frame_state)(void *context, uint64_t frame_id,
+    \\                              ProtoUiFrameState *frame_state);
     \\} ProtoUiHostV1;
     \\
     \\#ifdef __cplusplus
@@ -56,7 +69,8 @@ const manifest =
     \\  "tables": {
     \\    "host_v1": {
     \\      "owner": "emacs-host",
-    \\      "callbacks": ["read_generation", "read_geometry"]
+    \\      "callbacks": ["read_generation", "read_geometry", "read_frame_state"],
+    \\      "optional_callbacks": ["read_frame_state"],
     \\    },
     \\    "adapter_v1": {
     \\      "owner": "proto-ui-adapter",

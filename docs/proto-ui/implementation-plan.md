@@ -104,6 +104,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W12c real-frame lifecycle bridge smoke | Approved |
 | W12d frame visibility/focus state contract | Approved |
 | W12e resource payload/eviction contract | Approved |
+| W12f optional host frame-state ABI seam | Approved |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
@@ -2217,6 +2218,47 @@ failure atomicity, and regression passes; approved fixes added minimum-eviction
 replacement behavior and deterministic LRU regression coverage. Local
 validation passed 96/96 adapter unit tests, the boundary audit, and the W12c
 frame smoke.
+
+#### W12f — Optional host frame-state ABI seam (approved)
+
+Goal: define a versioned, backward-compatible way for a future
+Proto-UI-owned host adapter to expose authoritative frame generation,
+visibility, and focus without modifying inherited Emacs C files.
+
+1. Append an optional `read_frame_state` callback to the end of `HostV1`
+   while keeping ABI major version 1.
+2. Define C-compatible `FrameState` as generation, visibility byte
+   (`hidden=0`, `visible=1`, `iconified=2`), focused byte (`0/1`), and six
+   reserved zero bytes.
+3. Accept legacy v1 tables that end after the required generation and geometry
+   callbacks; expose frame state only when the supplied table size actually
+   covers the appended callback.
+4. Add `Runtime.observeFrameState` and fail closed on zero frame identity,
+   unsupported/missing callback, callback failure, zero generation, invalid
+   visibility, invalid focus, focused hidden/iconified state, and nonzero
+   reserved bytes.
+5. Keep observation read-only so it cannot mutate capture, resource, or
+   transport state.
+6. Generate C declarations and mark `read_frame_state` optional in the
+   non-normative ABI manifest.
+
+Implemented limits: this is a fake-host-validated ABI contract only.  No Emacs
+process currently supplies the callback, no `output_proto` terminal exists, and
+no runtime frame event is transported yet.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true proto-ui-boundary
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-frame-smoke
+```
+
+Status: approved. The dedicated reviewer completed ABI compatibility/layout,
+fail-closed state validation, and regression/boundary passes; approved fixes
+included explicit host-size gating, reserved-byte validation, and rejection of
+focused hidden/iconified host state. Local validation passed 100/100 adapter
+unit tests, the boundary audit, and the W12c frame smoke.
 
 Tasks:
 
