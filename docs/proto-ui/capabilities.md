@@ -435,7 +435,7 @@ parity.
 | SDL3 rendering | Real SDL window, frame/window/row/cursor scene, software/GPU selection, clear/fill/debug-text list, retained cursor/text clips | Glyph atlas/runs, faces, images, widgets, true partial present, GPU timestamps | `sdl3-ui-smoke`, `sdl3-renderer-smoke`, `sdl3-pointer-smoke`, `sdl3-epxl-interactive-smoke` |
 | Input | Bounded ASCII insert/delete, arrows, Ctrl+C/Ctrl+V, left pointer sessions, vertical wheel | Full keymaps, Unicode/IME, focus, selection drag, pixel/horizontal scroll | `sdl3-input-translate-smoke`, `sdl3-epxl-input-smoke`, `sdl3-epxl-edit-smoke`, `sdl3-pointer-smoke`, `sdl3-wheel-smoke` |
 | Desktop | Bounded ASCII clipboard paste/copy | Unicode, MIME, PRIMARY/SECONDARY selection, DND, dialogs, menus, scrollbars | `sdl3-clipboard-smoke`, `sdl3-emacs-copy-smoke` |
-| Performance | Change-aware present/skip, damage-class counters, clip counters, renderer tier reporting | Machine-readable benchmark, latency percentiles, bandwidth/GPU evidence | Renderer/interactive smoke diagnostics; W14 harness remains pending |
+| Performance | Change-aware present/skip, damage-class counters, clip counters, renderer tier reporting, opt-in adapter hot-path baseline for EUP encode/decode, Scene application, atomic capture, and bounded memory send | Latency percentiles, bandwidth/allocation evidence, real redisplay/typing/scroll benchmarks, GPU-tier comparisons | `proto-ui-bench` (opt-in), renderer/interactive smoke diagnostics; W14 remains partial |
 
 The status audit contains 118 PGTK capability rows: 21 Degraded, 97 Pending,
 0 Blocked, and 0 fully Implemented. A Degraded row always identifies both the

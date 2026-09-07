@@ -2425,13 +2425,24 @@ Review gates:
 
 Goal: prove the documented performance improvement.
 
+Status: W14-a complete. `proto-ui-bench` is an opt-in, adapter-only baseline.
+It covers EUP `FRAME_UPDATE` encoding, envelope/payload decode and validation,
+fresh `frontend.Scene.apply`, atomic `CaptureService` encoding, and bounded
+memory-sink sending on deterministic 960x600, 30-row fixtures. It reports
+monotonic latency percentiles, throughput, byte volume, allocation counts,
+iteration/warmup counts, build mode, and EUP version as machine-readable JSON.
+It intentionally remains outside `proto-ui-boundary` so timing cannot make the
+compatibility gate flaky. Frame creation, typing, scroll, resize, faces, fonts,
+images, widgets, multi-frame, renderer tiers, and optimization work remain
+W14 follow-up work.
+
 Tasks:
 
-1. Add machine-readable benchmark harness.
+1. Add machine-readable benchmark harness. *(W14-a covers the adapter memory-transport baseline.)*
 2. Benchmark frame creation, typing, scroll, resize, faces, fonts, images, widgets, and multi-frame.
-3. Add allocation counters.
-4. Add bandwidth counters.
-5. Add latency percentiles.
+3. Add allocation counters. *(W14-a records measurable per-operation allocation counts.)*
+4. Add bandwidth counters. *(W14-a records bytes/op and MiB/s for adapter paths.)*
+5. Add latency percentiles. *(W14-a records p50/p95/p99 and mean.)*
 6. Tune damage merging.
 7. Tune glyph atlas.
 8. Tune transport slab reuse.
@@ -2443,7 +2454,10 @@ Acceptance:
 zig build -Dproto-ui=true proto-ui-bench
 ```
 
-The benchmark must meet `performance.md` targets and preserve results as evidence.
+The W14-a baseline acceptance is the command above; its `result` proves only
+that all requested operations completed and the report values validated. Full
+W14 acceptance additionally requires the remaining workloads to meet
+`performance.md` targets and retain comparative evidence.
 
 Review gates:
 
@@ -2559,7 +2573,6 @@ Planned steps:
 ```sh
 zig build -Dproto-ui=true proto-ui-roundtrip
 zig build -Dproto-ui=true proto-ui-replay-test
-zig build -Dproto-ui=true proto-ui-bench
 zig build -Dproto-ui=true proto-ui-diff
 zig build -Dproto-ui=true proto-ui-live-recovery-test
 ```
@@ -2581,7 +2594,7 @@ Step names may be adjusted during W1/W2, but each listed verification must have 
 | Protocol schema examples | Done (adapter-only) |
 | User runbook | Done for current bounded smoke scope; update with each runtime milestone |
 | Output-proto runtime bridge and first-frame task split | Done as normative design; implementation gated by the host extension contract |
-| Troubleshooting guide | Pending W13 |
+| Troubleshooting guide | Pending final runtime/interactive milestone |
 | Final capability status report | Pending W12/W16 |
 
 ## 6. Risk register

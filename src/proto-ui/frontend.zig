@@ -154,10 +154,10 @@ pub const WheelInput = struct {
     }
 };
 
-const window_record_size: usize = 40;
-const row_record_size: usize = 56;
-const cursor_record_size: usize = 56;
-const damage_record_size: usize = 16;
+pub const window_record_size: usize = 40;
+pub const row_record_size: usize = 56;
+pub const cursor_record_size: usize = 56;
+pub const damage_record_size: usize = 16;
 const present_record_size: usize = 16;
 const max_text_columns: usize = 120;
 const resource_record_size: usize = 16;

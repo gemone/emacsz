@@ -65,6 +65,7 @@ pub const Feature = enum {
     policy_host_registration_contract,
     protocol_fuzz_hardening,
     recovery_differential_gate,
+    performance_adapter_hotpath_benchmark,
 
     pub fn name(self: Feature) []const u8 {
         return switch (self) {
@@ -98,6 +99,7 @@ pub const Feature = enum {
             .policy_host_registration_contract => "policy.host_registration_contract",
             .protocol_fuzz_hardening => "protocol.fuzz_hardening",
             .recovery_differential_gate => "recovery.differential_gate",
+            .performance_adapter_hotpath_benchmark => "performance.adapter_hotpath_benchmark",
         };
     }
 
@@ -121,6 +123,7 @@ pub const Feature = enum {
             .policy_host_registration_contract => false,
             .protocol_fuzz_hardening => false,
             .recovery_differential_gate => false,
+            .performance_adapter_hotpath_benchmark => false,
             .host_frame_state_seam => false,
             else => true,
         };
@@ -164,6 +167,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .policy_host_registration_contract, .status = .degraded, .evidence = "proto-ui-host-contract" },
     .{ .feature = .protocol_fuzz_hardening, .status = .degraded, .evidence = "proto-ui-fuzz" },
     .{ .feature = .recovery_differential_gate, .status = .degraded, .evidence = "proto-ui-recovery-diff" },
+    .{ .feature = .performance_adapter_hotpath_benchmark, .status = .degraded, .evidence = "proto-ui-bench" },
 };
 
 pub const feature_count = @typeInfo(Feature).@"enum".fields.len;

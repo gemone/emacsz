@@ -547,6 +547,25 @@ pub fn build(b: *std.Build) void {
         );
         recovery_diff_step.dependOn(&run_recovery_diff.step);
 
+        // W14-a: hot-path evidence is opt-in.  Timing is intentionally kept
+        // out of the boundary gate so slow or noisy machines cannot fail the
+        // adapter compatibility suite.
+        const bench_tool = b.addExecutable(.{
+            .name = "proto-ui-bench",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/bench.zig"),
+            }),
+        });
+        const run_bench = b.addRunArtifact(bench_tool);
+        const bench_step = b.step(
+            "proto-ui-bench",
+            "Run opt-in adapter hot-path benchmark evidence",
+        );
+        bench_step.dependOn(&run_bench.step);
+        if (b.args) |bench_args| run_bench.addArgs(bench_args);
+
         // R3: compile generated C directly in the build graph and test it
         // through the tracked Zig host harness.  No generated C is copied
         // into tracked inherited source.
@@ -5683,6 +5702,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true proto-ui-shim-library-conformance - dlopen ABI/export tests
         \\  zig build -Dproto-ui=true proto-ui-fuzz - deterministic bounded EUP protocol fuzzing
         \\  zig build -Dproto-ui=true proto-ui-recovery-diff - replay/recovery differential gate
+        \\  zig build -Dproto-ui=true proto-ui-bench - opt-in adapter hot-path benchmark evidence
         \\
         \\  zig build -Dproto-ui=true proto-ui-host-contract - pending registration decision audit
         \\  zig build -Dproto-ui=true proto-ui-runtime-manifest - fail-closed runtime manifest audit
