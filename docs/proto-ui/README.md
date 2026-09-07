@@ -95,6 +95,16 @@ timing are excluded from digest input.  The Zig gate validates the full matrix
 and recomputes every digest.  This remains evidence about existing Emacs
 semantics only, not `output_proto`, proto frames, or complete PGTK parity.
 
+W15-c adds `proto-ui-isolation-audit`, a deterministic disabled/default gate.
+It scans inherited C/Header/Lisp files and generated `src/config.h`, when
+present, for exact `output_proto`, `proto_ui`, and `proto-ui` markers; config
+also checks `HAVE_PROTO_UI`.  Occurrences are reported even in comments.  The
+scanner skips binaries, bounds file and count resources, and excludes
+`src/proto-ui`, `test/proto-ui`, `tools/proto-ui-*`, docs, and build outputs.
+The JSON report records the fail-closed runtime state and the source-owned
+exclusions.  A marker, config finding, or oversized unreviewed text file fails
+the gate.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and
@@ -205,6 +215,7 @@ zig build -Dproto-ui=true proto-ui-boundary
 zig build -Dproto-ui=true proto-ui-fuzz
 zig build -Dproto-ui=true proto-ui-recovery-diff
 zig build -Dproto-ui=true proto-ui-crash-isolation
+zig build -Dproto-ui=true proto-ui-isolation-audit
 
 # Build the independent SDL3 frontend.
 zig build -Dproto-ui=true -Dsdl3-frontend=true

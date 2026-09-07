@@ -117,6 +117,9 @@ zig-out/proto-ui/
    no forbidden mechanism.
 8. **Optional integration.**  Attach the adapter to an existing stable Emacs
    extension point.  If no stable point exists, mark the feature unavailable.
+9. **Disabled/default audit.**  `proto-ui-isolation-audit` proves that the
+   inherited sources and generated configuration carry no runtime adapter
+   markers while owned roots and build outputs remain excluded.
 
 ### 4.3 Generated shim rules
 
@@ -357,6 +360,7 @@ zig build -Dproto-ui=true proto-ui-boundary --summary all
 zig build -Dproto-ui=true proto-ui-fuzz --summary all
 zig build -Dproto-ui=true proto-ui-recovery-diff --summary all
 zig build -Dproto-ui=true proto-ui-crash-isolation --summary all
+zig build -Dproto-ui=true proto-ui-isolation-audit --summary all
 # Optional timing evidence; deliberately not a boundary dependency:
 zig build -Dproto-ui=true proto-ui-bench --summary all
 # Opt-in existing-Emacs health evidence; requires a dumped Emacs:
@@ -390,10 +394,14 @@ The boundary report must show:
    with opt-in `proto-ui-compat` evidence; its deterministic TTY/PGTK matrix is
    signature-checked but does not enable or claim `output_proto`.
 11. `protocol.frontend_crash_isolation` reports degraded/non-negotiable with
-   `proto-ui-crash-isolation` evidence. Its 24-case corpus is deterministic
-   and bounded; 23 cases must be handled cleanly and exactly one controlled
-   frontend child may exit nonzero. The gate proves frontend process isolation
-   only and keeps the runtime fail closed.
+    `proto-ui-crash-isolation` evidence. Its 24-case corpus is deterministic
+    and bounded; 23 cases must be handled cleanly and exactly one controlled
+    frontend child may exit nonzero. The gate proves frontend process isolation
+    only and keeps the runtime fail closed.
+12. `isolation.disabled_default_gate` reports degraded/non-negotiable with
+    `proto-ui-isolation-audit` evidence. Its JSON must report
+    `runtime_available:false`, `terminal_registered:false`, zero inherited and
+    config markers, and `result:"pass"`.
 
 ## 10. Definition of done
 

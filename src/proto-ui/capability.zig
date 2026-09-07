@@ -75,6 +75,7 @@ pub const Feature = enum {
     performance_adapter_hotpath_benchmark,
     compatibility_pgtk_base_gate,
     compatibility_backend_semantic_matrix,
+    isolation_disabled_default_gate,
 
     pub fn name(self: Feature) []const u8 {
         return switch (self) {
@@ -118,6 +119,7 @@ pub const Feature = enum {
             .performance_adapter_hotpath_benchmark => "performance.adapter_hotpath_benchmark",
             .compatibility_pgtk_base_gate => "compatibility.pgtk_base_gate",
             .compatibility_backend_semantic_matrix => "compatibility.backend_semantic_matrix",
+            .isolation_disabled_default_gate => "isolation.disabled_default_gate",
         };
     }
 
@@ -158,6 +160,7 @@ pub const Feature = enum {
             .performance_adapter_hotpath_benchmark => false,
             .compatibility_pgtk_base_gate => false,
             .compatibility_backend_semantic_matrix => false,
+            .isolation_disabled_default_gate => false,
             .host_frame_state_seam => false,
             else => true,
         };
@@ -211,6 +214,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .performance_adapter_hotpath_benchmark, .status = .degraded, .evidence = "proto-ui-bench" },
     .{ .feature = .compatibility_pgtk_base_gate, .status = .degraded, .evidence = "proto-ui-compat" },
     .{ .feature = .compatibility_backend_semantic_matrix, .status = .degraded, .evidence = "proto-ui-compat" },
+    .{ .feature = .isolation_disabled_default_gate, .status = .degraded, .evidence = "proto-ui-isolation-audit" },
 };
 
 pub const feature_count = @typeInfo(Feature).@"enum".fields.len;

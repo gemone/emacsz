@@ -16,6 +16,7 @@ pub const host_contract = @import("host_contract.zig");
 pub const fuzz = @import("fuzz.zig");
 pub const recovery_diff = @import("recovery_diff.zig");
 pub const crash_isolation = @import("crash_isolation.zig");
+pub const isolation_audit = @import("isolation_audit.zig");
 
 test {
     _ = protocol;
@@ -36,4 +37,5 @@ test {
     _ = fuzz;
     _ = recovery_diff;
     _ = crash_isolation;
+    _ = isolation_audit;
 }

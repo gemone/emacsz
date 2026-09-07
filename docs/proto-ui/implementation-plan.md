@@ -2601,9 +2601,10 @@ Review gates:
 
 Goal: prove “fully compatible with existing Emacs capabilities” within the declared capability matrix.
 
-Status: W15-a and W15-b complete as bounded base/PGTK health evidence with a
-deterministic TTY/PGTK semantic matrix.  They do **not** prove proto-frame
-compatibility, `output_proto`, or complete PGTK parity.
+Status: W15-a, W15-b, and W15-c complete as bounded base/PGTK health evidence,
+a deterministic TTY/PGTK semantic matrix, and a disabled/default isolation
+audit.  They do **not** prove proto-frame compatibility, `output_proto`, or
+complete PGTK parity.
 
 Tasks:
 
@@ -2629,6 +2630,8 @@ Tasks:
    cursor, scroll, and frames.
 9. Verify existing Lisp APIs on proto frames.
 10. Verify proto removal/disabled state leaves no runtime trace.
+    *(W15-c covers a static working-tree/generated-config isolation audit; it
+    does not exercise a compiled runtime toggle.)*
 11. Document every deliberate degradation.
 
 Acceptance:
@@ -2639,6 +2642,7 @@ zig build -Dpgtk=true check
 zig build -Dproto-ui=true check
 zig build -Dproto-ui=true proto-ui-diff
 zig build -Dproto-ui=true proto-ui-compat
+zig build -Dproto-ui=true proto-ui-isolation-audit
 ```
 
 `proto-ui-compat` passes only when every non-skipped scenario passes.  It is
@@ -2647,12 +2651,20 @@ source-authoritative capability descriptors are
 `compatibility.pgtk_base_gate` and `compatibility.backend_semantic_matrix`:
 degraded, non-negotiable, evidence `proto-ui-compat`.  The semantic matrix
 covers existing TTY and PGTK behavior only and does not define a proto frame.
+W15-c adds `isolation.disabled_default_gate`: degraded, non-negotiable,
+evidence `proto-ui-isolation-audit`.
 
 Review gates:
 
 1. Default-build compatibility.
 2. Existing backend isolation.
 3. Emacs semantic correctness.
+
+W15-c review gates:
+
+1. Scanner/path coverage and false-positive control.
+2. Deterministic JSON and resource bounds.
+3. Build/regression/status accuracy.
 
 ### W16 — Final real SDL3 acceptance
 

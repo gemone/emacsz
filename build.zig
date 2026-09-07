@@ -566,6 +566,35 @@ pub fn build(b: *std.Build) void {
         );
         recovery_diff_step.dependOn(&run_recovery_diff.step);
 
+        // W15-c: audit the inherited/default configuration for accidental
+        // Proto-UI runtime integration.  Owned adapter roots and build
+        // artifacts are deliberately excluded; findings fail closed.
+        const isolation_audit_tool = b.addExecutable(.{
+            .name = "proto-ui-isolation-audit",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/isolation_audit.zig"),
+            }),
+        });
+        const run_isolation_audit = b.addRunArtifact(isolation_audit_tool);
+        // The scanner reads the working tree outside the normal compile graph;
+        // a cached executable must not hide a newly integrated runtime marker.
+        run_isolation_audit.has_side_effects = true;
+        const isolation_audit_manifest = run_isolation_audit.addOutputFileArg(
+            "isolation_audit.json",
+        );
+        const install_isolation_audit = b.addInstallFile(
+            isolation_audit_manifest,
+            "proto-ui/isolation_audit.json",
+        );
+        const isolation_audit_step = b.step(
+            "proto-ui-isolation-audit",
+            "Audit inherited C/Header/Lisp and generated config for forbidden Proto-UI runtime markers",
+        );
+        isolation_audit_step.dependOn(&run_isolation_audit.step);
+        isolation_audit_step.dependOn(&install_isolation_audit.step);
+
         // W14-a: hot-path evidence is opt-in.  Timing is intentionally kept
         // out of the boundary gate so slow or noisy machines cannot fail the
         // adapter compatibility suite.
@@ -740,6 +769,7 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&run_fuzz.step);
         boundary_step.dependOn(&run_crash_isolation.step);
         boundary_step.dependOn(&run_recovery_diff.step);
+        boundary_step.dependOn(&run_isolation_audit.step);
 
         // R7: the host registration decision is source-authoritative policy.
         // Pending is valid, but it neither approves integration nor enables
@@ -5767,6 +5797,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true proto-ui-fuzz - deterministic bounded EUP protocol fuzzing
         \\  zig build -Dproto-ui=true proto-ui-recovery-diff - replay/recovery differential gate
         \\  zig build -Dproto-ui=true proto-ui-bench - opt-in adapter hot-path benchmark evidence
+        \\  zig build -Dproto-ui=true proto-ui-isolation-audit - disabled/default runtime isolation audit
         \\
         \\  zig build -Dproto-ui=true proto-ui-host-contract - pending registration decision audit
         \\  zig build -Dproto-ui=true proto-ui-runtime-manifest - fail-closed runtime manifest audit
