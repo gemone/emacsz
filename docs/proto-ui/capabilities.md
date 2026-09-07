@@ -420,6 +420,15 @@ A capability row is complete only when:
 7. Failure cannot crash Emacs.
 8. Implementation status is recorded.
 
+The base compatibility gate checks existing Emacs behavior only.  It runs
+isolated batch scenarios for identity, buffer text and undo, point/mark and
+narrowing, text/overlay properties, face definition/readback, window split and
+delete, resize/scroll/recenter, and buffer-local variables.  When
+`DISPLAY`/`WAYLAND_DISPLAY` is present it creates one real PGTK frame, repeats
+the window/scroll/face checks there, deletes the frame, and verifies cleanup.
+Without a display the PGTK scenarios are explicit skips, never passes disguised
+as GUI evidence.
+
 ## 12. Current implementation evidence
 
 Base snapshot: `zig-build-step-4` through `8bebccada16` plus the W12d state
@@ -436,6 +445,7 @@ parity.
 | Input | Bounded ASCII insert/delete, arrows, Ctrl+C/Ctrl+V, left pointer sessions, vertical wheel | Full keymaps, Unicode/IME, focus, selection drag, pixel/horizontal scroll | `sdl3-input-translate-smoke`, `sdl3-epxl-input-smoke`, `sdl3-epxl-edit-smoke`, `sdl3-pointer-smoke`, `sdl3-wheel-smoke` |
 | Desktop | Bounded ASCII clipboard paste/copy | Unicode, MIME, PRIMARY/SECONDARY selection, DND, dialogs, menus, scrollbars | `sdl3-clipboard-smoke`, `sdl3-emacs-copy-smoke` |
 | Performance | Change-aware present/skip, damage-class counters, clip counters, renderer tier reporting, opt-in adapter hot-path baseline for EUP encode/decode, Scene application, atomic capture, and bounded memory send | Latency percentiles, bandwidth/allocation evidence, real redisplay/typing/scroll benchmarks, GPU-tier comparisons | `proto-ui-bench` (opt-in), renderer/interactive smoke diagnostics; W14 remains partial |
+| Base Emacs compatibility | Existing-buffer health gate for version, text/undo, narrowing, properties, faces, windows, scroll/recenter, buffer locals, and optional real PGTK frame lifecycle | Proto-frame compatibility and full PGTK parity | `proto-ui-compat` (opt-in); `compatibility.pgtk_base_gate` is degraded and non-negotiable |
 
 The status audit contains 118 PGTK capability rows: 21 Degraded, 97 Pending,
 0 Blocked, and 0 fully Implemented. A Degraded row always identifies both the

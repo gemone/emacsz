@@ -358,6 +358,8 @@ zig build -Dproto-ui=true proto-ui-fuzz --summary all
 zig build -Dproto-ui=true proto-ui-recovery-diff --summary all
 # Optional timing evidence; deliberately not a boundary dependency:
 zig build -Dproto-ui=true proto-ui-bench --summary all
+# Opt-in existing-Emacs health evidence; requires a dumped Emacs:
+zig build -Dproto-ui=true proto-ui-compat --summary all
 zig build -Dproto-ui=true proto-ui-conformance --summary all
 zig build -Dproto-ui=true proto-ui-shim-library --summary all
 zig build -Dproto-ui=true proto-ui-shim-library-conformance --summary all
@@ -379,6 +381,9 @@ The boundary report must show:
 8. `performance.adapter_hotpath_benchmark` reports degraded/non-negotiable
    with opt-in `proto-ui-bench` evidence; benchmark timing is never a pass/fail
    boundary gate.
+9. `compatibility.pgtk_base_gate` reports degraded/non-negotiable with opt-in
+   `proto-ui-compat` evidence; it validates existing Emacs health only and
+   does not enable or claim `output_proto`.
 
 ## 10. Definition of done
 

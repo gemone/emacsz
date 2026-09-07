@@ -2469,15 +2469,29 @@ Review gates:
 
 Goal: prove “fully compatible with existing Emacs capabilities” within the declared capability matrix.
 
+Status: W15-a complete as a bounded base/PGTK health gate.  It does **not**
+prove proto-frame compatibility, `output_proto`, or complete PGTK parity.
+
 Tasks:
 
-1. Run default build and existing tests.
-2. Run PGTK build and GUI smoke tests.
-3. Run proto UI differential smoke suite.
-4. Compare TTY/PGTK/proto redisplay semantics for text, windows, faces, cursor, scroll, and frames.
-5. Verify existing Lisp APIs on proto frames.
-6. Verify proto removal/disabled state leaves no runtime trace.
-7. Document every deliberate degradation.
+1. Add an isolated batch gate that runs the installed Emacs without user,
+   site, X-resource, or site-lisp initialization. *(W15-a.)*
+2. Exercise identity/version, buffer text and undo, point/mark and narrowing,
+   text properties and overlay faces, face definition/readback, window
+   split/select/delete, resize/scroll/recenter, and buffer-local variables.
+   *(W15-a.)*
+3. On a graphical host, create one real PGTK frame, run window/scroll/face
+   checks there, delete it, and verify cleanup. *(W15-a.)*
+4. Without a display, emit explicit PGTK skips and still run backend-safe
+   scenarios. *(W15-a.)*
+5. Emit one machine-readable report with per-scenario details and no writable
+   repository files. *(W15-a.)*
+6. Run proto UI differential smoke suite.
+7. Compare TTY/PGTK/proto redisplay semantics for text, windows, faces,
+   cursor, scroll, and frames.
+8. Verify existing Lisp APIs on proto frames.
+9. Verify proto removal/disabled state leaves no runtime trace.
+10. Document every deliberate degradation.
 
 Acceptance:
 
@@ -2486,9 +2500,14 @@ zig build check
 zig build -Dpgtk=true check
 zig build -Dproto-ui=true check
 zig build -Dproto-ui=true proto-ui-diff
+zig build -Dproto-ui=true proto-ui-compat
 ```
 
-Existing capabilities must remain green. Proto-specific gaps must be explicit and non-breaking.
+`proto-ui-compat` passes only when every non-skipped scenario passes.  It is
+bounded and deterministic; no elapsed time participates in pass/fail.  The
+source-authoritative capability descriptor is
+`compatibility.pgtk_base_gate`: degraded, non-negotiable, evidence
+`proto-ui-compat`.
 
 Review gates:
 

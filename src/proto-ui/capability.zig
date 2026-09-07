@@ -66,6 +66,7 @@ pub const Feature = enum {
     protocol_fuzz_hardening,
     recovery_differential_gate,
     performance_adapter_hotpath_benchmark,
+    compatibility_pgtk_base_gate,
 
     pub fn name(self: Feature) []const u8 {
         return switch (self) {
@@ -100,6 +101,7 @@ pub const Feature = enum {
             .protocol_fuzz_hardening => "protocol.fuzz_hardening",
             .recovery_differential_gate => "recovery.differential_gate",
             .performance_adapter_hotpath_benchmark => "performance.adapter_hotpath_benchmark",
+            .compatibility_pgtk_base_gate => "compatibility.pgtk_base_gate",
         };
     }
 
@@ -124,6 +126,7 @@ pub const Feature = enum {
             .protocol_fuzz_hardening => false,
             .recovery_differential_gate => false,
             .performance_adapter_hotpath_benchmark => false,
+            .compatibility_pgtk_base_gate => false,
             .host_frame_state_seam => false,
             else => true,
         };
@@ -168,6 +171,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .protocol_fuzz_hardening, .status = .degraded, .evidence = "proto-ui-fuzz" },
     .{ .feature = .recovery_differential_gate, .status = .degraded, .evidence = "proto-ui-recovery-diff" },
     .{ .feature = .performance_adapter_hotpath_benchmark, .status = .degraded, .evidence = "proto-ui-bench" },
+    .{ .feature = .compatibility_pgtk_base_gate, .status = .degraded, .evidence = "proto-ui-compat" },
 };
 
 pub const feature_count = @typeInfo(Feature).@"enum".fields.len;

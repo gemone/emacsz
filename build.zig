@@ -400,6 +400,7 @@ pub fn build(b: *std.Build) void {
     if (enable_proto_ui_runtime and !enable_proto_ui) {
         @panic("host_registration_contract_missing: -Dproto-ui-runtime=true requires -Dproto-ui=true; runtime remains unavailable");
     }
+    var proto_compat_dep: ?*std.Build.Step = null;
 
     // Target-derived flags.  `target` is resolved at line 64, so target.result
     // is in scope here; computing these early lets the make-docfile / doc-scan
@@ -565,6 +566,45 @@ pub fn build(b: *std.Build) void {
         );
         bench_step.dependOn(&run_bench.step);
         if (b.args) |bench_args| run_bench.addArgs(bench_args);
+
+        // W15-a: validate the *existing* Emacs runtime, not Proto-UI
+        // enablement.  The invocation is isolated from user and site
+        // initialization; the tracked Lisp emits one JSON report and exits
+        // nonzero if any scenario fails.
+        const run_compat = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs",
+            "--batch",
+            "--no-init-file",
+            "--no-site-file",
+            "--no-x-resources",
+            "--no-site-lisp",
+            "--no-splash",
+            "-l",
+            "test/proto-ui/compat.el",
+            "-f",
+            "proto-ui-compat-run",
+        });
+        run_compat.setCwd(b.path("."));
+        const compat_stdout = run_compat.captureStdOut(.{
+            .basename = "proto-ui-compat-report.json",
+            .trim_whitespace = .all,
+        });
+        const compat_gate_tool = b.addExecutable(.{
+            .name = "proto-ui-compat-runner",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/compat_runner.zig"),
+            }),
+        });
+        const run_compat_gate = b.addRunArtifact(compat_gate_tool);
+        run_compat_gate.addFileArg(compat_stdout);
+        proto_compat_dep = &run_compat_gate.step;
+        const compat_step = b.step(
+            "proto-ui-compat",
+            "Run the isolated base/PGTK Emacs compatibility gate",
+        );
+        compat_step.dependOn(&run_compat_gate.step);
 
         // R3: compile generated C directly in the build graph and test it
         // through the tracked Zig host harness.  No generated C is copied
@@ -4959,6 +4999,10 @@ pub fn build(b: *std.Build) void {
     const smoke_step = b.step("smoke", "Verify the dumped emacs starts and evaluates Lisp");
     smoke_step.dependOn(&run_smoke.step);
     if (proto_module_smoke_dep) |step| step.dependOn(&run_smoke.step);
+    if (proto_compat_dep) |step| {
+        step.dependOn(&run_smoke.step);
+        step.dependOn(emacs_wrapper_step);
+    }
 
     // `check` step: run a broad set of built-in ert test suites with the
     // dumped emacs (582 tests across 40 suites today: alloc, version,
