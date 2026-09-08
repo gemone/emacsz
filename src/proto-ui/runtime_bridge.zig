@@ -21,12 +21,15 @@ pub const Error = runtime_host.Error || frontend.Error || protocol.Error ||
         DuplicateRun,
         DuplicateFace,
         DuplicateFont,
+        DuplicateImage,
         DuplicateCursor,
         TooManyWindows,
         TooManyRows,
         TooManyRuns,
         TooManyFaces,
         TooManyFonts,
+        TooManyImages,
+        TooManyImageBytes,
         TooManyCursors,
         TooManyDamage,
         DuplicateInput,
@@ -39,6 +42,10 @@ pub const max_rows: usize = 32;
 pub const max_runs: usize = 64;
 pub const max_faces: usize = 8;
 pub const max_fonts: usize = 8;
+pub const max_images: usize = 4;
+pub const max_image_capture_bytes: usize = 4096;
+pub const max_image_capture_fragments: u16 = 4;
+pub const max_image_capture_fragment_bytes: usize = 1024;
 pub const max_cursors: usize = 4;
 pub const max_damage: usize = 32;
 pub const max_tracked_inputs: usize = 16;
@@ -112,6 +119,7 @@ pub const Counts = struct {
     runs: usize = 0,
     faces: usize = 0,
     fonts: usize = 0,
+    images: usize = 0,
     cursors: usize = 0,
     damage: usize = 0,
 };
@@ -122,6 +130,16 @@ pub const RenderHintRequest = struct {
     damage_only_allowed: bool = false,
     refresh_interval_ns: u64 = 0,
     deadline_ns: u64 = 0,
+};
+
+pub const ImageCapture = struct {
+    metadata: protocol.ImageDefine,
+    fragment_count: u16 = 0,
+    bytes: [max_image_capture_bytes]u8 = undefined,
+    fragment_lengths: [max_image_capture_fragments]usize = [_]usize{0} ** max_image_capture_fragments,
+    bytes_received: usize = 0,
+    fragments_received: u16 = 0,
+    complete: bool = false,
 };
 
 pub const Bridge = struct {
@@ -138,6 +156,7 @@ pub const Bridge = struct {
     runs: [max_runs]runtime_host.RunRecord = undefined,
     faces: [max_faces]protocol.FaceDefine = undefined,
     fonts: [max_fonts]protocol.FontDefine = undefined,
+    images: [max_images]ImageCapture = undefined,
     cursors: [max_cursors]runtime_host.CursorRecord = undefined,
     damage: [max_damage]runtime_host.DamageRecord = undefined,
     counts: Counts = .{},
@@ -349,6 +368,56 @@ pub const Bridge = struct {
         try runtime_host.ensureOk(callback(context, &self.capture, &record));
         self.fonts[self.counts.fonts] = font;
         self.counts.fonts += 1;
+    }
+
+    pub fn observeImageDefine(self: *Bridge, record: runtime_host.ImageDefineRecord) Error!void {
+        try self.requireState(.capturing);
+        try runtime_host.validateImageDefineRecord(&record);
+        const metadata = try protocol.decodeImageDefine(&record.bytes);
+        if (metadata.total_byte_count > max_image_capture_bytes)
+            return error.TooManyImageBytes;
+        if (self.counts.images == max_images) return error.TooManyImages;
+        for (self.images[0..self.counts.images]) |existing| {
+            if (existing.metadata.image_id == metadata.image_id)
+                return error.DuplicateImage;
+        }
+        const group = try self.redisplayGroup();
+        const context = group.context orelse return error.InvalidRuntimeHost;
+        const callback = group.observe_image_define orelse return error.InvalidRuntimeHost;
+        try runtime_host.ensureOk(callback(context, &self.capture, &record));
+        self.images[self.counts.images] = .{ .metadata = metadata };
+        self.counts.images += 1;
+    }
+
+    pub fn observeImageFragment(self: *Bridge, record: runtime_host.ImageFragmentRecord) Error!void {
+        try self.requireState(.capturing);
+        try runtime_host.validateImageFragmentRecord(&record);
+        var index: ?usize = null;
+        for (self.images[0..self.counts.images], 0..) |*image, candidate| {
+            if (image.metadata.image_id == record.image_id) index = candidate;
+        }
+        const image_index = index orelse return error.InvalidState;
+        const image = &self.images[image_index];
+        if (image.complete or image.metadata.generation != record.generation or
+            (image.fragment_count != 0 and record.fragment_count != image.fragment_count) or
+            record.fragment_index != image.fragments_received or
+            image.bytes_received + record.byte_length > image.metadata.total_byte_count)
+            return error.InvalidState;
+        const group = try self.redisplayGroup();
+        const context = group.context orelse return error.InvalidRuntimeHost;
+        const callback = group.observe_image_fragment orelse return error.InvalidRuntimeHost;
+        const expected_count = if (image.fragment_count == 0) record.fragment_count else image.fragment_count;
+        try runtime_host.ensureOk(callback(context, &self.capture, &record));
+        image.fragment_count = expected_count;
+        @memcpy(
+            image.bytes[image.bytes_received..][0..record.byte_length],
+            record.bytes[0..record.byte_length],
+        );
+        image.bytes_received += record.byte_length;
+        image.fragment_lengths[record.fragment_index] = record.byte_length;
+        image.fragments_received += 1;
+        image.complete = image.bytes_received == image.metadata.total_byte_count and
+            image.fragments_received == image.fragment_count;
     }
 
     pub fn observeCursor(self: *Bridge, record: runtime_host.CursorRecord) Error!void {
@@ -874,6 +943,69 @@ pub const Bridge = struct {
         }, payload.items, out);
     }
 
+    pub fn encodeImageDefine(
+        self: *const Bridge,
+        gpa: std.mem.Allocator,
+        image_index: usize,
+        sequence: u64,
+        session_id: u64,
+        timestamp_ns: u64,
+        out: *std.ArrayList(u8),
+    ) Error!void {
+        try self.requireState(.captured);
+        if (image_index >= self.counts.images) return error.InvalidState;
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(gpa);
+        try protocol.encodeImageDefine(gpa, self.images[image_index].metadata, &payload);
+        try protocol.encodeEnvelope(gpa, .{
+            .flags = 0,
+            .message_type = protocol.Message.image_define,
+            .sequence = sequence,
+            .ack_sequence = 0,
+            .session_id = session_id,
+            .frame_id = @intCast(self.frame.id),
+            .timestamp_ns = timestamp_ns,
+        }, payload.items, out);
+    }
+
+    pub fn encodeImageFragment(
+        self: *const Bridge,
+        gpa: std.mem.Allocator,
+        image_index: usize,
+        fragment_index: u16,
+        sequence: u64,
+        session_id: u64,
+        timestamp_ns: u64,
+        out: *std.ArrayList(u8),
+    ) Error!void {
+        try self.requireState(.captured);
+        if (image_index >= self.counts.images) return error.InvalidState;
+        const image = self.images[image_index];
+        if (fragment_index >= image.fragment_count) return error.InvalidState;
+        const length = image.fragment_lengths[fragment_index];
+        if (length == 0) return error.InvalidState;
+        var offset: usize = 0;
+        for (image.fragment_lengths[0..fragment_index]) |prior| offset += prior;
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(gpa);
+        try protocol.encodeImageData(gpa, .{
+            .image_id = image.metadata.image_id,
+            .generation = image.metadata.generation,
+            .fragment_index = fragment_index,
+            .fragment_count = image.fragments_received,
+            .bytes = image.bytes[offset..][0..length],
+        }, &payload);
+        try protocol.encodeEnvelope(gpa, .{
+            .flags = 0,
+            .message_type = protocol.Message.image_data,
+            .sequence = sequence,
+            .ack_sequence = 0,
+            .session_id = session_id,
+            .frame_id = @intCast(self.frame.id),
+            .timestamp_ns = timestamp_ns,
+        }, payload.items, out);
+    }
+
     fn findFace(self: *const Bridge, face_id: u32) ?protocol.FaceDefine {
         for (self.faces[0..self.counts.faces]) |face| {
             if (face.face_id == face_id) return face;
@@ -1303,6 +1435,54 @@ test "runtime bridge validates captured font-backed faces" {
     try bridge.observeFace(.{ .bytes = face });
     try std.testing.expectEqual(@as(usize, 1), bridge.counts.fonts);
     try std.testing.expectEqual(@as(usize, 1), bridge.counts.faces);
+}
+
+test "runtime bridge captures and validates bounded image fragments" {
+    var host: runtime_host.FakeHost = undefined;
+    const table = runtime_host.fakeTable(&host);
+    var bridge = try Bridge.init(table);
+    try bridge.createTerminal(.{ .requested_generation = 1 });
+    try bridge.activateTerminal();
+    try bridge.registerFrame(.{ .id = 22, .generation = 1 });
+    _ = try bridge.refreshFrameGeometry();
+    try bridge.beginCapture(1);
+
+    const metadata_bytes = try protocol.encodeImageDefineBytes(.{
+        .image_id = 31,
+        .generation = 1,
+        .width = 4,
+        .height = 4,
+        .total_byte_count = 64,
+        .cache_policy = .pinned,
+    });
+    try bridge.observeImageDefine(.{ .bytes = metadata_bytes });
+    try std.testing.expectError(error.DuplicateImage, bridge.observeImageDefine(.{ .bytes = metadata_bytes }));
+
+    var fragment: runtime_host.ImageFragmentRecord = .{
+        .image_id = 31,
+        .generation = 1,
+        .fragment_index = 0,
+        .fragment_count = 1,
+        .byte_length = 64,
+    };
+    for (fragment.bytes[0..64], 0..) |*byte, index| byte.* = @truncate(index * 7 + 9);
+    try bridge.observeImageFragment(fragment);
+    try std.testing.expect(bridge.images[0].complete);
+
+    const observations_before = host.observations;
+    const counts_before = bridge.snapshotCounts();
+    try std.testing.expectError(error.InvalidState, bridge.observeImageFragment(fragment));
+    try std.testing.expectEqual(observations_before, host.observations);
+    try std.testing.expectEqual(counts_before, bridge.snapshotCounts());
+
+    const oversized = try protocol.encodeImageDefineBytes(.{
+        .image_id = 32,
+        .generation = 1,
+        .width = 33,
+        .height = 33,
+        .total_byte_count = 4356,
+    });
+    try std.testing.expectError(error.TooManyImageBytes, bridge.observeImageDefine(.{ .bytes = oversized }));
 }
 
 test "runtime bridge rejects stale run face before host observation" {

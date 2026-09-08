@@ -140,6 +140,23 @@ pub const FontRecord = extern struct {
     bytes: [224]u8 = [_]u8{0} ** 224,
 };
 
+/// Exact EUP IMAGE_DEFINE wire form carried from the host capture.
+pub const ImageDefineRecord = extern struct {
+    bytes: [72]u8 = [_]u8{0} ** 72,
+};
+
+/// Bounded IMAGE_DATA fragment.  The redisplay seam accepts at most 1024
+/// bytes per fragment and four fragments per image; wire bytes remain exact.
+pub const ImageFragmentRecord = extern struct {
+    image_id: u32 = 0,
+    generation: u32 = 0,
+    fragment_index: u16 = 0,
+    fragment_count: u16 = 0,
+    byte_length: u32 = 0,
+    reserved: u32 = 0,
+    bytes: [1024]u8 = [_]u8{0} ** 1024,
+};
+
 pub const InputEvent = extern struct {
     pub const payload_bytes: usize = 64;
 
@@ -214,6 +231,8 @@ pub const CaptureCursorFn = *const fn (*anyopaque, *const Identity, *const Curso
 pub const CaptureDamageFn = *const fn (*anyopaque, *const Identity, *const DamageRecord) callconv(.c) Status;
 pub const CaptureFaceFn = *const fn (*anyopaque, *const Identity, *const FaceRecord) callconv(.c) Status;
 pub const CaptureFontFn = *const fn (*anyopaque, *const Identity, *const FontRecord) callconv(.c) Status;
+pub const CaptureImageDefineFn = *const fn (*anyopaque, *const Identity, *const ImageDefineRecord) callconv(.c) Status;
+pub const CaptureImageFragmentFn = *const fn (*anyopaque, *const Identity, *const ImageFragmentRecord) callconv(.c) Status;
 pub const CaptureOperationFn = *const fn (*anyopaque, *const Identity) callconv(.c) Status;
 pub const InputDeliverFn = *const fn (*anyopaque, *const InputEvent, *InputAck) callconv(.c) Status;
 pub const InputResultFn = *const fn (*anyopaque, *const InputResult) callconv(.c) Status;
@@ -253,6 +272,8 @@ pub const RedisplayGroupV1 = extern struct {
     observe_damage: ?CaptureDamageFn = null,
     observe_face: ?CaptureFaceFn = null,
     observe_font: ?CaptureFontFn = null,
+    observe_image_define: ?CaptureImageDefineFn = null,
+    observe_image_fragment: ?CaptureImageFragmentFn = null,
     commit_capture: ?CaptureOperationFn = null,
     cancel_capture: ?CaptureOperationFn = null,
 };
@@ -303,6 +324,8 @@ pub const operation_names = [_][]const u8{
     "redisplay.observe_damage",
     "redisplay.observe_face",
     "redisplay.observe_font",
+    "redisplay.observe_image_define",
+    "redisplay.observe_image_fragment",
     "redisplay.commit_capture",
     "redisplay.cancel_capture",
     "input.deliver_event",
@@ -417,6 +440,18 @@ pub fn validateFaceRecord(record: *const FaceRecord) Error!void {
 
 pub fn validateFontRecord(record: *const FontRecord) Error!void {
     _ = protocol.decodeFontDefine(&record.bytes) catch return error.InvalidRuntimeHost;
+}
+
+pub fn validateImageDefineRecord(record: *const ImageDefineRecord) Error!void {
+    _ = protocol.decodeImageDefine(&record.bytes) catch return error.InvalidRuntimeHost;
+}
+
+pub fn validateImageFragmentRecord(record: *const ImageFragmentRecord) Error!void {
+    if (record.image_id == 0 or record.generation == 0 or
+        record.fragment_count == 0 or record.fragment_count > 4 or
+        record.fragment_index >= record.fragment_count or
+        record.byte_length == 0 or record.byte_length > record.bytes.len or
+        record.reserved != 0) return error.InvalidRuntimeHost;
 }
 
 pub fn validateInputEvent(event: *const InputEvent) Error!void {
@@ -711,6 +746,24 @@ pub const FakeHost = struct {
         return .ok;
     }
 
+    fn observeImageDefine(context: *anyopaque, session: *const Identity, record: *const ImageDefineRecord) callconv(.c) Status {
+        const self: *FakeHost = @ptrCast(@alignCast(context));
+        if (invalidIfError(validateImageDefineRecord(record)) != .ok or
+            !self.capture_active or session.id != self.capture.id)
+            return .invalid;
+        self.observations += 1;
+        return .ok;
+    }
+
+    fn observeImageFragment(context: *anyopaque, session: *const Identity, record: *const ImageFragmentRecord) callconv(.c) Status {
+        const self: *FakeHost = @ptrCast(@alignCast(context));
+        if (invalidIfError(validateImageFragmentRecord(record)) != .ok or
+            !self.capture_active or session.id != self.capture.id)
+            return .invalid;
+        self.observations += 1;
+        return .ok;
+    }
+
     fn commitCapture(context: *anyopaque, session: *const Identity) callconv(.c) Status {
         const self: *FakeHost = @ptrCast(@alignCast(context));
         if (!self.capture_active or session.id != self.capture.id) return .invalid;
@@ -782,7 +835,7 @@ pub fn fakeTable(host: *FakeHost) PureRuntimeHostV1 {
     host.* = .{
         .terminal_group = .{ .context = host, .create_terminal = FakeHost.createTerminal, .activate_terminal = FakeHost.activateTerminal, .delete_terminal = FakeHost.deleteTerminal },
         .frame_group = .{ .context = host, .register_frame = FakeHost.registerFrame, .unregister_frame = FakeHost.unregisterFrame, .read_frame_state = FakeHost.readFrameState, .read_geometry = FakeHost.readGeometry },
-        .redisplay_group = .{ .context = host, .begin_capture = FakeHost.beginCapture, .observe_window = FakeHost.observeWindow, .observe_row = FakeHost.observeRow, .observe_run = FakeHost.observeRun, .observe_cursor = FakeHost.observeCursor, .observe_damage = FakeHost.observeDamage, .observe_face = FakeHost.observeFace, .observe_font = FakeHost.observeFont, .commit_capture = FakeHost.commitCapture, .cancel_capture = FakeHost.cancelCapture },
+        .redisplay_group = .{ .context = host, .begin_capture = FakeHost.beginCapture, .observe_window = FakeHost.observeWindow, .observe_row = FakeHost.observeRow, .observe_run = FakeHost.observeRun, .observe_cursor = FakeHost.observeCursor, .observe_damage = FakeHost.observeDamage, .observe_face = FakeHost.observeFace, .observe_font = FakeHost.observeFont, .observe_image_define = FakeHost.observeImageDefine, .observe_image_fragment = FakeHost.observeImageFragment, .commit_capture = FakeHost.commitCapture, .cancel_capture = FakeHost.cancelCapture },
         .input_group = .{ .context = host, .deliver_event = FakeHost.deliverEvent, .deliver_result = FakeHost.deliverResult, .deliver_completion_status = FakeHost.deliverCompletion },
         .lifecycle_group = .{ .context = host, .heartbeat = FakeHost.heartbeat, .flush = FakeHost.flush, .diagnostic = FakeHost.diagnostic, .cancel_all_pending_work = FakeHost.cancelAll },
     };

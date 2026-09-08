@@ -303,6 +303,11 @@ P35 runtime-font preparation adds a `PureRuntimeHostV1` redisplay font
 observation, bounded `FONT_DEFINE` emission, and live font checks for
 font-backed faces.  Real font rasterization and shaped rendering remain pending.
 
+P36 runtime-image preparation adds bounded RGBA8 image define/fragment
+observations, ordered validation, and `IMAGE_DEFINE`/`IMAGE_DATA` emission.
+The first seam accepts at most four 1 KiB fragments per image; full-size image
+capture remains pending.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and

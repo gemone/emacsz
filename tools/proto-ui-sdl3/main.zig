@@ -2120,6 +2120,28 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     });
     try bridge.observeFont(.{ .bytes = captured_font });
 
+    var captured_image_pixels: [1024]u8 = @splat(0);
+    for (&captured_image_pixels, 0..) |*byte, index| byte.* = @truncate(index * 7 + 9);
+    const captured_image_define = try protocol.encodeImageDefineBytes(.{
+        .image_id = 31,
+        .generation = 1,
+        .width = 4,
+        .height = 4,
+        .total_byte_count = 64,
+        .cache_policy = .pinned,
+    });
+    try bridge.observeImageDefine(.{ .bytes = captured_image_define });
+    var image_fragment: runtime_host.ImageFragmentRecord = .{
+        .image_id = 31,
+        .generation = 1,
+        .fragment_index = 0,
+        .fragment_count = 1,
+        .byte_length = 64,
+        .reserved = 0,
+    };
+    @memcpy(image_fragment.bytes[0..64], captured_image_pixels[0..64]);
+    try bridge.observeImageFragment(image_fragment);
+
     try bridge.observeWindow(.{
         .id = 10,
         .generation = 1,
@@ -2397,51 +2419,14 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (scene.control.stage != .active or scene.next_sequence.? != 16)
         return error.RuntimeBridgeControlSequenceInvalid;
 
-    var image_define_payload: std.ArrayList(u8) = .empty;
-    defer image_define_payload.deinit(gpa);
-    try protocol.encodeImageDefine(gpa, .{
-        .image_id = 31,
-        .generation = 1,
-        .width = 4,
-        .height = 4,
-        .total_byte_count = 64,
-        .cache_policy = .pinned,
-    }, &image_define_payload);
     var image_define: std.ArrayList(u8) = .empty;
     defer image_define.deinit(gpa);
-    try protocol.encodeEnvelope(gpa, .{
-        .flags = 0,
-        .message_type = protocol.Message.image_define,
-        .sequence = 16,
-        .ack_sequence = 0,
-        .session_id = capability.session_id,
-        .frame_id = @intCast(bridge.frame.id),
-        .timestamp_ns = 1,
-    }, image_define_payload.items, &image_define);
+    try bridge.encodeImageDefine(gpa, 0, 16, capability.session_id, 1, &image_define);
     try scene.apply(image_define.items);
 
-    var icon_pixels: [64]u8 = undefined;
-    for (&icon_pixels, 0..) |*byte, index| byte.* = @truncate(index * 7 + 9);
-    var image_data_payload: std.ArrayList(u8) = .empty;
-    defer image_data_payload.deinit(gpa);
-    try protocol.encodeImageData(gpa, .{
-        .image_id = 31,
-        .generation = 1,
-        .fragment_index = 0,
-        .fragment_count = 1,
-        .bytes = &icon_pixels,
-    }, &image_data_payload);
     var image_data: std.ArrayList(u8) = .empty;
     defer image_data.deinit(gpa);
-    try protocol.encodeEnvelope(gpa, .{
-        .flags = 0,
-        .message_type = protocol.Message.image_data,
-        .sequence = 17,
-        .ack_sequence = 0,
-        .session_id = capability.session_id,
-        .frame_id = @intCast(bridge.frame.id),
-        .timestamp_ns = 1,
-    }, image_data_payload.items, &image_data);
+    try bridge.encodeImageFragment(gpa, 0, 0, 17, capability.session_id, 1, &image_data);
     try scene.apply(image_data.items);
 
     var icon_payload: std.ArrayList(u8) = .empty;

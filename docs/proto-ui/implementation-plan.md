@@ -3305,6 +3305,7 @@ P32 window-zone preparation adds `WINDOW_ZONES` v1 with nine fixed region slots,
 P33 window-position preparation adds `WINDOW_POSITION` v1 as an exact 40-byte diagnostic buffer identity/start/point fact with active-frame/window validation, bounded per-window upsert, and authoritative cleanup.  It does not transport text or implement complete point/viewport semantics.
 P34 runtime-face preparation adds a 96-byte `FaceRecord` observation to the PureRuntimeHostV1 redisplay ABI, bounded `FACE_DEFINE` emission, duplicate-face rejection, and strict face-generation checks before captured runs.  Real Emacs redisplay attachment and complete face parity remain pending.
 P35 runtime-font preparation adds a 224-byte `FontRecord` observation to the PureRuntimeHostV1 redisplay ABI, bounded `FONT_DEFINE` emission, duplicate-font rejection, and strict live-font checks for font-backed faces.  Real font rasterization, shaped text, and PGTK parity remain pending.
+P36 runtime-image preparation adds a 72-byte `ImageDefineRecord` and bounded 1,044-byte `ImageFragmentRecord` to the redisplay ABI, with ordered fragments, total-length checks, duplicate-image rejection, and existing `IMAGE_DEFINE`/`IMAGE_DATA` emission.  The seam currently accepts at most four 1 KiB fragments per image; full-size capture and PGTK parity remain pending.
 P23 fringe preparation adds a 40-byte `FRINGE_UPDATE` v1 color-band subset with
 left/right placement, strict generation replacement, active-frame/window bounds,
 and a bounded Scene table.  The SDL draw list renders validated bands.  Bitmap

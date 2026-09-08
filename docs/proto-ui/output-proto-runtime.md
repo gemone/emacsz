@@ -226,6 +226,9 @@ into existing debug `GLYPH_RUN` messages.  Production shaped runs remain pending
 It also adds `FaceRecord` and `FontRecord` observations plus bounded
 `FACE_DEFINE`/`FONT_DEFINE` emission.  Face captures may reference a live
 captured font, and run captures must reference a live matching face.
+It also adds bounded RGBA8 `ImageDefineRecord`/`ImageFragmentRecord`
+observations and `IMAGE_DEFINE`/`IMAGE_DATA` emission, currently capped at four
+1 KiB fragments per image.
 A P4-preparation `runtime_bridge` now drives validated `PureRuntimeHostV1`
 callbacks and emits bounded frame lifecycle/update messages for fake-host
 conformance.  It is not linked to an Emacs host and does not authorize terminal
