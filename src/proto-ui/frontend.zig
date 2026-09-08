@@ -506,6 +506,69 @@ pub fn decodeFringeUpdate(data: []const u8) Error!FringeUpdate {
         return Error.InvalidMessage;
     return fringe;
 }
+pub const WindowScrollFlags = struct {
+    pub const vertical_visible: u8 = 1 << 0;
+    pub const known: u8 = vertical_visible;
+};
+
+pub const WindowScrollState = struct {
+    schema: u16 = 1,
+    flags: u8,
+    reserved: u8 = 0,
+    window_id: u64,
+    frame_generation: u32,
+    content_size: u32,
+    viewport_size: u32,
+    position: u32,
+    track_width: u32,
+    reserved_tail: [16]u8 = @splat(0),
+};
+
+pub const window_scroll_state_size: usize = 48;
+pub const max_scrollbar_states: usize = 32;
+
+pub fn encodeWindowScrollState(a: std.mem.Allocator, state: WindowScrollState, out: *std.ArrayList(u8)) !void {
+    try validateWindowScrollState(state);
+    var b: [window_scroll_state_size]u8 = [_]u8{0} ** window_scroll_state_size;
+    std.mem.writeInt(u16, b[0..2], state.schema, .little);
+    b[2] = state.flags;
+    std.mem.writeInt(u64, b[4..12], state.window_id, .little);
+    std.mem.writeInt(u32, b[12..16], state.frame_generation, .little);
+    std.mem.writeInt(u32, b[16..20], state.content_size, .little);
+    std.mem.writeInt(u32, b[20..24], state.viewport_size, .little);
+    std.mem.writeInt(u32, b[24..28], state.position, .little);
+    std.mem.writeInt(u32, b[28..32], state.track_width, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeWindowScrollState(data: []const u8) Error!WindowScrollState {
+    if (data.len != window_scroll_state_size) return Error.InvalidTable;
+    const state: WindowScrollState = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .window_id = std.mem.readInt(u64, data[4..12], .little),
+        .frame_generation = std.mem.readInt(u32, data[12..16], .little),
+        .content_size = std.mem.readInt(u32, data[16..20], .little),
+        .viewport_size = std.mem.readInt(u32, data[20..24], .little),
+        .position = std.mem.readInt(u32, data[24..28], .little),
+        .track_width = std.mem.readInt(u32, data[28..32], .little),
+        .reserved_tail = data[32..48][0..16].*,
+    };
+    try validateWindowScrollState(state);
+    return state;
+}
+
+fn validateWindowScrollState(state: WindowScrollState) Error!void {
+    if (state.schema != 1 or state.flags & ~@as(u8, WindowScrollFlags.known) != 0 or
+        state.reserved != 0 or state.window_id == 0 or
+        state.frame_generation == 0 or state.viewport_size == 0 or
+        state.content_size < state.viewport_size or state.position > state.content_size - state.viewport_size or
+        state.track_width == 0 or state.track_width > 256 or
+        !std.mem.allEqual(u8, &state.reserved_tail, 0))
+        return Error.InvalidMessage;
+}
+
 pub const BorderSides = struct {
     pub const top: u8 = 1 << 0;
     pub const right: u8 = 1 << 1;
@@ -1807,6 +1870,7 @@ pub const Scene = struct {
     scroll_runs: std.ArrayList(ScrollRun) = .empty,
     dividers: std.ArrayList(DividerUpdate) = .empty,
     fringes: std.ArrayList(FringeUpdate) = .empty,
+    scroll_states: std.ArrayList(WindowScrollState) = .empty,
     border: ?BorderUpdate = null,
     text: std.ArrayList(TextLine) = .empty,
     title: ?[:0]u8 = null,
@@ -1843,6 +1907,7 @@ pub const Scene = struct {
         self.scroll_runs.deinit(self.allocator);
         self.dividers.deinit(self.allocator);
         self.fringes.deinit(self.allocator);
+        self.scroll_states.deinit(self.allocator);
         self.strings.deinit(self.allocator);
         self.faces = .{};
         self.fonts = .{};
@@ -1869,6 +1934,7 @@ pub const Scene = struct {
         self.scroll_runs = .empty;
         self.dividers = .empty;
         self.fringes = .empty;
+        self.scroll_states = .empty;
         self.strings = .{};
         self.faces = .{};
         self.fonts = .{};
@@ -1979,6 +2045,7 @@ pub const Scene = struct {
             protocol.Message.scroll_run => try self.applyScrollRun(payload),
             protocol.Message.divider_update => try self.applyDividerUpdate(payload),
             protocol.Message.fringe_update => try self.applyFringeUpdate(payload),
+            protocol.Message.window_scroll_state => try self.applyWindowScrollState(payload),
             protocol.Message.damage_rects => try self.applyDamageRects(payload),
             protocol.Message.flush => try self.applyFlush(payload),
             protocol.Message.render_hint => try self.applyRenderHint(payload),
@@ -2022,6 +2089,7 @@ pub const Scene = struct {
         self.scroll_runs.deinit(self.allocator);
         self.dividers.deinit(self.allocator);
         self.fringes.deinit(self.allocator);
+        self.scroll_states.deinit(self.allocator);
         for (self.text.items) |line| self.allocator.free(line.bytes);
         self.text.deinit(self.allocator);
         self.windows = .empty;
@@ -2032,6 +2100,7 @@ pub const Scene = struct {
         self.scroll_runs = .empty;
         self.dividers = .empty;
         self.fringes = .empty;
+        self.scroll_states = .empty;
         self.text = .empty;
         self.frame_header = null;
         self.cursor = null;
@@ -2999,6 +3068,7 @@ pub const Scene = struct {
         self.scroll_runs.clearRetainingCapacity();
         self.dividers.clearRetainingCapacity();
         self.fringes.clearRetainingCapacity();
+        self.scroll_states.clearRetainingCapacity();
         self.image_placements = image_placements;
         self.image_placement_count = image_placement_count;
         windows = old_windows;
@@ -3166,6 +3236,29 @@ pub const Scene = struct {
         if (self.scroll_runs.items.len == max_scroll_runs)
             return Error.Unsupported;
         try self.scroll_runs.append(self.allocator, run);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyWindowScrollState(self: *Scene, payload: protocol.Payload) Error!void {
+        const state = try decodeWindowScrollState(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != state.frame_generation or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation)
+            return Error.InvalidMessage;
+        _ = findWindow(self.windows.items, state.window_id) orelse
+            return Error.InvalidMessage;
+        for (self.scroll_states.items, 0..) |*old, index| {
+            if (old.window_id == state.window_id) {
+                self.scroll_states.items[index] = state;
+                self.stats.control_messages += 1;
+                return;
+            }
+        }
+        if (self.scroll_states.items.len == max_scrollbar_states) return Error.Unsupported;
+        try self.scroll_states.append(self.allocator, state);
         self.stats.control_messages += 1;
     }
 
@@ -3626,6 +3719,52 @@ test "scroll run has exact wire form and validates vertical copy bounds" {
     defer a.free(invalid);
     try std.testing.expectError(Error.InvalidMessage, scene.apply(invalid));
     try std.testing.expectEqual(@as(usize, 1), scene.scroll_runs.items.len);
+}
+
+test "window scroll state validates geometry and upserts per window" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    const state: WindowScrollState = .{
+        .flags = WindowScrollFlags.vertical_visible,
+        .window_id = 100,
+        .frame_generation = 1,
+        .content_size = 2000,
+        .viewport_size = 400,
+        .position = 400,
+        .track_width = 12,
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeWindowScrollState(a, state, &payload);
+    try std.testing.expectEqual(window_scroll_state_size, payload.items.len);
+    try std.testing.expectEqual(state, try decodeWindowScrollState(payload.items));
+    const message = try windowLifecycleMessage(a, protocol.Message.window_scroll_state, 3, 7, payload.items);
+    defer a.free(message);
+    try scene.apply(message);
+    try std.testing.expectEqual(state, scene.scroll_states.items[0]);
+
+    var updated = state;
+    updated.position = 800;
+    payload.clearRetainingCapacity();
+    try encodeWindowScrollState(a, updated, &payload);
+    const updated_message = try windowLifecycleMessage(a, protocol.Message.window_scroll_state, 4, 7, payload.items);
+    defer a.free(updated_message);
+    try scene.apply(updated_message);
+    try std.testing.expectEqual(@as(u32, 800), scene.scroll_states.items[0].position);
+
+    var invalid = state;
+    invalid.position = 1601;
+    payload.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidMessage, encodeWindowScrollState(a, invalid, &payload));
+    try std.testing.expectEqual(@as(u32, 800), scene.scroll_states.items[0].position);
 }
 
 test "divider update validates generation and owner bounds" {

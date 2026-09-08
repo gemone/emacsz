@@ -2713,6 +2713,32 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (scene.fringes.items.len != 1 or scene.fringes.items[0].width != 8)
         return error.RuntimeBridgeFringeInvalid;
 
+    var scrollbar_payload: std.ArrayList(u8) = .empty;
+    defer scrollbar_payload.deinit(gpa);
+    try frontend.encodeWindowScrollState(gpa, .{
+        .flags = frontend.WindowScrollFlags.vertical_visible,
+        .window_id = 10,
+        .frame_generation = bridge.eup_frame_generation,
+        .content_size = 2000,
+        .viewport_size = 400,
+        .position = 400,
+        .track_width = 12,
+    }, &scrollbar_payload);
+    var scrollbar_update: std.ArrayList(u8) = .empty;
+    defer scrollbar_update.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.window_scroll_state,
+        .sequence = 32,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, scrollbar_payload.items, &scrollbar_update);
+    try scene.apply(scrollbar_update.items);
+    if (scene.scroll_states.items.len != 1 or scene.scroll_states.items[0].position != 400)
+        return error.RuntimeBridgeScrollbarInvalid;
+
     if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
         scene.glyph_runs.items.len != 1 or scene.cursor == null)
         return error.RuntimeBridgeSceneInvalid;
@@ -3018,7 +3044,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     try protocol.encodeEnvelope(gpa, .{
         .flags = 0,
         .message_type = protocol.Message.damage_rects,
-        .sequence = 32,
+        .sequence = 33,
         .ack_sequence = 0,
         .session_id = capability.session_id,
         .frame_id = @intCast(bridge.frame.id),
@@ -3116,7 +3142,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,
@@ -3131,6 +3157,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
             scene.border != null,
             scene.dividers.items.len == 1,
             scene.fringes.items.len == 1,
+            scene.scroll_states.items.len == 1,
             scene.flush != null,
             scene.render_hint != null,
             opacity_supported,
@@ -4358,6 +4385,28 @@ fn buildSceneDrawList(
             .width = @floatFromInt(rect.width),
             .height = @floatFromInt(rect.height),
         }, .{ .r = fringe.color[0], .g = fringe.color[1], .b = fringe.color[2], .a = fringe.color[3] });
+    }
+
+    for (scene.scroll_states.items) |state| {
+        const owner = findSceneWindow(scene, state.window_id) orelse continue;
+        if (state.flags & frontend.WindowScrollFlags.vertical_visible == 0) continue;
+        const x: f32 = @floatFromInt(owner.x + owner.width - @as(i32, @intCast(state.track_width)));
+        const track = renderer_policy.LogicalRect{
+            .x = x,
+            .y = @floatFromInt(owner.y),
+            .width = @floatFromInt(state.track_width),
+            .height = @floatFromInt(owner.height),
+        };
+        try list.fillRect(track, .{ .r = 0x20, .g = 0x24, .b = 0x2c, .a = 255 });
+        const scrollable: f32 = @floatFromInt(state.content_size - state.viewport_size);
+        const ratio: f32 = if (scrollable > 0) @as(f32, @floatFromInt(state.position)) / scrollable else 0;
+        const thumb_height: f32 = track.height * (@as(f32, @floatFromInt(state.viewport_size)) / @as(f32, @floatFromInt(state.content_size)));
+        try list.fillRect(.{
+            .x = track.x,
+            .y = track.y + (track.height - thumb_height) * ratio,
+            .width = track.width,
+            .height = thumb_height,
+        }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2, .a = 255 });
     }
 
     for (scene.dividers.items) |divider| {

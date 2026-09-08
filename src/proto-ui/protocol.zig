@@ -69,6 +69,7 @@ pub const Message = struct {
     pub const window_tree_snapshot: u16 = 0x0300;
     pub const window_create: u16 = 0x0301;
     pub const window_delete: u16 = 0x0303;
+    pub const window_scroll_state: u16 = 0x0308;
     pub const window_patch: u16 = 0x0302;
     pub const frame_destroy: u16 = 0x0206;
     pub const frame_update: u16 = 0x0203;

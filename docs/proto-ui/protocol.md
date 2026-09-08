@@ -465,6 +465,17 @@ placements. Successful create/delete messages update `Scene.windows`
 atomically and preserve ordering; patch, zones, faces, scroll state, and
 mouse-highlight records remain pending.
 
+#### `WINDOW_SCROLL_STATE` v1 (implemented bounded adapter contract)
+
+`WINDOW_SCROLL_STATE = 0x0308` is an exact 48-byte little-endian scrollbar state
+record. It carries a visibility flag, window id, active-frame generation,
+content/viewport sizes, position, and track width. Unknown flags, reserved
+bytes, viewport zero, content smaller than viewport, position past the scroll
+range, zero/oversized track width, truncation, or stale generation are rejected.
+`Scene` upserts one state per window and SDL renders a proportional vertical
+track/thumb. Drag requests, horizontal scroll, and core-owned scroll semantics
+remain pending.
+
 ### 11.1 `WINDOW_TREE_SNAPSHOT` v1 (implemented bounded adapter contract)
 
 `WINDOW_TREE_SNAPSHOT = 0x0300` is an authoritative complete-tree state message.

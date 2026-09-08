@@ -133,7 +133,7 @@ Semantic ownership remains in Emacs regardless of renderer.
 | Color dialog | Core/backend | Native/custom | Color returns |
 | Font dialog | Core/backend | Native/custom | Font spec returns |
 | Tooltip | Core/backend | Custom/native | Content/placement |
-| Scrollbar | Core/backend | Custom/native | Scroll intent |
+| Scrollbar | Core/backend | Custom/native | Vertical state/thumb rendering; drag intent pending |
 | IME candidate | Platform/frontend | Platform/custom | Composition works |
 
 ## 6. PGTK parity matrix
