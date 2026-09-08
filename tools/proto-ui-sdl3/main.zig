@@ -3751,6 +3751,96 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!menu_box_rendered or !menu_text_rendered or unicode_text_rendered)
         return error.RuntimeBridgeMenuModelNotRendered;
 
+    var menu_open_payload: std.ArrayList(u8) = .empty;
+    defer menu_open_payload.deinit(gpa);
+    try protocol.encodeMenuOpen(gpa, .{
+        .menu_id = 3,
+        .menu_generation = 1,
+        .item_id = 20,
+        .window_id = 10,
+        .frame_generation = bridge.eup_frame_generation,
+        .x = 16,
+        .y = 16,
+        .width = 48,
+        .height = 16,
+    }, &menu_open_payload);
+    var menu_open_update: std.ArrayList(u8) = .empty;
+    defer menu_open_update.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.menu_open,
+        .sequence = 53,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, menu_open_payload.items, &menu_open_update);
+    try scene.apply(menu_open_update.items);
+
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    var menu_popup_box_rendered = false;
+    var menu_popup_text_rendered = false;
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .fill => |fill| {
+                if (fill.rect.x == 24 and fill.rect.y == 24 and
+                    fill.rect.width == 48 and fill.rect.height == 16 and
+                    fill.color.r == 0x20 and fill.color.g == 0x24 and fill.color.b == 0x2c)
+                    menu_popup_box_rendered = true;
+            },
+            .text => |text| {
+                if (std.mem.eql(u8, text.bytes, "NewFrame"))
+                    menu_popup_text_rendered = true;
+            },
+            else => {},
+        }
+    }
+    if (!menu_popup_box_rendered or !menu_popup_text_rendered)
+        return error.RuntimeBridgeMenuOpenNotRendered;
+
+    var menu_close_payload: std.ArrayList(u8) = .empty;
+    defer menu_close_payload.deinit(gpa);
+    try protocol.encodeMenuClose(gpa, .{
+        .reason = .dismissal,
+        .menu_id = 3,
+        .menu_generation = 1,
+        .item_id = 21,
+        .frame_generation = bridge.eup_frame_generation,
+    }, &menu_close_payload);
+    var menu_close_update: std.ArrayList(u8) = .empty;
+    defer menu_close_update.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.menu_close,
+        .sequence = 54,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, menu_close_payload.items, &menu_close_update);
+    try scene.apply(menu_close_update.items);
+    if (scene.menu_open != null) return error.RuntimeBridgeMenuCloseInvalid;
+
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    var menu_close_box_rendered = false;
+    var menu_close_text_rendered = false;
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .fill => |fill| {
+                if (fill.rect.x == 24 and fill.rect.y == 24 and
+                    fill.rect.width == 48 and fill.rect.height == 16)
+                    menu_close_box_rendered = true;
+            },
+            .text => |text| {
+                if (std.mem.eql(u8, text.bytes, "NewFrame"))
+                    menu_close_text_rendered = true;
+            },
+            else => {},
+        }
+    }
+    if (menu_close_box_rendered or menu_close_text_rendered)
+        return error.RuntimeBridgeMenuCloseStillRendered;
+
     const explicit_clip = renderer_policy.explicitDamageClip(240, 96, &explicit_damage);
     if (explicit_clip == null) return error.RuntimeBridgeExplicitClipInvalid;
     frame_gate.dirty = true;
@@ -3851,7 +3941,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"tooltip\":true,\"menu_model\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"tooltip\":true,\"menu_model\":true,\"menu_open\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,
@@ -5503,6 +5593,41 @@ fn buildSceneDrawList(
                 }
                 offset += 64;
             }
+        }
+    }
+
+    if (scene.menu_open) |open| {
+        const model = scene.menu_model orelse return error.MenuWithoutModel;
+        const owner = findSceneWindow(scene, open.window_id) orelse return error.MenuWithoutWindow;
+        const rect = renderer_policy.LogicalRect{
+            .x = @floatFromInt(owner.x + open.x),
+            .y = @floatFromInt(owner.y + open.y),
+            .width = @floatFromInt(open.width),
+            .height = @floatFromInt(open.height),
+        };
+        try list.fillRect(rect, .{ .r = 0x20, .g = 0x24, .b = 0x2c });
+        var child_count: usize = 0;
+        for (model.nodes) |*node| {
+            if (node.parent_item_id == open.item_id and
+                node.flags & protocol.MenuNodeFlags.visible != 0) child_count += 1;
+        }
+        if (child_count == 0) return error.MenuWithoutChildren;
+        const row_height: f32 = rect.height / @as(f32, @floatFromInt(child_count));
+        var row: f32 = rect.y;
+        for (model.nodes) |*node| {
+            if (node.parent_item_id != open.item_id or
+                node.flags & protocol.MenuNodeFlags.visible == 0) continue;
+            try list.fillRect(.{
+                .x = rect.x,
+                .y = row,
+                .width = rect.width,
+                .height = row_height,
+            }, .{ .r = 0x2a, .g = 0x30, .b = 0x3c });
+            const label = node.label[0..node.label_len];
+            if (input_policy.isAsciiText(label)) {
+                try list.drawText(rect.x + 4, row + 3, label, .{ .r = 0xff, .g = 0xd5, .b = 0x4d });
+            }
+            row += row_height;
         }
     }
 

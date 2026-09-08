@@ -358,6 +358,11 @@ menu tree, strict UTF-8 and hierarchy validation, generation replacement, Scene
 ownership, and a diagnostic SDL menu bar.  Open state, navigation, result
 dispatch, native menus, and full menu semantics remain pending.
 
+P47 menu-open preparation adds `MENU_OPEN`/`CLOSE` v1 with one bounded popup
+tied to an enabled visible submenu and exact live generation.  SDL renders direct
+child rows; navigation, selection results, native menus, and full menu semantics
+remain pending.
+
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by
 atlas/page identity, generation, and page revision.  The runtime smoke requires
 one upload followed by at least four cache hits; smoke-level renderer-reset clearing is wired; production-wide renderer-loss

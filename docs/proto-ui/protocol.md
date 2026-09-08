@@ -1614,6 +1614,26 @@ patches, open/close state, navigation, hover, result dispatch, native menus,
 disabled hit testing, accessibility, keymap execution, and PGTK menu parity
 remain pending.
 
+#### `MENU_OPEN` / `MENU_CLOSE` v1 (implemented bounded adapter contract)
+
+`MENU_OPEN = 0x0902` is an exact 48-byte record that names the live menu id and
+generation, an enabled visible submenu item, owner window, active-frame
+generation, and a nonzero popup rectangle.  The rectangle is owner-relative,
+both coordinates are nonnegative, and each dimension is at most 16,384.
+`MENU_CLOSE = 0x0903` is an exact 24-byte record with reason (`selection`,
+`dismissal`, or `replacement`), the live menu identity, a live trigger item, and
+active-frame generation.
+
+Scene requires the complete `MENU_MODEL`, exact live model/generation, active
+frame/header/envelope identity, and a live owner.  Opening validates the submenu
+and containment.  Only one popup remains open; a later open replaces it.  Close
+requires an open popup with the same menu generation and a live trigger item,
+then clears the state.  Frame update, model replacement, owner deletion, frame
+destroy, resync, and teardown clear the popup.  SDL renders direct visible child
+rows and ASCII debug labels.  Keyboard navigation, hover, selection result
+dispatch, nested placement policy, native menus, accessibility, keymap
+execution, and PGTK parity remain pending.
+
 #### `TOOLTIP_SHOW` / `MOVE` / `HIDE` v1 (implemented bounded adapter contract)
 
 `TOOLTIP_SHOW = 0x0930` is an exact 164-byte little-endian record: schema
@@ -1736,9 +1756,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 91 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 93 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 70 | Assigned for the target protocol but not implemented |
+| `planned` | 68 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

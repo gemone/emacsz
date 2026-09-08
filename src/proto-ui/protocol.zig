@@ -135,6 +135,8 @@ pub const Message = struct {
     pub const tooltip_move: u16 = 0x0931;
     pub const tooltip_hide: u16 = 0x0932;
     pub const menu_model: u16 = 0x0900;
+    pub const menu_open: u16 = 0x0902;
+    pub const menu_close: u16 = 0x0903;
     pub const key_event: u16 = 0x0600;
     pub const text_input: u16 = 0x0601;
     pub const pointer_event: u16 = 0x0602;
@@ -2571,6 +2573,131 @@ pub fn decodeMenuModelSnapshot(
 pub fn freeMenuModelSnapshot(a: std.mem.Allocator, snapshot: *MenuModelSnapshot) void {
     a.free(snapshot.nodes);
     snapshot.nodes = &.{};
+}
+
+pub const MenuCloseReason = enum(u8) {
+    selection = 1,
+    dismissal = 2,
+    replacement = 3,
+};
+
+pub const MenuOpen = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    menu_id: u32,
+    menu_generation: u32,
+    item_id: u32,
+    window_id: u64,
+    frame_generation: u32,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    reserved_tail: [4]u8 = @splat(0),
+};
+
+pub const menu_open_size: usize = 48;
+
+pub const MenuClose = struct {
+    schema: u16 = 1,
+    reason: MenuCloseReason,
+    reserved: u8 = 0,
+    menu_id: u32,
+    menu_generation: u32,
+    item_id: u32,
+    frame_generation: u32,
+};
+
+pub const menu_close_size: usize = 24;
+
+fn validateMenuOpen(payload: MenuOpen) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or payload.reserved != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0) or
+        payload.menu_id == 0 or payload.menu_generation == 0 or
+        payload.item_id == 0 or payload.window_id == 0 or
+        payload.frame_generation == 0 or payload.x < 0 or payload.y < 0 or
+        payload.width == 0 or payload.height == 0 or
+        payload.width > max_window_size or payload.height > max_window_size)
+        return Error.InvalidMessage;
+}
+
+pub fn encodeMenuOpen(a: std.mem.Allocator, payload: MenuOpen, out: *std.ArrayList(u8)) !void {
+    try validateMenuOpen(payload);
+    var b: [menu_open_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = payload.flags;
+    b[3] = payload.reserved;
+    std.mem.writeInt(u32, b[4..8], payload.menu_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.menu_generation, .little);
+    std.mem.writeInt(u32, b[12..16], payload.item_id, .little);
+    std.mem.writeInt(u64, b[16..24], payload.window_id, .little);
+    std.mem.writeInt(u32, b[24..28], payload.frame_generation, .little);
+    std.mem.writeInt(i32, b[28..32], payload.x, .little);
+    std.mem.writeInt(i32, b[32..36], payload.y, .little);
+    std.mem.writeInt(u32, b[36..40], payload.width, .little);
+    std.mem.writeInt(u32, b[40..44], payload.height, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeMenuOpen(data: []const u8) Error!MenuOpen {
+    if (data.len != menu_open_size) return Error.InvalidTable;
+    const payload: MenuOpen = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .menu_id = std.mem.readInt(u32, data[4..8], .little),
+        .menu_generation = std.mem.readInt(u32, data[8..12], .little),
+        .item_id = std.mem.readInt(u32, data[12..16], .little),
+        .window_id = std.mem.readInt(u64, data[16..24], .little),
+        .frame_generation = std.mem.readInt(u32, data[24..28], .little),
+        .x = @bitCast(std.mem.readInt(u32, data[28..32], .little)),
+        .y = @bitCast(std.mem.readInt(u32, data[32..36], .little)),
+        .width = std.mem.readInt(u32, data[36..40], .little),
+        .height = std.mem.readInt(u32, data[40..44], .little),
+        .reserved_tail = data[44..48][0..4].*,
+    };
+    try validateMenuOpen(payload);
+    return payload;
+}
+
+pub fn encodeMenuClose(a: std.mem.Allocator, payload: MenuClose, out: *std.ArrayList(u8)) !void {
+    if (payload.schema != 1 or payload.reserved != 0 or
+        payload.menu_id == 0 or payload.menu_generation == 0 or
+        payload.item_id == 0 or payload.frame_generation == 0)
+        return Error.InvalidMessage;
+    var b: [menu_close_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = @intFromEnum(payload.reason);
+    b[3] = payload.reserved;
+    std.mem.writeInt(u32, b[4..8], payload.menu_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.menu_generation, .little);
+    std.mem.writeInt(u32, b[12..16], payload.item_id, .little);
+    std.mem.writeInt(u32, b[16..20], payload.frame_generation, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeMenuClose(data: []const u8) Error!MenuClose {
+    if (data.len != menu_close_size) return Error.InvalidTable;
+    const payload: MenuClose = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .reason = switch (data[2]) {
+            1 => .selection,
+            2 => .dismissal,
+            3 => .replacement,
+            else => return Error.InvalidMessage,
+        },
+        .reserved = data[3],
+        .menu_id = std.mem.readInt(u32, data[4..8], .little),
+        .menu_generation = std.mem.readInt(u32, data[8..12], .little),
+        .item_id = std.mem.readInt(u32, data[12..16], .little),
+        .frame_generation = std.mem.readInt(u32, data[16..20], .little),
+    };
+    if (payload.schema != 1 or payload.reserved != 0 or
+        payload.menu_id == 0 or payload.menu_generation == 0 or
+        payload.item_id == 0 or payload.frame_generation == 0)
+        return Error.InvalidMessage;
+    return payload;
 }
 
 pub const WindowRequestKind = enum(u8) {
@@ -6480,4 +6607,57 @@ test "menu model rejects invalid hierarchy and metadata" {
     const second_key_len = menu_model_header_size + menu_node_size + 12;
     oversize_wire[second_key_len] = 33;
     try std.testing.expectError(Error.InvalidMessage, decodeMenuModelSnapshot(wire_allocator, oversize_wire));
+}
+
+test "menu open and close codecs enforce identity bounds and reasons" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    const open: MenuOpen = .{
+        .menu_id = 3,
+        .menu_generation = 4,
+        .item_id = 20,
+        .window_id = 10,
+        .frame_generation = 1,
+        .x = 8,
+        .y = 16,
+        .width = 48,
+        .height = 64,
+    };
+    try encodeMenuOpen(a, open, &bytes);
+    try std.testing.expectEqual(menu_open_size, bytes.items.len);
+    try std.testing.expectEqual(open, try decodeMenuOpen(bytes.items));
+
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuOpen(bytes.items));
+    bytes.items[3] = 0;
+    bytes.items[47] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuOpen(bytes.items));
+    bytes.items[47] = 0;
+    std.mem.writeInt(i32, bytes.items[28..32], -1, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuOpen(bytes.items));
+    std.mem.writeInt(i32, bytes.items[28..32], open.x, .little);
+    std.mem.writeInt(u32, bytes.items[36..40], max_window_size + 1, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuOpen(bytes.items));
+    try std.testing.expectError(Error.InvalidTable, decodeMenuOpen(bytes.items[0 .. bytes.items.len - 1]));
+
+    bytes.clearRetainingCapacity();
+    const close: MenuClose = .{
+        .reason = .selection,
+        .menu_id = 3,
+        .menu_generation = 4,
+        .item_id = 21,
+        .frame_generation = 1,
+    };
+    try encodeMenuClose(a, close, &bytes);
+    try std.testing.expectEqual(menu_close_size, bytes.items.len);
+    try std.testing.expectEqual(close, try decodeMenuClose(bytes.items));
+    bytes.items[2] = 4;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuClose(bytes.items));
+    bytes.items[2] = @intFromEnum(MenuCloseReason.selection);
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuClose(bytes.items));
+    bytes.items[3] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeMenuClose(bytes.items[0 .. bytes.items.len - 1]));
 }
