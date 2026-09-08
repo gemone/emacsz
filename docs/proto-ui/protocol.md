@@ -764,7 +764,30 @@ advance the expected sequence.  This message has no redisplay ownership,
 shaping, BiDi, face/font, atlas, image, widget, Emacs capture, or
 `output_proto` semantics.
 
-### 13.3 `FLUSH` v1 (implemented bounded adapter contract)
+### 13.3 `DAMAGE_RECTS` v1 (implemented bounded adapter contract)
+
+`DAMAGE_RECTS = 0x040d` is a bounded variable-length damage array.  It carries
+an explicitly enumerated conservative rectangle set after an accepted
+`FRAME_UPDATE`; it does not itself create a new redisplay generation.
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 2 | `schema` | `u16`, little-endian, must be `1` |
+| 2 | 1 | `flags` | zero in v1 |
+| 3 | 1 | reserved | zero |
+| 4 | 4 | `frame_generation` | nonzero, active-frame generation |
+| 8 | 4 | `count` | 1..256 |
+| 12 | 16*count | rectangles | canonical logical x/y/width/height records |
+
+Every rectangle must fit the active `FRAME_UPDATE` logical bounds.  The codec
+validates count, exact byte length, reserved bytes, rectangle form, and active
+frame identity atomically.  Scene application replaces the previous damage
+array only after every rectangle validates.  Empty arrays, truncation, trailing
+bytes, stale generations, and out-of-frame rectangles are protocol errors.
+Current bridge/smoke evidence carries the observed array through Scene; true
+partial present and redisplay-owned incremental damage remain pending.
+
+### 13.4 `FLUSH` v1 (implemented bounded adapter contract)
 
 `FLUSH = 0x040e` is an exact 40-byte little-endian present boundary.  It marks
 the Scene state that a frontend may treat as one render/present epoch; it does
@@ -791,7 +814,7 @@ Unknown flags, unknown damage kinds, truncation, and trailing bytes are protocol
 errors.  Current smoke evidence proves Scene state and SDL acceptance; core
 redisplay emission and adaptive present scheduling remain pending.
 
-### 13.4 `RENDER_HINT` v1 (implemented bounded adapter contract)
+### 13.5 `RENDER_HINT` v1 (implemented bounded adapter contract)
 
 `RENDER_HINT = 0x040f` is an exact 32-byte little-endian, non-authoritative
 renderer preference.  A conformant frontend may honor it only when the selected
@@ -1321,9 +1344,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 60 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 61 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 101 | Assigned for the target protocol but not implemented |
+| `planned` | 100 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

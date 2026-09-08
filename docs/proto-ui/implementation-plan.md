@@ -73,7 +73,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P6-prep reverse input bridge | Implemented for bounded SDL key/text intents through PureRuntimeHostV1 delivery/result/completion; not keymap/command parity |
 | P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
 | P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
-| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 60 implemented codecs, 3 partial, and 101 planned; prevents an unclassified or overclaimed protocol table |
+| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 61 implemented codecs, 3 partial, and 100 planned; prevents an unclassified or overclaimed protocol table |
 | Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
 | P12-prep EUP session setup | Implemented standard HELLO/HELLO_ACK/SESSION_READY/READY_ACK codecs and bounded state machine; not yet wired to EPXL transport |
 | P12-prep EUP session control | Implemented all eight standard-control codecs, automatic PONG, Scene integration, and EPXL transport for every control, including fatal VERSION_MISMATCH |
@@ -89,6 +89,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P15-prep terminal runtime service | Implemented `proto-ui-terminal-service` for fake-host create/activate/drain/delete orchestration with no-reuse registry IDs, drain retry, rollback-pending cleanup, and strict identity validation; no R7 approval or Emacs terminal |
 | P16-prep host adapter selection | Implemented the versioned pure-SDL3 `output_proto` candidate as unselected until an approved, metadata-complete R7 decision; machine-readable gate records no activation, registration, or runtime |
 | P17-prep runtime activation contract | Implemented a selection-gated controller plus explicit activation/rollback sequences; current gate remains blocked by pending R7 with no registration or runtime |
+| P18-prep explicit damage array | Implemented bounded `DAMAGE_RECTS` codec, atomic Scene replacement, bridge emission, and SDL smoke evidence; redisplay-owned incremental damage and partial present pending |
 
 | P9-prep authoritative geometry | Implemented in runtime bridge with host rectangle caching and frame/window/damage bounds; real monitor/DPI events pending |
 | P10-prep face-bound debug runs | Implemented with GLYPH_RUN v2, exact live-face validation, and colored SDL fallback; not production face/shaping parity |
@@ -3140,7 +3141,7 @@ bounds, and observation validation in `runtime_bridge`; real monitor and scale
 events remain pending.
 Protocol coverage preparation adds `proto-ui-protocol-coverage`: every assigned
 EUP ID now has one honest status and evidence/gap classification.  The current
-counts are 60 implemented codecs, 3 partial, and 101 planned.
+counts are 61 implemented codecs, 3 partial, and 100 planned.
 P12 session-setup preparation adds concrete standard EUP HELLO, HELLO_ACK,
 SESSION_READY, and READY_ACK codecs with a bounded frontend state machine.  The
 authenticated EPXL handshake remains the current transport path.
@@ -3250,6 +3251,11 @@ pending, the controller rejects activation before any host callback and the
 manifest reports `blocked_by_r7`.  Unit conformance uses an approved fake-host
 decision to prove activate, rollback-on-failure, and drain paths; no real Emacs
 terminal is registered and runtime remains unavailable.
+P18 damage-array preparation adds a bounded `DAMAGE_RECTS` codec and bridge
+emission.  The Scene validates every rectangle against the accepted
+`FRAME_UPDATE` before atomically replacing its damage set.  The SDL smoke proves
+the current observed array reaches Scene; redisplay-owned incremental damage and
+partial present remain pending.
 P12 maximize preparation adds `FRAME_MAXIMIZE` v1 for horizontal and vertical
 axis flags.  The diagnostic SDL bridge applies and restores both-axis
 maximization; single-axis mapping and redisplay adaptation remain pending.

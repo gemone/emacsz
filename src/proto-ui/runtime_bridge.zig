@@ -619,6 +619,41 @@ pub const Bridge = struct {
         self.last_accepted_frame_sequence = sequence;
     }
 
+    pub fn encodeDamageRects(
+        self: *const Bridge,
+        gpa: std.mem.Allocator,
+        sequence: u64,
+        session_id: u64,
+        timestamp_ns: u64,
+        out: *std.ArrayList(u8),
+    ) Error!void {
+        try self.requireState(.captured);
+        if (self.last_accepted_frame_sequence == 0 or sequence == 0)
+            return error.InvalidState;
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(gpa);
+        var rects: std.ArrayList(frontend.Rect) = .empty;
+        defer rects.deinit(gpa);
+        for (self.damage[0..self.counts.damage]) |record| {
+            try rects.append(gpa, .{
+                .x = record.x,
+                .y = record.y,
+                .width = record.width,
+                .height = record.height,
+            });
+        }
+        try frontend.encodeDamageRects(gpa, self.eup_frame_generation, rects.items, &payload);
+        try protocol.encodeEnvelope(gpa, .{
+            .flags = 0,
+            .message_type = protocol.Message.damage_rects,
+            .sequence = sequence,
+            .ack_sequence = 0,
+            .session_id = session_id,
+            .frame_id = @intCast(self.frame.id),
+            .timestamp_ns = timestamp_ns,
+        }, payload.items, out);
+    }
+
     pub fn setRenderHint(self: *Bridge, request: RenderHintRequest) Error!void {
         switch (self.state) {
             .frame_registered, .capturing, .captured => {},

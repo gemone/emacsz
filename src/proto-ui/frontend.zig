@@ -1123,6 +1123,55 @@ pub fn decodeRect(bytes: []const u8) Error!Rect {
     return rect;
 }
 
+pub const damage_rects_header_size: usize = 12;
+pub const damage_rects_schema: u16 = 1;
+
+pub fn encodeDamageRects(
+    a: std.mem.Allocator,
+    frame_generation: u32,
+    rects: []const Rect,
+    out: *std.ArrayList(u8),
+) !void {
+    if (frame_generation == 0 or rects.len == 0 or rects.len > protocol.max_damage)
+        return Error.InvalidMessage;
+    var header: [damage_rects_header_size]u8 = [_]u8{0} ** damage_rects_header_size;
+    std.mem.writeInt(u16, header[0..2], damage_rects_schema, .little);
+    std.mem.writeInt(u32, header[4..8], frame_generation, .little);
+    std.mem.writeInt(u32, header[8..12], @intCast(rects.len), .little);
+    try out.appendSlice(a, &header);
+    for (rects) |rect| try encodeRect(a, rect, out);
+}
+
+pub const DamageRects = struct {
+    frame_generation: u32,
+    rects: []const Rect,
+};
+
+pub fn decodeDamageRects(a: std.mem.Allocator, data: []const u8) Error!DamageRects {
+    if (data.len < damage_rects_header_size) return Error.InvalidTable;
+    var reader: Reader = .{ .bytes = data };
+    if (try reader.readU16() != damage_rects_schema) return Error.InvalidTable;
+    try reader.expectZeros(2);
+    const frame_generation = try reader.readU32();
+    const count = try reader.readU32();
+    if (frame_generation == 0 or count == 0 or count > protocol.max_damage)
+        return Error.InvalidMessage;
+    if (data.len != damage_rects_header_size + @as(usize, count) * damage_record_size)
+        return Error.InvalidTable;
+
+    const rects = try a.alloc(Rect, count);
+    errdefer a.free(rects);
+    for (rects) |*rect| {
+        rect.* = try decodeRect(data[reader.offset..][0..damage_record_size]);
+        try reader.skip(damage_record_size);
+    }
+    return .{ .frame_generation = frame_generation, .rects = rects };
+}
+
+pub fn freeDamageRects(a: std.mem.Allocator, damage: DamageRects) void {
+    a.free(damage.rects);
+}
+
 pub fn encodePresentHint(a: std.mem.Allocator, hint: PresentHint, out: *std.ArrayList(u8)) !void {
     try putU32(out, a, hint.mode);
     try putU32(out, a, hint.flags);
@@ -1463,6 +1512,7 @@ pub const Scene = struct {
             protocol.Message.window_delete => try self.applyWindowDelete(payload),
             protocol.Message.window_patch => try self.applyWindowPatch(payload),
             protocol.Message.cursor_update => try self.applyCursorUpdate(payload),
+            protocol.Message.damage_rects => try self.applyDamageRects(payload),
             protocol.Message.flush => try self.applyFlush(payload),
             protocol.Message.render_hint => try self.applyRenderHint(payload),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
@@ -1981,6 +2031,29 @@ pub const Scene = struct {
             return Error.InvalidMessage;
         _ = try update.cursor.withOwner(owner);
         self.cursor = update.cursor;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyDamageRects(self: *Scene, payload: protocol.Payload) Error!void {
+        const decoded = try decodeDamageRects(self.allocator, payload.bytes);
+        defer freeDamageRects(self.allocator, decoded);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != decoded.frame_generation or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation)
+            return Error.InvalidMessage;
+        for (decoded.rects) |rect| {
+            if (!rectInFrame(rect, header)) return Error.InvalidMessage;
+        }
+
+        var replacement: std.ArrayList(Rect) = .empty;
+        errdefer replacement.deinit(self.allocator);
+        try replacement.appendSlice(self.allocator, decoded.rects);
+        var old = self.damage;
+        self.damage = replacement;
+        old.deinit(self.allocator);
         self.stats.control_messages += 1;
     }
 
@@ -2545,6 +2618,74 @@ test "scene validates cursor update against active frame and owner" {
     try protocol.encodeEnvelope(a, .{ .flags = 0, .message_type = protocol.Message.cursor_update, .sequence = 4, .ack_sequence = 0, .session_id = 9, .frame_id = 8, .timestamp_ns = 4 }, payload.items, &wrong_envelope);
     try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_envelope.items));
     try std.testing.expectEqual(valid, scene.cursor.?);
+}
+
+test "damage rects have a bounded variable wire form" {
+    const a = std.testing.allocator;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(a);
+    const rects = [_]Rect{
+        .{ .x = 2, .y = 3, .width = 20, .height = 10 },
+        .{ .x = 30, .y = 8, .width = 12, .height = 4 },
+    };
+    try encodeDamageRects(a, 7, &rects, &out);
+    try std.testing.expectEqual(damage_rects_header_size + 2 * damage_record_size, out.items.len);
+    try std.testing.expectEqual(damage_rects_schema, std.mem.readInt(u16, out.items[0..2], .little));
+    try std.testing.expectEqual(@as(u32, 7), std.mem.readInt(u32, out.items[4..8], .little));
+    try std.testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, out.items[8..12], .little));
+
+    const decoded = try decodeDamageRects(a, out.items);
+    defer freeDamageRects(a, decoded);
+    try std.testing.expectEqual(@as(u32, 7), decoded.frame_generation);
+    try std.testing.expectEqualSlices(Rect, &rects, decoded.rects);
+
+    out.items[2] = 1;
+    try std.testing.expectError(Error.InvalidTable, decodeDamageRects(a, out.items));
+    out.items[2] = 0;
+    out.items[3] = 1;
+    try std.testing.expectError(Error.InvalidTable, decodeDamageRects(a, out.items));
+    out.items[3] = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeDamageRects(a, 0, &rects, &out));
+    try std.testing.expectError(Error.InvalidMessage, encodeDamageRects(a, 7, &.{}, &out));
+    try std.testing.expectError(Error.InvalidTable, decodeDamageRects(a, out.items[0 .. out.items.len - 1]));
+}
+
+test "scene atomically replaces damage with bounded active-frame rects" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+    try std.testing.expectEqual(@as(usize, 1), scene.damage.items.len);
+
+    const rects = [_]Rect{
+        .{ .x = 4, .y = 4, .width = 30, .height = 20 },
+        .{ .x = 40, .y = 30, .width = 20, .height = 10 },
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeDamageRects(a, 1, &rects, &payload);
+    const message = try windowLifecycleMessage(a, protocol.Message.damage_rects, 3, 7, payload.items);
+    defer a.free(message);
+    try scene.apply(message);
+    try std.testing.expectEqualSlices(Rect, &rects, scene.damage.items);
+
+    const outside = [_]Rect{.{ .x = 70, .y = 50, .width = 20, .height = 20 }};
+    payload.clearRetainingCapacity();
+    try encodeDamageRects(a, 1, &outside, &payload);
+    const outside_message = try windowLifecycleMessage(a, protocol.Message.damage_rects, 4, 7, payload.items);
+    defer a.free(outside_message);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(outside_message));
+    try std.testing.expectEqualSlices(Rect, &rects, scene.damage.items);
+
+    const wrong_envelope = try windowLifecycleMessage(a, protocol.Message.damage_rects, 4, 8, payload.items);
+    defer a.free(wrong_envelope);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_envelope));
+    try std.testing.expectEqualSlices(Rect, &rects, scene.damage.items);
 }
 
 test "scene stores flush and render hints only for the active frame" {

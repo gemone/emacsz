@@ -230,6 +230,12 @@ reverse rollback order.  A selection-gated controller can exercise the path with
 a fake host, but the repository's current activation gate is `blocked_by_r7`,
 performs no host callback, and still reports `runtime_available=false`.
 
+P18 damage-array preparation adds `DAMAGE_RECTS` v1.  The codec carries
+1..256 active-frame logical rectangles, `Scene` atomically replaces its damage
+set, and the runtime bridge emits observed arrays in the SDL smoke.  This
+improves explicit protocol damage observability; true redisplay-owned
+incremental damage and partial present remain pending.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and
