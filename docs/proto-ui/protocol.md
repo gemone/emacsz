@@ -1731,6 +1731,35 @@ transport only.  They do not prove SDL hit testing, keyboard navigation, core
 receipt, keymap lookup, command execution, check/radio mutation, native menus, or
 PGTK menu parity.
 
+#### `MENU_HOVER` v1 (implemented bounded reverse intent)
+
+`MENU_HOVER = 0x0906` is an exact 40-byte frontend-to-core intent.  Layout:
+schema (`u16=1`), phase, reserved, nonzero menu id/generation, item id, owner
+window, frame generation, owner-relative pointer coordinates, and four reserved
+bytes.  Phase is `enter`, `move`, or `leave`.  Enter and move require a
+nonzero item id and nonnegative coordinates; leave requires zero item id and
+zero coordinates.
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 2 | schema | `1` |
+| 2 | 1 | phase | `enter=1`, `move=2`, or `leave=3` |
+| 3 | 1 | reserved | `0` |
+| 4 | 4 | menu ID | nonzero |
+| 8 | 4 | menu generation | nonzero |
+| 12 | 4 | item ID | nonzero for enter/move; zero for leave |
+| 16 | 8 | owner window ID | nonzero |
+| 24 | 4 | frame generation | nonzero |
+| 28 | 4 | x | owner-relative `i32`; nonnegative for enter/move, zero for leave |
+| 32 | 4 | y | owner-relative `i32`; nonnegative for enter/move, zero for leave |
+| 36 | 4 | reserved tail | all zero |
+
+The frontend emits hover intents only after `widget.menu_hover_v1` is negotiated,
+in ordered acknowledged DeliveryJournal traffic.  This contract validates and
+transports bounded hover facts only.  It does not implement SDL menu hit testing,
+submenu auto-open policy, keyboard navigation, tooltip scheduling, Emacs menu
+bar highlighting, command execution, native menus, or PGTK parity.
+
 #### `TOOLTIP_SHOW` / `MOVE` / `HIDE` v1 (implemented bounded adapter contract)
 
 `TOOLTIP_SHOW = 0x0930` is an exact 164-byte little-endian record: schema
@@ -1853,9 +1882,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 97 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 98 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 64 | Assigned for the target protocol but not implemented |
+| `planned` | 63 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

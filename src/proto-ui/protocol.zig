@@ -29,6 +29,7 @@ pub const Error = error{
     InvalidSequence,
     InvalidStyle,
     InvalidBoolean,
+    InvalidMenuHover,
     InvalidReserved,
     ResourcePayloadBudgetExceeded,
     TrailingBytes,
@@ -141,6 +142,7 @@ pub const Message = struct {
     pub const menu_close: u16 = 0x0903;
     pub const menu_result: u16 = 0x0904;
     pub const menu_cancel: u16 = 0x0905;
+    pub const menu_hover: u16 = 0x0906;
     pub const key_event: u16 = 0x0600;
     pub const text_input: u16 = 0x0601;
     pub const pointer_event: u16 = 0x0602;
@@ -3110,6 +3112,164 @@ pub fn decodeMenuCancel(data: []const u8) Error!MenuCancel {
     };
     try validateMenuCancel(payload);
     return payload;
+}
+
+pub const MenuHoverPhase = enum(u8) {
+    enter = 1,
+    move = 2,
+    leave = 3,
+};
+
+pub const MenuHover = struct {
+    schema: u16 = 1,
+    phase: MenuHoverPhase,
+    reserved: u8 = 0,
+    menu_id: u32,
+    menu_generation: u32,
+    item_id: u32 = 0,
+    window_id: u64,
+    frame_generation: u32,
+    x: i32 = 0,
+    y: i32 = 0,
+    reserved_tail: [4]u8 = @splat(0),
+};
+
+pub const menu_hover_size: usize = 40;
+
+pub fn validateMenuHover(payload: MenuHover) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0) or
+        payload.menu_id == 0 or payload.menu_generation == 0 or
+        payload.window_id == 0 or payload.frame_generation == 0)
+        return Error.InvalidMessage;
+    switch (payload.phase) {
+        .enter, .move => {
+            if (payload.item_id == 0 or payload.x < 0 or payload.y < 0)
+                return Error.InvalidMenuHover;
+        },
+        .leave => {
+            if (payload.item_id != 0 or payload.x != 0 or payload.y != 0)
+                return Error.InvalidMenuHover;
+        },
+    }
+}
+
+pub fn encodeMenuHover(a: std.mem.Allocator, payload: MenuHover, out: *std.ArrayList(u8)) !void {
+    try validateMenuHover(payload);
+    var b: [menu_hover_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = @intFromEnum(payload.phase);
+    b[3] = payload.reserved;
+    std.mem.writeInt(u32, b[4..8], payload.menu_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.menu_generation, .little);
+    std.mem.writeInt(u32, b[12..16], payload.item_id, .little);
+    std.mem.writeInt(u64, b[16..24], payload.window_id, .little);
+    std.mem.writeInt(u32, b[24..28], payload.frame_generation, .little);
+    std.mem.writeInt(i32, b[28..32], payload.x, .little);
+    std.mem.writeInt(i32, b[32..36], payload.y, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeMenuHover(data: []const u8) Error!MenuHover {
+    if (data.len != menu_hover_size) return Error.InvalidTable;
+    const payload: MenuHover = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .phase = switch (data[2]) {
+            1 => .enter,
+            2 => .move,
+            3 => .leave,
+            else => return Error.InvalidMessage,
+        },
+        .reserved = data[3],
+        .menu_id = std.mem.readInt(u32, data[4..8], .little),
+        .menu_generation = std.mem.readInt(u32, data[8..12], .little),
+        .item_id = std.mem.readInt(u32, data[12..16], .little),
+        .window_id = std.mem.readInt(u64, data[16..24], .little),
+        .frame_generation = std.mem.readInt(u32, data[24..28], .little),
+        .x = @bitCast(std.mem.readInt(u32, data[28..32], .little)),
+        .y = @bitCast(std.mem.readInt(u32, data[32..36], .little)),
+        .reserved_tail = data[36..menu_hover_size][0..4].*,
+    };
+    try validateMenuHover(payload);
+    return payload;
+}
+
+test "menu hover codecs enforce phase-specific bounded identity" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    const hover: MenuHover = .{
+        .phase = .move,
+        .menu_id = 3,
+        .menu_generation = 4,
+        .item_id = 21,
+        .window_id = 10,
+        .frame_generation = 1,
+        .x = 8,
+        .y = 16,
+    };
+    try encodeMenuHover(a, hover, &bytes);
+    try std.testing.expectEqual(menu_hover_size, bytes.items.len);
+    try std.testing.expectEqual(hover, try decodeMenuHover(bytes.items));
+    bytes.items[2] = @intFromEnum(MenuHoverPhase.enter);
+    try std.testing.expectEqual(MenuHoverPhase.enter, (try decodeMenuHover(bytes.items)).phase);
+    bytes.items[2] = @intFromEnum(MenuHoverPhase.move);
+
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuHover(bytes.items));
+    bytes.items[3] = 0;
+    bytes.items[39] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuHover(bytes.items));
+    bytes.items[39] = 0;
+    bytes.items[2] = 3;
+    try std.testing.expectError(Error.InvalidMenuHover, decodeMenuHover(bytes.items));
+
+    bytes.items[2] = @intFromEnum(MenuHoverPhase.move);
+    std.mem.writeInt(u32, bytes.items[12..16], 0, .little);
+    try std.testing.expectError(Error.InvalidMenuHover, decodeMenuHover(bytes.items));
+    std.mem.writeInt(u32, bytes.items[12..16], hover.item_id, .little);
+    std.mem.writeInt(i32, bytes.items[28..32], -1, .little);
+    try std.testing.expectError(Error.InvalidMenuHover, decodeMenuHover(bytes.items));
+    std.mem.writeInt(i32, bytes.items[28..32], hover.x, .little);
+    std.mem.writeInt(i32, bytes.items[32..36], -1, .little);
+    try std.testing.expectError(Error.InvalidMenuHover, decodeMenuHover(bytes.items));
+    std.mem.writeInt(i32, bytes.items[32..36], hover.y, .little);
+    bytes.items[0] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuHover(bytes.items));
+    bytes.items[0] = 1;
+    std.mem.writeInt(u32, bytes.items[4..8], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuHover(bytes.items));
+    std.mem.writeInt(u32, bytes.items[4..8], hover.menu_id, .little);
+    std.mem.writeInt(u32, bytes.items[8..12], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuHover(bytes.items));
+    std.mem.writeInt(u32, bytes.items[8..12], hover.menu_generation, .little);
+    std.mem.writeInt(u64, bytes.items[16..24], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuHover(bytes.items));
+    std.mem.writeInt(u64, bytes.items[16..24], hover.window_id, .little);
+    std.mem.writeInt(u32, bytes.items[24..28], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuHover(bytes.items));
+    std.mem.writeInt(u32, bytes.items[24..28], hover.frame_generation, .little);
+    try std.testing.expectError(Error.InvalidTable, decodeMenuHover(bytes.items[0 .. bytes.items.len - 1]));
+
+    const leave: MenuHover = .{
+        .phase = .leave,
+        .menu_id = 3,
+        .menu_generation = 4,
+        .window_id = 10,
+        .frame_generation = 1,
+    };
+    bytes.clearRetainingCapacity();
+    try encodeMenuHover(a, leave, &bytes);
+    try std.testing.expectEqual(leave, try decodeMenuHover(bytes.items));
+    bytes.items[12] = 1;
+    try std.testing.expectError(Error.InvalidMenuHover, decodeMenuHover(bytes.items));
+    bytes.items[12] = 0;
+    std.mem.writeInt(i32, bytes.items[28..32], -1, .little);
+    try std.testing.expectError(Error.InvalidMenuHover, decodeMenuHover(bytes.items));
+    std.mem.writeInt(i32, bytes.items[28..32], 0, .little);
+    bytes.items[32] = 1;
+    try std.testing.expectError(Error.InvalidMenuHover, decodeMenuHover(bytes.items));
 }
 
 pub const WindowRequestKind = enum(u8) {

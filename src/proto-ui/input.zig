@@ -558,6 +558,7 @@ pub const TranslatedEvent = union(enum) {
     scroll: protocol.ScrollRequest,
     menu_result: protocol.MenuResult,
     menu_cancel: protocol.MenuCancel,
+    menu_hover: protocol.MenuHover,
 };
 
 pub const TextSupport = enum { ascii, unicode };
@@ -647,6 +648,13 @@ pub const Queue = struct {
         self.length += 1;
     }
 
+    pub fn pushMenuHover(self: *Queue, event: protocol.MenuHover) !void {
+        protocol.validateMenuHover(event) catch return error.InvalidMenuHover;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .menu_hover = event };
+        self.length += 1;
+    }
+
     pub fn pushText(self: *Queue, text: []const u8) !void {
         if (!validTextInput(text)) return error.InvalidInputText;
         if (self.length == queue_capacity) return error.InputQueueFull;
@@ -696,6 +704,7 @@ pub const DeliveryJournal = struct {
     platform_negotiated: bool = false,
     scroll_request_negotiated: bool = false,
     menu_result_negotiated: bool = false,
+    menu_hover_negotiated: bool = false,
     pointer_v2_buttons: u32 = 0,
     pointer_v2_clicks: u8 = 0,
 
@@ -815,6 +824,12 @@ pub const DeliveryJournal = struct {
         if (!self.menu_result_negotiated) return error.MenuResultCapabilityNotNegotiated;
         if (self.pointer_active) return error.PointerSessionActive;
         try self.queue.pushMenuCancel(event);
+    }
+
+    pub fn pushMenuHover(self: *DeliveryJournal, event: protocol.MenuHover) !void {
+        if (!self.menu_hover_negotiated) return error.MenuHoverCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushMenuHover(event);
     }
 
     /// SDL poll paths use this for incidental platform observations.  The
@@ -1367,6 +1382,45 @@ test "menu result and cancel require negotiation and preserve live identity" {
     var invalid_cancel = cancel;
     invalid_cancel.menu_id = 0;
     try std.testing.expectError(error.InvalidMenuCancel, journal.pushMenuCancel(invalid_cancel));
+}
+
+test "menu hover requires negotiation and validates phase identity" {
+    var journal: DeliveryJournal = .{};
+    const hover: protocol.MenuHover = .{
+        .phase = .move,
+        .menu_id = 3,
+        .menu_generation = 4,
+        .item_id = 21,
+        .window_id = 10,
+        .frame_generation = 3,
+        .x = 8,
+        .y = 16,
+    };
+    const leave: protocol.MenuHover = .{
+        .phase = .leave,
+        .menu_id = 3,
+        .menu_generation = 4,
+        .window_id = 10,
+        .frame_generation = 3,
+    };
+
+    try std.testing.expectError(error.MenuHoverCapabilityNotNegotiated, journal.pushMenuHover(hover));
+    journal.menu_hover_negotiated = true;
+    try journal.pushMenuHover(hover);
+    try journal.pushMenuHover(leave);
+    const hover_sent = (try journal.take()).?;
+    try std.testing.expectEqual(hover, hover_sent.event.menu_hover);
+    try std.testing.expect(journal.acknowledge(hover_sent.sequence));
+    const leave_sent = (try journal.take()).?;
+    try std.testing.expectEqual(leave, leave_sent.event.menu_hover);
+    try std.testing.expect(journal.acknowledge(leave_sent.sequence));
+
+    var invalid = hover;
+    invalid.item_id = 0;
+    try std.testing.expectError(error.InvalidMenuHover, journal.pushMenuHover(invalid));
+    invalid.item_id = 21;
+    invalid.reserved_tail[0] = 1;
+    try std.testing.expectError(error.InvalidMenuHover, journal.pushMenuHover(invalid));
 }
 
 test "scrollbar drag tracker emits bounded relative requests" {

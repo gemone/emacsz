@@ -625,6 +625,7 @@ fn writeTranslatedEvent(
         // Menu intents are EPXL-only and require negotiated capability.
         .menu_result => {},
         .menu_cancel => {},
+        .menu_hover => {},
     }
 }
 
@@ -1593,6 +1594,10 @@ fn sendDeliveryEvent(
             try protocol.encodeMenuCancel(gpa, cancel, &payload);
             break :blk protocol.Message.menu_cancel;
         },
+        .menu_hover => |hover| blk: {
+            try protocol.encodeMenuHover(gpa, hover, &payload);
+            break :blk protocol.Message.menu_hover;
+        },
     };
     var input_message: std.ArrayList(u8) = .empty;
     defer input_message.deinit(gpa);
@@ -1780,6 +1785,7 @@ fn awaitFrameAck(
                 const is_scroll_request = payload.envelope.message_type == protocol.Message.scroll_request;
                 const is_menu_result = payload.envelope.message_type == protocol.Message.menu_result;
                 const is_menu_cancel = payload.envelope.message_type == protocol.Message.menu_cancel;
+                const is_menu_hover = payload.envelope.message_type == protocol.Message.menu_hover;
                 var copy_action = false;
                 if (is_key_v2) {
                     full_key = try input_policy.decodeFullKeyEvent(payload.bytes);
@@ -1798,7 +1804,8 @@ fn awaitFrameAck(
                     (is_window and capabilities.contains(.platform_focus_window_events)) or
                     (is_scroll_request and capabilities.contains(.window_scroll_request_v1)) or
                     (is_menu_result and capabilities.contains(.widget_menu_result_v1)) or
-                    (is_menu_cancel and capabilities.contains(.widget_menu_result_v1));
+                    (is_menu_cancel and capabilities.contains(.widget_menu_result_v1)) or
+                    (is_menu_hover and capabilities.contains(.widget_menu_hover_v1));
                 if (!input_allowed or
                     payload.envelope.flags & protocol.Flags.requires_ack == 0 or
                     payload.envelope.ack_sequence != 0 or
@@ -1897,6 +1904,24 @@ fn awaitFrameAck(
                     );
                     defer gpa.free(value);
                     try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "menu-cancel", value);
+                } else if (is_menu_hover) {
+                    const event = try protocol.decodeMenuHover(payload.bytes);
+                    const value = try std.fmt.allocPrint(
+                        gpa,
+                        "{{\"phase\":\"{s}\",\"menu_id\":{d},\"menu_generation\":{d},\"item_id\":{d},\"window_id\":{d},\"frame_generation\":{d},\"x\":{d},\"y\":{d},\"execution\":\"observed\"}}",
+                        .{
+                            @tagName(event.phase),
+                            event.menu_id,
+                            event.menu_generation,
+                            event.item_id,
+                            event.window_id,
+                            event.frame_generation,
+                            event.x,
+                            event.y,
+                        },
+                    );
+                    defer gpa.free(value);
+                    try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "menu-hover", value);
                 } else if (is_window) {
                     const event = try protocol.decodeWindowRequest(payload.bytes);
                     const value = try std.fmt.allocPrint(
@@ -4472,6 +4497,7 @@ fn inputEventAllowed(capabilities: capability.Set, event: input_policy.Translate
         .scroll => capabilities.contains(.window_scroll_request_v1),
         .menu_result => capabilities.contains(.widget_menu_result_v1),
         .menu_cancel => capabilities.contains(.widget_menu_result_v1),
+        .menu_hover => capabilities.contains(.widget_menu_hover_v1),
     };
 }
 
@@ -4523,6 +4549,7 @@ fn clipboardSupportFor(capabilities: capability.Set) ?input_policy.TextSupport {
 fn syncDeliveryCapabilities(delivery: *input_policy.DeliveryJournal, capabilities: capability.Set) void {
     delivery.scroll_request_negotiated = capabilities.contains(.window_scroll_request_v1);
     delivery.menu_result_negotiated = capabilities.contains(.widget_menu_result_v1);
+    delivery.menu_hover_negotiated = capabilities.contains(.widget_menu_hover_v1);
     delivery.key_v2_negotiated = capabilities.contains(.input_key_full_v2);
     delivery.pointer_v2_negotiated = capabilities.contains(.input_pointer_v2);
     delivery.platform_negotiated = capabilities.contains(.platform_focus_window_events);
