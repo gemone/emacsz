@@ -23,6 +23,7 @@ pub const CursorFacts = struct {
 pub const max_observed_windows: usize = 16;
 
 pub const WindowFact = struct {
+    id: u32,
     index: usize,
     x: i32,
     y: i32,
@@ -105,6 +106,7 @@ const SnapshotWire = struct {
     window_width: i32,
     window_height: i32,
     windows: []const WindowFact = &.{},
+    identity: []const u8 = "",
     text: []const []const u8 = &.{},
     cursor: CursorFacts = .{ .line = 1, .column = 0 },
     window_start_line: i32 = 1,
@@ -124,8 +126,10 @@ fn validateWindowSet(windows: []const WindowFact, snapshot: SnapshotWire) Error!
     if (windows.len > max_observed_windows) return error.InvalidWindowFacts;
     var selected_count: usize = 0;
     var selected: ?WindowFact = null;
+    var id_count: usize = 0;
     for (windows, 0..) |item, index| {
         if (item.index != index) return error.InvalidWindowFacts;
+        if (item.id != 0) id_count += 1;
         try validateWindowFact(item, snapshot);
         if (item.selected) {
             selected = item;
@@ -133,9 +137,11 @@ fn validateWindowSet(windows: []const WindowFact, snapshot: SnapshotWire) Error!
         }
     }
     if (selected_count != 1) return error.InvalidWindowFacts;
+    if (id_count != windows.len) return error.InvalidWindowFacts;
 
     for (windows, 0..) |item, index| {
         for (windows[index + 1 ..]) |other| {
+            if (item.id == other.id) return error.InvalidWindowFacts;
             const left = @max(item.x, other.x);
             const right = @min(@as(i64, item.x) + item.width, @as(i64, other.x) + other.width);
             const top = @max(item.y, other.y);
@@ -153,6 +159,7 @@ fn parseWindows(gpa: std.mem.Allocator, wire: []const WindowFact, snapshot: Snap
     if (wire.len == 0) {
         const windows = try gpa.alloc(WindowFact, 1);
         windows[0] = .{
+            .id = 1001,
             .index = 0,
             .x = 0,
             .y = 0,
@@ -240,6 +247,9 @@ pub fn parseSnapshot(gpa: std.mem.Allocator, bytes: []const u8) !Snapshot {
     const viewport = ViewportFacts{ .start_line = wire.window_start_line, .line_count = wire.window_visible_lines };
     if (!viewport.valid()) return error.InvalidViewportFacts;
     if (viewport.line_count != wire.text.len) return error.InvalidViewportFacts;
+    if (wire.windows.len != 0 and
+        !std.mem.eql(u8, wire.identity, "process_lifetime"))
+        return error.InvalidWindowFacts;
     const windows = try parseWindows(gpa, wire.windows, wire);
     errdefer gpa.free(windows);
 
@@ -283,10 +293,11 @@ test "parses bounded real windows into wire snapshot" {
         \\{
         \\  "frame_width":120,"frame_height":40,"window_width":60,"window_height":30,
         \\  "windows":[
-        \\    {"index":0,"x":0,"y":0,"width":60,"height":30,"selected":false},
-        \\    {"index":1,"x":60,"y":0,"width":60,"height":30,"selected":true}
+        \\    {"id":101,"index":0,"x":0,"y":0,"width":60,"height":30,"selected":false},
+        \\    {"id":102,"index":1,"x":60,"y":0,"width":60,"height":30,"selected":true}
         \\  ],
         \\  "text":["Emacs","Proto-UI"],
+        \\  "identity":"process_lifetime",
         \\  "cursor":{"line":1,"column":1},
         \\  "window_start_line":1,"window_visible_lines":2
         \\}
@@ -315,8 +326,8 @@ test "parses bounded real windows into wire snapshot" {
         &messages,
     );
     try std.testing.expectEqual(@as(usize, 2), scene.windows.items.len);
-    try std.testing.expectEqual(@as(u64, 1001), scene.windows.items[1].id);
-    try std.testing.expectEqual(@as(u64, 1002), scene.windows.items[0].id);
+    try std.testing.expectEqual(@as(u64, 102), scene.windows.items[1].id);
+    try std.testing.expectEqual(@as(u64, 101), scene.windows.items[0].id);
     try std.testing.expectEqual(@as(i32, 8), scene.cursor.?.x);
     try std.testing.expectEqual(@as(i32, 0), scene.cursor.?.y);
 
@@ -337,12 +348,44 @@ test "parses bounded real windows into wire snapshot" {
 
     const overlap =
         \\{"frame_width":120,"frame_height":40,"window_width":60,"window_height":30,
-        \\ "windows":[{"index":0,"x":0,"y":0,"width":70,"height":30,"selected":true},
-        \\ {"index":1,"x":60,"y":0,"width":60,"height":30,"selected":false}],
+        \\ "windows":[{"id":101,"index":0,"x":0,"y":0,"width":70,"height":30,"selected":true},
+        \\ {"id":102,"index":1,"x":60,"y":0,"width":60,"height":30,"selected":false}],
         \\ "text":["Emacs"],"cursor":{"line":1,"column":0},
         \\ "window_start_line":1,"window_visible_lines":1}
     ;
     try std.testing.expectError(error.InvalidWindowFacts, parseSnapshot(a, overlap));
+}
+
+test "real window snapshot rejects malformed identities" {
+    const a = std.testing.allocator;
+    const duplicate =
+        \\{"frame_width":120,"frame_height":40,"window_width":60,"window_height":30,
+        \\ "identity":"process_lifetime",
+        \\ "windows":[{"id":101,"index":0,"x":0,"y":0,"width":60,"height":30,"selected":true},
+        \\ {"id":101,"index":1,"x":60,"y":0,"width":60,"height":30,"selected":false}],
+        \\ "text":["Emacs"],"cursor":{"line":1,"column":0},
+        \\ "window_start_line":1,"window_visible_lines":1}
+    ;
+    try std.testing.expectError(error.InvalidWindowFacts, parseSnapshot(a, duplicate));
+
+    const zero =
+        \\{"frame_width":120,"frame_height":40,"window_width":120,"window_height":30,
+        \\ "identity":"process_lifetime",
+        \\ "windows":[{"id":0,"index":0,"x":0,"y":0,"width":120,"height":30,"selected":true}],
+        \\ "text":["Emacs"],"cursor":{"line":1,"column":0},
+        \\ "window_start_line":1,"window_visible_lines":1}
+    ;
+    try std.testing.expectError(error.InvalidWindowFacts, parseSnapshot(a, zero));
+
+    const wrong_marker =
+        \\{"frame_width":120,"frame_height":40,"window_width":60,"window_height":30,
+        \\ "identity":"per_call_only",
+        \\ "windows":[{"id":101,"index":0,"x":0,"y":0,"width":60,"height":30,"selected":true},
+        \\ {"id":102,"index":1,"x":60,"y":0,"width":60,"height":30,"selected":false}],
+        \\ "text":["Emacs"],"cursor":{"line":1,"column":0},
+        \\ "window_start_line":1,"window_visible_lines":1}
+    ;
+    try std.testing.expectError(error.InvalidWindowFacts, parseSnapshot(a, wrong_marker));
 }
 
 pub fn buildScene(gpa: std.mem.Allocator, facts: FrameFacts, snapshot_index: u64) !frontend.Scene {
@@ -549,6 +592,7 @@ pub fn appendWireSnapshotWindows(
         .window_height = facts.window_height,
     };
     var selected: WindowFact = .{
+        .id = 1001,
         .index = 0,
         .x = 0,
         .y = 0,
@@ -573,8 +617,8 @@ pub fn appendWireSnapshotWindows(
             .height = facts.window_height,
         }, &window_bytes);
     } else {
-        for (windows, 0..) |item, index| {
-            const id: u32 = if (item.selected) 1001 else @intCast(1002 + index);
+        for (windows) |item| {
+            const id: u32 = item.id;
             try frontend.encodeWindow(gpa, .{
                 .id = id,
                 .frame_id = 1,
@@ -601,7 +645,7 @@ pub fn appendWireSnapshotWindows(
     var row_index: i32 = 0;
     while (row_index < row_count) : (row_index += 1) {
         try frontend.encodeRow(gpa, .{
-            .window_id = 1001,
+            .window_id = selected.id,
             .index = @intCast(row_index),
             .flags = 0,
             .x = 0,
@@ -618,7 +662,7 @@ pub fn appendWireSnapshotWindows(
     var cursor_bytes: std.ArrayList(u8) = .empty;
     defer cursor_bytes.deinit(gpa);
     try frontend.encodeCursor(gpa, .{
-        .window_id = 1001,
+        .window_id = selected.id,
         .x = cursor.column * 8,
         .y = (cursor.line - 1) * row_height,
         .width = 2,

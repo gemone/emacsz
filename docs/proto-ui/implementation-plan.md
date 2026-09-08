@@ -1495,11 +1495,14 @@ Implemented:
    redisplay internals.
 4. `proto-ui-window-facts` observes up to 16 live windows through public APIs
    (`frame-selected-window`, `window-list`, `car`, `cdr`, `nth`,
-   `window-pixel-edges`, and `eq`) and returns bounded flat geometry facts with
-   the selected-window ordinal.  Ordering is relative to the selected window and
-   each ordinal is per-call only; the wire explicitly marks `identity` as
-   `per_call_only`.  It is not a stable cross-snapshot identity, not a
-   hierarchical window tree, and does not inspect redisplay internals.
+   `window-pixel-edges`, `boundp`, `symbol-value`, `set`, `make-hash-table`,
+   `gethash`, `puthash`, and `eq`) and returns bounded flat geometry facts with
+   the selected-window ordinal.  Ordering remains relative to the selected
+   window, but each window receives a nonzero `id` from an adapter-owned,
+   process-lifetime `eq` hash registry with weak keys and a monotone counter.
+   Dead keys can be collected; IDs are not reused while the Emacs process
+   lives.  This is not a hierarchical window tree and does not inspect
+   redisplay internals.
 5. `proto-ui-module` builds the adapter-owned artifact; a batch gate loads it
    through `module-load`, verifies `proto-ui-echo`, and validates bounded
    multi-window facts.

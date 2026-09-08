@@ -43,6 +43,11 @@ fn call1(env: *emacs.struct_emacs_env_32, function: [*:0]const u8, argument: ema
     return env.funcall.?(env, function_value, 1, &args);
 }
 
+fn call0(env: *emacs.struct_emacs_env_32, function: [*:0]const u8) emacs.emacs_value {
+    const function_value = env.intern.?(env, function) orelse return null;
+    return env.funcall.?(env, function_value, 0, null);
+}
+
 fn call2(
     env: *emacs.struct_emacs_env_32,
     function: [*:0]const u8,
@@ -54,6 +59,31 @@ fn call2(
     return env.funcall.?(env, function_value, 2, &args);
 }
 
+fn call3(
+    env: *emacs.struct_emacs_env_32,
+    function: [*:0]const u8,
+    first: emacs.emacs_value,
+    second: emacs.emacs_value,
+    third: emacs.emacs_value,
+) emacs.emacs_value {
+    const function_value = env.intern.?(env, function) orelse return null;
+    var args = [_]emacs.emacs_value{ first, second, third };
+    return env.funcall.?(env, function_value, 3, &args);
+}
+
+fn call4(
+    env: *emacs.struct_emacs_env_32,
+    function: [*:0]const u8,
+    first: emacs.emacs_value,
+    second: emacs.emacs_value,
+    third: emacs.emacs_value,
+    fourth: emacs.emacs_value,
+) emacs.emacs_value {
+    const function_value = env.intern.?(env, function) orelse return null;
+    var args = [_]emacs.emacs_value{ first, second, third, fourth };
+    return env.funcall.?(env, function_value, 4, &args);
+}
+
 fn integerOf(env: *emacs.struct_emacs_env_32, value: emacs.emacs_value) ?i64 {
     if (pending(env) or env.is_not_nil.?(env, value) == false) return null;
     return @intCast(env.extract_integer.?(env, value));
@@ -63,6 +93,7 @@ const max_observed_windows: usize = 16;
 const max_window_facts_bytes: usize = 2048;
 
 const ObservedWindow = struct {
+    id: u32,
     index: usize,
     x: i64,
     y: i64,
@@ -77,7 +108,7 @@ const WindowFacts = struct {
 
     fn format(self: WindowFacts, buffer: []u8) []const u8 {
         var writer: std.Io.Writer = .fixed(buffer);
-        writer.writeAll("{\"ordering\":\"selection_relative\",\"identity\":\"per_call_only\",\"selected_index\":") catch return "";
+        writer.writeAll("{\"ordering\":\"selection_relative\",\"identity\":\"process_lifetime\",\"selected_index\":") catch return "";
         writer.print("{d},\"window_count\":{d},\"windows\":[", .{
             self.selected_index,
             self.windows.len,
@@ -85,8 +116,9 @@ const WindowFacts = struct {
         for (self.windows, 0..) |window, index| {
             if (index != 0) writer.writeAll(",") catch return "";
             writer.print(
-                "{{\"index\":{d},\"x\":{d},\"y\":{d},\"width\":{d},\"height\":{d},\"selected\":{s}}}",
+                "{{\"id\":{d},\"index\":{d},\"x\":{d},\"y\":{d},\"width\":{d},\"height\":{d},\"selected\":{s}}}",
                 .{
+                    window.id,
                     window.index,
                     window.x,
                     window.y,
@@ -118,6 +150,80 @@ fn geometryComponent(
     return value;
 }
 
+fn registrySymbol(env: *emacs.struct_emacs_env_32) emacs.emacs_value {
+    return env.intern.?(env, "proto-ui-window-id-table");
+}
+
+fn counterSymbol(env: *emacs.struct_emacs_env_32) emacs.emacs_value {
+    return env.intern.?(env, "proto-ui-window-next-id");
+}
+
+fn ensureWindowRegistry(env: *emacs.struct_emacs_env_32) bool {
+    const registry = registrySymbol(env) orelse return false;
+    const bound = call1(env, "boundp", registry) orelse return false;
+    if (pending(env) or env.is_not_nil.?(env, bound) == false) {
+        const test_keyword = env.intern.?(env, ":test") orelse return false;
+        const eq_symbol = env.intern.?(env, "eq") orelse return false;
+        const weakness_keyword = env.intern.?(env, ":weakness") orelse return false;
+        const key_symbol = env.intern.?(env, "key") orelse return false;
+        const table = call4(
+            env,
+            "make-hash-table",
+            test_keyword,
+            eq_symbol,
+            weakness_keyword,
+            key_symbol,
+        ) orelse return false;
+        _ = call2(env, "set", registry, table) orelse return false;
+    }
+    const counter = counterSymbol(env) orelse return false;
+    const counter_bound = call1(env, "boundp", counter) orelse return false;
+    if (pending(env) or env.is_not_nil.?(env, counter_bound) == false) {
+        const zero = env.make_integer.?(env, 0) orelse return false;
+        _ = call2(env, "set", counter, zero) orelse return false;
+    }
+    if (pending(env)) return false;
+    return true;
+}
+
+fn stableWindowId(env: *emacs.struct_emacs_env_32, window: emacs.emacs_value) ?u32 {
+    const registry = call1(env, "symbol-value", registrySymbol(env) orelse return null) orelse return null;
+    if (pending(env)) return null;
+    const existing = call2(env, "gethash", window, registry) orelse return null;
+    if (pending(env)) return null;
+    if (env.is_not_nil.?(env, existing)) {
+        const id = integerOf(env, existing) orelse {
+            signalError(env, "Proto-UI window identity was not an integer");
+            return null;
+        };
+        if (id <= 0 or id > std.math.maxInt(u32)) {
+            signalError(env, "Proto-UI persisted window identity is invalid");
+            return null;
+        }
+        return @intCast(id);
+    }
+
+    const counter_symbol = counterSymbol(env) orelse return null;
+    const counter = call1(env, "symbol-value", counter_symbol) orelse return null;
+    if (pending(env)) return null;
+    const next = call2(env, "+", counter, env.make_integer.?(env, 1) orelse return null) orelse return null;
+    if (pending(env)) return null;
+    const next_id = integerOf(env, next) orelse {
+        signalError(env, "Proto-UI window identity counter was not an integer");
+        return null;
+    };
+    if (pending(env)) return null;
+    if (next_id <= 0 or next_id > std.math.maxInt(u32)) {
+        signalError(env, "Proto-UI window identity space exhausted");
+        return null;
+    }
+    _ = call2(env, "set", counter_symbol, next) orelse return null;
+    if (pending(env)) return null;
+    _ = call3(env, "puthash", window, next, registry) orelse return null;
+    if (pending(env)) return null;
+    return @intCast(next_id);
+}
+
 fn windowFacts(
     maybe_env: ?*emacs.struct_emacs_env_32,
     nargs: c_long,
@@ -132,6 +238,7 @@ fn windowFacts(
         return null;
     }
     if (env.should_quit.?(env)) return null;
+    if (!ensureWindowRegistry(env)) return null;
 
     const selected = call1(env, "frame-selected-window", args[0]) orelse return null;
     if (pending(env)) return null;
@@ -144,6 +251,8 @@ fn windowFacts(
     var rest = list;
     while (count < max_observed_windows and env.is_not_nil.?(env, rest)) {
         const window = call1(env, "car", rest) orelse return null;
+        if (pending(env)) return null;
+        const id = stableWindowId(env, window) orelse return null;
         if (pending(env)) return null;
         const edges = call1(env, "window-pixel-edges", window) orelse return null;
         if (pending(env)) return null;
@@ -171,6 +280,7 @@ fn windowFacts(
         }
 
         windows[count] = .{
+            .id = id,
             .index = count,
             .x = left,
             .y = top,
@@ -302,6 +412,7 @@ export fn emacs_module_init(runtime: *emacs.struct_emacs_runtime) c_int {
     const env = runtime.get_environment.?(runtime) orelse return 3;
     if (env.*.size < @sizeOf(emacs.struct_emacs_env_31)) return 4;
     if (env.*.non_local_exit_check.?(env) != 0) return 5;
+    if (!ensureWindowRegistry(env)) return 18;
 
     const echo_value = env.*.make_function.?(
         env,
@@ -349,13 +460,13 @@ export fn emacs_module_init(runtime: *emacs.struct_emacs_runtime) c_int {
 
 test "formats bounded multi-window facts" {
     var windows = [_]ObservedWindow{
-        .{ .index = 0, .x = 0, .y = 0, .width = 120, .height = 80, .selected = true },
-        .{ .index = 1, .x = 120, .y = 0, .width = 80, .height = 80, .selected = false },
+        .{ .id = 101, .index = 0, .x = 0, .y = 0, .width = 120, .height = 80, .selected = true },
+        .{ .id = 102, .index = 1, .x = 120, .y = 0, .width = 80, .height = 80, .selected = false },
     };
     var buffer: [max_window_facts_bytes]u8 = undefined;
     const text = (WindowFacts{ .selected_index = 0, .windows = &windows }).format(&buffer);
     try std.testing.expectEqualStrings(
-        "{\"ordering\":\"selection_relative\",\"identity\":\"per_call_only\",\"selected_index\":0,\"window_count\":2,\"windows\":[{\"index\":0,\"x\":0,\"y\":0,\"width\":120,\"height\":80,\"selected\":true},{\"index\":1,\"x\":120,\"y\":0,\"width\":80,\"height\":80,\"selected\":false}]}",
+        "{\"ordering\":\"selection_relative\",\"identity\":\"process_lifetime\",\"selected_index\":0,\"window_count\":2,\"windows\":[{\"id\":101,\"index\":0,\"x\":0,\"y\":0,\"width\":120,\"height\":80,\"selected\":true},{\"id\":102,\"index\":1,\"x\":120,\"y\":0,\"width\":80,\"height\":80,\"selected\":false}]}",
         text,
     );
 }
