@@ -1493,8 +1493,16 @@ Implemented:
    `frame-pixel-width`, `frame-pixel-height`, `window-pixel-width`, and
    `window-pixel-height`) and returns bounded JSON facts.  It does not inspect
    redisplay internals.
-4. `proto-ui-module` builds the adapter-owned artifact; a batch gate loads it
-   through `module-load` and verifies `proto-ui-echo`.
+4. `proto-ui-window-facts` observes up to 16 live windows through public APIs
+   (`frame-selected-window`, `window-list`, `car`, `cdr`, `nth`,
+   `window-pixel-edges`, and `eq`) and returns bounded flat geometry facts with
+   the selected-window ordinal.  Ordering is relative to the selected window and
+   each ordinal is per-call only; the wire explicitly marks `identity` as
+   `per_call_only`.  It is not a stable cross-snapshot identity, not a
+   hierarchical window tree, and does not inspect redisplay internals.
+5. `proto-ui-module` builds the adapter-owned artifact; a batch gate loads it
+   through `module-load`, verifies `proto-ui-echo`, and validates bounded
+   multi-window facts.
 
 The seam is intentionally public-API-only.  It does not expose redisplay
 internals, input, resources, fonts, text content, or a complete Proto-UI frame.
@@ -1509,7 +1517,8 @@ The gate builds a modules-enabled Emacs and loads the adapter module in the same
 batch process.
 
 On a display-capable host, `proto-ui-frame-fact-smoke` opens Emacs briefly,
-observes public frame/window dimensions, validates the JSON fields, and exits:
+observes public frame dimensions and bounded live-window geometry, validates
+the JSON fields, and exits:
 
 ```sh
 zig build -Dproto-ui=true -Dmodules=true proto-ui-frame-fact-smoke --summary all

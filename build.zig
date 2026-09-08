@@ -1411,9 +1411,14 @@ pub fn build(b: *std.Build) void {
             ) catch @panic("OOM"),
             "--eval",
             "(unless (string= (proto-ui-echo \"seam\") \"proto-ui:seam\") (error \"proto-ui module mismatch\"))",
+            "--eval",
+            "(unless (let ((facts (proto-ui-window-facts (selected-frame)))) (and (string-match \"\\\"window_count\\\":[1-9][0-9]*\" facts) (string-match \"\\\"selected\\\":true\" facts))) (error \"proto-ui window-fact mismatch\"))",
+            "--eval",
+            "(let* ((raw (save-window-excursion (let ((new-window (split-window))) (select-window new-window) (proto-ui-window-facts (selected-frame))))) (facts (json-parse-string raw :object-type (quote plist) :array-type (quote list) :false-object nil :null-object nil)) (windows (plist-get facts :windows)) (selected-index (plist-get facts :selected_index)) (selected-window-fact (nth selected-index windows)) (other-index (% (1+ selected-index) 2)) (other-window-fact (nth other-index windows))) (unless (and (= (length windows) 2) (= (plist-get facts :window_count) 2) (plist-get selected-window-fact :selected) (not (plist-get other-window-fact :selected)) (plist-get selected-window-fact :width) (plist-get selected-window-fact :height) (plist-get other-window-fact :width) (plist-get other-window-fact :height)) (error \"proto-ui bounded multi-window smoke failed\")))",
         });
         proto_module_smoke.setCwd(b.path("."));
         proto_module_smoke.step.dependOn(&proto_module_install.step);
+        proto_module_smoke.step.dependOn(b.getInstallStep());
         proto_module_smoke_dep = &proto_module_smoke.step;
         const proto_module_smoke_step = b.step(
             "proto-ui-module-smoke",
@@ -1426,7 +1431,7 @@ pub fn build(b: *std.Build) void {
             "--eval",
             std.fmt.allocPrint(
                 b.allocator,
-                "(progn (module-load (expand-file-name \"proto-ui-module{s}\" \"zig-out/proto-ui\")) (let ((success nil) (facts nil) (path (getenv \"PROTO_UI_FACTS_FILE\"))) (unwind-protect (progn (setq facts (proto-ui-frame-facts (selected-frame))) (with-temp-file path (insert facts)) (setq success (and (string-match \"\\\"frame_width\\\":[0-9]+\" facts) (string-match \"\\\"window_height\\\":[0-9]+\" facts))) (princ facts))) (kill-emacs (if success 0 1)))) (unless success (error \"Proto-UI frame-fact smoke failed\")))",
+                "(progn (module-load (expand-file-name \"proto-ui-module{s}\" \"zig-out/proto-ui\")) (let ((success nil) (facts nil) (windows nil) (path (getenv \"PROTO_UI_FACTS_FILE\"))) (unwind-protect (progn (setq facts (proto-ui-frame-facts (selected-frame)) windows (proto-ui-window-facts (selected-frame))) (with-temp-file path (insert facts)) (setq success (and (string-match \"\\\"frame_width\\\":[0-9]+\" facts) (string-match \"\\\"window_height\\\":[0-9]+\" facts) (string-match \"\\\"window_count\\\":[1-9][0-9]*\" windows) (string-match \"\\\"selected\\\":true\" windows))) (princ facts) (princ windows))) (kill-emacs (if success 0 1)))) (unless success (error \"Proto-UI frame-fact smoke failed\")))",
                 .{proto_suffix},
             ) catch @panic("OOM"),
         });
@@ -2228,6 +2233,10 @@ pub fn build(b: *std.Build) void {
             };
             for (dk) |d| image_defines.append(b.allocator, d) catch @panic("OOM");
         }
+        // Dynamic-module support is emitted through config.h (not only the
+        // temacs compile macro) because Emacs's runtime module symbols and
+        // generated feature wiring must agree with the linked objects.
+        if (modules_runtime) image_defines.append(b.allocator, .{ .name = "HAVE_MODULES", .value = "1" }) catch @panic("OOM");
     }
     const base_config = makeConfigHeader(b, "linux", null, disabled_knobs.items);
     const config_h_file = base_config.file;
