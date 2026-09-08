@@ -2861,6 +2861,7 @@ pub const Scene = struct {
     window_tree: ?protocol.WindowTreeSnapshot = null,
     menu_model: ?protocol.MenuModelSnapshot = null,
     menu_open: ?protocol.MenuOpen = null,
+    dialog: ?protocol.DialogState = null,
     toolbar: ?protocol.ToolbarModel = null,
     control: session.Control = .{},
     stats: ApplyStats = .{},
@@ -2940,6 +2941,7 @@ pub const Scene = struct {
         self.menu_model = null;
         if (self.toolbar) |*model| protocol.freeToolbarModel(self.allocator, model);
         self.toolbar = null;
+        self.dialog = null;
         self.control = .{};
         self.image_placement_count = 0;
         self.stats = .{};
@@ -3013,6 +3015,9 @@ pub const Scene = struct {
             protocol.Message.menu_model => try self.applyMenuModel(payload),
             protocol.Message.menu_patch => try self.applyMenuPatch(payload),
             protocol.Message.toolbar_model => try self.applyToolbarModel(payload),
+            protocol.Message.dialog_open => try self.applyDialogOpen(payload),
+            protocol.Message.dialog_update => try self.applyDialogUpdate(payload),
+            protocol.Message.dialog_close => try self.applyDialogClose(payload),
             protocol.Message.toolbar_patch => try self.applyToolbarPatch(payload),
             protocol.Message.menu_open => try self.applyMenuOpen(payload),
             protocol.Message.menu_close => try self.applyMenuClose(payload),
@@ -3140,6 +3145,7 @@ pub const Scene = struct {
         self.menu_model = null;
         if (self.toolbar) |*model| protocol.freeToolbarModel(self.allocator, model);
         self.toolbar = null;
+        self.dialog = null;
     }
 
     fn clearGlyphRuns(self: *Scene) void {
@@ -3643,6 +3649,9 @@ pub const Scene = struct {
         }
         if (self.menu_open) |open| {
             if (open.window_id == window_id) self.menu_open = null;
+        }
+        if (self.dialog) |dialog| {
+            if (dialog.window_id == window_id) self.dialog = null;
         }
         self.stats.control_messages += 1;
     }
@@ -4215,6 +4224,63 @@ pub const Scene = struct {
         @memcpy(owned_items, next_model.items);
         if (self.toolbar) |*old| protocol.freeToolbarModel(self.allocator, old);
         self.toolbar = .{ .header = next_model.header, .items = owned_items };
+        self.stats.control_messages += 1;
+    }
+
+    fn validateDialogOwner(self: *Scene, envelope_frame_id: u32, window_id: u64, frame_generation: u32) Error!Window {
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != envelope_frame_id or
+            frame.generation != frame_generation or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation)
+            return Error.InvalidMessage;
+        return findWindow(self.windows.items, window_id) orelse Error.InvalidMessage;
+    }
+
+    fn applyDialogOpen(self: *Scene, payload: protocol.Payload) Error!void {
+        const dialog = try protocol.decodeDialogState(payload.bytes);
+        const owner = try self.validateDialogOwner(payload.envelope.frame_id, dialog.window_id, dialog.frame_generation);
+        if (dialog.x < 0 or dialog.y < 0 or
+            @as(i64, dialog.x) + dialog.width > owner.width or
+            @as(i64, dialog.y) + dialog.height > owner.height)
+            return Error.InvalidMessage;
+        if (self.dialog) |old| {
+            if (old.dialog_id == dialog.dialog_id and
+                dialog.dialog_generation <= old.dialog_generation)
+                return Error.StaleGeneration;
+        }
+        self.dialog = dialog;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyDialogUpdate(self: *Scene, payload: protocol.Payload) Error!void {
+        const dialog = try protocol.decodeDialogState(payload.bytes);
+        const owner = try self.validateDialogOwner(payload.envelope.frame_id, dialog.window_id, dialog.frame_generation);
+        const old = self.dialog orelse return Error.ResourceNotLive;
+        if (old.dialog_id != dialog.dialog_id)
+            return Error.InvalidMessage;
+        if (dialog.window_id != old.window_id)
+            return Error.InvalidMessage;
+        if (dialog.dialog_generation <= old.dialog_generation)
+            return Error.StaleGeneration;
+        if (dialog.x < 0 or dialog.y < 0 or
+            @as(i64, dialog.x) + dialog.width > owner.width or
+            @as(i64, dialog.y) + dialog.height > owner.height)
+            return Error.InvalidMessage;
+        self.dialog = dialog;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyDialogClose(self: *Scene, payload: protocol.Payload) Error!void {
+        const close = try protocol.decodeDialogClose(payload.bytes);
+        _ = try self.validateDialogOwner(payload.envelope.frame_id, close.window_id, close.frame_generation);
+        const dialog = self.dialog orelse return Error.ResourceNotLive;
+        if (dialog.dialog_id != close.dialog_id or
+            dialog.dialog_generation != close.dialog_generation or
+            dialog.window_id != close.window_id)
+            return Error.InvalidMessage;
+        self.dialog = null;
         self.stats.control_messages += 1;
     }
 
@@ -11398,4 +11464,138 @@ test "shaped atlas glyph run validates face font and atlas entries" {
     defer a.free(font_patch);
     try scene.apply(font_patch);
     try std.testing.expectEqual(@as(usize, 0), scene.glyph_runs.items.len);
+}
+
+test "dialog lifecycle validates owner, generation, and cleanup" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var title: [protocol.max_dialog_title]u8 = @splat(0);
+    var text: [protocol.max_dialog_text]u8 = @splat(0);
+    @memcpy(title[0..6], "Delete");
+    @memcpy(text[0..11], "Delete file");
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    var state: protocol.DialogState = .{
+        .kind = .confirm,
+        .dialog_id = 80,
+        .dialog_generation = 1,
+        .window_id = 100,
+        .frame_generation = 1,
+        .x = 8,
+        .y = 8,
+        .width = 32,
+        .height = 16,
+        .title_len = 6,
+        .text_len = 11,
+        .buttons = protocol.DialogButtons.yes | protocol.DialogButtons.no,
+        .title = title,
+        .text = text,
+    };
+    try protocol.encodeDialogState(a, state, &payload);
+    {
+        const cross_frame = try windowLifecycleMessage(a, protocol.Message.dialog_open, 3, 8, payload.items);
+        defer a.free(cross_frame);
+        try std.testing.expectError(Error.InvalidMessage, scene.apply(cross_frame));
+    }
+    var outside = state;
+    outside.width = 81;
+    payload.clearRetainingCapacity();
+    try protocol.encodeDialogState(a, outside, &payload);
+    {
+        const invalid = try windowLifecycleMessage(a, protocol.Message.dialog_open, 3, 7, payload.items);
+        defer a.free(invalid);
+        try std.testing.expectError(Error.InvalidMessage, scene.apply(invalid));
+    }
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeDialogState(a, state, &payload);
+    {
+        const open = try windowLifecycleMessage(a, protocol.Message.dialog_open, 3, 7, payload.items);
+        defer a.free(open);
+        try scene.apply(open);
+    }
+    {
+        const stale = try windowLifecycleMessage(a, protocol.Message.dialog_open, 4, 7, payload.items);
+        defer a.free(stale);
+        try std.testing.expectError(Error.StaleGeneration, scene.apply(stale));
+    }
+
+    state.dialog_generation = 2;
+    state.text_len = 6;
+    @memset(&state.text, 0);
+    @memcpy(state.text[0..6], "Append");
+    payload.clearRetainingCapacity();
+    try protocol.encodeDialogState(a, state, &payload);
+    {
+        const replacement = try windowLifecycleMessage(a, protocol.Message.dialog_update, 4, 7, payload.items);
+        defer a.free(replacement);
+        try scene.apply(replacement);
+    }
+    try std.testing.expectEqual(@as(u32, 2), scene.dialog.?.dialog_generation);
+    try std.testing.expectEqualStrings("Append", scene.dialog.?.text[0..6]);
+
+    const second_window = try windowCreateMessage(a, 5, 7, .{
+        .window_id = 101,
+        .parent_window_id = 0,
+        .x = 0,
+        .y = 0,
+        .width = 80,
+        .height = 60,
+        .flags = 2,
+        .default_face_id = 0,
+        .depth = 0,
+    });
+    defer a.free(second_window);
+    try scene.apply(second_window);
+    var moved = state;
+    moved.window_id = 101;
+    moved.dialog_generation = 3;
+    payload.clearRetainingCapacity();
+    try protocol.encodeDialogState(a, moved, &payload);
+    {
+        const wrong_owner = try windowLifecycleMessage(a, protocol.Message.dialog_update, 6, 7, payload.items);
+        defer a.free(wrong_owner);
+        try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_owner));
+    }
+    try std.testing.expectEqual(@as(u32, 2), scene.dialog.?.dialog_generation);
+    try std.testing.expectEqual(@as(u64, 100), scene.dialog.?.window_id);
+    payload.clearRetainingCapacity();
+    try protocol.encodeDialogClose(a, .{
+        .reason = .escape,
+        .dialog_id = 80,
+        .dialog_generation = 2,
+        .window_id = 100,
+        .frame_generation = 1,
+    }, &payload);
+    {
+        const close = try windowLifecycleMessage(a, protocol.Message.dialog_close, 6, 7, payload.items);
+        defer a.free(close);
+        try scene.apply(close);
+    }
+    try std.testing.expect(scene.dialog == null);
+
+    state.dialog_generation = 3;
+    payload.clearRetainingCapacity();
+    try protocol.encodeDialogState(a, state, &payload);
+    {
+        const reopened = try windowLifecycleMessage(a, protocol.Message.dialog_open, 7, 7, payload.items);
+        defer a.free(reopened);
+        try scene.apply(reopened);
+    }
+    scene.rows.deinit(a);
+    scene.rows = .empty;
+    const deleted = try windowDeleteMessage(a, 8, 7, 100);
+    defer a.free(deleted);
+    try scene.apply(deleted);
+    try std.testing.expect(scene.dialog == null);
+    scene.resetForResync();
+    try std.testing.expect(scene.dialog == null);
 }

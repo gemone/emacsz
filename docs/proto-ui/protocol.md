@@ -1659,14 +1659,14 @@ Menu item fields include ID, parent, label, help, key binding, icon, enabled, se
 | `0x0920` | `DIALOG_OPEN` | C→F | Dialog model |
 | `0x0921` | `DIALOG_UPDATE` | C→F | Changes |
 | `0x0922` | `DIALOG_CLOSE` | C→F | Dialog ID/reason |
-| `0x0923` | `DIALOG_RESULT` | F→C | Button/fields/path/color/font |
+| `0x0923` | `DIALOG_RESULT` | F→C | Button/bounded UTF-8 text |
 | `0x0930` | `TOOLTIP_SHOW` | C→F | Content/placement |
 | `0x0931` | `TOOLTIP_MOVE` | C→F | New placement |
 | `0x0932` | `TOOLTIP_HIDE` | C→F | Tooltip ID |
 | `0x0940` | `SCROLLBAR_STATE` | C→F | Authoritative values |
 | `0x0941` | `SCROLLBAR_EVENT` | F→C | Drag/page/step intent |
 
-Dialog kinds include message, question, yes/no, yes/no/cancel, OK/cancel, prompt, error, progress, file open/save, font, color, and custom.
+The bounded v1 slice implements message, prompt, and confirm.  Progress, file, color, font, and advanced custom dialogs remain planned extension IDs.
 
 #### `MENU_MODEL` v1 (implemented bounded adapter contract)
 
@@ -1908,6 +1908,25 @@ Each `TOOLBAR_PATCH` operation is exactly 168 bytes:
 | 88 | 64 | help | item rules; fully zero on delete |
 | 152 | 16 | key | item rules; fully zero on delete |
 
+#### `DIALOG_OPEN` / `UPDATE` / `CLOSE` / `RESULT` v1 (implemented bounded adapter contracts)
+
+`DIALOG_OPEN = 0x0920` and `DIALOG_UPDATE = 0x0921` carry an exact 304-byte
+bounded model for message, prompt, or confirm dialogs.  The model has strict
+schema/reserved rules, nonzero dialog/generation/window/frame identity,
+nonnegative owner-relative geometry bounded by the owner, UTF-8 title/text,
+modal flag, and a nonempty kind-specific known-button mask.  Updates must match
+the dialog id and strictly advance its generation.  `DIALOG_CLOSE = 0x0922` is
+an exact 28-byte action/escape/replaced/shutdown intent and must match the live
+dialog identity exactly.  `DIALOG_RESULT = 0x0923` is an exact 160-byte reverse
+intent carrying a known or custom button plus optional bounded UTF-8 text.
+
+Scene deletion, resync, and teardown clear the owned dialog.  SDL renders a
+diagnostic box and ASCII debug text.  Results require negotiated
+`widget.dialog_result_v1` and use ordered acknowledged DeliveryJournal/EPXL
+traffic.  This slice does not implement native dialogs, file/color/font dialogs,
+progress or error policy, SDL hit testing, input fields, Emacs callback
+dispatch, accessibility, or PGTK dialog parity.
+
 #### `MENU_HOVER` v1 (implemented bounded reverse intent)
 
 `MENU_HOVER = 0x0906` is an exact 40-byte frontend-to-core intent.  Layout:
@@ -2059,9 +2078,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 102 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 106 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 59 | Assigned for the target protocol but not implemented |
+| `planned` | 55 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

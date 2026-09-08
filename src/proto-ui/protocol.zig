@@ -31,6 +31,7 @@ pub const Error = error{
     InvalidBoolean,
     InvalidMenuHover,
     InvalidToolbarClick,
+    InvalidDialogResult,
     InvalidReserved,
     ResourcePayloadBudgetExceeded,
     TrailingBytes,
@@ -147,6 +148,10 @@ pub const Message = struct {
     pub const menu_hover: u16 = 0x0906;
     pub const toolbar_model: u16 = 0x0910;
     pub const toolbar_patch: u16 = 0x0911;
+    pub const dialog_open: u16 = 0x0920;
+    pub const dialog_update: u16 = 0x0921;
+    pub const dialog_close: u16 = 0x0922;
+    pub const dialog_result: u16 = 0x0923;
     pub const toolbar_click: u16 = 0x0912;
     pub const key_event: u16 = 0x0600;
     pub const text_input: u16 = 0x0601;
@@ -4029,6 +4034,298 @@ pub fn decodeToolbarClick(data: []const u8) Error!ToolbarClick {
         .reserved_tail = data[40..48][0..8].*,
     };
     try validateToolbarClick(payload);
+    return payload;
+}
+
+pub const DialogKind = enum(u8) {
+    message = 1,
+    prompt = 2,
+    confirm = 3,
+};
+
+pub const DialogFlags = struct {
+    pub const modal: u8 = 1 << 0;
+    pub const known: u8 = modal;
+};
+
+pub const DialogButtons = struct {
+    pub const ok: u16 = 1 << 0;
+    pub const cancel: u16 = 1 << 1;
+    pub const yes: u16 = 1 << 2;
+    pub const no: u16 = 1 << 3;
+    pub const retry: u16 = 1 << 4;
+    pub const close: u16 = 1 << 5;
+    pub const known: u16 = ok | cancel | yes | no | retry | close;
+};
+
+pub const max_dialog_title: usize = 64;
+pub const max_dialog_text: usize = 192;
+
+pub const DialogState = struct {
+    schema: u16 = 1,
+    flags: u8 = DialogFlags.modal,
+    kind: DialogKind,
+    reserved: u8 = 0,
+    dialog_id: u32,
+    dialog_generation: u32,
+    window_id: u64,
+    frame_generation: u32,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    title_len: u8,
+    text_len: u16,
+    buttons: u16,
+    reserved_tail: u16 = 0,
+    title: [max_dialog_title]u8 = @splat(0),
+    text: [max_dialog_text]u8 = @splat(0),
+};
+
+pub const dialog_state_size: usize = 304;
+
+pub const DialogCloseReason = enum(u8) {
+    action = 1,
+    escape = 2,
+    replaced = 3,
+    shutdown = 4,
+};
+
+pub const DialogClose = struct {
+    schema: u16 = 1,
+    reason: DialogCloseReason,
+    reserved: u8 = 0,
+    dialog_id: u32,
+    dialog_generation: u32,
+    window_id: u64,
+    frame_generation: u32,
+    reserved_tail: [4]u8 = @splat(0),
+};
+
+pub const dialog_close_size: usize = 28;
+
+pub const DialogResultButton = enum(u8) {
+    ok = 1,
+    cancel = 2,
+    yes = 3,
+    no = 4,
+    retry = 5,
+    close = 6,
+    custom = 7,
+};
+
+pub const DialogResult = struct {
+    schema: u16 = 1,
+    button: DialogResultButton,
+    flags: u8 = 0,
+    dialog_id: u32,
+    dialog_generation: u32,
+    window_id: u64,
+    frame_generation: u32,
+    text_len: u16 = 0,
+    reserved_tail: [6]u8 = @splat(0),
+    text: [128]u8 = @splat(0),
+};
+
+pub const dialog_result_size: usize = 160;
+
+fn validateDialogGeometry(state: DialogState) Error!void {
+    if (state.x < 0 or state.y < 0 or state.width == 0 or state.height == 0 or
+        state.width > max_window_size or state.height > max_window_size)
+        return Error.InvalidMessage;
+}
+
+fn validateDialogState(state: DialogState) Error!void {
+    if (state.schema != 1 or state.flags & ~DialogFlags.known != 0 or
+        state.reserved != 0 or state.reserved_tail != 0 or
+        state.dialog_id == 0 or state.dialog_generation == 0 or
+        state.window_id == 0 or state.frame_generation == 0)
+        return Error.InvalidMessage;
+    try validateDialogGeometry(state);
+    if (state.title_len == 0 or state.title_len > max_dialog_title or
+        state.text_len == 0 or state.text_len > max_dialog_text or
+        !std.mem.allEqual(u8, state.title[state.title_len..], 0) or
+        !std.mem.allEqual(u8, state.text[state.text_len..], 0))
+        return Error.InvalidMessage;
+    try validateToolbarText(state.title[0..state.title_len]);
+    try validateToolbarText(state.text[0..state.text_len]);
+    if (state.buttons == 0 or state.buttons & ~DialogButtons.known != 0)
+        return Error.InvalidMessage;
+    switch (state.kind) {
+        .message => {
+            if (state.buttons & (DialogButtons.yes | DialogButtons.no) != 0)
+                return Error.InvalidMessage;
+        },
+        .prompt => {
+            if (state.buttons & DialogButtons.yes != 0) return Error.InvalidMessage;
+        },
+        .confirm => {
+            if (state.buttons & DialogButtons.ok != 0) return Error.InvalidMessage;
+        },
+    }
+}
+
+pub fn encodeDialogState(a: std.mem.Allocator, state: DialogState, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    try validateDialogState(state);
+    var b: [dialog_state_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], state.schema, .little);
+    b[2] = state.flags;
+    b[3] = @intFromEnum(state.kind);
+    std.mem.writeInt(u32, b[4..8], state.dialog_id, .little);
+    std.mem.writeInt(u32, b[8..12], state.dialog_generation, .little);
+    std.mem.writeInt(u64, b[12..20], state.window_id, .little);
+    std.mem.writeInt(u32, b[20..24], state.frame_generation, .little);
+    std.mem.writeInt(i32, b[24..28], state.x, .little);
+    std.mem.writeInt(i32, b[28..32], state.y, .little);
+    std.mem.writeInt(u32, b[32..36], state.width, .little);
+    std.mem.writeInt(u32, b[36..40], state.height, .little);
+    b[40] = state.title_len;
+    std.mem.writeInt(u16, b[42..44], state.text_len, .little);
+    std.mem.writeInt(u16, b[44..46], state.buttons, .little);
+    @memcpy(b[48..112], &state.title);
+    @memcpy(b[112..304], &state.text);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeDialogState(data: []const u8) Error!DialogState {
+    if (data.len != dialog_state_size) return Error.InvalidTable;
+    if (data[41] != 0) return Error.InvalidReserved;
+    const state: DialogState = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .kind = switch (data[3]) {
+            1 => .message,
+            2 => .prompt,
+            3 => .confirm,
+            else => return Error.InvalidMessage,
+        },
+        .dialog_id = std.mem.readInt(u32, data[4..8], .little),
+        .dialog_generation = std.mem.readInt(u32, data[8..12], .little),
+        .window_id = std.mem.readInt(u64, data[12..20], .little),
+        .frame_generation = std.mem.readInt(u32, data[20..24], .little),
+        .x = @bitCast(std.mem.readInt(u32, data[24..28], .little)),
+        .y = @bitCast(std.mem.readInt(u32, data[28..32], .little)),
+        .width = std.mem.readInt(u32, data[32..36], .little),
+        .height = std.mem.readInt(u32, data[36..40], .little),
+        .title_len = data[40],
+        .text_len = std.mem.readInt(u16, data[42..44], .little),
+        .buttons = std.mem.readInt(u16, data[44..46], .little),
+        .reserved_tail = std.mem.readInt(u16, data[46..48], .little),
+        .title = data[48..112][0..max_dialog_title].*,
+        .text = data[112..304][0..max_dialog_text].*,
+    };
+    try validateDialogState(state);
+    return state;
+}
+
+pub fn encodeDialogClose(a: std.mem.Allocator, payload: DialogClose, out: *std.ArrayList(u8)) !void {
+    if (payload.schema != 1 or payload.reserved != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0) or
+        payload.dialog_id == 0 or payload.dialog_generation == 0 or
+        payload.window_id == 0 or payload.frame_generation == 0)
+        return Error.InvalidMessage;
+    switch (payload.reason) {
+        .action, .escape, .replaced, .shutdown => {},
+    }
+    var b: [dialog_close_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = @intFromEnum(payload.reason);
+    b[3] = payload.reserved;
+    std.mem.writeInt(u32, b[4..8], payload.dialog_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.dialog_generation, .little);
+    std.mem.writeInt(u64, b[12..20], payload.window_id, .little);
+    std.mem.writeInt(u32, b[20..24], payload.frame_generation, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeDialogClose(data: []const u8) Error!DialogClose {
+    if (data.len != dialog_close_size) return Error.InvalidTable;
+    const payload: DialogClose = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .reason = switch (data[2]) {
+            1 => .action,
+            2 => .escape,
+            3 => .replaced,
+            4 => .shutdown,
+            else => return Error.InvalidMessage,
+        },
+        .reserved = data[3],
+        .dialog_id = std.mem.readInt(u32, data[4..8], .little),
+        .dialog_generation = std.mem.readInt(u32, data[8..12], .little),
+        .window_id = std.mem.readInt(u64, data[12..20], .little),
+        .frame_generation = std.mem.readInt(u32, data[20..24], .little),
+        .reserved_tail = data[24..dialog_close_size][0..4].*,
+    };
+    if (payload.schema != 1 or payload.reserved != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0) or
+        payload.dialog_id == 0 or payload.dialog_generation == 0 or
+        payload.window_id == 0 or payload.frame_generation == 0)
+        return Error.InvalidMessage;
+    return payload;
+}
+
+fn validateDialogResultText(text: []const u8) Error!void {
+    if (std.mem.indexOfScalar(u8, text, 0) != null) return Error.InvalidMessage;
+    for (text) |byte| {
+        if (byte < 0x20 or byte == 0x7f) return Error.InvalidMessage;
+    }
+    if (!std.unicode.utf8ValidateSlice(text)) return Error.InvalidUtf8;
+}
+
+pub fn validateDialogResult(payload: DialogResult) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0) or
+        payload.dialog_id == 0 or payload.dialog_generation == 0 or
+        payload.window_id == 0 or payload.frame_generation == 0)
+        return Error.InvalidDialogResult;
+    if (payload.text_len > payload.text.len or
+        !std.mem.allEqual(u8, payload.text[payload.text_len..], 0))
+        return Error.InvalidDialogResult;
+    if (payload.text_len != 0) try validateDialogResultText(payload.text[0..payload.text_len]);
+    switch (payload.button) {
+        .ok, .cancel, .yes, .no, .retry, .close, .custom => {},
+    }
+}
+
+pub fn encodeDialogResult(a: std.mem.Allocator, payload: DialogResult, out: *std.ArrayList(u8)) !void {
+    try validateDialogResult(payload);
+    var b: [dialog_result_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = @intFromEnum(payload.button);
+    b[3] = payload.flags;
+    std.mem.writeInt(u32, b[4..8], payload.dialog_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.dialog_generation, .little);
+    std.mem.writeInt(u64, b[12..20], payload.window_id, .little);
+    std.mem.writeInt(u32, b[20..24], payload.frame_generation, .little);
+    std.mem.writeInt(u16, b[24..26], payload.text_len, .little);
+    @memcpy(b[32..160], payload.text[0..128]);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeDialogResult(data: []const u8) Error!DialogResult {
+    if (data.len != dialog_result_size) return Error.InvalidTable;
+    const payload: DialogResult = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .button = switch (data[2]) {
+            1 => .ok,
+            2 => .cancel,
+            3 => .yes,
+            4 => .no,
+            5 => .retry,
+            6 => .close,
+            7 => .custom,
+            else => return Error.InvalidMessage,
+        },
+        .flags = data[3],
+        .dialog_id = std.mem.readInt(u32, data[4..8], .little),
+        .dialog_generation = std.mem.readInt(u32, data[8..12], .little),
+        .window_id = std.mem.readInt(u64, data[12..20], .little),
+        .frame_generation = std.mem.readInt(u32, data[20..24], .little),
+        .text_len = std.mem.readInt(u16, data[24..26], .little),
+        .reserved_tail = data[26..32][0..6].*,
+        .text = data[32..160][0..128].*,
+    };
+    try validateDialogResult(payload);
     return payload;
 }
 
@@ -8187,4 +8484,88 @@ test "menu result and cancel codecs validate bounded live identities" {
     std.mem.writeInt(u32, bytes.items[20..24], 0, .little);
     try std.testing.expectError(Error.InvalidMessage, decodeMenuCancel(bytes.items));
     try std.testing.expectError(Error.InvalidTable, decodeMenuCancel(bytes.items[0 .. bytes.items.len - 1]));
+}
+
+test "dialog codecs enforce bounded model and result identities" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    var title: [max_dialog_title]u8 = @splat(0);
+    var text: [max_dialog_text]u8 = @splat(0);
+    @memcpy(title[0..6], "Delete");
+    @memcpy(text[0..11], "Delete file");
+    const state: DialogState = .{
+        .kind = .confirm,
+        .dialog_id = 80,
+        .dialog_generation = 2,
+        .window_id = 10,
+        .frame_generation = 3,
+        .x = 8,
+        .y = 12,
+        .width = 96,
+        .height = 48,
+        .title_len = 6,
+        .text_len = 11,
+        .buttons = DialogButtons.yes | DialogButtons.no,
+        .title = title,
+        .text = text,
+    };
+    try encodeDialogState(a, state, &bytes);
+    try std.testing.expectEqual(dialog_state_size, bytes.items.len);
+    try std.testing.expectEqual(state, try decodeDialogState(bytes.items));
+    bytes.items[41] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeDialogState(bytes.items));
+    bytes.items[41] = 0;
+    bytes.items[46] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeDialogState(bytes.items));
+    bytes.items[46] = 0;
+    var invalid = state;
+    invalid.buttons = DialogButtons.ok;
+    try std.testing.expectError(Error.InvalidMessage, encodeDialogState(a, invalid, &bytes));
+    invalid = state;
+    invalid.width = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeDialogState(a, invalid, &bytes));
+    try std.testing.expectError(Error.InvalidTable, decodeDialogState(bytes.items[0 .. bytes.items.len - 1]));
+
+    bytes.clearRetainingCapacity();
+    const close: DialogClose = .{
+        .reason = .escape,
+        .dialog_id = 80,
+        .dialog_generation = 2,
+        .window_id = 10,
+        .frame_generation = 3,
+    };
+    try encodeDialogClose(a, close, &bytes);
+    try std.testing.expectEqual(dialog_close_size, bytes.items.len);
+    try std.testing.expectEqual(close, try decodeDialogClose(bytes.items));
+    bytes.items[24] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeDialogClose(bytes.items));
+    bytes.items[24] = 0;
+
+    bytes.clearRetainingCapacity();
+    var result_text: [128]u8 = @splat(0);
+    @memcpy(result_text[0..4], "user");
+    const result: DialogResult = .{
+        .button = .custom,
+        .dialog_id = 80,
+        .dialog_generation = 2,
+        .window_id = 10,
+        .frame_generation = 3,
+        .text_len = 4,
+        .text = result_text,
+    };
+    try encodeDialogResult(a, result, &bytes);
+    try std.testing.expectEqual(dialog_result_size, bytes.items.len);
+    try std.testing.expectEqual(result, try decodeDialogResult(bytes.items));
+    bytes.items[2] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeDialogResult(bytes.items));
+    bytes.items[2] = @intFromEnum(DialogResultButton.custom);
+    bytes.items[26] = 1;
+    try std.testing.expectError(Error.InvalidDialogResult, decodeDialogResult(bytes.items));
+    bytes.items[26] = 0;
+    bytes.items[32] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeDialogResult(bytes.items));
+    bytes.items[32] = 'u';
+    try std.testing.expectError(Error.InvalidTable, decodeDialogResult(bytes.items[0 .. bytes.items.len - 1]));
 }

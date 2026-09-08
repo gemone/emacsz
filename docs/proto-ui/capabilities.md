@@ -70,6 +70,8 @@ Unknown optional capabilities are ignored. Unknown required messages trigger con
 | `widget.toolbar_model_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded complete tool-bar model and diagnostic render only, with no icon rendering or full policy |
 | `widget.toolbar_click_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded acknowledged press/release queue only, with no SDL hit testing or command execution |
 | `widget.toolbar_patch_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded ordered upsert/delete evolution only, with no move policy, icon rendering, or full toolbar parity |
+| `widget.dialog_model_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded message/prompt/confirm state and diagnostic box render only, with no native/file/color/font dialog or full callback parity |
+| `widget.dialog_result_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded acknowledged button/text queue only, with no SDL hit testing, input field, or callback dispatch |
 | `glyph_rows` | Required | core/backend | Backend cannot operate |
 | `shaped_glyphs` | Required | core/font stack + frontend | Incomplete text fallback |
 | `bidi` | Required | core/redisplay | RTL text nonconformant |
@@ -357,10 +359,12 @@ Priorities:
 | Bounded tool bar model | P1 | Degraded | `TOOLBAR_MODEL` v1 validates bounded UTF-8 item models and SDL renders a diagnostic row; icons, overflow, orientation, and full policy pending |
 | Bounded tool bar patch | P1 | Degraded | `TOOLBAR_PATCH` v1 applies ordered upsert/delete operations with strict generations and atomic Scene evolution; dedicated moves, icon rendering, and full policy pending |
 | Bounded tool bar click intent | P1 | Degraded | `TOOLBAR_CLICK` v1 preserves press/release, toolbar/item/window/frame identity, click count, button, modifiers, and coordinates in a negotiated queue; hit testing and command execution pending |
+| Bounded dialog model | P1 | Degraded | `DIALOG_OPEN`/`UPDATE`/`CLOSE` v1 validate kind, button policy, owner containment, exact generations, UTF-8 title/text, and lifecycle cleanup; SDL renders a diagnostic box |
+| Bounded dialog result intent | P1 | Degraded | `DIALOG_RESULT` v1 validates button/text tails, nonzero dialog/window/frame identity, and negotiated acknowledged delivery; hit testing, input fields, and Emacs callback dispatch pending |
 | Popup menu model | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Native menu | Optional | Pending | No platform menu bridge |
 | Tool bar model | P1 | Pending | W12/W16 PGTK parity gate not met |
-| Dialog model | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Full dialog model | P1 | Pending | W12/W16 PGTK parity gate not met; bounded message/prompt/confirm adapter slice only |
 | File dialog | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Color dialog | P2 | Pending | W12/W16 PGTK parity gate not met |
 | Font dialog | P2 | Pending | W12/W16 PGTK parity gate not met |
@@ -501,7 +505,7 @@ parity.
 
 | Layer | Working now | Still required for parity | Evidence |
 |---|---|---|---|
-| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 102 implemented codecs, 3 partial, and 59 planned; no unassigned or unclassified ID | Production implementation of the remaining face/text/graphics protocol gaps |
+| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 106 implemented codecs, 3 partial, and 55 planned; no unassigned or unclassified ID | Production implementation of the remaining face/text/graphics protocol gaps |
 | Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry, deterministic ordered/resync/ACK-loss/ERP1 convergence differential with
 `RESOURCE_SNAPSHOT`-aware concrete face/font/string/image fingerprints, bounded EPXL capability negotiation/status manifest, frame visibility/focus state codec, bounded resource payload cache/eviction policy, request/evict codecs, bounded string define/delete, fixed-layout face/font/image define/data/delete, and atomic concrete `RESOURCE_SNAPSHOT` v1 restore with frontend ownership, optional host frame-state ABI seam, terminal-lifecycle core and fake-host runtime service, generated read-only C adapter, dynamically linkable observation library, bounded host-frame to EUP-frame service mapping, deterministic atomic capture batches, deterministic protocol fuzz hardening, and bounded process-level frontend crash isolation, and negotiated strict focus/window observation | General resource/widget capability coverage, arbitrary recovery, remote safety, runtime terminal registration | `proto-ui-conformance`, `proto-ui-unit`, `proto-ui-terminal-service`, `proto-ui-fuzz`, `proto-ui-recovery-diff`, `proto-ui-crash-isolation`, `proto-ui-shim-conformance`, `proto-ui-shim-library-conformance`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
 | Emacs observation | Real Emacs process publishes public frame/window geometry, bounded printable-ASCII text, point/cursor, and viewport facts; W12c creates/deletes one real display-backed frame and synchronizes one EUP/SDL3 frame lifecycle; W10e renders that public-facts marker through the bounded glyph-run debug fallback | Redisplay-owned rows/glyphs/faces/fonts, full window tree, `output_proto`-owned frame creation/deletion, runtime visibility/focus events | `proto-ui-module-smoke`, `sdl3-emacs-smoke`, `sdl3-epxl-facts-smoke`, `sdl3-frame-smoke` |

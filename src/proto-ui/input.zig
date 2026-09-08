@@ -560,6 +560,7 @@ pub const TranslatedEvent = union(enum) {
     menu_cancel: protocol.MenuCancel,
     menu_hover: protocol.MenuHover,
     toolbar_click: protocol.ToolbarClick,
+    dialog_result: protocol.DialogResult,
 };
 
 pub const TextSupport = enum { ascii, unicode };
@@ -649,6 +650,13 @@ pub const Queue = struct {
         self.length += 1;
     }
 
+    pub fn pushDialogResult(self: *Queue, event: protocol.DialogResult) !void {
+        protocol.validateDialogResult(event) catch return error.InvalidDialogResult;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .dialog_result = event };
+        self.length += 1;
+    }
+
     pub fn pushToolbarClick(self: *Queue, event: protocol.ToolbarClick) !void {
         protocol.validateToolbarClick(event) catch return error.InvalidToolbarClick;
         if (self.length == queue_capacity) return error.InputQueueFull;
@@ -714,6 +722,7 @@ pub const DeliveryJournal = struct {
     menu_result_negotiated: bool = false,
     menu_hover_negotiated: bool = false,
     toolbar_click_negotiated: bool = false,
+    dialog_result_negotiated: bool = false,
     pointer_v2_buttons: u32 = 0,
     pointer_v2_clicks: u8 = 0,
 
@@ -833,6 +842,12 @@ pub const DeliveryJournal = struct {
         if (!self.menu_result_negotiated) return error.MenuResultCapabilityNotNegotiated;
         if (self.pointer_active) return error.PointerSessionActive;
         try self.queue.pushMenuCancel(event);
+    }
+
+    pub fn pushDialogResult(self: *DeliveryJournal, event: protocol.DialogResult) !void {
+        if (!self.dialog_result_negotiated) return error.DialogResultCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushDialogResult(event);
     }
 
     pub fn pushToolbarClick(self: *DeliveryJournal, event: protocol.ToolbarClick) !void {
@@ -1479,6 +1494,37 @@ test "menu hover requires negotiation and validates phase identity" {
     invalid.item_id = 21;
     invalid.reserved_tail[0] = 1;
     try std.testing.expectError(error.InvalidMenuHover, journal.pushMenuHover(invalid));
+}
+
+test "dialog result requires negotiation and preserves bounded identity" {
+    var journal: DeliveryJournal = .{};
+    const result: protocol.DialogResult = .{
+        .button = .ok,
+        .dialog_id = 80,
+        .dialog_generation = 2,
+        .window_id = 10,
+        .frame_generation = 3,
+    };
+
+    try std.testing.expectError(error.DialogResultCapabilityNotNegotiated, journal.pushDialogResult(result));
+    journal.dialog_result_negotiated = true;
+    try journal.pushDialogResult(result);
+    try std.testing.expectError(error.PointerSessionActive, blk: {
+        journal.pointer_active = true;
+        break :blk journal.pushDialogResult(result);
+    });
+    journal.pointer_active = false;
+
+    const sent = (try journal.take()).?;
+    try std.testing.expectEqual(result, sent.event.dialog_result);
+    try std.testing.expect(journal.acknowledge(sent.sequence));
+
+    var invalid = result;
+    invalid.dialog_id = 0;
+    try std.testing.expectError(error.InvalidDialogResult, journal.pushDialogResult(invalid));
+    invalid.dialog_id = 80;
+    invalid.flags = 1;
+    try std.testing.expectError(error.InvalidDialogResult, journal.pushDialogResult(invalid));
 }
 
 test "scrollbar drag tracker emits bounded relative requests" {

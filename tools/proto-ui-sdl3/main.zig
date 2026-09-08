@@ -627,6 +627,8 @@ fn writeTranslatedEvent(
         .menu_cancel => {},
         .menu_hover => {},
         .toolbar_click => {},
+        // Dialog results are EPXL-only and require negotiated capability.
+        .dialog_result => {},
     }
 }
 
@@ -1603,6 +1605,10 @@ fn sendDeliveryEvent(
             try protocol.encodeToolbarClick(gpa, click, &payload);
             break :blk protocol.Message.toolbar_click;
         },
+        .dialog_result => |result| blk: {
+            try protocol.encodeDialogResult(gpa, result, &payload);
+            break :blk protocol.Message.dialog_result;
+        },
     };
     var input_message: std.ArrayList(u8) = .empty;
     defer input_message.deinit(gpa);
@@ -1792,6 +1798,7 @@ fn awaitFrameAck(
                 const is_menu_cancel = payload.envelope.message_type == protocol.Message.menu_cancel;
                 const is_menu_hover = payload.envelope.message_type == protocol.Message.menu_hover;
                 const is_toolbar_click = payload.envelope.message_type == protocol.Message.toolbar_click;
+                const is_dialog_result = payload.envelope.message_type == protocol.Message.dialog_result;
                 var copy_action = false;
                 if (is_key_v2) {
                     full_key = try input_policy.decodeFullKeyEvent(payload.bytes);
@@ -1812,7 +1819,8 @@ fn awaitFrameAck(
                     (is_menu_result and capabilities.contains(.widget_menu_result_v1)) or
                     (is_menu_cancel and capabilities.contains(.widget_menu_result_v1)) or
                     (is_menu_hover and capabilities.contains(.widget_menu_hover_v1)) or
-                    (is_toolbar_click and capabilities.contains(.widget_toolbar_click_v1));
+                    (is_toolbar_click and capabilities.contains(.widget_toolbar_click_v1)) or
+                    (is_dialog_result and capabilities.contains(.widget_dialog_result_v1));
                 if (!input_allowed or
                     payload.envelope.flags & protocol.Flags.requires_ack == 0 or
                     payload.envelope.ack_sequence != 0 or
@@ -1932,6 +1940,22 @@ fn awaitFrameAck(
                     );
                     defer gpa.free(value);
                     try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "toolbar-click", value);
+                } else if (is_dialog_result) {
+                    const event = try protocol.decodeDialogResult(payload.bytes);
+                    const value = try std.fmt.allocPrint(
+                        gpa,
+                        "{{\"button\":\"{s}\",\"dialog_id\":{d},\"dialog_generation\":{d},\"window_id\":{d},\"frame_generation\":{d},\"has_text\":{},\"execution\":\"observed\"}}",
+                        .{
+                            @tagName(event.button),
+                            event.dialog_id,
+                            event.dialog_generation,
+                            event.window_id,
+                            event.frame_generation,
+                            event.text_len != 0,
+                        },
+                    );
+                    defer gpa.free(value);
+                    try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "dialog-result", value);
                 } else if (is_menu_hover) {
                     const event = try protocol.decodeMenuHover(payload.bytes);
                     const value = try std.fmt.allocPrint(
@@ -4282,6 +4306,120 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!toolbar_patch_rendered or toolbar_old_rendered)
         return error.RuntimeBridgeToolbarPatchNotRendered;
 
+    var dialog_payload: std.ArrayList(u8) = .empty;
+    defer dialog_payload.deinit(gpa);
+    var dialog_title: [64]u8 = @splat(0);
+    var dialog_text: [192]u8 = @splat(0);
+    @memcpy(dialog_title[0..6], "Dialog");
+    @memcpy(dialog_text[0..11], "Save buffer");
+    try protocol.encodeDialogState(gpa, .{
+        .kind = .message,
+        .dialog_id = 80,
+        .dialog_generation = 1,
+        .window_id = 10,
+        .frame_generation = bridge.eup_frame_generation,
+        .x = 32,
+        .y = 16,
+        .width = 96,
+        .height = 24,
+        .title_len = 6,
+        .text_len = 11,
+        .buttons = protocol.DialogButtons.ok | protocol.DialogButtons.cancel,
+        .title = dialog_title,
+        .text = dialog_text,
+    }, &dialog_payload);
+    var dialog_update: std.ArrayList(u8) = .empty;
+    defer dialog_update.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.dialog_open,
+        .sequence = 60,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, dialog_payload.items, &dialog_update);
+    try scene.apply(dialog_update.items);
+
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    var dialog_box_rendered = false;
+    var dialog_title_rendered = false;
+    var dialog_message_rendered = false;
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .fill => |fill| {
+                if (fill.rect.x == 40 and fill.rect.y == 24 and
+                    fill.rect.width == 96 and fill.rect.height == 24 and
+                    fill.color.r == 0x20 and fill.color.g == 0x24 and fill.color.b == 0x2c)
+                    dialog_box_rendered = true;
+            },
+            .text => |text| {
+                if (text.x == 44 and text.y == 27 and std.mem.eql(u8, text.bytes, "Dialog"))
+                    dialog_title_rendered = true;
+                if (text.x == 44 and text.y == 36 and std.mem.eql(u8, text.bytes, "Save buffer"))
+                    dialog_message_rendered = true;
+            },
+            else => {},
+        }
+    }
+    if (!dialog_box_rendered or !dialog_title_rendered or !dialog_message_rendered)
+        return error.RuntimeBridgeDialogNotRendered;
+
+    dialog_payload.clearRetainingCapacity();
+    @memcpy(dialog_title[0..6], "Dialog");
+    @memcpy(dialog_text[0..11], "Buffer done");
+    try protocol.encodeDialogState(gpa, .{
+        .kind = .message,
+        .dialog_id = 80,
+        .dialog_generation = 2,
+        .window_id = 10,
+        .frame_generation = bridge.eup_frame_generation,
+        .x = 40,
+        .y = 16,
+        .width = 96,
+        .height = 24,
+        .title_len = 6,
+        .text_len = 11,
+        .buttons = protocol.DialogButtons.ok | protocol.DialogButtons.cancel,
+        .title = dialog_title,
+        .text = dialog_text,
+    }, &dialog_payload);
+    dialog_update.clearRetainingCapacity();
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.dialog_update,
+        .sequence = 61,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, dialog_payload.items, &dialog_update);
+    try scene.apply(dialog_update.items);
+    if (scene.dialog.?.x != 40 or !std.mem.eql(u8, scene.dialog.?.text[0..11], "Buffer done"))
+        return error.RuntimeBridgeDialogUpdateInvalid;
+
+    var dialog_close_payload: std.ArrayList(u8) = .empty;
+    defer dialog_close_payload.deinit(gpa);
+    try protocol.encodeDialogClose(gpa, .{
+        .reason = .escape,
+        .dialog_id = 80,
+        .dialog_generation = 2,
+        .window_id = 10,
+        .frame_generation = bridge.eup_frame_generation,
+    }, &dialog_close_payload);
+    dialog_update.clearRetainingCapacity();
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.dialog_close,
+        .sequence = 62,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, dialog_close_payload.items, &dialog_update);
+    try scene.apply(dialog_update.items);
+    if (scene.dialog != null) return error.RuntimeBridgeDialogCloseInvalid;
+
     const explicit_clip = renderer_policy.explicitDamageClip(240, 96, &explicit_damage);
     if (explicit_clip == null) return error.RuntimeBridgeExplicitClipInvalid;
     frame_gate.dirty = true;
@@ -4382,7 +4520,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"tooltip\":true,\"menu_model\":true,\"menu_open\":true,\"frame_patch\":true,\"frame_snapshot\":true,\"menu_patch\":true,\"toolbar_model\":true,\"toolbar_patch\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"tooltip\":true,\"menu_model\":true,\"menu_open\":true,\"frame_patch\":true,\"frame_snapshot\":true,\"menu_patch\":true,\"toolbar_model\":true,\"toolbar_patch\":true,\"dialog\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,
@@ -4679,6 +4817,7 @@ fn inputEventAllowed(capabilities: capability.Set, event: input_policy.Translate
         .menu_cancel => capabilities.contains(.widget_menu_result_v1),
         .menu_hover => capabilities.contains(.widget_menu_hover_v1),
         .toolbar_click => capabilities.contains(.widget_toolbar_click_v1),
+        .dialog_result => capabilities.contains(.widget_dialog_result_v1),
     };
 }
 
@@ -4732,6 +4871,7 @@ fn syncDeliveryCapabilities(delivery: *input_policy.DeliveryJournal, capabilitie
     delivery.menu_result_negotiated = capabilities.contains(.widget_menu_result_v1);
     delivery.menu_hover_negotiated = capabilities.contains(.widget_menu_hover_v1);
     delivery.toolbar_click_negotiated = capabilities.contains(.widget_toolbar_click_v1);
+    delivery.dialog_result_negotiated = capabilities.contains(.widget_dialog_result_v1);
     delivery.key_v2_negotiated = capabilities.contains(.input_key_full_v2);
     delivery.pointer_v2_negotiated = capabilities.contains(.input_pointer_v2);
     delivery.platform_negotiated = capabilities.contains(.platform_focus_window_events);
@@ -6114,6 +6254,29 @@ fn buildSceneDrawList(
                 }
                 offset += 52;
             }
+        }
+    }
+
+    if (scene.dialog) |dialog| {
+        const owner = findSceneWindow(scene, dialog.window_id) orelse return error.DialogWithoutWindow;
+        const rect = renderer_policy.LogicalRect{
+            .x = @floatFromInt(owner.x + dialog.x),
+            .y = @floatFromInt(owner.y + dialog.y),
+            .width = @floatFromInt(dialog.width),
+            .height = @floatFromInt(dialog.height),
+        };
+        try list.fillRect(rect, .{ .r = 0x20, .g = 0x24, .b = 0x2c });
+        try list.fillRect(.{ .x = rect.x, .y = rect.y, .width = rect.width, .height = 1 }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2 });
+        try list.fillRect(.{ .x = rect.x, .y = rect.y + rect.height - 1, .width = rect.width, .height = 1 }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2 });
+        try list.fillRect(.{ .x = rect.x, .y = rect.y, .width = 1, .height = rect.height }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2 });
+        try list.fillRect(.{ .x = rect.x + rect.width - 1, .y = rect.y, .width = 1, .height = rect.height }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2 });
+        const title = dialog.title[0..dialog.title_len];
+        if (input_policy.isAsciiText(title)) {
+            try list.drawText(rect.x + 4, rect.y + 3, title, .{ .r = 0xff, .g = 0xd5, .b = 0x4d });
+        }
+        const message = dialog.text[0..dialog.text_len];
+        if (input_policy.isAsciiText(message)) {
+            try list.drawText(rect.x + 4, rect.y + 12, message, .{ .r = 0xe0, .g = 0xe6, .b = 0xf0 });
         }
     }
 

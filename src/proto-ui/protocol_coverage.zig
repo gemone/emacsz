@@ -134,9 +134,11 @@ const ranges = [_]Range{
     .{ .low = 0x0910, .high = 0x0910, .status = .implemented_codec, .domain = .widget, .family = "toolbar-model", .note = "bounded complete toolbar model with UTF-8 labels, strict item kinds/flags/icon identity, Scene ownership, and SDL render evidence; icons/policy pending" },
     .{ .low = 0x0911, .high = 0x0911, .status = .implemented_codec, .domain = .widget, .family = "toolbar-patch", .note = "exact 44-byte header plus 168-byte ordered upsert/delete operations with strict generation checks, Scene atomic evolution, and SDL render evidence; move operations and full toolbar policy pending" },
     .{ .low = 0x0912, .high = 0x0912, .status = .implemented_codec, .domain = .widget, .family = "toolbar-click", .note = "bounded press/release reverse intent with toolbar/item/window/frame identity and negotiated DeliveryJournal queue; SDL hit testing and Emacs command dispatch pending" },
-    .{ .low = 0x0913, .high = 0x092f, .status = .planned, .domain = .widget, .family = "toolbar-extension", .note = "toolbar menus, overflow, orientation, and advanced item policy pending" },
+    .{ .low = 0x0913, .high = 0x091f, .status = .planned, .domain = .widget, .family = "toolbar-extension", .note = "toolbar menus, overflow, orientation, and advanced item policy pending" },
+    .{ .low = 0x0920, .high = 0x0923, .status = .implemented_codec, .domain = .widget, .family = "dialog", .note = "bounded message/prompt/confirm open/update/close/result codecs with owner/generation validation, negotiated result queue, and SDL diagnostic render; native dialogs, file/color/font dialogs, and Emacs callback dispatch pending" },
+    .{ .low = 0x0924, .high = 0x092f, .status = .planned, .domain = .widget, .family = "dialog-extension", .note = "progress, file, color, font, error, and advanced dialog policies pending" },
     .{ .low = 0x0930, .high = 0x0932, .status = .implemented_codec, .domain = .widget, .family = "tooltip", .note = "bounded show/move/hide codec, active frame/window validation, exact-generation lifecycle, authoritative clear, and SDL box/text render; Unicode text state validates but debug glyphs are ASCII-only" },
-    .{ .low = 0x0933, .high = 0x0941, .status = .planned, .domain = .widget, .family = "dialog-tooltip-scrollbar", .note = "dialog, remaining tooltip policies, and scrollbar model messages pending" },
+    .{ .low = 0x0933, .high = 0x0941, .status = .planned, .domain = .widget, .family = "tooltip-scrollbar", .note = "remaining tooltip policies and scrollbar model messages pending" },
     .{ .low = 0x0a00, .high = 0x0a09, .status = .planned, .domain = .diagnostic, .family = "diagnostics", .note = "performance/trace/replay diagnostic payloads pending" },
 };
 
