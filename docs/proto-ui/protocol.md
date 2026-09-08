@@ -436,6 +436,20 @@ modal propagation, and Emacs child-frame parity remain pending.
 
 `WINDOW_POSITION` is diagnostic. Frontend layout uses rows and glyph runs, not buffer content.
 
+#### `WINDOW_GEOMETRY` v1 (implemented bounded adapter contract)
+
+`WINDOW_GEOMETRY = 0x0304` is an exact 52-byte little-endian record. After
+`schema=1`, zero flags/reserved, a nonzero window ID, and the active frame
+generation, it carries two owner-relative rectangles: `content` and `body`,
+each as x/y/width/height, followed by four zero bytes. Both rectangles must be
+positive. `Scene` requires the body to be contained by content, the content to
+fit the live owner window, and the envelope/header frame generation to match.
+It upserts one geometry per window, caps the table at 32, clears it on
+authoritative frame updates/resync/teardown, removes it on window deletion, and
+invalidates it when a window patch shrinks the owner. SDL draws the validated
+body boundary as diagnostic evidence. This is not yet redisplay-owned layout,
+zone geometry, DPI-aware layout, or complete PGTK window parity.
+
 #### Window patch v1 (implemented bounded adapter contract)
 
 `WINDOW_PATCH` (`0x0302`) is a fixed 56-byte little-endian record. It starts
@@ -1535,9 +1549,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 76 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 77 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 85 | Assigned for the target protocol but not implemented |
+| `planned` | 84 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

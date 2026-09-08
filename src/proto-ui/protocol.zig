@@ -69,6 +69,7 @@ pub const Message = struct {
     pub const window_tree_snapshot: u16 = 0x0300;
     pub const window_create: u16 = 0x0301;
     pub const window_delete: u16 = 0x0303;
+    pub const window_geometry: u16 = 0x0304;
     pub const window_face: u16 = 0x0306;
     pub const window_scroll_state: u16 = 0x0308;
     pub const window_patch: u16 = 0x0302;
@@ -2503,7 +2504,7 @@ pub fn decodeFrameDropped(data: []const u8) Error!FrameDroppedPayload {
     return payload;
 }
 
-fn containsGeometryRect(outer: GeometryRect, inner: GeometryRect) bool {
+pub fn containsGeometryRect(outer: GeometryRect, inner: GeometryRect) bool {
     const outer_right = @as(i64, outer.x) + outer.width;
     const outer_bottom = @as(i64, outer.y) + outer.height;
     const inner_right = @as(i64, inner.x) + inner.width;
@@ -2512,7 +2513,7 @@ fn containsGeometryRect(outer: GeometryRect, inner: GeometryRect) bool {
         inner_right <= outer_right and inner_bottom <= outer_bottom;
 }
 
-fn validGeometryRect(rect: GeometryRect) bool {
+pub fn validGeometryRect(rect: GeometryRect) bool {
     return rect.width > 0 and rect.height > 0 and
         @as(i64, rect.x) + rect.width <= std.math.maxInt(i32) and
         @as(i64, rect.y) + rect.height <= std.math.maxInt(i32);

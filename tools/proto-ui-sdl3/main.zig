@@ -2786,6 +2786,29 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (scene.window_faces.items.len != 1 or scene.window_faces.items[0].face_id != 7)
         return error.RuntimeBridgeWindowFaceInvalid;
 
+    var window_geometry_payload: std.ArrayList(u8) = .empty;
+    defer window_geometry_payload.deinit(gpa);
+    try frontend.encodeWindowGeometryState(gpa, .{
+        .window_id = 10,
+        .frame_generation = bridge.eup_frame_generation,
+        .content = .{ .x = 2, .y = 2, .width = 60, .height = 36 },
+        .body = .{ .x = 4, .y = 4, .width = 50, .height = 30 },
+    }, &window_geometry_payload);
+    var window_geometry_update: std.ArrayList(u8) = .empty;
+    defer window_geometry_update.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.window_geometry,
+        .sequence = 34,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, window_geometry_payload.items, &window_geometry_update);
+    try scene.apply(window_geometry_update.items);
+    if (scene.window_geometries.items.len != 1 or scene.window_geometries.items[0].body.width != 50)
+        return error.RuntimeBridgeWindowGeometryInvalid;
+
     if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
         scene.glyph_runs.items.len != 1 or scene.cursor == null)
         return error.RuntimeBridgeSceneInvalid;
@@ -2980,6 +3003,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     var run_rendered = false;
     var face_background = false;
     var window_face_background_rendered = false;
+    var window_geometry_rendered = false;
     var cursor_update_rendered = false;
     for (draw_list.commands.items) |command| {
         switch (command) {
@@ -2990,6 +3014,10 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
                     fill.rect.width == 200 and fill.rect.height == 40 and
                     fill.color.r == 0x20 and fill.color.g == 0x28 and fill.color.b == 0x38)
                     window_face_background_rendered = true;
+                if (fill.rect.x == 12 and fill.rect.y == 12 and
+                    fill.rect.width == 50 and fill.rect.height == 1 and
+                    fill.color.r == 0x38 and fill.color.g == 0xd9 and fill.color.b == 0xa9)
+                    window_geometry_rendered = true;
                 if (fill.rect.x == 24 and fill.rect.y == 20 and
                     fill.color.r == 0xff and fill.color.g == 0xd5 and fill.color.b == 0x4d)
                     cursor_update_rendered = true;
@@ -3003,7 +3031,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
             else => {},
         }
     }
-    if (!face_background or !window_face_background_rendered or !run_rendered or !cursor_update_rendered)
+    if (!face_background or !window_face_background_rendered or !window_geometry_rendered or
+        !run_rendered or !cursor_update_rendered)
         return error.RuntimeBridgeNotRendered;
 
     var frame_gate: renderer_policy.FrameGate = .{};
@@ -3096,7 +3125,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     try protocol.encodeEnvelope(gpa, .{
         .flags = 0,
         .message_type = protocol.Message.damage_rects,
-        .sequence = 34,
+        .sequence = 35,
         .ack_sequence = 0,
         .session_id = capability.session_id,
         .frame_id = @intCast(bridge.frame.id),
@@ -3194,7 +3223,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"window_face\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"window_face\":{},\"window_geometry\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,
@@ -3211,6 +3240,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
             scene.fringes.items.len == 1,
             scene.scroll_states.items.len == 1,
             window_face_background_rendered,
+            window_geometry_rendered,
             scene.flush != null,
             scene.render_hint != null,
             opacity_supported,
@@ -4447,6 +4477,30 @@ fn buildSceneDrawList(
             .b = face.payload.background[2],
             .a = face.payload.background[3],
         });
+    }
+
+    for (scene.window_geometries.items) |state| {
+        const owner = findSceneWindow(scene, state.window_id) orelse continue;
+        if (!owner.visible) continue;
+        const left: f32 = @floatFromInt(owner.x + state.body.x);
+        const top: f32 = @floatFromInt(owner.y + state.body.y);
+        const width: f32 = @floatFromInt(state.body.width);
+        const height: f32 = @floatFromInt(state.body.height);
+        const color = renderer_policy.Color{ .r = 0x38, .g = 0xd9, .b = 0xa9, .a = 255 };
+        try list.fillRect(.{ .x = left, .y = top, .width = width, .height = 1 }, color);
+        try list.fillRect(.{
+            .x = left,
+            .y = top + height - 1,
+            .width = width,
+            .height = 1,
+        }, color);
+        try list.fillRect(.{ .x = left, .y = top, .width = 1, .height = height }, color);
+        try list.fillRect(.{
+            .x = left + width - 1,
+            .y = top,
+            .width = 1,
+            .height = height,
+        }, color);
     }
 
     for (scene.clear_areas.items) |area| {

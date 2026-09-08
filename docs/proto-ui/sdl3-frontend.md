@@ -147,6 +147,7 @@ Scene objects include:
 frame state
 window region
 zone geometry
+window content/body geometry
 window default-face state
 row
 render item
@@ -171,8 +172,8 @@ The scene is rebuilt incrementally where possible. A full rebuild occurs after s
 3. Apply window patches.
 4. Replace or update rows.
 5. Replace or update render items.
-6. Update cursor, window default face, fringe, divider, border, and scrollbar
-   state.
+6. Clear window content/body geometry, then update cursor, window default face,
+   fringe, divider, border, and scrollbar state.
 7. Merge damage rectangles.
 8. Record present hint and deadline.
 
@@ -185,6 +186,7 @@ begin frame
   clear damaged regions
   draw frame background
   draw window backgrounds (default face when live and validated)
+  draw validated body geometry boundary
   draw margins
   draw glyph runs
   draw images

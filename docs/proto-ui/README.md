@@ -278,6 +278,12 @@ replacement/patch/delete.  SDL renders the validated background over the owner
 window as evidence only; redisplay-owned face capture and PGTK face parity
 remain pending.
 
+P31 window-geometry preparation adds `WINDOW_GEOMETRY` v1.  `Scene` validates
+owner-relative content and body rectangles against the active live window,
+upserts one bounded geometry per window, clears it on authoritative updates,
+and invalidates it on shrink/delete.  SDL draws the validated body boundary as
+evidence; redisplay-owned layout and complete zone/PGTK parity remain pending.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and

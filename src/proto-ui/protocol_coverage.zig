@@ -86,7 +86,8 @@ const ranges = [_]Range{
     .{ .low = 0x0301, .high = 0x0301, .status = .implemented_codec, .domain = .window, .family = "window-create", .note = "bounded visible-window create codec and Scene lifecycle" },
     .{ .low = 0x0302, .high = 0x0302, .status = .implemented_codec, .domain = .window, .family = "window-patch", .note = "bounded geometry/parent/visibility/face/depth patch with Scene validation" },
     .{ .low = 0x0303, .high = 0x0303, .status = .implemented_codec, .domain = .window, .family = "window-delete", .note = "bounded empty-window delete codec and Scene lifecycle" },
-    .{ .low = 0x0304, .high = 0x0305, .status = .planned, .domain = .window, .family = "window-state", .note = "zones and position payloads pending" },
+    .{ .low = 0x0304, .high = 0x0304, .status = .implemented_codec, .domain = .window, .family = "window-geometry", .note = "bounded content/body geometry codec, owner validation, Scene upsert, SDL body-boundary render evidence" },
+    .{ .low = 0x0305, .high = 0x0305, .status = .planned, .domain = .window, .family = "window-state", .note = "mode/header/tab/margin/fringe/scrollbar zone payload pending" },
     .{ .low = 0x0306, .high = 0x0306, .status = .implemented_codec, .domain = .window, .family = "window-face", .note = "bounded window default-face state codec, active resource validation, Scene upsert, SDL render evidence" },
     .{ .low = 0x0307, .high = 0x0307, .status = .planned, .domain = .window, .family = "window-state", .note = "position payload pending" },
     .{ .low = 0x0308, .high = 0x0308, .status = .implemented_codec, .domain = .window, .family = "scroll-state", .note = "bounded scrollbar state codec, active-frame/window validation, Scene upsert, SDL render evidence" },
@@ -276,8 +277,10 @@ test "coverage table covers every assigned ID exactly once" {
 test "implemented and planned protocol coverage remain honest" {
     const implemented = entryFor(0x0203) catch unreachable;
     try std.testing.expectEqual(Status.implemented_codec, implemented.status);
-    const planned = entryFor(0x0304) catch unreachable;
-    try std.testing.expectEqual(Status.planned, planned.status);
+    const window_geometry = entryFor(0x0304) catch unreachable;
+    try std.testing.expectEqual(Status.implemented_codec, window_geometry.status);
+    const zones = entryFor(0x0305) catch unreachable;
+    try std.testing.expectEqual(Status.planned, zones.status);
     const window_face = entryFor(0x0306) catch unreachable;
     try std.testing.expectEqual(Status.implemented_codec, window_face.status);
     const position = entryFor(0x0307) catch unreachable;
