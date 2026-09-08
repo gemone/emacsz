@@ -3504,6 +3504,7 @@ fn clipboardSupportFor(capabilities: capability.Set) ?input_policy.TextSupport {
 }
 
 fn syncDeliveryCapabilities(delivery: *input_policy.DeliveryJournal, capabilities: capability.Set) void {
+    delivery.scroll_request_negotiated = capabilities.contains(.window_scroll_request_v1);
     delivery.key_v2_negotiated = capabilities.contains(.input_key_full_v2);
     delivery.pointer_v2_negotiated = capabilities.contains(.input_pointer_v2);
     delivery.platform_negotiated = capabilities.contains(.platform_focus_window_events);
@@ -3515,6 +3516,7 @@ fn usePointerV2(capabilities: capability.Set, config: *const Config) bool {
 
 fn pollEpxlInteractiveInput(
     delivery: *input_policy.DeliveryJournal,
+    scrollbar_drag: *input_policy.ScrollbarDragTracker,
     config: *const Config,
     retained: *RetainedFrame,
     scene: *frontend.Scene,
@@ -3633,6 +3635,13 @@ fn pollEpxlInteractiveInput(
                 if (config.interactive_synthetic and !config.synthetic_pointer and !config.synthetic_pointer_v2) return;
                 const x = boundedPointerCoordinate(event.motion.x) orelse return;
                 const y = boundedPointerCoordinate(event.motion.y) orelse return;
+                if (scrollbar_drag.active) {
+                    if (try scrollbar_drag.drag(x, y, 1)) |request| {
+                        try delivery.pushScrollRequest(request);
+                        dirty.* = true;
+                    }
+                    return;
+                }
                 if (usePointerV2(capabilities, config)) {
                     const translated = input_policy.translatePointerV2(.{
                         .event_type = event.type,
@@ -3685,6 +3694,14 @@ fn pollEpxlInteractiveInput(
                     return;
                 }
                 if (event.button.button == 1 and event.button.clicks == 1) {
+                    if (scene.scroll_states.items.len == 1 and
+                        capabilities.contains(.window_scroll_request_v1))
+                    {
+                        if (scrollbar_drag.begin(scene.scroll_states.items[0], scene.windows.items[0], x, y, 1)) |_| {
+                            dirty.* = true;
+                            return;
+                        } else |_| {}
+                    }
                     delivery.pushPointer(.{
                         .phase = if (down) .press else .release,
                         .button = 1,
@@ -4070,7 +4087,8 @@ fn runEpxlInteractiveFrontend(
         var release = mouseButtonEvent(120, 2, SDL_EVENT_MOUSE_BUTTON_UP, false);
         if (!SDL_PushEvent(&release)) return sdlFail("SDL_PushEvent");
     }
-    try pollEpxlInteractiveInput(delivery, config, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty);
+    var scrollbar_drag: input_policy.ScrollbarDragTracker = .{};
+    try pollEpxlInteractiveInput(delivery, &scrollbar_drag, config, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty);
     try deliveryAllowed(delivery, negotiated.effective);
 
     var quit = false;
@@ -4109,7 +4127,7 @@ fn runEpxlInteractiveFrontend(
         }
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
-        pollEpxlInteractiveInput(delivery, config, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty) catch |err| switch (err) {
+        pollEpxlInteractiveInput(delivery, &scrollbar_drag, config, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty) catch |err| switch (err) {
             error.InteractiveQuit => quit = true,
             else => return err,
         };
