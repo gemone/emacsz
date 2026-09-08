@@ -52,6 +52,7 @@ Unknown optional capabilities are ignored. Unknown required messages trigger con
 | `frame.tooltip` | Required for PGTK parity | negotiated | Echo-area fallback |
 | `window_tree` | Required | core/backend | Backend cannot operate |
 | `window.tree_snapshot_v1` | Optional/degraded | adapter/frontend | Bounded complete-tree state codec and Scene validation; no rendering/management parity |
+| `window.face_state_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded default-face/background evidence only |
 | `glyph_rows` | Required | core/backend | Backend cannot operate |
 | `shaped_glyphs` | Required | core/font stack + frontend | Incomplete text fallback |
 | `bidi` | Required | core/redisplay | RTL text nonconformant |
@@ -170,6 +171,11 @@ that bounded path in `sdl3-frame-smoke` to render the public-facts marker
 this remains diagnostic fallback, not redisplay-owned capture, shaped text,
 face/font rendering, or `output_proto`.
 
+P30 moves the matrix's `Faces` row from Pending to Degraded: bounded
+`FACE_DEFINE`/`FACE_PATCH`/`FACE_DELETE` resources and `WINDOW_FACE` v1 can
+validate and render one live default-face background, but core-owned face
+capture and complete Emacs face semantics remain pending.
+
 Priorities:
 
 | Priority | Meaning |
@@ -231,7 +237,7 @@ Priorities:
 | Image glyphs | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Stretch glyphs | P1 | Pending | W12/W16 PGTK parity gate not met |
 | XWidget glyphs | EXP | Pending | W12/W16 PGTK parity gate not met |
-| Faces | P0 | Pending | W12/W16 PGTK parity gate not met |
+| Faces | P0 | Degraded | Bounded face resources and `WINDOW_FACE` v1 validate exact live generations and SDL renders one default-face background; redisplay capture, overlays, derived faces, shaping, and PGTK face parity pending |
 | Cursor styles | P0 | Degraded | Single filled rectangle; no shape, blink, or face model |
 | Mouse face | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Fringe bitmaps | P1 | Degraded | `FRINGE_UPDATE` v1 validates side/geometry/generation and SDL renders color bands; bitmap glyphs and draggable fringe semantics pending |
@@ -468,18 +474,18 @@ parity.
 
 | Layer | Working now | Still required for parity | Evidence |
 |---|---|---|---|
-| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 71 implemented codecs, 3 partial, and 90 planned; no unassigned or unclassified ID | Production implementation of the remaining face/text/graphics protocol gaps |
+| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 76 implemented codecs, 3 partial, and 85 planned; no unassigned or unclassified ID | Production implementation of the remaining face/text/graphics protocol gaps |
 | Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry, deterministic ordered/resync/ACK-loss/ERP1 convergence differential with
 `RESOURCE_SNAPSHOT`-aware concrete face/font/string/image fingerprints, bounded EPXL capability negotiation/status manifest, frame visibility/focus state codec, bounded resource payload cache/eviction policy, request/evict codecs, bounded string define/delete, fixed-layout face/font/image define/data/delete, and atomic concrete `RESOURCE_SNAPSHOT` v1 restore with frontend ownership, optional host frame-state ABI seam, terminal-lifecycle core and fake-host runtime service, generated read-only C adapter, dynamically linkable observation library, bounded host-frame to EUP-frame service mapping, deterministic atomic capture batches, deterministic protocol fuzz hardening, and bounded process-level frontend crash isolation, and negotiated strict focus/window observation | General resource/widget capability coverage, arbitrary recovery, remote safety, runtime terminal registration | `proto-ui-conformance`, `proto-ui-unit`, `proto-ui-terminal-service`, `proto-ui-fuzz`, `proto-ui-recovery-diff`, `proto-ui-crash-isolation`, `proto-ui-shim-conformance`, `proto-ui-shim-library-conformance`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
 | Emacs observation | Real Emacs process publishes public frame/window geometry, bounded printable-ASCII text, point/cursor, and viewport facts; W12c creates/deletes one real display-backed frame and synchronizes one EUP/SDL3 frame lifecycle; W10e renders that public-facts marker through the bounded glyph-run debug fallback | Redisplay-owned rows/glyphs/faces/fonts, full window tree, `output_proto`-owned frame creation/deletion, runtime visibility/focus events | `proto-ui-module-smoke`, `sdl3-emacs-smoke`, `sdl3-epxl-facts-smoke`, `sdl3-frame-smoke` |
-| SDL3 rendering | Real SDL window, frame/window/row/cursor scene, software/GPU selection, clear/fill/debug-text list, retained cursor/text clips, explicit damage-array retained-target clip, CPU command culling, bounded face-colored clear areas, vertical scroll-copy execution and policy, bounded border/divider/fringe styles, face decoration bars, bounded debug glyph runs, EUP-resolved Scene title application, and optional face-colored fallback text | Glyph atlas, production glyph runs, full faces, image presentation, widgets, GPU timestamps | `sdl3-ui-smoke`, `sdl3-renderer-smoke`, `sdl3-pointer-smoke`, `sdl3-epxl-interactive-smoke`, `sdl3-runtime-bridge-smoke` |
+| SDL3 rendering | Real SDL window, frame/window/row/cursor scene, software/GPU selection, clear/fill/debug-text list, retained cursor/text clips, explicit damage-array retained-target clip, CPU command culling, bounded face-colored clear areas and window default-face backgrounds, vertical scroll-copy execution and policy, bounded border/divider/fringe styles, face decoration bars, bounded debug glyph runs, EUP-resolved Scene title application, and optional face-colored fallback text | Glyph atlas, production glyph runs, full faces, image presentation, widgets, GPU timestamps | `sdl3-ui-smoke`, `sdl3-renderer-smoke`, `sdl3-pointer-smoke`, `sdl3-epxl-interactive-smoke`, `sdl3-runtime-bridge-smoke` |
 | Input | Bounded ASCII insert/delete, negotiated bounded UTF-8 text, arrows, negotiated strict down/up/repeat key v2, Ctrl+C/Ctrl+V, left pointer sessions, negotiated bounded left-drag selection, bounded middle-click yank, vertical wheel, negotiated focus and strict window request observation | General keymap/command execution, IME, shaped Unicode rendering, host-applied window mutations, general selection semantics, right-button semantics, generic mouse behavior, pixel/horizontal scroll | `sdl3-input-translate-smoke`, `sdl3-epxl-input-smoke`, `sdl3-epxl-unicode-input-smoke`, `sdl3-epxl-key-v2-smoke`, `sdl3-epxl-edit-smoke`, `sdl3-pointer-smoke`, `sdl3-pointer-selection-smoke`, `sdl3-pointer-middle-paste-smoke`, `sdl3-wheel-smoke`, `sdl3-focus-window-smoke` |
 | Desktop | Bounded UTF-8 clipboard paste/copy, with Unicode gated by negotiated `clipboard.text_unicode` | MIME, PRIMARY/SECONDARY selection, DND, dialogs, menus, scrollbars | `sdl3-clipboard-smoke`, `sdl3-clipboard-unicode-smoke`, `sdl3-emacs-copy-smoke` |
 | Performance | Change-aware present/skip, damage-class counters, clip counters, renderer tier reporting, bridge-owned `FRINGE_UPDATE`/`DIVIDER_UPDATE`/`BORDER_UPDATE`/`SCROLL_RUN`/`DAMAGE_RECTS`/`FLUSH`/`RENDER_HINT` emission, `CLEAR_AREA` Scene acceptance, scroll copy-plan bytes, executed scratch-target scroll copies, explicit submitted/skipped command counters, `FRAME_PRESENTED`/`FRAME_DROPPED` codec conformance, opt-in adapter hot-path baseline for EUP encode/decode, Scene application, atomic capture, and bounded memory send | Core redisplay flush emission, renderer pacing integration, latency percentiles, bandwidth/allocation evidence, real redisplay/typing/scroll benchmarks, GPU-tier comparisons | `proto-ui-bench` (opt-in), renderer/interactive smoke diagnostics; W14 remains partial |
 | Base Emacs compatibility | Existing-buffer health gate for version, text/undo, narrowing, properties, faces, windows, scroll/recenter, buffer locals, optional real PGTK frame lifecycle, and a seven-scenario deterministic TTY/PGTK semantic matrix | Proto-frame compatibility and full PGTK parity | `proto-ui-compat` (opt-in); `compatibility.pgtk_base_gate` and `compatibility.backend_semantic_matrix` are degraded and non-negotiable |
 | Disabled/default isolation | Bounded marker audit of inherited C/Header/Lisp files and generated `src/config.h`; explicit owned-root/build-output exclusion; deterministic machine-readable fail-closed JSON | Runtime host registration, real `output_proto` enablement, and proto-frame compatibility | `proto-ui-isolation-audit`; `isolation.disabled_default_gate` is degraded and non-negotiable |
 
-The status audit contains 120 PGTK capability rows: 23 Degraded, 97 Pending,
+The status audit contains 120 PGTK capability rows: 24 Degraded, 96 Pending,
 0 Blocked, and 0 fully Implemented. A Degraded row always identifies both the
 verified bounded subset and the parity gap that remains.
 

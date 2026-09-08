@@ -446,8 +446,8 @@ nonzero frame ID/generation and the target `u64 window_id`. Presence bits are
 Present geometry values must be nonnegative with positive width/height. A
 present parent must be another live window and must not create a cycle; depth
 must equal parent depth plus one and stay at most eight. The Scene applies the
-patch in place. Zones, faces, scroll state, and mouse-highlight records remain
-separate pending messages.
+patch in place. Zones, scroll state, and mouse-highlight records remain separate pending
+messages; window default-face state is defined by `WINDOW_FACE` v1.
 
 #### Window create/delete lifecycle v1 (implemented bounded adapter contract)
 
@@ -462,8 +462,32 @@ generation. Duplicate IDs are rejected.
 flags/reserved, nonzero frame ID/generation, nonzero window ID). Deletion is
 rejected while the window still owns rows, glyph runs, cursor state, or image
 placements. Successful create/delete messages update `Scene.windows`
-atomically and preserve ordering; patch, zones, faces, scroll state, and
-mouse-highlight records remain pending.
+atomically and preserve ordering. A successful delete removes dependent
+window default-face state. Patch, zones, scroll state, and mouse-highlight
+records remain separate.
+
+#### `WINDOW_FACE` v1 (implemented bounded adapter contract)
+
+`WINDOW_FACE = 0x0306` is an exact 24-byte little-endian record:
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 2 | `schema` | `1` |
+| 2 | 1 | `reserved` | zero |
+| 3 | 1 | `flags` | zero |
+| 4 | 8 | `window_id` | nonzero and live in the active frame |
+| 12 | 4 | `frame_generation` | active frame generation |
+| 16 | 4 | `face_id` | nonzero and live |
+| 20 | 4 | `face_generation` | exactly the live face generation |
+
+The envelope frame ID and frame header must identify the same active frame
+generation. `Scene` validates the owner window and exact live face before an
+atomic upsert; it retains one face state per window and at most 32 states. Face
+replacement, a generation-advancing face patch, or exact-generation face delete
+removes dependent states; window deletion removes the owner’s state. The SDL diagnostic renderer paints the validated
+background over the owner rectangle when that background is present. This is
+bounded default-face evidence only, not redisplay-owned face capture, overlays,
+derived-face resolution, font shaping, or PGTK face parity.
 
 #### `WINDOW_SCROLL_STATE` v1 (implemented bounded adapter contract)
 
@@ -1511,9 +1535,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 71 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 76 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 90 | Assigned for the target protocol but not implemented |
+| `planned` | 85 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

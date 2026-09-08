@@ -526,6 +526,52 @@ pub const WindowScrollState = struct {
 
 pub const window_scroll_state_size: usize = 48;
 pub const max_scrollbar_states: usize = 32;
+pub const max_window_faces: usize = 32;
+
+pub const WindowFaceState = struct {
+    schema: u16 = 1,
+    reserved: u8 = 0,
+    flags: u8 = 0,
+    window_id: u64,
+    frame_generation: u32,
+    face_id: u32,
+    face_generation: u32,
+};
+
+pub const window_face_state_size: usize = 24;
+
+pub fn encodeWindowFaceState(a: std.mem.Allocator, state: WindowFaceState, out: *std.ArrayList(u8)) !void {
+    try validateWindowFaceState(state);
+    var b: [window_face_state_size]u8 = [_]u8{0} ** window_face_state_size;
+    std.mem.writeInt(u16, b[0..2], state.schema, .little);
+    std.mem.writeInt(u64, b[4..12], state.window_id, .little);
+    std.mem.writeInt(u32, b[12..16], state.frame_generation, .little);
+    std.mem.writeInt(u32, b[16..20], state.face_id, .little);
+    std.mem.writeInt(u32, b[20..24], state.face_generation, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeWindowFaceState(data: []const u8) Error!WindowFaceState {
+    if (data.len != window_face_state_size) return Error.InvalidTable;
+    const state: WindowFaceState = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .reserved = data[2],
+        .flags = data[3],
+        .window_id = std.mem.readInt(u64, data[4..12], .little),
+        .frame_generation = std.mem.readInt(u32, data[12..16], .little),
+        .face_id = std.mem.readInt(u32, data[16..20], .little),
+        .face_generation = std.mem.readInt(u32, data[20..24], .little),
+    };
+    try validateWindowFaceState(state);
+    return state;
+}
+
+fn validateWindowFaceState(state: WindowFaceState) Error!void {
+    if (state.schema != 1 or state.flags != 0 or state.reserved != 0 or
+        state.window_id == 0 or state.frame_generation == 0 or
+        state.face_id == 0 or state.face_generation == 0)
+        return Error.InvalidMessage;
+}
 
 pub fn encodeWindowScrollState(a: std.mem.Allocator, state: WindowScrollState, out: *std.ArrayList(u8)) !void {
     try validateWindowScrollState(state);
@@ -1871,6 +1917,7 @@ pub const Scene = struct {
     dividers: std.ArrayList(DividerUpdate) = .empty,
     fringes: std.ArrayList(FringeUpdate) = .empty,
     scroll_states: std.ArrayList(WindowScrollState) = .empty,
+    window_faces: std.ArrayList(WindowFaceState) = .empty,
     border: ?BorderUpdate = null,
     text: std.ArrayList(TextLine) = .empty,
     title: ?[:0]u8 = null,
@@ -1908,6 +1955,7 @@ pub const Scene = struct {
         self.dividers.deinit(self.allocator);
         self.fringes.deinit(self.allocator);
         self.scroll_states.deinit(self.allocator);
+        self.window_faces.deinit(self.allocator);
         self.strings.deinit(self.allocator);
         self.faces = .{};
         self.fonts = .{};
@@ -1935,6 +1983,7 @@ pub const Scene = struct {
         self.dividers = .empty;
         self.fringes = .empty;
         self.scroll_states = .empty;
+        self.window_faces = .empty;
         self.strings = .{};
         self.faces = .{};
         self.fonts = .{};
@@ -2046,6 +2095,7 @@ pub const Scene = struct {
             protocol.Message.divider_update => try self.applyDividerUpdate(payload),
             protocol.Message.fringe_update => try self.applyFringeUpdate(payload),
             protocol.Message.window_scroll_state => try self.applyWindowScrollState(payload),
+            protocol.Message.window_face => try self.applyWindowFace(payload),
             protocol.Message.damage_rects => try self.applyDamageRects(payload),
             protocol.Message.flush => try self.applyFlush(payload),
             protocol.Message.render_hint => try self.applyRenderHint(payload),
@@ -2090,6 +2140,7 @@ pub const Scene = struct {
         self.dividers.deinit(self.allocator);
         self.fringes.deinit(self.allocator);
         self.scroll_states.deinit(self.allocator);
+        self.window_faces.deinit(self.allocator);
         for (self.text.items) |line| self.allocator.free(line.bytes);
         self.text.deinit(self.allocator);
         self.windows = .empty;
@@ -2101,6 +2152,7 @@ pub const Scene = struct {
         self.dividers = .empty;
         self.fringes = .empty;
         self.scroll_states = .empty;
+        self.window_faces = .empty;
         self.text = .empty;
         self.frame_header = null;
         self.cursor = null;
@@ -2478,6 +2530,8 @@ pub const Scene = struct {
             if (cursor.window_id == window_id) return Error.ResourceNotLive;
         }
         _ = self.windows.orderedRemove(window_index);
+
+        self.removeWindowFacesForWindow(window_id);
         self.stats.control_messages += 1;
     }
 
@@ -2669,6 +2723,29 @@ pub const Scene = struct {
         }
     }
 
+    fn removeWindowFacesForFace(
+        self: *Scene,
+        face_id: u32,
+        face_generation: u32,
+    ) void {
+        var index: usize = 0;
+        while (index < self.window_faces.items.len) {
+            const state = self.window_faces.items[index];
+            if (state.face_id == face_id and state.face_generation == face_generation) {
+                _ = self.window_faces.orderedRemove(index);
+            } else index += 1;
+        }
+    }
+
+    fn removeWindowFacesForWindow(self: *Scene, window_id: u64) void {
+        var index: usize = 0;
+        while (index < self.window_faces.items.len) {
+            if (self.window_faces.items[index].window_id == window_id) {
+                _ = self.window_faces.orderedRemove(index);
+            } else index += 1;
+        }
+    }
+
     fn applyWindowTreeSnapshot(self: *Scene, payload: protocol.Payload) Error!void {
         const frame = self.frame orelse return Error.FrameNotActive;
         var tree = try protocol.decodeWindowTreeSnapshot(self.allocator, payload.bytes);
@@ -2691,6 +2768,7 @@ pub const Scene = struct {
         const old_generation: ?u32 = if (old) |resource| resource.generation else null;
         try self.faces.define(&self.resources, face);
         if (old_generation) |generation| self.removeGlyphRunsForFace(face.face_id, generation);
+        if (old_generation) |generation| self.removeWindowFacesForFace(face.face_id, generation);
         self.stats.control_messages += 1;
     }
 
@@ -2698,6 +2776,7 @@ pub const Scene = struct {
         const face = try protocol.decodeFaceDelete(payload.bytes);
         try self.faces.delete(&self.resources, face);
         self.removeGlyphRunsForFace(face.face_id, face.generation);
+        self.removeWindowFacesForFace(face.face_id, face.generation);
         self.stats.control_messages += 1;
     }
 
@@ -2723,6 +2802,7 @@ pub const Scene = struct {
         try protocol.validateFaceDefine(patched);
         try self.faces.define(&self.resources, patched);
         self.removeGlyphRunsForFace(patch.face_id, current.generation);
+        self.removeWindowFacesForFace(patch.face_id, current.generation);
         self.stats.control_messages += 1;
     }
 
@@ -3069,6 +3149,7 @@ pub const Scene = struct {
         self.dividers.clearRetainingCapacity();
         self.fringes.clearRetainingCapacity();
         self.scroll_states.clearRetainingCapacity();
+        self.window_faces.clearRetainingCapacity();
         self.image_placements = image_placements;
         self.image_placement_count = image_placement_count;
         windows = old_windows;
@@ -3236,6 +3317,33 @@ pub const Scene = struct {
         if (self.scroll_runs.items.len == max_scroll_runs)
             return Error.Unsupported;
         try self.scroll_runs.append(self.allocator, run);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyWindowFace(self: *Scene, payload: protocol.Payload) Error!void {
+        const state = try decodeWindowFaceState(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != state.frame_generation or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation)
+            return Error.InvalidMessage;
+        _ = findWindow(self.windows.items, state.window_id) orelse
+            return Error.InvalidMessage;
+        const face = self.faces.lookup(state.face_id) orelse
+            return Error.ResourceNotLive;
+        if (face.generation != state.face_generation)
+            return Error.StaleGeneration;
+        for (self.window_faces.items, 0..) |*old, index| {
+            if (old.window_id == state.window_id) {
+                self.window_faces.items[index] = state;
+                self.stats.control_messages += 1;
+                return;
+            }
+        }
+        if (self.window_faces.items.len == max_window_faces) return Error.Unsupported;
+        try self.window_faces.append(self.allocator, state);
         self.stats.control_messages += 1;
     }
 
@@ -3765,6 +3873,213 @@ test "window scroll state validates geometry and upserts per window" {
     payload.clearRetainingCapacity();
     try std.testing.expectError(Error.InvalidMessage, encodeWindowScrollState(a, invalid, &payload));
     try std.testing.expectEqual(@as(u32, 800), scene.scroll_states.items[0].position);
+}
+
+test "window face state validates live resources and follows face lifecycle" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    const face: protocol.FaceDefine = .{
+        .face_id = 8,
+        .generation = 1,
+        .presence = .{ .background = true },
+        .background = .{ 12, 34, 56, 255 },
+    };
+    var face_payload: std.ArrayList(u8) = .empty;
+    defer face_payload.deinit(a);
+    try protocol.encodeFaceDefine(a, face, &face_payload);
+    const define = try faceMessage(a, protocol.Message.face_define, 3, face_payload.items);
+    defer a.free(define);
+    try scene.apply(define);
+
+    const state: WindowFaceState = .{
+        .window_id = 100,
+        .frame_generation = 1,
+        .face_id = 8,
+        .face_generation = 1,
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeWindowFaceState(a, state, &payload);
+    try std.testing.expectEqual(window_face_state_size, payload.items.len);
+    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, payload.items[0..2], .little));
+    try std.testing.expectEqual(@as(u8, 0), payload.items[2]);
+    try std.testing.expectEqual(@as(u8, 0), payload.items[3]);
+    try std.testing.expectEqual(state, try decodeWindowFaceState(payload.items));
+
+    const message = try windowLifecycleMessage(a, protocol.Message.window_face, 4, 7, payload.items);
+    defer a.free(message);
+    try scene.apply(message);
+    try std.testing.expectEqual(state, scene.window_faces.items[0]);
+
+    const wrong_size = try windowLifecycleMessage(a, protocol.Message.window_face, 5, 7, payload.items[0 .. payload.items.len - 1]);
+    defer a.free(wrong_size);
+    try std.testing.expectError(Error.InvalidTable, scene.apply(wrong_size));
+
+    payload.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeWindowFaceState(payload.items));
+    payload.items[2] = 0;
+    payload.items[3] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeWindowFaceState(payload.items));
+    payload.items[3] = 0;
+
+    const face_two: protocol.FaceDefine = .{ .face_id = 9, .generation = 1 };
+    face_payload.clearRetainingCapacity();
+    try protocol.encodeFaceDefine(a, face_two, &face_payload);
+    const define_two = try faceMessage(a, protocol.Message.face_define, 5, face_payload.items);
+    defer a.free(define_two);
+    try scene.apply(define_two);
+
+    var replacement = state;
+    replacement.face_id = 9;
+    payload.clearRetainingCapacity();
+    try encodeWindowFaceState(a, replacement, &payload);
+    const replacement_message = try windowLifecycleMessage(a, protocol.Message.window_face, 6, 7, payload.items);
+    defer a.free(replacement_message);
+    try scene.apply(replacement_message);
+    try std.testing.expectEqual(@as(usize, 1), scene.window_faces.items.len);
+    try std.testing.expectEqual(replacement, scene.window_faces.items[0]);
+
+    var stale_frame = replacement;
+    stale_frame.frame_generation = 2;
+    payload.clearRetainingCapacity();
+    try encodeWindowFaceState(a, stale_frame, &payload);
+    const stale_frame_message = try windowLifecycleMessage(a, protocol.Message.window_face, 7, 7, payload.items);
+    defer a.free(stale_frame_message);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(stale_frame_message));
+
+    var missing_owner = replacement;
+    missing_owner.window_id = 999;
+    payload.clearRetainingCapacity();
+    try encodeWindowFaceState(a, missing_owner, &payload);
+    const missing_message = try windowLifecycleMessage(a, protocol.Message.window_face, 7, 7, payload.items);
+    defer a.free(missing_message);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(missing_message));
+
+    var stale_face = replacement;
+    stale_face.face_generation = 2;
+    payload.clearRetainingCapacity();
+    try encodeWindowFaceState(a, stale_face, &payload);
+    const stale_face_message = try windowLifecycleMessage(a, protocol.Message.window_face, 7, 7, payload.items);
+    defer a.free(stale_face_message);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(stale_face_message));
+    try std.testing.expectEqual(replacement, scene.window_faces.items[0]);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeFacePatch(a, .{
+        .flags = protocol.FacePatchFlags.background,
+        .face_id = 9,
+        .expected_generation = 1,
+        .new_generation = 2,
+        .foreground = .{ 0, 0, 0, 0 },
+        .background = .{ 1, 2, 3, 255 },
+    }, &payload);
+    const face_patch = try faceMessage(a, protocol.Message.face_patch, 7, payload.items);
+    defer a.free(face_patch);
+    try scene.apply(face_patch);
+    try std.testing.expectEqual(@as(usize, 0), scene.window_faces.items.len);
+
+    payload.clearRetainingCapacity();
+    try encodeWindowFaceState(a, .{
+        .window_id = 100,
+        .frame_generation = 1,
+        .face_id = 9,
+        .face_generation = 2,
+    }, &payload);
+    const replacement_state = try windowLifecycleMessage(a, protocol.Message.window_face, 8, 7, payload.items);
+    defer a.free(replacement_state);
+    try scene.apply(replacement_state);
+    try std.testing.expectEqual(@as(usize, 1), scene.window_faces.items.len);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeFaceDelete(a, .{ .face_id = 9, .generation = 2 }, &payload);
+    const deletion = try faceMessage(a, protocol.Message.face_delete, 9, payload.items);
+    defer a.free(deletion);
+    try scene.apply(deletion);
+    try std.testing.expectEqual(@as(usize, 0), scene.window_faces.items.len);
+
+    payload.clearRetainingCapacity();
+    const empty_window_create = try windowCreateMessage(a, 10, 7, .{
+        .window_id = 900,
+        .parent_window_id = 0,
+        .x = 0,
+        .y = 0,
+        .width = 20,
+        .height = 20,
+        .flags = 2,
+        .default_face_id = 0,
+        .depth = 0,
+    });
+    defer a.free(empty_window_create);
+    try scene.apply(empty_window_create);
+
+    try encodeWindowFaceState(a, .{
+        .window_id = 900,
+        .frame_generation = 1,
+        .face_id = 8,
+        .face_generation = 1,
+    }, &payload);
+    const reattach = try windowLifecycleMessage(a, protocol.Message.window_face, 11, 7, payload.items);
+    defer a.free(reattach);
+    try scene.apply(reattach);
+    try std.testing.expectEqual(@as(usize, 1), scene.window_faces.items.len);
+
+    const window_delete = try windowDeleteMessage(a, 12, 7, 900);
+    defer a.free(window_delete);
+    try scene.apply(window_delete);
+    try std.testing.expectEqual(@as(usize, 0), scene.window_faces.items.len);
+}
+
+test "window face state rejects overflow atomically" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    const face: protocol.FaceDefine = .{ .face_id = 8, .generation = 1 };
+    var face_payload: std.ArrayList(u8) = .empty;
+    defer face_payload.deinit(a);
+    try protocol.encodeFaceDefine(a, face, &face_payload);
+    const define = try faceMessage(a, protocol.Message.face_define, 3, face_payload.items);
+    defer a.free(define);
+    try scene.apply(define);
+
+    for (0..max_window_faces) |index| {
+        try scene.window_faces.append(a, .{
+            .window_id = 1000 + @as(u64, @intCast(index)),
+            .frame_generation = 1,
+            .face_id = 8,
+            .face_generation = 1,
+        });
+    }
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeWindowFaceState(a, .{
+        .window_id = 100,
+        .frame_generation = 1,
+        .face_id = 8,
+        .face_generation = 1,
+    }, &payload);
+    const message = try windowLifecycleMessage(a, protocol.Message.window_face, 4, 7, payload.items);
+    defer a.free(message);
+    try std.testing.expectError(Error.Unsupported, scene.apply(message));
+    try std.testing.expectEqual(max_window_faces, scene.window_faces.items.len);
+    for (scene.window_faces.items) |state| {
+        try std.testing.expect(state.window_id != 100);
+    }
 }
 
 test "divider update validates generation and owner bounds" {

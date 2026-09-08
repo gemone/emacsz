@@ -73,7 +73,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P6-prep reverse input bridge | Implemented for bounded SDL key/text intents through PureRuntimeHostV1 delivery/result/completion; not keymap/command parity |
 | P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
 | P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
-| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 71 implemented codecs, 3 partial, and 90 planned; prevents an unclassified or overclaimed protocol table |
+| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 76 implemented codecs, 3 partial, and 85 planned; prevents an unclassified or overclaimed protocol table |
 | Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
 | P12-prep EUP session setup | Implemented standard HELLO/HELLO_ACK/SESSION_READY/READY_ACK codecs and bounded state machine; not yet wired to EPXL transport |
 | P12-prep EUP session control | Implemented all eight standard-control codecs, automatic PONG, Scene integration, and EPXL transport for every control, including fatal VERSION_MISMATCH |
@@ -3145,9 +3145,8 @@ Production redisplay, shaping, fonts, and atlas rendering remain pending.
 P9 geometry preparation adds `refreshFrameGeometry`, authoritative frame
 bounds, and observation validation in `runtime_bridge`; real monitor and scale
 events remain pending.
-Protocol coverage preparation adds `proto-ui-protocol-coverage`: every assigned
-EUP ID now has one honest status and evidence/gap classification.  The current
-counts are 66 implemented codecs, 3 partial, and 95 planned.
+P29 protocol coverage remains source-authoritative for every assigned EUP ID;
+current counts are 76 implemented codecs, 3 partial, and 85 planned.
 P12 session-setup preparation adds concrete standard EUP HELLO, HELLO_ACK,
 SESSION_READY, and READY_ACK codecs with a bounded frontend state machine.  The
 authenticated EPXL handshake remains the current transport path.
@@ -3290,16 +3289,17 @@ horizontal dividers.  `Scene` validates active frame/window bounds and replaces
 a divider only with a strictly newer generation.  The SDL draw list renders the
 validated fixed-color geometry.  Draggable divider semantics and redisplay-owned
 layout remain pending.
-P24 face-decoration preparation converts face underline, overline,
 P25 row-lifecycle preparation adds granular `ROW_SNAPSHOT`, `ROW_UPDATE`, and `ROW_DELETE` v1 codecs.  `Scene` validates active generation, owner window, logical bounds, flags, and metric non-negativity; snapshots upsert rows, updates require existing rows, and deletes remove dependent row text while rejecting live glyph runs.  This advances the bounded row model; redisplay-owned capture remains pending.
 P26 font-metrics preparation adds `FONT_METRICS` v1, a bounded metrics patch that updates ascent, descent, line height, average advance, and max advance with strict expected/new generation checks.  This improves resource evolution; real font metrics and shaped rendering remain pending.
 P27 update-boundary preparation adds strict `BEGIN_UPDATE`/`END_UPDATE` v1 codecs with active-frame checks, non-nested IDs, and deterministic close validation.  Redisplay wiring remains pending.
 P28 scrollbar-state preparation adds `WINDOW_SCROLL_STATE` v1 with content/viewport/position validation and one upsert per window.  The SDL draw list renders a proportional vertical track/thumb; drag requests and core-owned scroll semantics remain pending.
 P29 scroll-request preparation adds a bounded absolute/relative reverse intent for vertical or horizontal scrolling, negotiated queue delivery, and EPXL encoding/acknowledgement.  Actual core application of the intent remains pending.
+P24 face-decoration preparation converts face underline, overline,
 strike-through, and box policies into bounded bars in the SDL debug glyph path.
 Style-color variants use their dedicated RGBA colors, while single styles use
 the face foreground.  These are conservative approximation bars, not shaped-text
 metrics or full Emacs face rendering.
+P30 window-face preparation adds `WINDOW_FACE` v1 with active-frame/window checks, exact live-face generation validation, a bounded per-window upsert table, lifecycle invalidation, and an SDL owner-background render probe.  This is bounded evidence, not core-owned face capture or PGTK face parity.
 P23 fringe preparation adds a 40-byte `FRINGE_UPDATE` v1 color-band subset with
 left/right placement, strict generation replacement, active-frame/window bounds,
 and a bounded Scene table.  The SDL draw list renders validated bands.  Bitmap

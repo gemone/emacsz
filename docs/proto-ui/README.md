@@ -271,6 +271,13 @@ bands.  `Scene` validates active frame/window bounds and strictly newer
 generations, while SDL renders the validated bands.  Bitmap glyphs and
 redisplay-owned fringe capture remain pending.
 
+P30 window-default-face preparation adds `WINDOW_FACE` v1.  The Scene requires
+the active frame and owner window, validates the exact live face generation,
+upserts one bounded state per window, and removes dependent states on face
+replacement/patch/delete.  SDL renders the validated background over the owner
+window as evidence only; redisplay-owned face capture and PGTK face parity
+remain pending.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and
