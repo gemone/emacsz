@@ -685,6 +685,98 @@ pub const DrawStats = struct {
     images: u64 = 0,
 };
 
+pub const FaceLineStyle = enum(u8) {
+    unspecified = 0,
+    off = 1,
+    single = 2,
+    color = 3,
+};
+
+pub const FaceBoxStyle = enum(u8) {
+    none = 0,
+    simple = 1,
+    released = 2,
+    pressed = 3,
+};
+
+pub const FaceDecorationStyles = struct {
+    underline: FaceLineStyle = .unspecified,
+    overline: FaceLineStyle = .unspecified,
+    strike_through: FaceLineStyle = .unspecified,
+    box: FaceBoxStyle = .none,
+    underline_color: ?Color = null,
+    overline_color: ?Color = null,
+    strike_color: ?Color = null,
+    box_color: ?Color = null,
+    foreground: ?Color = null,
+};
+
+pub const FaceDecorationBar = struct {
+    rect: LogicalRect,
+    color: Color,
+};
+
+pub const FaceDecorationBars = struct {
+    bars: [7]FaceDecorationBar = undefined,
+    len: usize = 0,
+
+    pub fn slice(self: *const FaceDecorationBars) []const FaceDecorationBar {
+        return self.bars[0..self.len];
+    }
+};
+
+fn faceLineColor(style: FaceLineStyle, style_color: ?Color, foreground: ?Color) ?Color {
+    return switch (style) {
+        .off => null,
+        .color => style_color orelse foreground,
+        .unspecified => null,
+        .single => foreground,
+    };
+}
+
+fn pushFaceBar(bars: *FaceDecorationBars, rect: LogicalRect, color: ?Color) void {
+    if (color == null or rect.width <= 0 or rect.height <= 0) return;
+    if (bars.len == bars.bars.len) return;
+    bars.bars[bars.len] = .{ .rect = rect, .color = color.? };
+    bars.len += 1;
+}
+
+/// Computes bounded face decoration bars for one diagnostic ASCII glyph run.
+/// These are approximation bars for the current debug renderer, not shaped-text
+/// metrics or full Emacs face rendering.
+pub fn faceDecorationBars(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    styles: FaceDecorationStyles,
+) FaceDecorationBars {
+    var bars: FaceDecorationBars = .{};
+    if (width <= 0 or height <= 0) return bars;
+    const thickness: f32 = @max(1, height * 0.08);
+
+    if (styles.underline != .off) {
+        const color = faceLineColor(styles.underline, styles.underline_color, styles.foreground);
+        pushFaceBar(&bars, .{ .x = x, .y = y + height - thickness, .width = width, .height = thickness }, color);
+    }
+    if (styles.overline != .off) {
+        const color = faceLineColor(styles.overline, styles.overline_color, styles.foreground);
+        pushFaceBar(&bars, .{ .x = x, .y = y, .width = width, .height = thickness }, color);
+    }
+    if (styles.strike_through != .off) {
+        const color = faceLineColor(styles.strike_through, styles.strike_color, styles.foreground);
+        pushFaceBar(&bars, .{ .x = x, .y = y + (height - thickness) / 2, .width = width, .height = thickness }, color);
+    }
+    if (styles.box != .none) {
+        const color = styles.box_color orelse styles.foreground;
+        pushFaceBar(&bars, .{ .x = x, .y = y, .width = width, .height = thickness }, color);
+        pushFaceBar(&bars, .{ .x = x, .y = y + height - thickness, .width = width, .height = thickness }, color);
+        pushFaceBar(&bars, .{ .x = x, .y = y + thickness, .width = thickness, .height = @max(0, height - 2 * thickness) }, color);
+        pushFaceBar(&bars, .{ .x = x + width - thickness, .y = y + thickness, .width = thickness, .height = @max(0, height - 2 * thickness) }, color);
+    }
+    return bars;
+}
+
 fn logicalRectsIntersect(left: LogicalRect, right: LogicalRect) bool {
     return left.x < right.x + right.width and
         right.x < left.x + left.width and
@@ -928,6 +1020,27 @@ test "explicit damage culls conservative command bounds" {
     try std.testing.expect(drawCommandIntersectsClip(touching, clip));
     try std.testing.expect(!drawCommandIntersectsClip(outside_fill, clip));
     try std.testing.expect(!drawCommandIntersectsClip(outside_text, clip));
+}
+
+test "face decoration bars honor styles and colors" {
+    const bars = faceDecorationBars(10, 20, 80, 16, .{
+        .underline = .single,
+        .strike_through = .color,
+        .strike_color = .{ .r = 1, .g = 2, .b = 3 },
+        .foreground = .{ .r = 250, .g = 250, .b = 250 },
+    });
+    try std.testing.expectEqual(@as(usize, 2), bars.len);
+    try std.testing.expectEqual(@as(f32, 1.28), bars.slice()[0].rect.height);
+    try std.testing.expectEqual(Color{ .r = 1, .g = 2, .b = 3 }, bars.slice()[1].color);
+
+    const boxed = faceDecorationBars(0, 0, 40, 20, .{
+        .underline = .single,
+        .overline = .single,
+        .strike_through = .single,
+        .box = .simple,
+        .foreground = .{ .r = 9, .g = 9, .b = 9 },
+    });
+    try std.testing.expectEqual(@as(usize, 7), boxed.len);
 }
 
 test "explicit damage counters separate submitted and culled commands" {

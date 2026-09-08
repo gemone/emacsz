@@ -95,6 +95,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P21-prep border style | Implemented 16-byte `BORDER_UPDATE` v1 with side mask, bounded thickness, RGBA color, active-frame validation, and SDL selected-edge rendering; window-manager border semantics pending |
 | P22-prep divider update | Implemented 40-byte vertical/horizontal `DIVIDER_UPDATE` v1 with generation replacement, active-window bounds, bounded Scene table, and SDL fixed-color rendering; draggable semantics pending |
 | P23-prep fringe update | Implemented 40-byte left/right `FRINGE_UPDATE` v1 with generation replacement, bounds validation, bounded Scene table, and SDL color-band rendering; bitmap glyphs and redisplay capture pending |
+| P24-prep face decoration bars | Implemented policy-derived underline, overline, strike-through, and box-edge approximation bars in the SDL debug glyph path; shaped text, font metrics, and core face parity pending |
 
 | P9-prep authoritative geometry | Implemented in runtime bridge with host rectangle caching and frame/window/damage bounds; real monitor/DPI events pending |
 | P10-prep face-bound debug runs | Implemented with GLYPH_RUN v2, exact live-face validation, and colored SDL fallback; not production face/shaping parity |
@@ -3289,6 +3290,11 @@ horizontal dividers.  `Scene` validates active frame/window bounds and replaces
 a divider only with a strictly newer generation.  The SDL draw list renders the
 validated fixed-color geometry.  Draggable divider semantics and redisplay-owned
 layout remain pending.
+P24 face-decoration preparation converts face underline, overline,
+strike-through, and box policies into bounded bars in the SDL debug glyph path.
+Style-color variants use their dedicated RGBA colors, while single styles use
+the face foreground.  These are conservative approximation bars, not shaped-text
+metrics or full Emacs face rendering.
 P23 fringe preparation adds a 40-byte `FRINGE_UPDATE` v1 color-band subset with
 left/right placement, strict generation replacement, active-frame/window bounds,
 and a bounded Scene table.  The SDL draw list renders validated bands.  Bitmap

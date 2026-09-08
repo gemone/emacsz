@@ -4440,6 +4440,40 @@ fn buildSceneDrawList(
             .b = resource.payload.foreground[2],
             .a = resource.payload.foreground[3],
         } else null) else null;
+        if (face) |resource| {
+            const decorations = renderer_policy.faceDecorationBars(
+                @floatFromInt(owner.x + run.x),
+                @floatFromInt(owner.y + run.y),
+                @floatFromInt(run.width),
+                @floatFromInt(run.height),
+                .{
+                    .underline = @enumFromInt(@intFromEnum(resource.payload.underline)),
+                    .overline = @enumFromInt(@intFromEnum(resource.payload.overline)),
+                    .strike_through = @enumFromInt(@intFromEnum(resource.payload.strike_through)),
+                    .box = @enumFromInt(@intFromEnum(resource.payload.box)),
+                    .underline_color = if (resource.payload.presence.underline_color)
+                        renderer_policy.Color{ .r = resource.payload.underline_color[0], .g = resource.payload.underline_color[1], .b = resource.payload.underline_color[2], .a = resource.payload.underline_color[3] }
+                    else
+                        null,
+                    .overline_color = if (resource.payload.presence.overline_color)
+                        renderer_policy.Color{ .r = resource.payload.overline_color[0], .g = resource.payload.overline_color[1], .b = resource.payload.overline_color[2], .a = resource.payload.overline_color[3] }
+                    else
+                        null,
+                    .strike_color = if (resource.payload.presence.strike_color)
+                        renderer_policy.Color{ .r = resource.payload.strike_color[0], .g = resource.payload.strike_color[1], .b = resource.payload.strike_color[2], .a = resource.payload.strike_color[3] }
+                    else
+                        null,
+                    .box_color = if (resource.payload.presence.box_color)
+                        renderer_policy.Color{ .r = resource.payload.box_color[0], .g = resource.payload.box_color[1], .b = resource.payload.box_color[2], .a = resource.payload.box_color[3] }
+                    else
+                        null,
+                    .foreground = foreground,
+                },
+            );
+            for (decorations.slice()) |bar| {
+                try list.fillRect(bar.rect, bar.color);
+            }
+        }
         // GLYPH_RUN remains bounded ASCII fallback; face color does not imply
         // shaped text, fonts, atlas rendering, or full Emacs face parity.
         try list.drawText(

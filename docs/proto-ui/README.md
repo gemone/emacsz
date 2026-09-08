@@ -261,6 +261,11 @@ horizontal dividers.  `Scene` validates active frame/window bounds and replaces
 a divider only with a strictly newer generation; SDL renders its fixed-color
 geometry.  Draggable divider semantics remain pending.
 
+P24 face-decoration preparation adds policy-derived underline, overline,
+strike-through, and box-edge bars to the SDL debug glyph path.  Dedicated face
+colors are honored when present; font metrics and full shaped-text parity remain
+pending.
+
 P23 fringe preparation adds `FRINGE_UPDATE` v1 as bounded left/right color
 bands.  `Scene` validates active frame/window bounds and strictly newer
 generations, while SDL renders the validated bands.  Bitmap glyphs and
