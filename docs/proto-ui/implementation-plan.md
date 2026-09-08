@@ -3293,6 +3293,7 @@ layout remain pending.
 P24 face-decoration preparation converts face underline, overline,
 P25 row-lifecycle preparation adds granular `ROW_SNAPSHOT`, `ROW_UPDATE`, and `ROW_DELETE` v1 codecs.  `Scene` validates active generation, owner window, logical bounds, flags, and metric non-negativity; snapshots upsert rows, updates require existing rows, and deletes remove dependent row text while rejecting live glyph runs.  This advances the bounded row model; redisplay-owned capture remains pending.
 P26 font-metrics preparation adds `FONT_METRICS` v1, a bounded metrics patch that updates ascent, descent, line height, average advance, and max advance with strict expected/new generation checks.  This improves resource evolution; real font metrics and shaped rendering remain pending.
+P27 update-boundary preparation adds strict `BEGIN_UPDATE`/`END_UPDATE` v1 codecs with active-frame checks, non-nested IDs, and deterministic close validation.  Redisplay wiring remains pending.
 strike-through, and box policies into bounded bars in the SDL debug glyph path.
 Style-color variants use their dedicated RGBA colors, while single styles use
 the face foreground.  These are conservative approximation bars, not shaped-text

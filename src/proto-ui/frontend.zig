@@ -1257,6 +1257,52 @@ pub fn decodeRow(bytes: []const u8) Error!Row {
     return row;
 }
 
+pub const update_boundary_size: usize = 12;
+pub const update_boundary_schema: u16 = 1;
+
+pub const UpdateBoundary = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    frame_generation: u32,
+    update_id: u32,
+};
+
+pub fn encodeUpdateBoundary(
+    a: std.mem.Allocator,
+    kind: u16,
+    boundary: UpdateBoundary,
+    out: *std.ArrayList(u8),
+) !void {
+    if (kind != protocol.Message.begin_update and kind != protocol.Message.end_update)
+        return Error.InvalidMessage;
+    if (boundary.schema != 1 or boundary.flags != 0 or boundary.reserved != 0 or
+        boundary.frame_generation == 0 or boundary.update_id == 0)
+        return Error.InvalidMessage;
+    var b: [update_boundary_size]u8 = [_]u8{0} ** update_boundary_size;
+    std.mem.writeInt(u16, b[0..2], boundary.schema, .little);
+    b[2] = boundary.flags;
+    b[3] = boundary.reserved;
+    std.mem.writeInt(u32, b[4..8], boundary.frame_generation, .little);
+    std.mem.writeInt(u32, b[8..12], boundary.update_id, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeUpdateBoundary(data: []const u8) Error!UpdateBoundary {
+    if (data.len != update_boundary_size) return Error.InvalidTable;
+    const boundary: UpdateBoundary = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .frame_generation = std.mem.readInt(u32, data[4..8], .little),
+        .update_id = std.mem.readInt(u32, data[8..12], .little),
+    };
+    if (boundary.schema != 1 or boundary.flags != 0 or boundary.reserved != 0 or
+        boundary.frame_generation == 0 or boundary.update_id == 0)
+        return Error.InvalidMessage;
+    return boundary;
+}
+
 pub const row_snapshot_header_size: usize = 8;
 pub const row_snapshot_size: usize = row_snapshot_header_size + row_record_size;
 pub const row_delete_size: usize = 24;
@@ -1778,6 +1824,7 @@ pub const Scene = struct {
     present: ?PresentHint = null,
     flush: ?protocol.FrameFlushPayload = null,
     render_hint: ?protocol.RenderHintPayload = null,
+    active_update_id: ?u32 = null,
     viewport: ?Viewport = null,
     window_tree: ?protocol.WindowTreeSnapshot = null,
     control: session.Control = .{},
@@ -1836,6 +1883,7 @@ pub const Scene = struct {
         self.present = null;
         self.flush = null;
         self.render_hint = null;
+        self.active_update_id = null;
         self.viewport = null;
         if (self.window_tree) |*tree| protocol.freeWindowTreeSnapshot(self.allocator, tree);
         self.window_tree = null;
@@ -1899,6 +1947,8 @@ pub const Scene = struct {
         switch (payload.envelope.message_type) {
             protocol.Message.frame_create => try self.applyFrameCreate(payload.envelope, payload.bytes),
             protocol.Message.frame_update => try self.applyFrameUpdate(payload),
+            protocol.Message.begin_update => try self.applyBeginUpdate(payload),
+            protocol.Message.end_update => try self.applyEndUpdate(payload),
             protocol.Message.row_snapshot => try self.applyRowSnapshot(payload),
             protocol.Message.row_update => try self.applyRowUpdate(payload),
             protocol.Message.row_delete => try self.applyRowDelete(payload),
@@ -2964,6 +3014,7 @@ pub const Scene = struct {
         self.present = present;
         self.flush = null;
         self.viewport = viewport;
+        self.active_update_id = null;
         self.stats.frame_updates += 1;
     }
 
@@ -3039,6 +3090,35 @@ pub const Scene = struct {
         }
         _ = owner;
         _ = self.rows.orderedRemove(row_index);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyBeginUpdate(self: *Scene, payload: protocol.Payload) Error!void {
+        const boundary = try decodeUpdateBoundary(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != boundary.frame_generation or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation)
+            return Error.InvalidMessage;
+        if (self.active_update_id != null) return Error.InvalidMessage;
+        self.active_update_id = boundary.update_id;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyEndUpdate(self: *Scene, payload: protocol.Payload) Error!void {
+        const boundary = try decodeUpdateBoundary(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != boundary.frame_generation or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation)
+            return Error.InvalidMessage;
+        const active = self.active_update_id orelse return Error.InvalidMessage;
+        if (active != boundary.update_id) return Error.InvalidMessage;
+        self.active_update_id = null;
         self.stats.control_messages += 1;
     }
 
@@ -3687,6 +3767,44 @@ test "row snapshot update and delete maintain bounded row state" {
     defer a.free(deletion);
     try scene.apply(deletion);
     try std.testing.expectEqual(@as(usize, 1), scene.rows.items.len);
+}
+
+test "update boundaries reject nesting and stale close" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeUpdateBoundary(a, protocol.Message.begin_update, .{ .frame_generation = 1, .update_id = 77 }, &payload);
+    try std.testing.expectEqual(update_boundary_size, payload.items.len);
+    const begin = try windowLifecycleMessage(a, protocol.Message.begin_update, 3, 7, payload.items);
+    defer a.free(begin);
+    try scene.apply(begin);
+    try std.testing.expectEqual(@as(u32, 77), scene.active_update_id.?);
+
+    const nested = try windowLifecycleMessage(a, protocol.Message.begin_update, 4, 7, payload.items);
+    defer a.free(nested);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(nested));
+
+    payload.clearRetainingCapacity();
+    try encodeUpdateBoundary(a, protocol.Message.end_update, .{ .frame_generation = 1, .update_id = 78 }, &payload);
+    const wrong_close = try windowLifecycleMessage(a, protocol.Message.end_update, 4, 7, payload.items);
+    defer a.free(wrong_close);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_close));
+
+    payload.clearRetainingCapacity();
+    try encodeUpdateBoundary(a, protocol.Message.end_update, .{ .frame_generation = 1, .update_id = 77 }, &payload);
+    const close = try windowLifecycleMessage(a, protocol.Message.end_update, 4, 7, payload.items);
+    defer a.free(close);
+    try scene.apply(close);
+    try std.testing.expect(scene.active_update_id == null);
 }
 
 test "scene stores flush and render hints only for the active frame" {

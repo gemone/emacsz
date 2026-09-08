@@ -87,7 +87,7 @@ const ranges = [_]Range{
     .{ .low = 0x0302, .high = 0x0302, .status = .implemented_codec, .domain = .window, .family = "window-patch", .note = "bounded geometry/parent/visibility/face/depth patch with Scene validation" },
     .{ .low = 0x0303, .high = 0x0303, .status = .implemented_codec, .domain = .window, .family = "window-delete", .note = "bounded empty-window delete codec and Scene lifecycle" },
     .{ .low = 0x0304, .high = 0x030a, .status = .planned, .domain = .window, .family = "window-state", .note = "zones/face/position/scroll/mouse-highlight payloads pending" },
-    .{ .low = 0x0400, .high = 0x0401, .status = .planned, .domain = .render, .family = "render-debug", .note = "update boundary messages pending" },
+    .{ .low = 0x0400, .high = 0x0401, .status = .implemented_codec, .domain = .render, .family = "render-debug", .note = "strict BEGIN/END update boundary codecs, active-frame validation, and Scene nesting/state lifecycle" },
     .{ .low = 0x0402, .high = 0x0404, .status = .implemented_codec, .domain = .render, .family = "row-lifecycle", .note = "bounded row snapshot/update/delete codecs with owner bounds, generation validation, and Scene lifecycle" },
     .{ .low = 0x0405, .high = 0x0405, .status = .implemented_codec, .domain = .render, .family = "glyph-run", .note = "bounded ASCII fallback v1/v2 and Scene rendering" },
     .{ .low = 0x0406, .high = 0x0406, .status = .implemented_codec, .domain = .render, .family = "glyph-run-delete", .note = "exact identity deletion and fallback restore" },

@@ -764,6 +764,16 @@ advance the expected sequence.  This message has no redisplay ownership,
 shaping, BiDi, face/font, atlas, image, widget, Emacs capture, or
 `output_proto` semantics.
 
+### 13.3 `BEGIN_UPDATE` / `END_UPDATE` v1 (implemented bounded adapter contract)
+
+`BEGIN_UPDATE = 0x0400` and `END_UPDATE = 0x0401` are exact 12-byte
+little-endian transaction boundaries.  Fields are schema (`u16=1`), flags,
+reserved, nonzero active-frame generation, and a nonzero update ID.  BEGIN may
+not nest inside another active update; END must repeat the active update ID
+exactly.  A new authoritative `FRAME_UPDATE` invalidates an open boundary.
+These boundaries validate ordering and stale generation; they do not by
+themselves capture or own redisplay state.
+
 ### 13.3 `BORDER_UPDATE` v1 (implemented bounded adapter contract)
 
 `BORDER_UPDATE = 0x040a` is an exact 16-byte little-endian window-edge style
