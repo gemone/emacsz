@@ -90,6 +90,7 @@ pub const header =
     \\  uint64_t window_id;
     \\  uint32_t row_index;
     \\  uint32_t face_id;
+    \\  uint32_t face_generation;
     \\  uint32_t font_id;
     \\  int32_t x;
     \\  int32_t y;
@@ -123,6 +124,10 @@ pub const header =
     \\  uint8_t reason;
     \\  uint8_t reserved[3];
     \\} ProtoUiDamageRecord;
+    \\
+    \\typedef struct ProtoUiFaceRecord {
+    \\  uint8_t bytes[96];
+    \\} ProtoUiFaceRecord;
     \\
     \\typedef struct ProtoUiInputEvent {
     \\  uint64_t event_id;
@@ -205,6 +210,9 @@ pub const header =
     \\typedef ProtoUiPureRuntimeStatus (*ProtoUiCaptureDamageFn)(
     \\  void *context, const ProtoUiIdentity *session,
     \\  const ProtoUiDamageRecord *record);
+    \\typedef ProtoUiPureRuntimeStatus (*ProtoUiCaptureFaceFn)(
+    \\  void *context, const ProtoUiIdentity *session,
+    \\  const ProtoUiFaceRecord *record);
     \\typedef ProtoUiPureRuntimeStatus (*ProtoUiCaptureOperationFn)(
     \\  void *context, const ProtoUiIdentity *session);
     \\typedef ProtoUiPureRuntimeStatus (*ProtoUiInputDeliverFn)(
@@ -249,6 +257,7 @@ pub const header =
     \\  ProtoUiCaptureRunFn observe_run;
     \\  ProtoUiCaptureCursorFn observe_cursor;
     \\  ProtoUiCaptureDamageFn observe_damage;
+    \\  ProtoUiCaptureFaceFn observe_face;
     \\  ProtoUiCaptureOperationFn commit_capture;
     \\  ProtoUiCaptureOperationFn cancel_capture;
     \\} ProtoUiRedisplayGroupV1;
@@ -290,8 +299,14 @@ pub const header =
     \\              "invalid TerminalCreateRequest ABI");
     \\_Static_assert(offsetof(ProtoUiCaptureRequest, redisplay_generation) == 16u,
     \\              "invalid CaptureRequest ABI");
-    \\_Static_assert(offsetof(ProtoUiRunRecord, text) == 52u,
+    \\_Static_assert(offsetof(ProtoUiRunRecord, face_generation) == 24u,
     \\              "invalid RunRecord ABI");
+    \\_Static_assert(offsetof(ProtoUiRunRecord, font_id) == 28u,
+    \\              "invalid RunRecord ABI");
+    \\_Static_assert(offsetof(ProtoUiRunRecord, text) == 56u,
+    \\              "invalid RunRecord ABI");
+    \\_Static_assert(sizeof(ProtoUiFaceRecord) == 96u,
+    \\              "invalid FaceRecord ABI");
     \\_Static_assert(sizeof(ProtoUiRunRecord) == 176u,
     \\              "invalid RunRecord ABI");
     \\_Static_assert(offsetof(ProtoUiInputEvent, payload) == 32u,
@@ -322,7 +337,7 @@ pub const conformance =
     \\  ProtoUiFrameGroupV1 frame = {1, sizeof(ProtoUiFrameGroupV1), (void *)&frame,
     \\    NULL, stub_identity_op, NULL, NULL};
     \\  ProtoUiRedisplayGroupV1 redisplay = {1, sizeof(ProtoUiRedisplayGroupV1), (void *)&redisplay,
-    \\    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+    \\    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
     \\  ProtoUiInputGroupV1 input = {1, sizeof(ProtoUiInputGroupV1), (void *)&input,
     \\    NULL, NULL, NULL};
     \\  ProtoUiLifecycleGroupV1 lifecycle = {1, sizeof(ProtoUiLifecycleGroupV1), (void *)&lifecycle,
@@ -345,6 +360,6 @@ pub const conformance =
 ;
 
 pub const manifest =
-    \\{"manifest_version":1,"kind":"proto-ui-pure-runtime-host-abi-c","abi_version":1,"registered":false,"runtime_available":false,"decision_status":"pending","reason_code":"host_registration_contract_missing","c_conformance":"planned"}
+    \\{"manifest_version":1,"kind":"proto-ui-pure-runtime-host-abi-c","abi_version":1,"registered":false,"runtime_available":false,"decision_status":"pending","reason_code":"host_registration_contract_missing","c_conformance":"implemented"}
     \\
 ;

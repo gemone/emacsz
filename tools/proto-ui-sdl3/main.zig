@@ -2081,6 +2081,15 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     _ = try bridge.refreshFrameGeometry();
     try bridge.beginCapture(1);
 
+    const captured_face = try protocol.encodeFaceDefineBytes(.{
+        .face_id = 7,
+        .generation = 1,
+        .presence = .{ .foreground = true, .background = true },
+        .foreground = .{ 0xff, 0xd5, 0x4d, 255 },
+        .background = .{ 0x20, 0x28, 0x38, 255 },
+    });
+    try bridge.observeFace(.{ .bytes = captured_face });
+
     try bridge.observeWindow(.{
         .id = 10,
         .generation = 1,
@@ -2131,26 +2140,9 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
 
     var scene = frontend.Scene.init(gpa);
     defer scene.deinit();
-    var face_payload: std.ArrayList(u8) = .empty;
-    defer face_payload.deinit(gpa);
-    try protocol.encodeFaceDefine(gpa, .{
-        .face_id = 7,
-        .generation = 1,
-        .presence = .{ .foreground = true, .background = true },
-        .foreground = .{ 0xff, 0xd5, 0x4d, 255 },
-        .background = .{ 0x20, 0x28, 0x38, 255 },
-    }, &face_payload);
     var face_define: std.ArrayList(u8) = .empty;
     defer face_define.deinit(gpa);
-    try protocol.encodeEnvelope(gpa, .{
-        .flags = 0,
-        .message_type = protocol.Message.face_define,
-        .sequence = 1,
-        .ack_sequence = 0,
-        .session_id = capability.session_id,
-        .frame_id = 1,
-        .timestamp_ns = 1,
-    }, face_payload.items, &face_define);
+    try bridge.encodeFaceDefine(gpa, 0, 1, capability.session_id, 1, &face_define);
     try scene.apply(face_define.items);
 
     var string_payload: std.ArrayList(u8) = .empty;

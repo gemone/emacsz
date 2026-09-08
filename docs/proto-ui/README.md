@@ -294,6 +294,11 @@ diagnostic identity/start/point fact.  It contains no buffer text or layout
 authority; complete point, narrowing, invisible-text, BiDi, and viewport
 semantics remain pending.
 
+P34 runtime-face preparation adds a `PureRuntimeHostV1` redisplay face
+observation, bounded `FACE_DEFINE` emission, and live-face checks for captured
+runs.  This is an adapter-owned fake-host seam; real Emacs redisplay attachment
+and complete face parity remain pending.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and

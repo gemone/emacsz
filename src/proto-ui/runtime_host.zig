@@ -7,6 +7,7 @@
 
 const std = @import("std");
 pub const adapter = @import("adapter.zig");
+pub const protocol = @import("protocol.zig");
 
 pub const abi_version: u32 = 1;
 pub const authoritative_source = "src/proto-ui/runtime_host.zig";
@@ -129,6 +130,11 @@ pub const DamageRecord = extern struct {
     reserved: [3]u8 = [_]u8{0} ** 3,
 };
 
+/// Fixed EUP FACE_DEFINE wire form carried verbatim from the host capture.
+pub const FaceRecord = extern struct {
+    bytes: [96]u8 = [_]u8{0} ** 96,
+};
+
 pub const InputEvent = extern struct {
     pub const payload_bytes: usize = 64;
 
@@ -201,6 +207,7 @@ pub const CaptureRowFn = *const fn (*anyopaque, *const Identity, *const RowRecor
 pub const CaptureRunFn = *const fn (*anyopaque, *const Identity, *const RunRecord) callconv(.c) Status;
 pub const CaptureCursorFn = *const fn (*anyopaque, *const Identity, *const CursorRecord) callconv(.c) Status;
 pub const CaptureDamageFn = *const fn (*anyopaque, *const Identity, *const DamageRecord) callconv(.c) Status;
+pub const CaptureFaceFn = *const fn (*anyopaque, *const Identity, *const FaceRecord) callconv(.c) Status;
 pub const CaptureOperationFn = *const fn (*anyopaque, *const Identity) callconv(.c) Status;
 pub const InputDeliverFn = *const fn (*anyopaque, *const InputEvent, *InputAck) callconv(.c) Status;
 pub const InputResultFn = *const fn (*anyopaque, *const InputResult) callconv(.c) Status;
@@ -238,6 +245,7 @@ pub const RedisplayGroupV1 = extern struct {
     observe_run: ?CaptureRunFn = null,
     observe_cursor: ?CaptureCursorFn = null,
     observe_damage: ?CaptureDamageFn = null,
+    observe_face: ?CaptureFaceFn = null,
     commit_capture: ?CaptureOperationFn = null,
     cancel_capture: ?CaptureOperationFn = null,
 };
@@ -286,6 +294,7 @@ pub const operation_names = [_][]const u8{
     "redisplay.observe_run",
     "redisplay.observe_cursor",
     "redisplay.observe_damage",
+    "redisplay.observe_face",
     "redisplay.commit_capture",
     "redisplay.cancel_capture",
     "input.deliver_event",
@@ -392,6 +401,10 @@ pub fn validateCursorRecord(record: *const CursorRecord) Error!void {
 pub fn validateDamageRecord(record: *const DamageRecord) Error!void {
     if (record.width < 0 or record.height < 0 or
         !std.mem.allEqual(u8, &record.reserved, 0)) return error.InvalidRuntimeHost;
+}
+
+pub fn validateFaceRecord(record: *const FaceRecord) Error!void {
+    _ = protocol.decodeFaceDefine(&record.bytes) catch return error.InvalidRuntimeHost;
 }
 
 pub fn validateInputEvent(event: *const InputEvent) Error!void {
@@ -668,6 +681,15 @@ pub const FakeHost = struct {
         return .ok;
     }
 
+    fn observeFace(context: *anyopaque, session: *const Identity, record: *const FaceRecord) callconv(.c) Status {
+        const self: *FakeHost = @ptrCast(@alignCast(context));
+        if (invalidIfError(validateFaceRecord(record)) != .ok or
+            !self.capture_active or session.id != self.capture.id)
+            return .invalid;
+        self.observations += 1;
+        return .ok;
+    }
+
     fn commitCapture(context: *anyopaque, session: *const Identity) callconv(.c) Status {
         const self: *FakeHost = @ptrCast(@alignCast(context));
         if (!self.capture_active or session.id != self.capture.id) return .invalid;
@@ -739,7 +761,7 @@ pub fn fakeTable(host: *FakeHost) PureRuntimeHostV1 {
     host.* = .{
         .terminal_group = .{ .context = host, .create_terminal = FakeHost.createTerminal, .activate_terminal = FakeHost.activateTerminal, .delete_terminal = FakeHost.deleteTerminal },
         .frame_group = .{ .context = host, .register_frame = FakeHost.registerFrame, .unregister_frame = FakeHost.unregisterFrame, .read_frame_state = FakeHost.readFrameState, .read_geometry = FakeHost.readGeometry },
-        .redisplay_group = .{ .context = host, .begin_capture = FakeHost.beginCapture, .observe_window = FakeHost.observeWindow, .observe_row = FakeHost.observeRow, .observe_run = FakeHost.observeRun, .observe_cursor = FakeHost.observeCursor, .observe_damage = FakeHost.observeDamage, .commit_capture = FakeHost.commitCapture, .cancel_capture = FakeHost.cancelCapture },
+        .redisplay_group = .{ .context = host, .begin_capture = FakeHost.beginCapture, .observe_window = FakeHost.observeWindow, .observe_row = FakeHost.observeRow, .observe_run = FakeHost.observeRun, .observe_cursor = FakeHost.observeCursor, .observe_damage = FakeHost.observeDamage, .observe_face = FakeHost.observeFace, .commit_capture = FakeHost.commitCapture, .cancel_capture = FakeHost.cancelCapture },
         .input_group = .{ .context = host, .deliver_event = FakeHost.deliverEvent, .deliver_result = FakeHost.deliverResult, .deliver_completion_status = FakeHost.deliverCompletion },
         .lifecycle_group = .{ .context = host, .heartbeat = FakeHost.heartbeat, .flush = FakeHost.flush, .diagnostic = FakeHost.diagnostic, .cancel_all_pending_work = FakeHost.cancelAll },
     };

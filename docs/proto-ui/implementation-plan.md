@@ -3303,6 +3303,7 @@ P30 window-face preparation adds `WINDOW_FACE` v1 with active-frame/window check
 P31 window-geometry preparation adds `WINDOW_GEOMETRY` v1 with strict content/body containment, active owner validation, one bounded upsert per window, authoritative-update and window-lifecycle invalidation, and an SDL body-boundary render probe.  Redisplay-owned layout, zones, and complete PGTK window parity remain pending.
 P32 window-zone preparation adds `WINDOW_ZONES` v1 with nine fixed region slots, strict presence/rect validation, disjoint owner containment, body-conflict checks, bounded per-window upsert, lifecycle invalidation, and SDL top-boundary evidence.  Redisplay-owned zones and complete PGTK layout parity remain pending.
 P33 window-position preparation adds `WINDOW_POSITION` v1 as an exact 40-byte diagnostic buffer identity/start/point fact with active-frame/window validation, bounded per-window upsert, and authoritative cleanup.  It does not transport text or implement complete point/viewport semantics.
+P34 runtime-face preparation adds a 96-byte `FaceRecord` observation to the PureRuntimeHostV1 redisplay ABI, bounded `FACE_DEFINE` emission, duplicate-face rejection, and strict face-generation checks before captured runs.  Real Emacs redisplay attachment and complete face parity remain pending.
 P23 fringe preparation adds a 40-byte `FRINGE_UPDATE` v1 color-band subset with
 left/right placement, strict generation replacement, active-frame/window bounds,
 and a bounded Scene table.  The SDL draw list renders validated bands.  Bitmap

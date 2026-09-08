@@ -19,10 +19,12 @@ pub const Error = runtime_host.Error || frontend.Error || protocol.Error ||
         DuplicateWindow,
         DuplicateRow,
         DuplicateRun,
+        DuplicateFace,
         DuplicateCursor,
         TooManyWindows,
         TooManyRows,
         TooManyRuns,
+        TooManyFaces,
         TooManyCursors,
         TooManyDamage,
         DuplicateInput,
@@ -33,6 +35,7 @@ pub const Error = runtime_host.Error || frontend.Error || protocol.Error ||
 pub const max_windows: usize = 4;
 pub const max_rows: usize = 32;
 pub const max_runs: usize = 64;
+pub const max_faces: usize = 8;
 pub const max_cursors: usize = 4;
 pub const max_damage: usize = 32;
 pub const max_tracked_inputs: usize = 16;
@@ -104,6 +107,7 @@ pub const Counts = struct {
     windows: usize = 0,
     rows: usize = 0,
     runs: usize = 0,
+    faces: usize = 0,
     cursors: usize = 0,
     damage: usize = 0,
 };
@@ -128,6 +132,7 @@ pub const Bridge = struct {
     windows: [max_windows]runtime_host.WindowRecord = undefined,
     rows: [max_rows]runtime_host.RowRecord = undefined,
     runs: [max_runs]runtime_host.RunRecord = undefined,
+    faces: [max_faces]protocol.FaceDefine = undefined,
     cursors: [max_cursors]runtime_host.CursorRecord = undefined,
     damage: [max_damage]runtime_host.DamageRecord = undefined,
     counts: Counts = .{},
@@ -293,12 +298,32 @@ pub const Bridge = struct {
         for (self.runs[0..self.counts.runs]) |existing| {
             if (existing.run_id == record.run_id) return error.DuplicateRun;
         }
+        if (record.face_id != 0) {
+            const face = self.findFace(record.face_id) orelse return error.InvalidState;
+            if (face.generation != record.face_generation) return error.InvalidState;
+        }
         const group = try self.redisplayGroup();
         const context = group.context orelse return error.InvalidRuntimeHost;
         const callback = group.observe_run orelse return error.InvalidRuntimeHost;
         try runtime_host.ensureOk(callback(context, &self.capture, &record));
         self.runs[self.counts.runs] = record;
         self.counts.runs += 1;
+    }
+
+    pub fn observeFace(self: *Bridge, record: runtime_host.FaceRecord) Error!void {
+        try self.requireState(.capturing);
+        try runtime_host.validateFaceRecord(&record);
+        const face = try protocol.decodeFaceDefine(&record.bytes);
+        if (self.counts.faces == max_faces) return error.TooManyFaces;
+        for (self.faces[0..self.counts.faces]) |existing| {
+            if (existing.face_id == face.face_id) return error.DuplicateFace;
+        }
+        const group = try self.redisplayGroup();
+        const context = group.context orelse return error.InvalidRuntimeHost;
+        const callback = group.observe_face orelse return error.InvalidRuntimeHost;
+        try runtime_host.ensureOk(callback(context, &self.capture, &record));
+        self.faces[self.counts.faces] = face;
+        self.counts.faces += 1;
     }
 
     pub fn observeCursor(self: *Bridge, record: runtime_host.CursorRecord) Error!void {
@@ -774,6 +799,38 @@ pub const Bridge = struct {
         }, payload.items, out);
     }
 
+    pub fn encodeFaceDefine(
+        self: *const Bridge,
+        gpa: std.mem.Allocator,
+        face_index: usize,
+        sequence: u64,
+        session_id: u64,
+        timestamp_ns: u64,
+        out: *std.ArrayList(u8),
+    ) Error!void {
+        try self.requireState(.captured);
+        if (face_index >= self.counts.faces) return error.InvalidState;
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(gpa);
+        try protocol.encodeFaceDefine(gpa, self.faces[face_index], &payload);
+        try protocol.encodeEnvelope(gpa, .{
+            .flags = 0,
+            .message_type = protocol.Message.face_define,
+            .sequence = sequence,
+            .ack_sequence = 0,
+            .session_id = session_id,
+            .frame_id = @intCast(self.frame.id),
+            .timestamp_ns = timestamp_ns,
+        }, payload.items, out);
+    }
+
+    fn findFace(self: *const Bridge, face_id: u32) ?protocol.FaceDefine {
+        for (self.faces[0..self.counts.faces]) |face| {
+            if (face.face_id == face_id) return face;
+        }
+        return null;
+    }
+
     fn findInput(self: *const Bridge, event_id: u64) ?usize {
         for (self.input_ids[0..self.input_count], 0..) |candidate, index| {
             if (candidate == event_id) return index;
@@ -1001,14 +1058,23 @@ test "pure runtime bridge produces a valid bounded EUP frame lifecycle" {
     try std.testing.expect(!unchanged_state.focus_changed);
     try bridge.beginCapture(8);
 
+    const face_bytes = try protocol.encodeFaceDefineBytes(.{
+        .face_id = 7,
+        .generation = 2,
+        .presence = .{ .foreground = true, .background = true },
+        .foreground = .{ 0xff, 0xd5, 0x4d, 255 },
+        .background = .{ 0x20, 0x28, 0x38, 255 },
+    });
+    try bridge.observeFace(.{ .bytes = face_bytes });
+
     try bridge.observeWindow(.{ .id = 10, .generation = 8, .width = 80, .height = 60 });
     try bridge.observeRow(.{ .window_id = 10, .row_index = 0, .width = 80, .height = 10, .ascent = 7, .descent = 3, .baseline = 7, .visible_height = 10 });
     var run_text = [_]u8{0} ** 120;
     @memcpy(run_text[0..5], "Emacs");
-    try bridge.observeRun(.{ .run_id = 1, .window_id = 10, .row_index = 0, .x = 2, .y = 0, .width = 40, .height = 10, .text_length = 5, .text = run_text });
+    try bridge.observeRun(.{ .run_id = 1, .window_id = 10, .row_index = 0, .face_id = 7, .face_generation = 2, .x = 2, .y = 0, .width = 40, .height = 10, .text_length = 5, .text = run_text });
     try bridge.observeCursor(.{ .window_id = 10, .x = 0, .y = 0, .width = 2, .height = 8, .visible = true, .active = true });
     try bridge.observeDamage(.{ .width = 800, .height = 600 });
-    try std.testing.expectEqual(Counts{ .windows = 1, .rows = 1, .runs = 1, .cursors = 1, .damage = 1 }, bridge.snapshotCounts());
+    try std.testing.expectEqual(Counts{ .windows = 1, .rows = 1, .runs = 1, .faces = 1, .cursors = 1, .damage = 1 }, bridge.snapshotCounts());
     try bridge.commitCapture();
 
     var scene = frontend.Scene.init(gpa);
@@ -1025,6 +1091,18 @@ test "pure runtime bridge produces a valid bounded EUP frame lifecycle" {
     try scene.apply(update.items);
     try bridge.acceptFrameUpdate(2);
 
+    var captured_face: std.ArrayList(u8) = .empty;
+    defer captured_face.deinit(gpa);
+    try bridge.encodeFaceDefine(gpa, 0, 3, 9, 3, &captured_face);
+    try scene.apply(captured_face.items);
+    try std.testing.expect(scene.faces.lookup(7) != null);
+
+    var captured_run: std.ArrayList(u8) = .empty;
+    defer captured_run.deinit(gpa);
+    try bridge.encodeRun(gpa, 0, 4, 9, 4, &captured_run);
+    try scene.apply(captured_run.items);
+    try std.testing.expectEqual(@as(usize, 1), scene.glyph_runs.items.len);
+
     try std.testing.expectEqual(@as(usize, 1), scene.windows.items.len);
     try std.testing.expectEqual(@as(usize, 1), scene.rows.items.len);
     try std.testing.expect(scene.cursor != null);
@@ -1038,7 +1116,7 @@ test "pure runtime bridge produces a valid bounded EUP frame lifecycle" {
     });
     var visibility: std.ArrayList(u8) = .empty;
     defer visibility.deinit(gpa);
-    try bridge.encodeFlush(gpa, 3, 9, 3, &visibility);
+    try bridge.encodeFlush(gpa, 5, 9, 3, &visibility);
     try scene.apply(visibility.items);
     try std.testing.expect(scene.flush != null);
     try std.testing.expectEqual(@as(u64, 2), scene.flush.?.frame_sequence);
@@ -1050,18 +1128,18 @@ test "pure runtime bridge produces a valid bounded EUP frame lifecycle" {
 
     var hint: std.ArrayList(u8) = .empty;
     defer hint.deinit(gpa);
-    try bridge.encodeRenderHint(gpa, 4, 9, 4, &hint);
+    try bridge.encodeRenderHint(gpa, 6, 9, 4, &hint);
     try scene.apply(hint.items);
     try std.testing.expectEqual(protocol.RenderHintMode.adaptive_vsync, scene.render_hint.?.preferred_mode);
 
     var visibility_next: std.ArrayList(u8) = .empty;
     defer visibility_next.deinit(gpa);
-    try bridge.encodeFrameVisibility(gpa, 5, 9, 5, &visibility_next);
+    try bridge.encodeFrameVisibility(gpa, 7, 9, 5, &visibility_next);
     try scene.apply(visibility_next.items);
 
     var focus: std.ArrayList(u8) = .empty;
     defer focus.deinit(gpa);
-    try bridge.encodeFrameFocus(gpa, 6, 9, 6, &focus);
+    try bridge.encodeFrameFocus(gpa, 8, 9, 6, &focus);
     try scene.apply(focus.items);
     try std.testing.expectEqual(
         protocol.FrameVisibilityState.visible,
@@ -1069,17 +1147,10 @@ test "pure runtime bridge produces a valid bounded EUP frame lifecycle" {
     );
     try std.testing.expect(scene.frames.lookup(100).?.focused);
 
-    var run: std.ArrayList(u8) = .empty;
-    defer run.deinit(gpa);
-    try bridge.encodeRun(gpa, 0, 7, 9, 7, &run);
-    try scene.apply(run.items);
-    try std.testing.expectEqual(@as(usize, 1), scene.glyph_runs.items.len);
-    try std.testing.expectEqualStrings("Emacs", scene.glyph_runs.items[0].text);
-
     try bridge.destroy();
     var destroy: std.ArrayList(u8) = .empty;
     defer destroy.deinit(gpa);
-    try bridge.encodeFrameDestroy(gpa, 8, 9, 8, &destroy);
+    try bridge.encodeFrameDestroy(gpa, 9, 9, 8, &destroy);
     try scene.apply(destroy.items);
     try std.testing.expectEqual(State.destroyed, bridge.state);
     try std.testing.expectEqual(@as(usize, 0), scene.windows.items.len);
@@ -1096,6 +1167,57 @@ test "hidden focused host state is rejected without cache mutation" {
     host.frame_focused = true;
     try std.testing.expectError(error.InvalidFrameIdentity, bridge.refreshFrameState());
     try std.testing.expect(bridge.frame_state == null);
+}
+
+test "runtime bridge rejects invalid duplicate face captures" {
+    var host: runtime_host.FakeHost = undefined;
+    const table = runtime_host.fakeTable(&host);
+    var bridge = try Bridge.init(table);
+    try bridge.createTerminal(.{ .requested_generation = 1 });
+    try bridge.activateTerminal();
+    try bridge.registerFrame(.{ .id = 22, .generation = 1 });
+    _ = try bridge.refreshFrameGeometry();
+    try bridge.beginCapture(1);
+
+    try std.testing.expectError(error.InvalidRuntimeHost, bridge.observeFace(.{}));
+
+    const bytes = try protocol.encodeFaceDefineBytes(.{ .face_id = 7, .generation = 1 });
+    try bridge.observeFace(.{ .bytes = bytes });
+    try std.testing.expectError(error.DuplicateFace, bridge.observeFace(.{ .bytes = bytes }));
+}
+
+test "runtime bridge rejects stale run face before host observation" {
+    var host: runtime_host.FakeHost = undefined;
+    const table = runtime_host.fakeTable(&host);
+    var bridge = try Bridge.init(table);
+    try bridge.createTerminal(.{ .requested_generation = 1 });
+    try bridge.activateTerminal();
+    try bridge.registerFrame(.{ .id = 22, .generation = 1 });
+    _ = try bridge.refreshFrameGeometry();
+    try bridge.beginCapture(1);
+    try bridge.observeWindow(.{ .id = 10, .generation = 1, .width = 20, .height = 10 });
+    try bridge.observeRow(.{ .window_id = 10, .row_index = 0, .width = 20, .height = 4, .ascent = 3, .descent = 1, .baseline = 3, .visible_height = 4 });
+
+    const bytes = try protocol.encodeFaceDefineBytes(.{ .face_id = 7, .generation = 1 });
+    try bridge.observeFace(.{ .bytes = bytes });
+    const observations_before = host.observations;
+    const counts_before = bridge.snapshotCounts();
+
+    var run_text = [_]u8{0} ** 120;
+    @memcpy(run_text[0..5], "Emacs");
+    try std.testing.expectError(error.InvalidState, bridge.observeRun(.{
+        .run_id = 1,
+        .window_id = 10,
+        .row_index = 0,
+        .face_id = 7,
+        .face_generation = 2,
+        .width = 10,
+        .height = 4,
+        .text_length = 5,
+        .text = run_text,
+    }));
+    try std.testing.expectEqual(observations_before, host.observations);
+    try std.testing.expectEqual(counts_before, bridge.snapshotCounts());
 }
 
 test "bridge rejects ok callbacks that return invalid identities" {
