@@ -45,6 +45,46 @@ pub const DamageClip = union(enum) {
     rect: LogicalRect,
 };
 
+pub const I32Rect = struct {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+};
+
+/// Unions protocol damage rectangles and clamps them to the logical frame.
+/// An empty or wholly invalid array yields no clip; callers must fall back.
+pub fn explicitDamageClip(
+    logical_width: i32,
+    logical_height: i32,
+    rects: []const I32Rect,
+) ?LogicalRect {
+    if (logical_width <= 0 or logical_height <= 0) return null;
+    var union_rect: ?LogicalRect = null;
+    for (rects) |rect| {
+        if (rect.width <= 0 or rect.height <= 0) continue;
+        const left_i64: i64 = @max(0, rect.x);
+        const top_i64: i64 = @max(0, rect.y);
+        const right_i64: i64 = @min(@as(i64, logical_width), @as(i64, rect.x) + rect.width);
+        const bottom_i64: i64 = @min(@as(i64, logical_height), @as(i64, rect.y) + rect.height);
+        if (left_i64 >= right_i64 or top_i64 >= bottom_i64) continue;
+
+        const left: f32 = @floatFromInt(left_i64);
+        const top: f32 = @floatFromInt(top_i64);
+        const right: f32 = @floatFromInt(right_i64);
+        const bottom: f32 = @floatFromInt(bottom_i64);
+        if (union_rect) |current| {
+            union_rect = .{
+                .x = @min(current.x, left),
+                .y = @min(current.y, top),
+                .width = @max(current.x + current.width, right) - @min(current.x, left),
+                .height = @max(current.y + current.height, bottom) - @min(current.y, top),
+            };
+        } else union_rect = .{ .x = left, .y = top, .width = right - left, .height = bottom - top };
+    }
+    return union_rect;
+}
+
 pub const CursorSize = struct { width: i32, height: i32 };
 
 /// Returns the smallest rectangle the debug renderer can draw for a cursor.
@@ -356,6 +396,9 @@ pub const FrameCounters = struct {
     unchanged_frames: u64 = 0,
     cursor_clipped_frames: u64 = 0,
     cursor_full_fallback_frames: u64 = 0,
+    explicit_damage_frames: u64 = 0,
+    explicit_clipped_frames: u64 = 0,
+    explicit_full_fallback_frames: u64 = 0,
     text_clipped_frames: u64 = 0,
     text_full_fallback_frames: u64 = 0,
     region_clipped_frames: u64 = 0,
@@ -388,6 +431,14 @@ pub const FrameCounters = struct {
         } else {
             self.cursor_full_fallback_frames += 1;
         }
+    }
+
+    pub fn recordExplicitDamage(self: *FrameCounters, clipped: bool, submitted_commands: u64) void {
+        self.explicit_damage_frames += 1;
+        if (clipped) {
+            self.explicit_clipped_frames += 1;
+            self.clipped_draw_commands_total += submitted_commands;
+        } else self.explicit_full_fallback_frames += 1;
     }
 
     pub fn recordDamage(self: *FrameCounters, kind: DamageKind) void {

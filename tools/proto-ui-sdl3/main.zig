@@ -2795,7 +2795,22 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
 
     var frame_gate: renderer_policy.FrameGate = .{};
     var frame_counters: renderer_policy.FrameCounters = .{};
-    try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+    var retained_frame: RetainedFrame = .{};
+    defer destroyRetainedFrame(&retained_frame);
+    var partial_capabilities: capability.Set = .{};
+    partial_capabilities.insert(.damage_retained_clip);
+    try presentSceneDamage(
+        &scene,
+        &draw_list,
+        selected_renderer.handle,
+        window,
+        &retained_frame,
+        &frame_gate,
+        &frame_counters,
+        .{ .kind = .initial },
+        partial_capabilities,
+        null,
+    );
     if (frame_counters.presented_frames != 1) return error.RuntimeBridgePresentCounterInvalid;
     if (scene.frame_header) |header| {
         const presented_payload: protocol.FramePresentedPayload = .{
@@ -2840,6 +2855,48 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
             dropped.reason != .superseded)
             return error.RuntimeBridgeDroppedFeedbackInvalid;
     } else return error.RuntimeBridgeFrameHeaderInvalid;
+
+    const explicit_damage = [_]renderer_policy.I32Rect{.{ .x = 16, .y = 8, .width = 96, .height = 48 }};
+    var explicit_payload: std.ArrayList(u8) = .empty;
+    defer explicit_payload.deinit(gpa);
+    try frontend.encodeDamageRects(gpa, bridge.eup_frame_generation, &.{
+        .{ .x = explicit_damage[0].x, .y = explicit_damage[0].y, .width = explicit_damage[0].width, .height = explicit_damage[0].height },
+    }, &explicit_payload);
+    var explicit_message: std.ArrayList(u8) = .empty;
+    defer explicit_message.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.damage_rects,
+        .sequence = 27,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, explicit_payload.items, &explicit_message);
+    try scene.apply(explicit_message.items);
+    if (scene.damage.items.len != 1 or scene.damage.items[0].width != explicit_damage[0].width)
+        return error.RuntimeBridgeDamageRectsInvalid;
+
+    const explicit_clip = renderer_policy.explicitDamageClip(240, 96, &explicit_damage);
+    if (explicit_clip == null) return error.RuntimeBridgeExplicitClipInvalid;
+    frame_gate.dirty = true;
+    try presentSceneDamage(
+        &scene,
+        &draw_list,
+        selected_renderer.handle,
+        window,
+        &retained_frame,
+        &frame_gate,
+        &frame_counters,
+        .{ .kind = .region, .clip = explicit_clip },
+        partial_capabilities,
+        explicit_clip,
+    );
+    if (frame_counters.explicit_damage_frames != 1 or
+        frame_counters.explicit_clipped_frames != 1 or
+        frame_counters.explicit_full_fallback_frames != 0)
+        return error.RuntimeBridgeExplicitPresentInvalid;
+
     var key: runtime_host.InputEvent = .{
         .event_id = 11,
         .kind = runtime_bridge.input_kind_key,
@@ -3907,6 +3964,7 @@ fn runEpxlInteractiveFrontend(
                 &frame_counters,
                 decision,
                 negotiated.effective,
+                null,
             );
         } else {
             try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
@@ -4482,6 +4540,7 @@ fn presentSceneDamage(
     counters: *renderer_policy.FrameCounters,
     decision: renderer_policy.DamageDecision,
     capabilities: capability.Set,
+    explicit_clip: ?renderer_policy.LogicalRect,
 ) !void {
     var width: c_int = 0;
     var height: c_int = 0;
@@ -4495,10 +4554,13 @@ fn presentSceneDamage(
     const header = scene.frame_header orelse return error.NoFrameUpdate;
     const renderable = frameDimensionsRenderable(header.logical_width, header.logical_height);
     const texture = if (renderable) retainedFrameTexture(renderer, window, retained) else null;
+    const explicit_allowed = explicit_clip != null and
+        capabilities.contains(.damage_retained_clip) and retained.primed;
     const clip: ?renderer_policy.LogicalRect = if (renderable and texture != null and
         capabilities.contains(.damage_retained_clip) and retained.primed and
-        (decision.kind == .cursor or decision.kind == .text or decision.kind == .region))
-        decision.clip
+        (explicit_allowed or
+            (decision.kind == .cursor or decision.kind == .text or decision.kind == .region)))
+        if (explicit_allowed) explicit_clip else decision.clip
     else
         null;
 
@@ -4524,6 +4586,7 @@ fn presentSceneDamage(
         retained.primed = false;
     }
     counters.recordClip(decision.kind, clipped, submitted);
+    if (explicit_clip != null) counters.recordExplicitDamage(clipped, submitted);
     counters.recordDrawList(execution);
     const ended_ticks = SDL_GetPerformanceCounter();
     counters.recordPresent(
