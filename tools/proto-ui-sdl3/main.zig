@@ -2894,7 +2894,9 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     );
     if (frame_counters.explicit_damage_frames != 1 or
         frame_counters.explicit_clipped_frames != 1 or
-        frame_counters.explicit_full_fallback_frames != 0)
+        frame_counters.explicit_full_fallback_frames != 0 or
+        frame_counters.explicit_skipped_commands == 0 or
+        frame_counters.explicit_submitted_commands == 0)
         return error.RuntimeBridgeExplicitPresentInvalid;
 
     var key: runtime_host.InputEvent = .{
@@ -2963,7 +2965,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,
@@ -2984,6 +2986,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
             platform_monitor.w,
             platform_monitor.h,
             maximize_supported,
+            frame_counters.explicit_submitted_commands,
+            frame_counters.explicit_skipped_commands,
         },
     );
 }
@@ -4347,6 +4351,7 @@ fn executeDrawList(
     window: *SDL_Window,
     target: ?*SDL_Texture,
     clip: ?renderer_policy.LogicalRect,
+    cull_explicit_damage: bool,
 ) !renderer_policy.DrawStats {
     var output_width: c_int = 0;
     var output_height: c_int = 0;
@@ -4377,6 +4382,15 @@ fn executeDrawList(
     }
 
     for (list.commands.items) |command| {
+        if (cull_explicit_damage) {
+            executed.examined_commands += 1;
+            if (!renderer_policy.drawCommandIntersectsClip(command, clip orelse
+                renderer_policy.LogicalRect{ .x = 0, .y = 0, .width = 0, .height = 0 }))
+            {
+                executed.skipped_commands += 1;
+                continue;
+            }
+        }
         switch (command) {
             // The retained texture keeps the prior frame, so a cursor-only
             // pass redraws only the old/new cursor union and skips the clear.
@@ -4520,7 +4534,7 @@ fn presentScene(
     }
     const started_ticks = SDL_GetPerformanceCounter();
     try buildSceneDrawList(scene, list, @intCast(width), @intCast(height));
-    const execution = try executeDrawList(list, renderer, window, null, null);
+    const execution = try executeDrawList(list, renderer, window, null, null, false);
     if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
     counters.recordDrawList(execution);
     const ended_ticks = SDL_GetPerformanceCounter();
@@ -4569,24 +4583,24 @@ fn presentSceneDamage(
     var execution: renderer_policy.DrawStats = .{};
     if (texture) |target| {
         if (clip) |rect| {
-            execution = try executeDrawList(list, renderer, window, target, rect);
+            execution = try executeDrawList(list, renderer, window, target, rect, explicit_clip != null);
             submitted = execution.commands;
             clipped = submitted != 0;
         }
         if (!clipped) {
-            execution = try executeDrawList(list, renderer, window, target, null);
+            execution = try executeDrawList(list, renderer, window, target, null, false);
             submitted = execution.commands;
         }
         retained.primed = true;
         try presentRetainedOutput(renderer, target);
     } else {
-        execution = try executeDrawList(list, renderer, window, null, null);
+        execution = try executeDrawList(list, renderer, window, null, null, false);
         submitted = execution.commands;
         if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
         retained.primed = false;
     }
     counters.recordClip(decision.kind, clipped, submitted);
-    if (explicit_clip != null) counters.recordExplicitDamage(clipped, submitted);
+    if (explicit_clip != null) counters.recordExplicitDamage(clipped, submitted, execution.skipped_commands);
     counters.recordDrawList(execution);
     const ended_ticks = SDL_GetPerformanceCounter();
     counters.recordPresent(
@@ -4612,7 +4626,7 @@ fn presentFacts(
     }
     const started_ticks = SDL_GetPerformanceCounter();
     try buildFactsDrawList(snapshot, list, @intCast(width), @intCast(height));
-    const execution = try executeDrawList(list, renderer, window, null, null);
+    const execution = try executeDrawList(list, renderer, window, null, null, false);
     if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
     counters.recordDrawList(execution);
     const ended_ticks = SDL_GetPerformanceCounter();

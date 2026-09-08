@@ -399,6 +399,8 @@ pub const FrameCounters = struct {
     explicit_damage_frames: u64 = 0,
     explicit_clipped_frames: u64 = 0,
     explicit_full_fallback_frames: u64 = 0,
+    explicit_submitted_commands: u64 = 0,
+    explicit_skipped_commands: u64 = 0,
     text_clipped_frames: u64 = 0,
     text_full_fallback_frames: u64 = 0,
     region_clipped_frames: u64 = 0,
@@ -433,8 +435,15 @@ pub const FrameCounters = struct {
         }
     }
 
-    pub fn recordExplicitDamage(self: *FrameCounters, clipped: bool, submitted_commands: u64) void {
+    pub fn recordExplicitDamage(
+        self: *FrameCounters,
+        clipped: bool,
+        submitted_commands: u64,
+        skipped_commands: u64,
+    ) void {
         self.explicit_damage_frames += 1;
+        self.explicit_submitted_commands += submitted_commands;
+        self.explicit_skipped_commands += skipped_commands;
         if (clipped) {
             self.explicit_clipped_frames += 1;
             self.clipped_draw_commands_total += submitted_commands;
@@ -622,11 +631,36 @@ pub const DrawCommand = union(enum) {
 
 pub const DrawStats = struct {
     commands: u64 = 0,
+    examined_commands: u64 = 0,
+    skipped_commands: u64 = 0,
     clears: u64 = 0,
     fills: u64 = 0,
     texts: u64 = 0,
     images: u64 = 0,
 };
+
+fn logicalRectsIntersect(left: LogicalRect, right: LogicalRect) bool {
+    return left.x < right.x + right.width and
+        right.x < left.x + left.width and
+        left.y < right.y + right.height and
+        right.y < left.y + left.height;
+}
+
+/// Conservative CPU-side culling for explicit damage.  Debug text has no
+/// measured bounds in this diagnostic path, so its estimated box uses the
+/// SDL debug-text cell width plus a vertical margin.
+pub fn drawCommandIntersectsClip(command: DrawCommand, clip: LogicalRect) bool {
+    if (clip.width <= 0 or clip.height <= 0) return false;
+    return switch (command) {
+        .clear => true,
+        .fill => |draw| logicalRectsIntersect(draw.rect, clip),
+        .image => |draw| logicalRectsIntersect(draw.rect, clip),
+        .text => |draw| logicalRectsIntersect(
+            .{ .x = draw.x, .y = draw.y, .width = @floatFromInt(8 * draw.bytes.len), .height = 16 },
+            clip,
+        ),
+    };
+}
 
 /// Backend-neutral immediate commands for the current smoke renderer. The
 /// command list owns command storage, while text slices are borrowed and must
@@ -820,6 +854,45 @@ test "frame counters separate presents from skipped polls" {
     try std.testing.expectEqual(@as(u64, 1), counters.clear_commands_total);
     try std.testing.expectEqual(@as(u64, 1), counters.fill_commands_total);
     try std.testing.expectEqual(@as(u64, 1), counters.text_commands_total);
+}
+
+test "explicit damage culls conservative command bounds" {
+    const clip: LogicalRect = .{ .x = 16, .y = 8, .width = 96, .height = 48 };
+    const clear: DrawCommand = .{ .clear = .{ .r = 0, .g = 0, .b = 0 } };
+    const inside: DrawCommand = .{ .fill = .{
+        .rect = .{ .x = 32, .y = 16, .width = 16, .height = 16 },
+        .color = .{ .r = 1, .g = 2, .b = 3 },
+    } };
+    const outside_fill: DrawCommand = .{ .fill = .{
+        .rect = .{ .x = 160, .y = 72, .width = 16, .height = 16 },
+        .color = .{ .r = 1, .g = 2, .b = 3 },
+    } };
+    const touching: DrawCommand = .{ .fill = .{
+        .rect = .{ .x = 104, .y = 32, .width = 16, .height = 16 },
+        .color = .{ .r = 1, .g = 2, .b = 3 },
+    } };
+    const outside_text: DrawCommand = .{ .text = .{
+        .x = 8,
+        .y = 72,
+        .bytes = "outside",
+    } };
+
+    try std.testing.expect(drawCommandIntersectsClip(clear, clip));
+    try std.testing.expect(drawCommandIntersectsClip(inside, clip));
+    try std.testing.expect(drawCommandIntersectsClip(touching, clip));
+    try std.testing.expect(!drawCommandIntersectsClip(outside_fill, clip));
+    try std.testing.expect(!drawCommandIntersectsClip(outside_text, clip));
+}
+
+test "explicit damage counters separate submitted and culled commands" {
+    var counters: FrameCounters = .{};
+    counters.recordExplicitDamage(true, 7, 2);
+
+    try std.testing.expectEqual(@as(u64, 1), counters.explicit_damage_frames);
+    try std.testing.expectEqual(@as(u64, 1), counters.explicit_clipped_frames);
+    try std.testing.expectEqual(@as(u64, 0), counters.explicit_full_fallback_frames);
+    try std.testing.expectEqual(@as(u64, 7), counters.explicit_submitted_commands);
+    try std.testing.expectEqual(@as(u64, 2), counters.explicit_skipped_commands);
 }
 
 test "glyph atlas inserts looks up and evicts least recent use" {

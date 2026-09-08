@@ -89,7 +89,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P15-prep terminal runtime service | Implemented `proto-ui-terminal-service` for fake-host create/activate/drain/delete orchestration with no-reuse registry IDs, drain retry, rollback-pending cleanup, and strict identity validation; no R7 approval or Emacs terminal |
 | P16-prep host adapter selection | Implemented the versioned pure-SDL3 `output_proto` candidate as unselected until an approved, metadata-complete R7 decision; machine-readable gate records no activation, registration, or runtime |
 | P17-prep runtime activation contract | Implemented a selection-gated controller plus explicit activation/rollback sequences; current gate remains blocked by pending R7 with no registration or runtime |
-| P18-prep explicit damage array | Implemented bounded `DAMAGE_RECTS` codec, atomic Scene replacement, bridge emission, union clipping, and clipped retained-target present evidence; redisplay-owned incremental damage pending |
+| P18-prep explicit damage array | Implemented bounded `DAMAGE_RECTS` codec, atomic Scene replacement, bridge emission, union clipping, clipped retained-target present, and command-culling counters with smoke evidence; redisplay-owned incremental damage pending |
 
 | P9-prep authoritative geometry | Implemented in runtime bridge with host rectangle caching and frame/window/damage bounds; real monitor/DPI events pending |
 | P10-prep face-bound debug runs | Implemented with GLYPH_RUN v2, exact live-face validation, and colored SDL fallback; not production face/shaping parity |
