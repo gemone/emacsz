@@ -38,6 +38,11 @@ pub const CallbackGroup = enum {
                 "observe_run",
                 "observe_cursor",
                 "observe_damage",
+                "observe_face",
+                "observe_font",
+                "observe_shaped_run",
+                "observe_image_define",
+                "observe_image_fragment",
                 "commit_capture",
                 "cancel_capture",
             },
@@ -260,11 +265,11 @@ test "required callback contract is complete and stable" {
     try std.testing.expectEqual(CallbackGroup.lifecycle, callback_groups[4]);
     try std.testing.expectEqual(@as(usize, 3), CallbackGroup.terminal.operations().len);
     try std.testing.expectEqual(@as(usize, 4), CallbackGroup.frame.operations().len);
-    try std.testing.expectEqual(@as(usize, 8), CallbackGroup.redisplay.operations().len);
+    try std.testing.expectEqual(@as(usize, 13), CallbackGroup.redisplay.operations().len);
     try std.testing.expectEqual(@as(usize, 3), CallbackGroup.input.operations().len);
     try std.testing.expectEqual(@as(usize, 4), CallbackGroup.lifecycle.operations().len);
     try std.testing.expectEqualStrings("create_terminal", CallbackGroup.terminal.operations()[0]);
-    try std.testing.expectEqualStrings("cancel_capture", CallbackGroup.redisplay.operations()[7]);
+    try std.testing.expectEqualStrings("cancel_capture", CallbackGroup.redisplay.operations()[12]);
     try std.testing.expect(terminal.max_terminals > 0);
 }
 

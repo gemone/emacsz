@@ -327,6 +327,10 @@ observation to the PureRuntimeHostV1 redisplay ABI, with duplicate-run rejection
 live face/font checks, and schema-3 EUP emission.  Real Emacs redisplay
 attachment remains pending.
 
+P41 R7-readiness audit synchronizes the fail-closed runtime contract with the
+full redisplay callback inventory and records resource/shaped-run capture as
+implemented adapter prerequisites.  The R7 decision remains pending.
+
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by
 atlas/page identity, generation, and page revision.  The runtime smoke requires
 one upload followed by at least four cache hits; smoke-level renderer-reset clearing is wired; production-wide renderer-loss

@@ -230,6 +230,10 @@ that live face/font pair.
 It also adds bounded RGBA8 `ImageDefineRecord`/`ImageFragmentRecord`
 observations and `IMAGE_DEFINE`/`IMAGE_DATA` emission, currently capped at four
 1 KiB fragments per image.
+The fail-closed runtime contract now inventories the complete redisplay
+callback set, including face, font, shaped-run, and image capture operations.
+The R7 proposal records these as implemented adapter prerequisites while the
+host-decision gate remains pending.
 A P4-preparation `runtime_bridge` now drives validated `PureRuntimeHostV1`
 callbacks and emits bounded frame lifecycle/update messages for fake-host
 conformance.  It is not linked to an Emacs host and does not authorize terminal

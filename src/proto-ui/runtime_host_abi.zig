@@ -323,6 +323,12 @@ pub const header =
     \\  ProtoUiCaptureOperationFn cancel_capture;
     \\} ProtoUiRedisplayGroupV1;
     \\
+    \\_Static_assert(offsetof(ProtoUiRedisplayGroupV1, observe_face) <
+    \\              offsetof(ProtoUiRedisplayGroupV1, observe_font),
+    \\              "invalid resource callback ordering");
+    \\_Static_assert(offsetof(ProtoUiRedisplayGroupV1, observe_image_define) <
+    \\              offsetof(ProtoUiRedisplayGroupV1, observe_image_fragment),
+    \\              "invalid image callback ordering");
     \\_Static_assert(offsetof(ProtoUiRedisplayGroupV1, observe_run) <
     \\              offsetof(ProtoUiRedisplayGroupV1, observe_shaped_run),
     \\              "invalid shaped callback ordering");

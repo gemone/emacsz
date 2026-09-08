@@ -8,6 +8,7 @@
 const std = @import("std");
 pub const adapter = @import("adapter.zig");
 pub const protocol = @import("protocol.zig");
+pub const runtime = @import("runtime.zig");
 
 pub const abi_version: u32 = 1;
 pub const authoritative_source = "src/proto-ui/runtime_host.zig";
@@ -972,4 +973,26 @@ test "manifest records the ABI as available policy but not runtime" {
     try std.testing.expect(std.mem.indexOf(u8, output.items, "\"reason_code\":\"host_registration_contract_missing\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output.items, "\"terminal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output.items, "\"lifecycle\"") != null);
+}
+
+test "PureRuntimeHostV1 callback inventory matches runtime contract" {
+    var expected_len: usize = 0;
+    for (runtime.callback_groups) |group| {
+        for (group.operations()) |operation| {
+            const prefix = @tagName(group);
+            const expected_name = std.fmt.allocPrint(std.testing.allocator, "{s}.{s}", .{ prefix, operation }) catch unreachable;
+            defer std.testing.allocator.free(expected_name);
+
+            var found = false;
+            for (operation_names) |actual_name| {
+                if (std.mem.eql(u8, actual_name, expected_name)) {
+                    found = true;
+                    break;
+                }
+            }
+            try std.testing.expect(found);
+            expected_len += 1;
+        }
+    }
+    try std.testing.expectEqual(operation_names.len, expected_len);
 }

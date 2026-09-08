@@ -81,6 +81,16 @@ pub const prerequisites = [_]Prerequisite{
         .evidence = "proto-ui-unit capture service tests",
     },
     .{
+        .name = "redisplay.resource_capture",
+        .status = "implemented",
+        .evidence = "runtime bridge face/font/image observation tests and sdl3-runtime-bridge-smoke",
+    },
+    .{
+        .name = "redisplay.shaped_run_capture",
+        .status = "implemented",
+        .evidence = "PureRuntimeHostV1 shaped-run observation and schema-3 EUP emission tests",
+    },
+    .{
         .name = "host.registration_decision",
         .status = "pending",
         .evidence = "proto-ui-host-contract",
@@ -172,6 +182,8 @@ pub fn validateState() ?[]const u8 {
         "adapter.host_shim_library",
         "frame.service_mapping",
         "capture.atomic_batches",
+        "redisplay.resource_capture",
+        "redisplay.shaped_run_capture",
         "host.registration_decision",
     };
     if (prerequisites.len != required.len) return "unexpected prerequisite count";
