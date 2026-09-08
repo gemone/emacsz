@@ -92,7 +92,7 @@ const ranges = [_]Range{
     .{ .low = 0x0406, .high = 0x0406, .status = .implemented_codec, .domain = .render, .family = "glyph-run-delete", .note = "exact identity deletion and fallback restore" },
     .{ .low = 0x0407, .high = 0x0407, .status = .implemented_codec, .domain = .render, .family = "cursor-update", .note = "dedicated cursor codec, owner/geometry validation, Scene state, SDL render evidence" },
     .{ .low = 0x0408, .high = 0x040a, .status = .planned, .domain = .render, .family = "render-control", .note = "fringe/divider/border codecs pending" },
-    .{ .low = 0x040c, .high = 0x040c, .status = .planned, .domain = .render, .family = "scroll-run", .note = "scroll-copy optimization codec and backend pending" },
+    .{ .low = 0x040c, .high = 0x040c, .status = .implemented_codec, .domain = .render, .family = "scroll-run", .note = "bounded vertical scroll codec, Scene validation, and copy plan metrics; SDL copy backend pending" },
     .{ .low = 0x040b, .high = 0x040b, .status = .implemented_codec, .domain = .render, .family = "clear-area", .note = "bounded face-colored rect codec, active-frame validation, Scene state, SDL render evidence" },
     .{ .low = 0x040d, .high = 0x040d, .status = .implemented_codec, .domain = .render, .family = "damage-rects", .note = "bounded active-frame damage array codec, Scene atomic replacement, bridge emission" },
     .{ .low = 0x040e, .high = 0x040e, .status = .implemented_codec, .domain = .render, .family = "flush", .note = "strict codec, bridge emission, Scene generation/sequence validation, SDL smoke evidence" },

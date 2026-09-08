@@ -85,6 +85,43 @@ pub fn explicitDamageClip(
     return union_rect;
 }
 
+pub const ScrollCopyPlan = struct {
+    source_y: i32,
+    destination_y: i32,
+    width: i32,
+    height: i32,
+    overlap: bool,
+    estimated_upload_bytes: u64,
+};
+
+pub fn planScrollCopy(
+    window_width: i32,
+    window_height: i32,
+    source_y: i32,
+    destination_y: i32,
+    width: i32,
+    height: i32,
+) ?ScrollCopyPlan {
+    if (window_width <= 0 or window_height <= 0 or
+        width <= 0 or height <= 0 or width != window_width or
+        source_y < 0 or destination_y < 0 or
+        @as(i64, source_y) + height > window_height or
+        @as(i64, destination_y) + height > window_height)
+        return null;
+    const overlap = source_y != destination_y and
+        source_y < destination_y + height and
+        destination_y < source_y + height;
+    const pixels: u64 = @as(u64, @intCast(width)) * @as(u64, @intCast(height));
+    return .{
+        .source_y = source_y,
+        .destination_y = destination_y,
+        .width = width,
+        .height = height,
+        .overlap = overlap,
+        .estimated_upload_bytes = pixels * 4,
+    };
+}
+
 pub const CursorSize = struct { width: i32, height: i32 };
 
 /// Returns the smallest rectangle the debug renderer can draw for a cursor.
@@ -893,6 +930,23 @@ test "explicit damage counters separate submitted and culled commands" {
     try std.testing.expectEqual(@as(u64, 0), counters.explicit_full_fallback_frames);
     try std.testing.expectEqual(@as(u64, 7), counters.explicit_submitted_commands);
     try std.testing.expectEqual(@as(u64, 2), counters.explicit_skipped_commands);
+}
+
+test "scroll copy planner rejects non-full-width runs and estimates bytes" {
+    const plan = planScrollCopy(80, 60, 0, 10, 80, 40);
+    try std.testing.expect(plan != null);
+    try std.testing.expect(plan.?.overlap);
+    try std.testing.expectEqual(@as(u64, 80 * 40 * 4), plan.?.estimated_upload_bytes);
+    try std.testing.expectEqual(ScrollCopyPlan{
+        .source_y = 0,
+        .destination_y = 10,
+        .width = 80,
+        .height = 40,
+        .overlap = true,
+        .estimated_upload_bytes = 12_800,
+    }, plan.?);
+    try std.testing.expect(planScrollCopy(80, 60, 0, 10, 40, 40) == null);
+    try std.testing.expect(planScrollCopy(80, 60, 0, 10, 80, 61) == null);
 }
 
 test "glyph atlas inserts looks up and evicts least recent use" {

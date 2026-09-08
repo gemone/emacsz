@@ -430,6 +430,7 @@ pub const max_font_resources: usize = 64;
 pub const max_image_resources: usize = 8;
 pub const max_image_placements: usize = 16;
 pub const max_clear_areas: usize = 64;
+pub const max_scroll_runs: usize = 32;
 pub const image_placement_record_size: usize = 64;
 pub const image_placement_schema: u16 = 1;
 pub const image_placement_kind: u8 = 3;
@@ -1234,6 +1235,62 @@ pub fn decodeClearArea(data: []const u8) Error!ClearArea {
     return area;
 }
 
+pub const ScrollRun = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    window_id: u64,
+    source_y: i32,
+    destination_y: i32,
+    width: i32,
+    height: i32,
+    frame_generation: u32,
+};
+
+pub const scroll_run_size: usize = 32;
+
+pub fn encodeScrollRun(
+    a: std.mem.Allocator,
+    run: ScrollRun,
+    out: *std.ArrayList(u8),
+) !void {
+    if (run.schema != 1 or run.flags != 0 or run.reserved != 0 or
+        run.window_id == 0 or
+        run.width <= 0 or run.height <= 0 or
+        run.source_y < 0 or run.destination_y < 0 or
+        run.frame_generation == 0) return Error.InvalidMessage;
+    var bytes: [scroll_run_size]u8 = [_]u8{0} ** scroll_run_size;
+    std.mem.writeInt(u16, bytes[0..2], run.schema, .little);
+    std.mem.writeInt(u64, bytes[4..12], run.window_id, .little);
+    std.mem.writeInt(i32, bytes[12..16], run.source_y, .little);
+    std.mem.writeInt(i32, bytes[16..20], run.destination_y, .little);
+    std.mem.writeInt(i32, bytes[20..24], run.width, .little);
+    std.mem.writeInt(i32, bytes[24..28], run.height, .little);
+    std.mem.writeInt(u32, bytes[28..32], run.frame_generation, .little);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeScrollRun(data: []const u8) Error!ScrollRun {
+    if (data.len != scroll_run_size) return Error.InvalidTable;
+    const run: ScrollRun = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .window_id = std.mem.readInt(u64, data[4..12], .little),
+        .source_y = @bitCast(std.mem.readInt(u32, data[12..16], .little)),
+        .destination_y = @bitCast(std.mem.readInt(u32, data[16..20], .little)),
+        .width = @bitCast(std.mem.readInt(u32, data[20..24], .little)),
+        .height = @bitCast(std.mem.readInt(u32, data[24..28], .little)),
+        .frame_generation = std.mem.readInt(u32, data[28..32], .little),
+    };
+    if (run.schema != 1 or run.flags != 0 or run.reserved != 0 or
+        run.window_id == 0 or
+        run.width <= 0 or run.height <= 0 or
+        run.source_y < 0 or run.destination_y < 0 or
+        run.frame_generation == 0) return Error.InvalidMessage;
+    return run;
+}
+
 pub fn encodePresentHint(a: std.mem.Allocator, hint: PresentHint, out: *std.ArrayList(u8)) !void {
     try putU32(out, a, hint.mode);
     try putU32(out, a, hint.flags);
@@ -1424,6 +1481,7 @@ pub const Scene = struct {
     cursor: ?Cursor = null,
     damage: std.ArrayList(Rect) = .empty,
     clear_areas: std.ArrayList(ClearArea) = .empty,
+    scroll_runs: std.ArrayList(ScrollRun) = .empty,
     text: std.ArrayList(TextLine) = .empty,
     title: ?[:0]u8 = null,
     alpha: ?protocol.FrameAlphaPayload = null,
@@ -1455,6 +1513,7 @@ pub const Scene = struct {
         self.clearGlyphRuns();
         self.damage.deinit(self.allocator);
         self.clear_areas.deinit(self.allocator);
+        self.scroll_runs.deinit(self.allocator);
         self.strings.deinit(self.allocator);
         self.faces = .{};
         self.fonts = .{};
@@ -1478,6 +1537,7 @@ pub const Scene = struct {
         self.glyph_runs = .empty;
         self.damage = .empty;
         self.clear_areas = .empty;
+        self.scroll_runs = .empty;
         self.strings = .{};
         self.faces = .{};
         self.fonts = .{};
@@ -1578,6 +1638,7 @@ pub const Scene = struct {
             protocol.Message.window_patch => try self.applyWindowPatch(payload),
             protocol.Message.cursor_update => try self.applyCursorUpdate(payload),
             protocol.Message.clear_area => try self.applyClearArea(payload),
+            protocol.Message.scroll_run => try self.applyScrollRun(payload),
             protocol.Message.damage_rects => try self.applyDamageRects(payload),
             protocol.Message.flush => try self.applyFlush(payload),
             protocol.Message.render_hint => try self.applyRenderHint(payload),
@@ -1615,6 +1676,7 @@ pub const Scene = struct {
         self.rows.deinit(self.allocator);
         self.damage.deinit(self.allocator);
         self.clear_areas.deinit(self.allocator);
+        self.scroll_runs.deinit(self.allocator);
         for (self.text.items) |line| self.allocator.free(line.bytes);
         self.text.deinit(self.allocator);
         self.windows = .empty;
@@ -1622,6 +1684,7 @@ pub const Scene = struct {
         self.glyph_runs = .empty;
         self.damage = .empty;
         self.clear_areas = .empty;
+        self.scroll_runs = .empty;
         self.text = .empty;
         self.frame_header = null;
         self.cursor = null;
@@ -2545,6 +2608,7 @@ pub const Scene = struct {
         self.damage = damage;
         self.text = text;
         self.clear_areas.clearRetainingCapacity();
+        self.scroll_runs.clearRetainingCapacity();
         self.image_placements = image_placements;
         self.image_placement_count = image_placement_count;
         windows = old_windows;
@@ -2584,6 +2648,28 @@ pub const Scene = struct {
         if (self.clear_areas.items.len == max_clear_areas)
             return Error.Unsupported;
         try self.clear_areas.append(self.allocator, area);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyScrollRun(self: *Scene, payload: protocol.Payload) Error!void {
+        const run = try decodeScrollRun(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != run.frame_generation or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation)
+            return Error.InvalidMessage;
+        const owner = findWindow(self.windows.items, run.window_id) orelse
+            return Error.InvalidMessage;
+        if (run.width != owner.width or
+            !inside(0, run.height, owner.height) or
+            @as(i64, run.source_y) + run.height > owner.height or
+            @as(i64, run.destination_y) + run.height > owner.height)
+            return Error.InvalidMessage;
+        if (self.scroll_runs.items.len == max_scroll_runs)
+            return Error.Unsupported;
+        try self.scroll_runs.append(self.allocator, run);
         self.stats.control_messages += 1;
     }
 };
@@ -2850,6 +2936,46 @@ test "clear area has exact wire form and validates active face" {
     defer a.free(stale_message);
     try std.testing.expectError(Error.ResourceNotLive, scene.apply(stale_message));
     try std.testing.expectEqual(@as(usize, 1), scene.clear_areas.items.len);
+}
+
+test "scroll run has exact wire form and validates vertical copy bounds" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    const run: ScrollRun = .{
+        .window_id = 100,
+        .source_y = 0,
+        .destination_y = 10,
+        .width = 80,
+        .height = 40,
+        .frame_generation = 1,
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeScrollRun(a, run, &payload);
+    try std.testing.expectEqual(scroll_run_size, payload.items.len);
+    try std.testing.expectEqual(run, try decodeScrollRun(payload.items));
+
+    const message = try windowLifecycleMessage(a, protocol.Message.scroll_run, 3, 7, payload.items);
+    defer a.free(message);
+    try scene.apply(message);
+    try std.testing.expectEqual(run, scene.scroll_runs.items[0]);
+
+    var too_tall = run;
+    too_tall.height = 61;
+    payload.clearRetainingCapacity();
+    try encodeScrollRun(a, too_tall, &payload);
+    const invalid = try windowLifecycleMessage(a, protocol.Message.scroll_run, 4, 7, payload.items);
+    defer a.free(invalid);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(invalid));
+    try std.testing.expectEqual(@as(usize, 1), scene.scroll_runs.items.len);
 }
 
 test "scene stores flush and render hints only for the active frame" {

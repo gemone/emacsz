@@ -2574,9 +2574,40 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (scene.clear_areas.items.len != 1 or scene.clear_areas.items[0].rect.width != 32)
         return error.RuntimeBridgeClearAreaInvalid;
 
+    var scroll_payload: std.ArrayList(u8) = .empty;
+    defer scroll_payload.deinit(gpa);
+    try frontend.encodeScrollRun(gpa, .{
+        .window_id = 10,
+        .source_y = 0,
+        .destination_y = 8,
+        .width = 200,
+        .height = 20,
+        .frame_generation = bridge.eup_frame_generation,
+    }, &scroll_payload);
+    var scroll_run: std.ArrayList(u8) = .empty;
+    defer scroll_run.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.scroll_run,
+        .sequence = 25,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, scroll_payload.items, &scroll_run);
+    try scene.apply(scroll_run.items);
+    const scroll_plan = renderer_policy.planScrollCopy(
+        @intCast(scene.windows.items[0].width),
+        @intCast(scene.windows.items[0].height),
+        scene.scroll_runs.items[0].source_y,
+        scene.scroll_runs.items[0].destination_y,
+        scene.scroll_runs.items[0].width,
+        scene.scroll_runs.items[0].height,
+    ) orelse return error.RuntimeBridgeScrollPlanInvalid;
+
     var damage_rects: std.ArrayList(u8) = .empty;
     defer damage_rects.deinit(gpa);
-    try bridge.encodeDamageRects(gpa, 25, capability.session_id, 1, &damage_rects);
+    try bridge.encodeDamageRects(gpa, 26, capability.session_id, 1, &damage_rects);
     try scene.apply(damage_rects.items);
     if (scene.damage.items.len != 1 or scene.damage.items[0].width != 800)
         return error.RuntimeBridgeDamageRectsInvalid;
@@ -2590,14 +2621,14 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     });
     var flush: std.ArrayList(u8) = .empty;
     defer flush.deinit(gpa);
-    try bridge.encodeFlush(gpa, 26, capability.session_id, 1, &flush);
+    try bridge.encodeFlush(gpa, 27, capability.session_id, 1, &flush);
     try scene.apply(flush.items);
     if (scene.flush == null or scene.flush.?.damage_kind != .full)
         return error.RuntimeBridgeFlushInvalid;
 
     var render_hint: std.ArrayList(u8) = .empty;
     defer render_hint.deinit(gpa);
-    try bridge.encodeRenderHint(gpa, 27, capability.session_id, 1, &render_hint);
+    try bridge.encodeRenderHint(gpa, 28, capability.session_id, 1, &render_hint);
     try scene.apply(render_hint.items);
     if (scene.render_hint == null or scene.render_hint.?.preferred_mode != .mailbox)
         return error.RuntimeBridgeRenderHintInvalid;
@@ -2891,7 +2922,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     try protocol.encodeEnvelope(gpa, .{
         .flags = 0,
         .message_type = protocol.Message.damage_rects,
-        .sequence = 28,
+        .sequence = 29,
         .ack_sequence = 0,
         .session_id = capability.session_id,
         .frame_id = @intCast(bridge.frame.id),
@@ -2989,7 +3020,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,
@@ -2998,6 +3029,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
             parent_unparented,
             cursor_update_rendered,
             scene.damage.items.len != 0,
+            scroll_plan.estimated_upload_bytes > 0,
             scene.flush != null,
             scene.render_hint != null,
             opacity_supported,
