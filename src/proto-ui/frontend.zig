@@ -1866,6 +1866,7 @@ pub const Scene = struct {
             protocol.Message.flush => try self.applyFlush(payload),
             protocol.Message.render_hint => try self.applyRenderHint(payload),
             protocol.Message.face_define => try self.applyFaceDefine(payload),
+            protocol.Message.face_patch => try self.applyFacePatch(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.font_define => try self.applyFontDefine(payload),
             protocol.Message.font_delete => try self.applyFontDelete(payload),
@@ -2510,6 +2511,31 @@ pub const Scene = struct {
         const face = try protocol.decodeFaceDelete(payload.bytes);
         try self.faces.delete(&self.resources, face);
         self.removeGlyphRunsForFace(face.face_id, face.generation);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFacePatch(self: *Scene, payload: protocol.Payload) Error!void {
+        const patch = try protocol.decodeFacePatch(payload.bytes);
+        const current = self.faces.lookup(patch.face_id) orelse
+            return Error.ResourceNotLive;
+        if (current.generation != patch.expected_generation)
+            return Error.StaleGeneration;
+        if (patch.new_generation <= current.generation)
+            return Error.StaleGeneration;
+
+        var patched = current.payload;
+        patched.generation = patch.new_generation;
+        if (patch.flags & protocol.FacePatchFlags.foreground != 0) {
+            patched.presence.foreground = true;
+            patched.foreground = patch.foreground;
+        }
+        if (patch.flags & protocol.FacePatchFlags.background != 0) {
+            patched.presence.background = true;
+            patched.background = patch.background;
+        }
+        try protocol.validateFaceDefine(patched);
+        try self.faces.define(&self.resources, patched);
+        self.removeGlyphRunsForFace(patch.face_id, current.generation);
         self.stats.control_messages += 1;
     }
 
@@ -3211,6 +3237,58 @@ test "border update enforces strict form and active frame" {
     defer a.free(stale);
     try std.testing.expectError(Error.InvalidMessage, scene.apply(stale));
     try std.testing.expectEqual(border, scene.border.?);
+}
+
+test "face patch updates colors and advances generation" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    const face: protocol.FaceDefine = .{
+        .face_id = 8,
+        .generation = 2,
+        .presence = .{ .foreground = true },
+        .foreground = .{ 1, 2, 3, 255 },
+    };
+    var face_payload: std.ArrayList(u8) = .empty;
+    defer face_payload.deinit(a);
+    try protocol.encodeFaceDefine(a, face, &face_payload);
+    const define = try windowLifecycleMessage(a, protocol.Message.face_define, 3, 7, face_payload.items);
+    defer a.free(define);
+    try scene.apply(define);
+
+    const patch: protocol.FacePatch = .{
+        .flags = protocol.FacePatchFlags.foreground | protocol.FacePatchFlags.background,
+        .face_id = 8,
+        .expected_generation = 2,
+        .new_generation = 3,
+        .foreground = .{ 9, 10, 11, 255 },
+        .background = .{ 20, 30, 40, 255 },
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeFacePatch(a, patch, &payload);
+    try std.testing.expectEqual(protocol.face_patch_size, payload.items.len);
+    try std.testing.expectEqual(patch, try protocol.decodeFacePatch(payload.items));
+    const message = try windowLifecycleMessage(a, protocol.Message.face_patch, 4, 7, payload.items);
+    defer a.free(message);
+    try scene.apply(message);
+
+    const patched = scene.faces.lookup(8).?;
+    try std.testing.expectEqual(@as(u32, 3), patched.generation);
+    try std.testing.expect(patched.payload.presence.background);
+    try std.testing.expectEqual([4]u8{ 9, 10, 11, 255 }, patched.payload.foreground);
+    try std.testing.expectEqual([4]u8{ 20, 30, 40, 255 }, patched.payload.background);
+
+    const stale = try windowLifecycleMessage(a, protocol.Message.face_patch, 5, 7, payload.items);
+    defer a.free(stale);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(stale));
 }
 
 test "clear area has exact wire form and validates active face" {

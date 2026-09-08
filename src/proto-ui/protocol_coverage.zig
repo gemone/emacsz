@@ -100,7 +100,7 @@ const ranges = [_]Range{
     .{ .low = 0x040e, .high = 0x040e, .status = .implemented_codec, .domain = .render, .family = "flush", .note = "strict codec, bridge emission, Scene generation/sequence validation, SDL smoke evidence" },
     .{ .low = 0x040f, .high = 0x040f, .status = .implemented_codec, .domain = .render, .family = "render-hint", .note = "strict codec, bridge emission, Scene state, SDL smoke evidence" },
     .{ .low = 0x0500, .high = 0x0500, .status = .implemented_codec, .domain = .resource, .family = "face-define", .note = "bounded face resource codec and Scene ownership" },
-    .{ .low = 0x0501, .high = 0x0501, .status = .planned, .domain = .resource, .family = "face-patch", .note = "attribute patch codec pending" },
+    .{ .low = 0x0501, .high = 0x0501, .status = .implemented_codec, .domain = .resource, .family = "face-patch", .note = "bounded color patch, strict generation replacement, Scene validation; full face attributes pending" },
     .{ .low = 0x0502, .high = 0x0502, .status = .implemented_codec, .domain = .resource, .family = "face-delete", .note = "generation-qualified bounded delete" },
     .{ .low = 0x0503, .high = 0x0503, .status = .implemented_codec, .domain = .resource, .family = "font-define", .note = "bounded font resource codec and Scene ownership" },
     .{ .low = 0x0504, .high = 0x0505, .status = .planned, .domain = .resource, .family = "font-patch-metrics", .note = "font patch and metrics codecs pending" },

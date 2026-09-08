@@ -1029,6 +1029,19 @@ not mutate state.  Delete requires the exact live generation, removes the
 active value, and marks the registry record deleted.  Faces are protocol-global:
 frame destroy retains them, while resync and scene teardown clear them.
 
+### Face patch v1 (implemented bounded adapter contract)
+
+`FACE_PATCH = 0x0501` is an exact 28-byte little-endian color patch.  Fields are
+schema (`u16=1`), flags, reserved, face id, expected generation, new generation,
+foreground RGBA, background RGBA, and four reserved bytes.  Flag bit 0 selects
+foreground and bit 1 selects background; unselected color bytes must be zero,
+selected colors require nonzero RGB and alpha, and unknown flags/reserved bytes
+are invalid.  `new_generation` must be strictly greater than
+`expected_generation`.  `Scene` requires the expected generation to be live,
+applies only the selected colors, validates the complete face, removes dependent
+debug runs from the old generation, and advances the face atomically.  This is
+not full face-attribute parity.
+
 ### String resource v1 (implemented adapter contract)
 
 All integers are little-endian. `STRING_DEFINE` is:
@@ -1466,9 +1479,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 66 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 67 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 95 | Assigned for the target protocol but not implemented |
+| `planned` | 94 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

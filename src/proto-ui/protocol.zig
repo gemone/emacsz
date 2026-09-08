@@ -92,6 +92,7 @@ pub const Message = struct {
     pub const resource_evict: u16 = 0x0511;
     pub const resource_snapshot: u16 = 0x0512;
     pub const face_define: u16 = 0x0500;
+    pub const face_patch: u16 = 0x0501;
     pub const face_delete: u16 = 0x0502;
     pub const glyph_run: u16 = 0x0405;
     pub const glyph_run_delete: u16 = 0x0406;
@@ -292,6 +293,51 @@ pub const FaceDelete = struct {
     generation: u32,
 };
 
+pub const FacePatchFlags = struct {
+    pub const foreground: u8 = 1 << 0;
+    pub const background: u8 = 1 << 1;
+    pub const known: u8 = foreground | background;
+};
+
+/// Bounded FACE_PATCH v1: updates only foreground/background colors and
+/// requires a stale-generation-safe replacement generation.
+pub const FacePatch = struct {
+    schema: u16 = 1,
+    flags: u8,
+    reserved: u8 = 0,
+    face_id: u32,
+    expected_generation: u32,
+    new_generation: u32,
+    foreground: [4]u8 = .{ 0, 0, 0, 0 },
+    background: [4]u8 = .{ 0, 0, 0, 0 },
+    reserved_tail: [4]u8 = .{ 0, 0, 0, 0 },
+};
+
+pub const face_patch_size: usize = 28;
+
+fn validateFacePatch(patch: FacePatch) Error!void {
+    if (patch.schema != 1 or patch.reserved != 0 or
+        !std.mem.allEqual(u8, &patch.reserved_tail, 0) or
+        patch.flags & ~@as(u8, FacePatchFlags.known) != 0 or
+        patch.face_id == 0 or patch.expected_generation == 0 or
+        patch.new_generation <= patch.expected_generation)
+        return Error.InvalidMessage;
+    if (patch.flags & FacePatchFlags.foreground != 0 and
+        (patch.foreground[3] == 0 or !anyColorBytes(patch.foreground)))
+        return Error.InvalidMessage;
+    if (patch.flags & FacePatchFlags.background != 0 and
+        (patch.background[3] == 0 or !anyColorBytes(patch.background)))
+        return Error.InvalidMessage;
+    if (patch.flags & FacePatchFlags.foreground == 0 and anyColorBytes(patch.foreground))
+        return Error.InvalidMessage;
+    if (patch.flags & FacePatchFlags.background == 0 and anyColorBytes(patch.background))
+        return Error.InvalidMessage;
+}
+
+fn anyColorBytes(color: [4]u8) bool {
+    return color[0] != 0 or color[1] != 0 or color[2] != 0;
+}
+
 fn optionalReferenceValid(id: u32, generation: u32, present: bool) bool {
     return if (present) (id != 0 and generation != 0) else (id == 0 and generation == 0);
 }
@@ -300,7 +346,7 @@ fn validateFaceStyle(style: FaceStyle, color_present: bool) Error!void {
     if ((style == .color) != color_present) return Error.InvalidStyle;
 }
 
-fn validateFaceDefine(payload: FaceDefine) Error!void {
+pub fn validateFaceDefine(payload: FaceDefine) Error!void {
     if (payload.face_id == 0 or payload.generation == 0) return Error.InvalidMessage;
     if (!optionalReferenceValid(payload.font_id, payload.font_generation, payload.presence.font))
         return Error.InvalidResource;
@@ -1088,6 +1134,37 @@ pub fn decodeFaceDelete(data: []const u8) Error!FaceDelete {
     };
     if (payload.face_id == 0 or payload.generation == 0) return Error.InvalidMessage;
     return payload;
+}
+
+pub fn encodeFacePatch(a: std.mem.Allocator, patch: FacePatch, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    try validateFacePatch(patch);
+    var bytes: [face_patch_size]u8 = [_]u8{0} ** face_patch_size;
+    std.mem.writeInt(u16, bytes[0..2], patch.schema, .little);
+    bytes[2] = patch.flags;
+    bytes[3] = patch.reserved;
+    std.mem.writeInt(u32, bytes[4..8], patch.face_id, .little);
+    std.mem.writeInt(u32, bytes[8..12], patch.expected_generation, .little);
+    std.mem.writeInt(u32, bytes[12..16], patch.new_generation, .little);
+    @memcpy(bytes[16..20], &patch.foreground);
+    @memcpy(bytes[20..24], &patch.background);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeFacePatch(data: []const u8) Error!FacePatch {
+    if (data.len != face_patch_size) return Error.InvalidTable;
+    const patch = FacePatch{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .face_id = std.mem.readInt(u32, data[4..8], .little),
+        .expected_generation = std.mem.readInt(u32, data[8..12], .little),
+        .new_generation = std.mem.readInt(u32, data[12..16], .little),
+        .foreground = data[16..20][0..4].*,
+        .background = data[20..24][0..4].*,
+        .reserved_tail = data[24..28][0..4].*,
+    };
+    try validateFacePatch(patch);
+    return patch;
 }
 
 pub const Capability = struct {
