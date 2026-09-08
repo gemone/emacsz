@@ -137,6 +137,8 @@ pub const Message = struct {
     pub const menu_model: u16 = 0x0900;
     pub const menu_open: u16 = 0x0902;
     pub const menu_close: u16 = 0x0903;
+    pub const menu_result: u16 = 0x0904;
+    pub const menu_cancel: u16 = 0x0905;
     pub const key_event: u16 = 0x0600;
     pub const text_input: u16 = 0x0601;
     pub const pointer_event: u16 = 0x0602;
@@ -2697,6 +2699,124 @@ pub fn decodeMenuClose(data: []const u8) Error!MenuClose {
         payload.menu_id == 0 or payload.menu_generation == 0 or
         payload.item_id == 0 or payload.frame_generation == 0)
         return Error.InvalidMessage;
+    return payload;
+}
+
+pub const MenuCancelReason = enum(u8) {
+    user = 1,
+    escape = 2,
+    focus_lost = 3,
+};
+
+pub const MenuResult = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    menu_id: u32,
+    menu_generation: u32,
+    item_id: u32,
+    window_id: u64,
+    frame_generation: u32,
+    reserved_tail: [4]u8 = @splat(0),
+};
+
+pub const menu_result_size: usize = 32;
+
+pub const MenuCancel = struct {
+    schema: u16 = 1,
+    reason: MenuCancelReason,
+    reserved: u8 = 0,
+    menu_id: u32,
+    menu_generation: u32,
+    window_id: u64,
+    frame_generation: u32,
+    reserved_tail: [4]u8 = @splat(0),
+};
+
+pub const menu_cancel_size: usize = 28;
+
+pub fn validateMenuResult(payload: MenuResult) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or payload.reserved != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0) or
+        payload.menu_id == 0 or payload.menu_generation == 0 or
+        payload.item_id == 0 or payload.window_id == 0 or
+        payload.frame_generation == 0)
+        return Error.InvalidMessage;
+}
+
+pub fn encodeMenuResult(a: std.mem.Allocator, payload: MenuResult, out: *std.ArrayList(u8)) !void {
+    try validateMenuResult(payload);
+    var b: [menu_result_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = payload.flags;
+    b[3] = payload.reserved;
+    std.mem.writeInt(u32, b[4..8], payload.menu_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.menu_generation, .little);
+    std.mem.writeInt(u32, b[12..16], payload.item_id, .little);
+    std.mem.writeInt(u64, b[16..24], payload.window_id, .little);
+    std.mem.writeInt(u32, b[24..28], payload.frame_generation, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeMenuResult(data: []const u8) Error!MenuResult {
+    if (data.len != menu_result_size) return Error.InvalidTable;
+    const payload: MenuResult = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .menu_id = std.mem.readInt(u32, data[4..8], .little),
+        .menu_generation = std.mem.readInt(u32, data[8..12], .little),
+        .item_id = std.mem.readInt(u32, data[12..16], .little),
+        .window_id = std.mem.readInt(u64, data[16..24], .little),
+        .frame_generation = std.mem.readInt(u32, data[24..28], .little),
+        .reserved_tail = data[28..menu_result_size][0..4].*,
+    };
+    try validateMenuResult(payload);
+    return payload;
+}
+
+pub fn validateMenuCancel(payload: MenuCancel) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0) or
+        payload.menu_id == 0 or payload.menu_generation == 0 or
+        payload.window_id == 0 or payload.frame_generation == 0)
+        return Error.InvalidMessage;
+    switch (payload.reason) {
+        .user, .escape, .focus_lost => {},
+    }
+}
+
+pub fn encodeMenuCancel(a: std.mem.Allocator, payload: MenuCancel, out: *std.ArrayList(u8)) !void {
+    try validateMenuCancel(payload);
+    var b: [menu_cancel_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = @intFromEnum(payload.reason);
+    b[3] = payload.reserved;
+    std.mem.writeInt(u32, b[4..8], payload.menu_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.menu_generation, .little);
+    std.mem.writeInt(u64, b[12..20], payload.window_id, .little);
+    std.mem.writeInt(u32, b[20..24], payload.frame_generation, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeMenuCancel(data: []const u8) Error!MenuCancel {
+    if (data.len != menu_cancel_size) return Error.InvalidTable;
+    const payload: MenuCancel = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .reason = switch (data[2]) {
+            1 => .user,
+            2 => .escape,
+            3 => .focus_lost,
+            else => return Error.InvalidMessage,
+        },
+        .reserved = data[3],
+        .menu_id = std.mem.readInt(u32, data[4..8], .little),
+        .menu_generation = std.mem.readInt(u32, data[8..12], .little),
+        .window_id = std.mem.readInt(u64, data[12..20], .little),
+        .frame_generation = std.mem.readInt(u32, data[20..24], .little),
+        .reserved_tail = data[24..menu_cancel_size][0..4].*,
+    };
+    try validateMenuCancel(payload);
     return payload;
 }
 
@@ -6660,4 +6780,54 @@ test "menu open and close codecs enforce identity bounds and reasons" {
     try std.testing.expectError(Error.InvalidMessage, decodeMenuClose(bytes.items));
     bytes.items[3] = 0;
     try std.testing.expectError(Error.InvalidTable, decodeMenuClose(bytes.items[0 .. bytes.items.len - 1]));
+}
+
+test "menu result and cancel codecs validate bounded live identities" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    const result: MenuResult = .{
+        .menu_id = 3,
+        .menu_generation = 4,
+        .item_id = 21,
+        .window_id = 10,
+        .frame_generation = 1,
+    };
+    try encodeMenuResult(a, result, &bytes);
+    try std.testing.expectEqual(menu_result_size, bytes.items.len);
+    try std.testing.expectEqual(result, try decodeMenuResult(bytes.items));
+    bytes.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuResult(bytes.items));
+    bytes.items[2] = 0;
+    bytes.items[31] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuResult(bytes.items));
+    bytes.items[31] = 0;
+    bytes.items[12] = 0;
+    bytes.items[13] = 0;
+    bytes.items[14] = 0;
+    bytes.items[15] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuResult(bytes.items));
+    try std.testing.expectError(Error.InvalidTable, decodeMenuResult(bytes.items[0 .. bytes.items.len - 1]));
+
+    bytes.clearRetainingCapacity();
+    const cancel: MenuCancel = .{
+        .reason = .escape,
+        .menu_id = 3,
+        .menu_generation = 4,
+        .window_id = 10,
+        .frame_generation = 1,
+    };
+    try encodeMenuCancel(a, cancel, &bytes);
+    try std.testing.expectEqual(menu_cancel_size, bytes.items.len);
+    try std.testing.expectEqual(cancel, try decodeMenuCancel(bytes.items));
+    bytes.items[2] = 9;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuCancel(bytes.items));
+    bytes.items[2] = @intFromEnum(MenuCancelReason.escape);
+    bytes.items[27] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuCancel(bytes.items));
+    bytes.items[27] = 0;
+    std.mem.writeInt(u32, bytes.items[20..24], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuCancel(bytes.items));
+    try std.testing.expectError(Error.InvalidTable, decodeMenuCancel(bytes.items[0 .. bytes.items.len - 1]));
 }

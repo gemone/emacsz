@@ -619,6 +619,9 @@ fn writeTranslatedEvent(
         .window => {},
         // Reverse scroll intents are EPXL-only and require negotiated capability.
         .scroll => {},
+        // Menu intents are EPXL-only and require negotiated capability.
+        .menu_result => {},
+        .menu_cancel => {},
     }
 }
 
@@ -1579,6 +1582,14 @@ fn sendDeliveryEvent(
             try protocol.encodeScrollRequest(gpa, request, &payload);
             break :blk protocol.Message.scroll_request;
         },
+        .menu_result => |result| blk: {
+            try protocol.encodeMenuResult(gpa, result, &payload);
+            break :blk protocol.Message.menu_result;
+        },
+        .menu_cancel => |cancel| blk: {
+            try protocol.encodeMenuCancel(gpa, cancel, &payload);
+            break :blk protocol.Message.menu_cancel;
+        },
     };
     var input_message: std.ArrayList(u8) = .empty;
     defer input_message.deinit(gpa);
@@ -1764,6 +1775,8 @@ fn awaitFrameAck(
                 const is_focus = payload.envelope.message_type == protocol.Message.focus_event;
                 const is_window = payload.envelope.message_type == protocol.Message.window_request;
                 const is_scroll_request = payload.envelope.message_type == protocol.Message.scroll_request;
+                const is_menu_result = payload.envelope.message_type == protocol.Message.menu_result;
+                const is_menu_cancel = payload.envelope.message_type == protocol.Message.menu_cancel;
                 var copy_action = false;
                 if (is_key_v2) {
                     full_key = try input_policy.decodeFullKeyEvent(payload.bytes);
@@ -1780,7 +1793,9 @@ fn awaitFrameAck(
                     (is_wheel and capabilities.contains(.input_wheel_line)) or
                     (is_focus and capabilities.contains(.platform_focus_window_events)) or
                     (is_window and capabilities.contains(.platform_focus_window_events)) or
-                    (is_scroll_request and capabilities.contains(.window_scroll_request_v1));
+                    (is_scroll_request and capabilities.contains(.window_scroll_request_v1)) or
+                    (is_menu_result and capabilities.contains(.widget_menu_result_v1)) or
+                    (is_menu_cancel and capabilities.contains(.widget_menu_result_v1));
                 if (!input_allowed or
                     payload.envelope.flags & protocol.Flags.requires_ack == 0 or
                     payload.envelope.ack_sequence != 0 or
@@ -1849,6 +1864,36 @@ fn awaitFrameAck(
                     );
                     defer gpa.free(value);
                     try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "scroll-request", value);
+                } else if (is_menu_result) {
+                    const event = try protocol.decodeMenuResult(payload.bytes);
+                    const value = try std.fmt.allocPrint(
+                        gpa,
+                        "{{\"menu_id\":{d},\"menu_generation\":{d},\"item_id\":{d},\"window_id\":{d},\"frame_generation\":{d},\"execution\":\"observed\"}}",
+                        .{
+                            event.menu_id,
+                            event.menu_generation,
+                            event.item_id,
+                            event.window_id,
+                            event.frame_generation,
+                        },
+                    );
+                    defer gpa.free(value);
+                    try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "menu-result", value);
+                } else if (is_menu_cancel) {
+                    const event = try protocol.decodeMenuCancel(payload.bytes);
+                    const value = try std.fmt.allocPrint(
+                        gpa,
+                        "{{\"reason\":\"{s}\",\"menu_id\":{d},\"menu_generation\":{d},\"window_id\":{d},\"frame_generation\":{d},\"execution\":\"observed\"}}",
+                        .{
+                            @tagName(event.reason),
+                            event.menu_id,
+                            event.menu_generation,
+                            event.window_id,
+                            event.frame_generation,
+                        },
+                    );
+                    defer gpa.free(value);
+                    try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "menu-cancel", value);
                 } else if (is_window) {
                     const event = try protocol.decodeWindowRequest(payload.bytes);
                     const value = try std.fmt.allocPrint(
@@ -4234,6 +4279,8 @@ fn inputEventAllowed(capabilities: capability.Set, event: input_policy.Translate
         .focus => capabilities.contains(.platform_focus_window_events),
         .window => capabilities.contains(.platform_focus_window_events),
         .scroll => capabilities.contains(.window_scroll_request_v1),
+        .menu_result => capabilities.contains(.widget_menu_result_v1),
+        .menu_cancel => capabilities.contains(.widget_menu_result_v1),
     };
 }
 
@@ -4284,6 +4331,7 @@ fn clipboardSupportFor(capabilities: capability.Set) ?input_policy.TextSupport {
 
 fn syncDeliveryCapabilities(delivery: *input_policy.DeliveryJournal, capabilities: capability.Set) void {
     delivery.scroll_request_negotiated = capabilities.contains(.window_scroll_request_v1);
+    delivery.menu_result_negotiated = capabilities.contains(.widget_menu_result_v1);
     delivery.key_v2_negotiated = capabilities.contains(.input_key_full_v2);
     delivery.pointer_v2_negotiated = capabilities.contains(.input_pointer_v2);
     delivery.platform_negotiated = capabilities.contains(.platform_focus_window_events);

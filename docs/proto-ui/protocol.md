@@ -1634,6 +1634,23 @@ rows and ASCII debug labels.  Keyboard navigation, hover, selection result
 dispatch, nested placement policy, native menus, accessibility, keymap
 execution, and PGTK parity remain pending.
 
+#### `MENU_RESULT` / `MENU_CANCEL` v1 (implemented bounded reverse intents)
+
+`MENU_RESULT = 0x0904` and `MENU_CANCEL = 0x0905` are exact 32/28-byte
+frontend-to-core intents.  Both carry schema `1`, nonzero menu id/generation,
+nonzero owner window, and nonzero frame generation; this codec does not look up
+Scene state to prove that those identities are currently live.  `MENU_RESULT`
+also requires zero flags/reserved and a nonzero selected item id.
+`MENU_CANCEL` requires zero reserved and a reason (`user`, `escape`, or
+`focus_lost`); its layout is menu/generation, 64-bit window, frame generation,
+then four reserved bytes.
+
+The frontend emits these only after `widget.menu_result_v1` is negotiated, in
+ordered acknowledged DeliveryJournal traffic.  These codecs prove bounded intent
+transport only.  They do not prove SDL hit testing, keyboard navigation, core
+receipt, keymap lookup, command execution, check/radio mutation, native menus, or
+PGTK menu parity.
+
 #### `TOOLTIP_SHOW` / `MOVE` / `HIDE` v1 (implemented bounded adapter contract)
 
 `TOOLTIP_SHOW = 0x0930` is an exact 164-byte little-endian record: schema
@@ -1756,9 +1773,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 93 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 95 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 68 | Assigned for the target protocol but not implemented |
+| `planned` | 66 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

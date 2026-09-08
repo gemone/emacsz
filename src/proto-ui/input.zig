@@ -556,6 +556,8 @@ pub const TranslatedEvent = union(enum) {
     focus: protocol.FocusEvent,
     window: protocol.WindowRequest,
     scroll: protocol.ScrollRequest,
+    menu_result: protocol.MenuResult,
+    menu_cancel: protocol.MenuCancel,
 };
 
 pub const TextSupport = enum { ascii, unicode };
@@ -631,6 +633,20 @@ pub const Queue = struct {
         self.length += 1;
     }
 
+    pub fn pushMenuResult(self: *Queue, event: protocol.MenuResult) !void {
+        protocol.validateMenuResult(event) catch return error.InvalidMenuResult;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .menu_result = event };
+        self.length += 1;
+    }
+
+    pub fn pushMenuCancel(self: *Queue, event: protocol.MenuCancel) !void {
+        protocol.validateMenuCancel(event) catch return error.InvalidMenuCancel;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .menu_cancel = event };
+        self.length += 1;
+    }
+
     pub fn pushText(self: *Queue, text: []const u8) !void {
         if (!validTextInput(text)) return error.InvalidInputText;
         if (self.length == queue_capacity) return error.InputQueueFull;
@@ -679,6 +695,7 @@ pub const DeliveryJournal = struct {
     pointer_v2_negotiated: bool = false,
     platform_negotiated: bool = false,
     scroll_request_negotiated: bool = false,
+    menu_result_negotiated: bool = false,
     pointer_v2_buttons: u32 = 0,
     pointer_v2_clicks: u8 = 0,
 
@@ -786,6 +803,18 @@ pub const DeliveryJournal = struct {
         if (!self.scroll_request_negotiated) return error.ScrollRequestCapabilityNotNegotiated;
         if (self.pointer_active) return error.PointerSessionActive;
         try self.queue.pushScrollRequest(event);
+    }
+
+    pub fn pushMenuResult(self: *DeliveryJournal, event: protocol.MenuResult) !void {
+        if (!self.menu_result_negotiated) return error.MenuResultCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushMenuResult(event);
+    }
+
+    pub fn pushMenuCancel(self: *DeliveryJournal, event: protocol.MenuCancel) !void {
+        if (!self.menu_result_negotiated) return error.MenuResultCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushMenuCancel(event);
     }
 
     /// SDL poll paths use this for incidental platform observations.  The
@@ -1297,6 +1326,47 @@ test "scroll requests negotiate and preserve bounded intent order" {
     try std.testing.expectEqual(absolute, sent.?.event.scroll);
     if (!journal.acknowledge(sent.?.sequence)) return error.AckMismatch;
     try std.testing.expect((journal.take() catch unreachable) == null);
+}
+
+test "menu result and cancel require negotiation and preserve live identity" {
+    var journal: DeliveryJournal = .{};
+    const result: protocol.MenuResult = .{
+        .menu_id = 3,
+        .menu_generation = 4,
+        .item_id = 21,
+        .window_id = 10,
+        .frame_generation = 3,
+    };
+    const cancel: protocol.MenuCancel = .{
+        .reason = .escape,
+        .menu_id = 3,
+        .menu_generation = 4,
+        .window_id = 10,
+        .frame_generation = 3,
+    };
+
+    try std.testing.expectError(error.MenuResultCapabilityNotNegotiated, journal.pushMenuResult(result));
+    try std.testing.expectError(error.MenuResultCapabilityNotNegotiated, journal.pushMenuCancel(cancel));
+    journal.menu_result_negotiated = true;
+    try journal.pushMenuResult(result);
+    try journal.pushMenuCancel(cancel);
+
+    const result_sent = (try journal.take()).?;
+    try std.testing.expectEqual(result, result_sent.event.menu_result);
+    try std.testing.expect(journal.acknowledge(result_sent.sequence));
+    const cancel_sent = (try journal.take()).?;
+    try std.testing.expectEqual(cancel, cancel_sent.event.menu_cancel);
+    try std.testing.expect(journal.acknowledge(cancel_sent.sequence));
+
+    var invalid = result;
+    invalid.item_id = 0;
+    try std.testing.expectError(error.InvalidMenuResult, journal.pushMenuResult(invalid));
+    invalid.item_id = 21;
+    invalid.reserved_tail[0] = 1;
+    try std.testing.expectError(error.InvalidMenuResult, journal.pushMenuResult(invalid));
+    var invalid_cancel = cancel;
+    invalid_cancel.menu_id = 0;
+    try std.testing.expectError(error.InvalidMenuCancel, journal.pushMenuCancel(invalid_cancel));
 }
 
 test "scrollbar drag tracker emits bounded relative requests" {

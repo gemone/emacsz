@@ -363,6 +363,10 @@ tied to an enabled visible submenu and exact live generation.  SDL renders direc
 child rows; navigation, selection results, native menus, and full menu semantics
 remain pending.
 
+P48 menu-result preparation adds `MENU_RESULT`/`CANCEL` v1 as bounded, ordered,
+acknowledged reverse intents with live model/window/frame identity.  Hit testing,
+keyboard navigation, core command execution, and PGTK parity remain pending.
+
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by
 atlas/page identity, generation, and page revision.  The runtime smoke requires
 one upload followed by at least four cache hits; smoke-level renderer-reset clearing is wired; production-wide renderer-loss
