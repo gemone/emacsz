@@ -2685,6 +2685,34 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (scene.dividers.items.len != 1 or scene.dividers.items[0].position != 100)
         return error.RuntimeBridgeDividerInvalid;
 
+    var fringe_payload: std.ArrayList(u8) = .empty;
+    defer fringe_payload.deinit(gpa);
+    try frontend.encodeFringeUpdate(gpa, .{
+        .side = .left,
+        .fringe_id = 9,
+        .fringe_generation = 1,
+        .window_id = 10,
+        .y = 8,
+        .height = 24,
+        .width = 8,
+        .color = .{ 0x22, 0x66, 0xaa, 255 },
+        .frame_generation = bridge.eup_frame_generation,
+    }, &fringe_payload);
+    var fringe_update: std.ArrayList(u8) = .empty;
+    defer fringe_update.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.fringe_update,
+        .sequence = 31,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, fringe_payload.items, &fringe_update);
+    try scene.apply(fringe_update.items);
+    if (scene.fringes.items.len != 1 or scene.fringes.items[0].width != 8)
+        return error.RuntimeBridgeFringeInvalid;
+
     if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
         scene.glyph_runs.items.len != 1 or scene.cursor == null)
         return error.RuntimeBridgeSceneInvalid;
@@ -2990,7 +3018,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     try protocol.encodeEnvelope(gpa, .{
         .flags = 0,
         .message_type = protocol.Message.damage_rects,
-        .sequence = 31,
+        .sequence = 32,
         .ack_sequence = 0,
         .session_id = capability.session_id,
         .frame_id = @intCast(bridge.frame.id),
@@ -3088,7 +3116,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,
@@ -3102,6 +3130,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
             scroll_plan.estimated_upload_bytes,
             scene.border != null,
             scene.dividers.items.len == 1,
+            scene.fringes.items.len == 1,
             scene.flush != null,
             scene.render_hint != null,
             opacity_supported,
@@ -4318,6 +4347,17 @@ fn buildSceneDrawList(
             .b = face.payload.background[2],
             .a = face.payload.background[3],
         });
+    }
+
+    for (scene.fringes.items) |fringe| {
+        const owner = findSceneWindow(scene, fringe.window_id) orelse continue;
+        const rect = frontend.fringeRect(fringe, owner.width);
+        try list.fillRect(.{
+            .x = @floatFromInt(owner.x + rect.x),
+            .y = @floatFromInt(owner.y + rect.y),
+            .width = @floatFromInt(rect.width),
+            .height = @floatFromInt(rect.height),
+        }, .{ .r = fringe.color[0], .g = fringe.color[1], .b = fringe.color[2], .a = fringe.color[3] });
     }
 
     for (scene.dividers.items) |divider| {

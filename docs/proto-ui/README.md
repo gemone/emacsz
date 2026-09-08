@@ -261,6 +261,11 @@ horizontal dividers.  `Scene` validates active frame/window bounds and replaces
 a divider only with a strictly newer generation; SDL renders its fixed-color
 geometry.  Draggable divider semantics remain pending.
 
+P23 fringe preparation adds `FRINGE_UPDATE` v1 as bounded left/right color
+bands.  `Scene` validates active frame/window bounds and strictly newer
+generations, while SDL renders the validated bands.  Bitmap glyphs and
+redisplay-owned fringe capture remain pending.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and

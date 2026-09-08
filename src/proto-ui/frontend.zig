@@ -432,6 +432,80 @@ pub const max_image_placements: usize = 16;
 pub const max_clear_areas: usize = 64;
 pub const max_scroll_runs: usize = 32;
 pub const max_dividers: usize = 32;
+pub const max_fringes: usize = 32;
+
+pub const FringeSide = enum(u8) {
+    left = 1,
+    right = 2,
+};
+
+pub const FringeUpdate = struct {
+    schema: u16 = 1,
+    side: FringeSide,
+    reserved: u8 = 0,
+    fringe_id: u32,
+    fringe_generation: u32,
+    window_id: u64,
+    y: i32,
+    height: i32,
+    width: i32,
+    color: [4]u8,
+    frame_generation: u32,
+};
+
+pub const fringe_update_size: usize = 40;
+
+pub fn fringeRect(fringe: FringeUpdate, owner_width: i32) Rect {
+    const x = if (fringe.side == .left) 0 else owner_width - fringe.width;
+    return .{ .x = x, .y = fringe.y, .width = fringe.width, .height = fringe.height };
+}
+
+pub fn encodeFringeUpdate(a: std.mem.Allocator, fringe: FringeUpdate, out: *std.ArrayList(u8)) !void {
+    if (fringe.schema != 1 or fringe.reserved != 0 or
+        fringe.fringe_id == 0 or fringe.fringe_generation == 0 or
+        fringe.window_id == 0 or fringe.y < 0 or fringe.height <= 0 or
+        fringe.width <= 0 or fringe.color[3] == 0 or fringe.frame_generation == 0)
+        return Error.InvalidMessage;
+    var b: [fringe_update_size]u8 = [_]u8{0} ** fringe_update_size;
+    std.mem.writeInt(u16, b[0..2], fringe.schema, .little);
+    b[2] = @intFromEnum(fringe.side);
+    std.mem.writeInt(u32, b[4..8], fringe.fringe_id, .little);
+    std.mem.writeInt(u32, b[8..12], fringe.fringe_generation, .little);
+    std.mem.writeInt(u64, b[12..20], fringe.window_id, .little);
+    std.mem.writeInt(i32, b[20..24], fringe.y, .little);
+    std.mem.writeInt(i32, b[24..28], fringe.height, .little);
+    std.mem.writeInt(i32, b[28..32], fringe.width, .little);
+    @memcpy(b[32..36], &fringe.color);
+    std.mem.writeInt(u32, b[36..40], fringe.frame_generation, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeFringeUpdate(data: []const u8) Error!FringeUpdate {
+    if (data.len != fringe_update_size) return Error.InvalidTable;
+    const fringe: FringeUpdate = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .side = switch (data[2]) {
+            1 => .left,
+            2 => .right,
+            else => return Error.InvalidMessage,
+        },
+        .reserved = data[3],
+        .fringe_id = std.mem.readInt(u32, data[4..8], .little),
+        .fringe_generation = std.mem.readInt(u32, data[8..12], .little),
+        .window_id = std.mem.readInt(u64, data[12..20], .little),
+        .y = @bitCast(std.mem.readInt(u32, data[20..24], .little)),
+        .height = @bitCast(std.mem.readInt(u32, data[24..28], .little)),
+        .width = @bitCast(std.mem.readInt(u32, data[28..32], .little)),
+        .color = data[32..36][0..4].*,
+        .frame_generation = std.mem.readInt(u32, data[36..40], .little),
+    };
+    if (fringe.schema != 1 or fringe.reserved != 0 or
+        fringe.fringe_id == 0 or fringe.fringe_generation == 0 or
+        fringe.window_id == 0 or fringe.y < 0 or fringe.height <= 0 or
+        fringe.width <= 0 or fringe.color[3] == 0 or fringe.frame_generation == 0)
+        return Error.InvalidMessage;
+    return fringe;
+}
 pub const BorderSides = struct {
     pub const top: u8 = 1 << 0;
     pub const right: u8 = 1 << 1;
@@ -1622,6 +1696,7 @@ pub const Scene = struct {
     clear_areas: std.ArrayList(ClearArea) = .empty,
     scroll_runs: std.ArrayList(ScrollRun) = .empty,
     dividers: std.ArrayList(DividerUpdate) = .empty,
+    fringes: std.ArrayList(FringeUpdate) = .empty,
     border: ?BorderUpdate = null,
     text: std.ArrayList(TextLine) = .empty,
     title: ?[:0]u8 = null,
@@ -1656,6 +1731,7 @@ pub const Scene = struct {
         self.clear_areas.deinit(self.allocator);
         self.scroll_runs.deinit(self.allocator);
         self.dividers.deinit(self.allocator);
+        self.fringes.deinit(self.allocator);
         self.strings.deinit(self.allocator);
         self.faces = .{};
         self.fonts = .{};
@@ -1681,6 +1757,7 @@ pub const Scene = struct {
         self.clear_areas = .empty;
         self.scroll_runs = .empty;
         self.dividers = .empty;
+        self.fringes = .empty;
         self.strings = .{};
         self.faces = .{};
         self.fonts = .{};
@@ -1784,6 +1861,7 @@ pub const Scene = struct {
             protocol.Message.clear_area => try self.applyClearArea(payload),
             protocol.Message.scroll_run => try self.applyScrollRun(payload),
             protocol.Message.divider_update => try self.applyDividerUpdate(payload),
+            protocol.Message.fringe_update => try self.applyFringeUpdate(payload),
             protocol.Message.damage_rects => try self.applyDamageRects(payload),
             protocol.Message.flush => try self.applyFlush(payload),
             protocol.Message.render_hint => try self.applyRenderHint(payload),
@@ -1824,6 +1902,7 @@ pub const Scene = struct {
         self.clear_areas.deinit(self.allocator);
         self.scroll_runs.deinit(self.allocator);
         self.dividers.deinit(self.allocator);
+        self.fringes.deinit(self.allocator);
         for (self.text.items) |line| self.allocator.free(line.bytes);
         self.text.deinit(self.allocator);
         self.windows = .empty;
@@ -1833,6 +1912,7 @@ pub const Scene = struct {
         self.clear_areas = .empty;
         self.scroll_runs = .empty;
         self.dividers = .empty;
+        self.fringes = .empty;
         self.text = .empty;
         self.frame_header = null;
         self.cursor = null;
@@ -2758,6 +2838,7 @@ pub const Scene = struct {
         self.clear_areas.clearRetainingCapacity();
         self.scroll_runs.clearRetainingCapacity();
         self.dividers.clearRetainingCapacity();
+        self.fringes.clearRetainingCapacity();
         self.image_placements = image_placements;
         self.image_placement_count = image_placement_count;
         windows = old_windows;
@@ -2833,6 +2914,35 @@ pub const Scene = struct {
         if (self.scroll_runs.items.len == max_scroll_runs)
             return Error.Unsupported;
         try self.scroll_runs.append(self.allocator, run);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFringeUpdate(self: *Scene, payload: protocol.Payload) Error!void {
+        const fringe = try decodeFringeUpdate(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != fringe.frame_generation or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation)
+            return Error.InvalidMessage;
+        const owner = findWindow(self.windows.items, fringe.window_id) orelse
+            return Error.InvalidMessage;
+        if (fringe.width > owner.width or
+            !inside(0, fringe.height, owner.height) or
+            @as(i64, fringe.y) + fringe.height > owner.height)
+            return Error.InvalidMessage;
+        for (self.fringes.items) |*old| {
+            if (old.fringe_id == fringe.fringe_id) {
+                if (fringe.fringe_generation <= old.fringe_generation)
+                    return Error.StaleGeneration;
+                old.* = fringe;
+                self.stats.control_messages += 1;
+                return;
+            }
+        }
+        if (self.fringes.items.len == max_fringes) return Error.Unsupported;
+        try self.fringes.append(self.allocator, fringe);
         self.stats.control_messages += 1;
     }
 
@@ -3262,6 +3372,56 @@ test "divider update validates generation and owner bounds" {
     defer a.free(newer_message);
     try scene.apply(newer_message);
     try std.testing.expectEqual(newer, scene.dividers.items[0]);
+}
+
+test "fringe update validates generation and active frame" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    const fringe: FringeUpdate = .{
+        .side = .left,
+        .fringe_id = 7,
+        .fringe_generation = 1,
+        .window_id = 100,
+        .y = 4,
+        .height = 40,
+        .width = 6,
+        .color = .{ 1, 2, 3, 255 },
+        .frame_generation = 1,
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeFringeUpdate(a, fringe, &payload);
+    try std.testing.expectEqual(fringe_update_size, payload.items.len);
+    try std.testing.expectEqual(fringe, try decodeFringeUpdate(payload.items));
+    const message = try windowLifecycleMessage(a, protocol.Message.fringe_update, 3, 7, payload.items);
+    defer a.free(message);
+    try scene.apply(message);
+    try std.testing.expectEqual(fringe, scene.fringes.items[0]);
+
+    const stale = fringe;
+    payload.clearRetainingCapacity();
+    try encodeFringeUpdate(a, stale, &payload);
+    const stale_message = try windowLifecycleMessage(a, protocol.Message.fringe_update, 4, 7, payload.items);
+    defer a.free(stale_message);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(stale_message));
+
+    var newer = fringe;
+    newer.fringe_generation = 2;
+    newer.width = 8;
+    payload.clearRetainingCapacity();
+    try encodeFringeUpdate(a, newer, &payload);
+    const newer_message = try windowLifecycleMessage(a, protocol.Message.fringe_update, 4, 7, payload.items);
+    defer a.free(newer_message);
+    try scene.apply(newer_message);
+    try std.testing.expectEqual(newer, scene.fringes.items[0]);
 }
 
 test "scene stores flush and render hints only for the active frame" {

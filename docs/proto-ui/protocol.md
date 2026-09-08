@@ -811,6 +811,31 @@ generations, clears them on authoritative updates/teardown, and renders the
 validated fixed-color geometry.  Invalid orientation, truncation, out-of-bounds
 geometry, or stale generation is rejected before mutation.
 
+### 13.4 `FRINGE_UPDATE` v1 (implemented bounded adapter contract)
+
+`FRINGE_UPDATE = 0x0408` is an exact 40-byte little-endian color-band subset.
+It supports left/right fringe geometry and generation replacement; bitmap glyph
+patterns, scroll semantics, and redisplay-owned fringe capture remain pending.
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 2 | `schema` | `u16`, little-endian, must be `1` |
+| 2 | 1 | `side` | 1 left, 2 right |
+| 3 | 1 | reserved | zero |
+| 4 | 4 | `fringe_id` | nonzero |
+| 8 | 4 | `fringe_generation` | nonzero; replacement strictly newer |
+| 12 | 8 | `window_id` | nonzero, exists in active frame |
+| 20 | 4 | `y` | nonnegative window-relative coordinate |
+| 24 | 4 | `height` | positive |
+| 28 | 4 | `width` | positive and <= owner width |
+| 32 | 4 | color | RGBA bytes; alpha nonzero |
+| 36 | 4 | `frame_generation` | nonzero, active-frame generation |
+
+`Scene` owns at most 32 fringe bands, replaces same IDs only for strictly newer
+generations, and clears them on authoritative frame updates or teardown.  The
+SDL draw list renders validated left/right bands.  Bitmap patterns and full
+fringe semantics remain pending.
+
 ### 13.4 `CLEAR_AREA` v1 (implemented bounded adapter contract)
 
 `CLEAR_AREA = 0x040b` is an exact 40-byte little-endian rectangle filled with a
@@ -1441,9 +1466,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 65 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 66 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 96 | Assigned for the target protocol but not implemented |
+| `planned` | 95 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

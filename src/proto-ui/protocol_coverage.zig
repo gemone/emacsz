@@ -91,7 +91,7 @@ const ranges = [_]Range{
     .{ .low = 0x0405, .high = 0x0405, .status = .implemented_codec, .domain = .render, .family = "glyph-run", .note = "bounded ASCII fallback v1/v2 and Scene rendering" },
     .{ .low = 0x0406, .high = 0x0406, .status = .implemented_codec, .domain = .render, .family = "glyph-run-delete", .note = "exact identity deletion and fallback restore" },
     .{ .low = 0x0407, .high = 0x0407, .status = .implemented_codec, .domain = .render, .family = "cursor-update", .note = "dedicated cursor codec, owner/geometry validation, Scene state, SDL render evidence" },
-    .{ .low = 0x0408, .high = 0x0408, .status = .planned, .domain = .render, .family = "render-control", .note = "fringe codec pending" },
+    .{ .low = 0x0408, .high = 0x0408, .status = .implemented_codec, .domain = .render, .family = "fringe-update", .note = "bounded side/color fringe codec, generation replacement, Scene validation, SDL render evidence" },
     .{ .low = 0x0409, .high = 0x0409, .status = .implemented_codec, .domain = .render, .family = "divider-update", .note = "bounded vertical/horizontal divider codec, generation replacement, Scene validation, SDL render evidence" },
     .{ .low = 0x040a, .high = 0x040a, .status = .implemented_codec, .domain = .render, .family = "border-update", .note = "bounded side mask, thickness/color codec, Scene state, SDL border evidence" },
     .{ .low = 0x040c, .high = 0x040c, .status = .implemented_codec, .domain = .render, .family = "scroll-run", .note = "bounded vertical scroll codec, Scene validation, and copy plan metrics; SDL copy backend pending" },
