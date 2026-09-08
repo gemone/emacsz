@@ -373,6 +373,7 @@ lifecycle checks and SDL runtime evidence.  Complete snapshot and PGTK
 frame parity are covered by the next slice and remain pending.
 
 P50 frame-snapshot preparation adds `FRAME_SNAPSHOT` v1, an exact 128-byte atomic core presentation snapshot with strict geometry containment, Scene restoration, and bounded SDL evidence.  Full Emacs frame parameters and PGTK parity remain pending.
+P52 menu-patch preparation adds `MENU_PATCH` v1 with ordered upsert/delete operations, strict generation and hierarchy validation, atomic Scene replacement, and SDL render evidence.  Full menu policy remains pending.
 P51 menu-hover preparation adds `MENU_HOVER` v1, an exact 40-byte enter/move/leave reverse intent with phase-specific validation and negotiated acknowledged delivery.  SDL hit testing and menu highlight dispatch remain pending.
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by
 atlas/page identity, generation, and page revision.  The runtime smoke requires

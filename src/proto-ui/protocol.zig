@@ -138,6 +138,7 @@ pub const Message = struct {
     pub const tooltip_move: u16 = 0x0931;
     pub const tooltip_hide: u16 = 0x0932;
     pub const menu_model: u16 = 0x0900;
+    pub const menu_patch: u16 = 0x0901;
     pub const menu_open: u16 = 0x0902;
     pub const menu_close: u16 = 0x0903;
     pub const menu_result: u16 = 0x0904;
@@ -2694,7 +2695,43 @@ fn validateMenuText(bytes: []const u8) Error!void {
     if (!std.unicode.utf8ValidateSlice(bytes)) return Error.InvalidUtf8;
 }
 
-fn validateMenuModelSnapshot(snapshot: MenuModelSnapshot) Error!void {
+fn validateMenuNode(node: MenuNode) Error!void {
+    if (node.item_id == 0) return Error.InvalidMessage;
+    if (node.flags & ~MenuNodeFlags.known != 0) return Error.InvalidReserved;
+    if (node.depth > max_menu_depth) return Error.InvalidMessage;
+    if (node.parent_item_id == 0 and node.depth != 0) return Error.InvalidMessage;
+    if (node.label_len > node.label.len or
+        node.help_len > node.help.len or
+        node.key_len > node.key.len) return Error.InvalidMessage;
+    if (!std.mem.allEqual(u8, node.label[node.label_len..], 0) or
+        !std.mem.allEqual(u8, node.help[node.help_len..], 0) or
+        !std.mem.allEqual(u8, node.key[node.key_len..], 0))
+        return Error.InvalidReserved;
+    if (node.label_len != 0) try validateMenuText(node.label[0..node.label_len]);
+    if (node.help_len != 0) try validateMenuText(node.help[0..node.help_len]);
+    if (node.key_len != 0) try validateMenuText(node.key[0..node.key_len]);
+    const visible = node.flags & MenuNodeFlags.visible != 0;
+    const enabled = node.flags & MenuNodeFlags.enabled != 0;
+    const selected = node.flags & MenuNodeFlags.selected != 0;
+    if (!visible and (enabled or selected)) return Error.InvalidMessage;
+    if (selected and !(node.kind == .checkbox or node.kind == .radio))
+        return Error.InvalidMessage;
+    switch (node.kind) {
+        .separator => {
+            if (node.label_len != 0 or node.help_len != 0 or node.key_len != 0 or
+                enabled or selected)
+                return Error.InvalidMessage;
+        },
+        .submenu => {
+            if (node.label_len == 0 or selected) return Error.InvalidMessage;
+        },
+        else => {
+            if (node.label_len == 0) return Error.InvalidMessage;
+        },
+    }
+}
+
+pub fn validateMenuModelSnapshot(snapshot: MenuModelSnapshot) Error!void {
     const header = snapshot.header;
     if (header.frame_id == 0 or header.frame_generation == 0 or
         header.menu_id == 0 or header.menu_generation == 0)
@@ -2703,39 +2740,7 @@ fn validateMenuModelSnapshot(snapshot: MenuModelSnapshot) Error!void {
         return Error.InvalidMessage;
 
     for (snapshot.nodes, 0..) |node, index| {
-        if (node.item_id == 0) return Error.InvalidMessage;
-        if (node.flags & ~MenuNodeFlags.known != 0) return Error.InvalidReserved;
-        if (node.depth > max_menu_depth) return Error.InvalidMessage;
-        if (node.parent_item_id == 0 and node.depth != 0) return Error.InvalidMessage;
-        if (node.label_len > node.label.len or
-            node.help_len > node.help.len or
-            node.key_len > node.key.len) return Error.InvalidMessage;
-        if (!std.mem.allEqual(u8, node.label[node.label_len..], 0) or
-            !std.mem.allEqual(u8, node.help[node.help_len..], 0) or
-            !std.mem.allEqual(u8, node.key[node.key_len..], 0))
-            return Error.InvalidReserved;
-        if (node.label_len != 0) try validateMenuText(node.label[0..node.label_len]);
-        if (node.help_len != 0) try validateMenuText(node.help[0..node.help_len]);
-        if (node.key_len != 0) try validateMenuText(node.key[0..node.key_len]);
-        const visible = node.flags & MenuNodeFlags.visible != 0;
-        const enabled = node.flags & MenuNodeFlags.enabled != 0;
-        const selected = node.flags & MenuNodeFlags.selected != 0;
-        if (!visible and (enabled or selected)) return Error.InvalidMessage;
-        if (selected and !(node.kind == .checkbox or node.kind == .radio))
-            return Error.InvalidMessage;
-        switch (node.kind) {
-            .separator => {
-                if (node.label_len != 0 or node.help_len != 0 or node.key_len != 0 or
-                    enabled or selected)
-                    return Error.InvalidMessage;
-            },
-            .submenu => {
-                if (node.label_len == 0 or selected) return Error.InvalidMessage;
-            },
-            else => {
-                if (node.label_len == 0) return Error.InvalidMessage;
-            },
-        }
+        try validateMenuNode(node);
         for (snapshot.nodes[0..index]) |prior| {
             if (prior.item_id == node.item_id) return Error.InvalidTable;
         }
@@ -2869,6 +2874,157 @@ pub fn decodeMenuModelSnapshot(
 pub fn freeMenuModelSnapshot(a: std.mem.Allocator, snapshot: *MenuModelSnapshot) void {
     a.free(snapshot.nodes);
     snapshot.nodes = &.{};
+}
+
+pub const MenuPatchOperationKind = enum(u8) {
+    upsert = 1,
+    delete = 2,
+};
+
+pub const MenuPatchHeader = struct {
+    frame_id: u32,
+    frame_generation: u32,
+    menu_id: u32,
+    expected_generation: u32,
+    new_generation: u32,
+};
+
+pub const MenuPatchOperation = struct {
+    operation: MenuPatchOperationKind,
+    node: MenuNode,
+    reserved_tail: [4]u8 = @splat(0),
+};
+
+pub const menu_patch_header_size: usize = 32;
+pub const menu_patch_operation_size: usize = 184;
+pub const menu_patch_schema: u16 = 1;
+pub const max_menu_patch_operations: usize = 32;
+
+fn validateMenuPatchHeader(header: MenuPatchHeader, operation_count: u32) Error!void {
+    if (header.frame_id == 0 or header.frame_generation == 0 or
+        header.menu_id == 0 or header.expected_generation == 0 or
+        header.new_generation <= header.expected_generation or
+        operation_count == 0 or operation_count > max_menu_patch_operations)
+        return Error.InvalidMessage;
+}
+
+fn validateMenuPatchOperation(operation: MenuPatchOperation) Error!void {
+    if (!std.mem.allEqual(u8, &operation.reserved_tail, 0)) return Error.InvalidReserved;
+    if (operation.node.item_id == 0) return Error.InvalidMessage;
+    if (operation.operation == .delete) {
+        if (operation.node.parent_item_id != 0 or
+            operation.node.kind != .command or operation.node.flags != 0 or
+            operation.node.depth != 0 or operation.node.label_len != 0 or
+            operation.node.help_len != 0 or operation.node.key_len != 0)
+            return Error.InvalidMessage;
+        if (!std.mem.allEqual(u8, &operation.node.label, 0) or
+            !std.mem.allEqual(u8, &operation.node.help, 0) or
+            !std.mem.allEqual(u8, &operation.node.key, 0))
+            return Error.InvalidReserved;
+        return;
+    }
+    try validateMenuNode(operation.node);
+}
+
+pub fn encodeMenuPatch(
+    a: std.mem.Allocator,
+    header: MenuPatchHeader,
+    operations: []const MenuPatchOperation,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateMenuPatchHeader(header, @intCast(operations.len));
+    var header_bytes: [menu_patch_header_size]u8 = @splat(0);
+    std.mem.writeInt(u16, header_bytes[0..2], menu_patch_schema, .little);
+    std.mem.writeInt(u32, header_bytes[4..8], header.frame_id, .little);
+    std.mem.writeInt(u32, header_bytes[8..12], header.frame_generation, .little);
+    std.mem.writeInt(u32, header_bytes[12..16], header.menu_id, .little);
+    std.mem.writeInt(u32, header_bytes[16..20], header.expected_generation, .little);
+    std.mem.writeInt(u32, header_bytes[20..24], header.new_generation, .little);
+    std.mem.writeInt(u32, header_bytes[24..28], @intCast(operations.len), .little);
+    try out.appendSlice(a, &header_bytes);
+    for (operations) |operation| {
+        try validateMenuPatchOperation(operation);
+        var bytes: [menu_patch_operation_size]u8 = @splat(0);
+        bytes[0] = @intFromEnum(operation.operation);
+        std.mem.writeInt(u32, bytes[4..8], operation.node.item_id, .little);
+        std.mem.writeInt(u32, bytes[8..12], operation.node.parent_item_id, .little);
+        bytes[12] = @intFromEnum(operation.node.kind);
+        bytes[13] = operation.node.flags;
+        bytes[14] = operation.node.depth;
+        bytes[15] = operation.node.label_len;
+        bytes[16] = operation.node.help_len;
+        bytes[17] = operation.node.key_len;
+        @memcpy(bytes[20..84], &operation.node.label);
+        @memcpy(bytes[84..148], &operation.node.help);
+        @memcpy(bytes[148..180], &operation.node.key);
+        try out.appendSlice(a, &bytes);
+    }
+}
+
+pub fn decodeMenuPatch(
+    a: std.mem.Allocator,
+    data: []const u8,
+) (Error || std.mem.Allocator.Error)!struct { header: MenuPatchHeader, operations: []MenuPatchOperation } {
+    if (data.len < menu_patch_header_size) return Error.InvalidTable;
+    var reader = Reader{ .data = data };
+    if (try reader.readU16() != menu_patch_schema) return Error.InvalidVersion;
+    const flags = try reader.readByte();
+    const reserved = try reader.readByte();
+    const header: MenuPatchHeader = .{
+        .frame_id = try reader.readU32(),
+        .frame_generation = try reader.readU32(),
+        .menu_id = try reader.readU32(),
+        .expected_generation = try reader.readU32(),
+        .new_generation = try reader.readU32(),
+    };
+    const operation_count = try reader.readU32();
+    try reader.expectZeros(4);
+    if (flags != 0 or reserved != 0) return Error.InvalidReserved;
+    try validateMenuPatchHeader(header, operation_count);
+    if (data.len != menu_patch_header_size + @as(usize, operation_count) * menu_patch_operation_size)
+        return Error.InvalidTable;
+
+    const operations = try a.alloc(MenuPatchOperation, operation_count);
+    errdefer a.free(operations);
+    for (operations) |*operation| {
+        const operation_kind: MenuPatchOperationKind = switch (try reader.readByte()) {
+            1 => .upsert,
+            2 => .delete,
+            else => return Error.InvalidMessage,
+        };
+        try reader.expectZeros(3);
+        operation.* = .{
+            .operation = operation_kind,
+            .node = .{
+                .item_id = try reader.readU32(),
+                .parent_item_id = try reader.readU32(),
+                .kind = switch (try reader.readByte()) {
+                    1 => .separator,
+                    2 => .command,
+                    3 => .checkbox,
+                    4 => .radio,
+                    5 => .submenu,
+                    else => return Error.InvalidMessage,
+                },
+                .flags = try reader.readByte(),
+                .depth = try reader.readByte(),
+                .label_len = try reader.readByte(),
+                .help_len = try reader.readByte(),
+                .key_len = try reader.readByte(),
+            },
+        };
+        try reader.expectZeros(2);
+        operation.node.label = (try reader.bytes(64))[0..64].*;
+        operation.node.help = (try reader.bytes(64))[0..64].*;
+        operation.node.key = (try reader.bytes(32))[0..32].*;
+        operation.reserved_tail = (try reader.bytes(4))[0..4].*;
+        try validateMenuPatchOperation(operation.*);
+    }
+    return .{ .header = header, .operations = operations };
+}
+
+pub fn freeMenuPatchOperations(a: std.mem.Allocator, operations: []MenuPatchOperation) void {
+    a.free(operations);
 }
 
 pub const MenuCloseReason = enum(u8) {
@@ -3192,6 +3348,75 @@ pub fn decodeMenuHover(data: []const u8) Error!MenuHover {
     };
     try validateMenuHover(payload);
     return payload;
+}
+
+test "menu patch codecs enforce ordered generation and operations" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    const header: MenuPatchHeader = .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .menu_id = 3,
+        .expected_generation = 4,
+        .new_generation = 5,
+    };
+    var operations = [_]MenuPatchOperation{
+        .{ .operation = .upsert, .node = .{
+            .item_id = 21,
+            .parent_item_id = 20,
+            .kind = .command,
+            .flags = MenuNodeFlags.enabled | MenuNodeFlags.visible,
+            .depth = 1,
+            .label_len = 8,
+        } },
+        .{ .operation = .delete, .node = .{
+            .item_id = 22,
+            .parent_item_id = 0,
+            .kind = .command,
+            .flags = 0,
+            .depth = 0,
+        } },
+    };
+    @memcpy(operations[0].node.label[0..8], "NewFrame");
+    try encodeMenuPatch(a, header, &operations, &bytes);
+    try std.testing.expectEqual(menu_patch_header_size + 2 * menu_patch_operation_size, bytes.items.len);
+    const decoded = try decodeMenuPatch(a, bytes.items);
+    defer freeMenuPatchOperations(a, decoded.operations);
+    try std.testing.expectEqual(header, decoded.header);
+    try std.testing.expectEqual(operations.len, decoded.operations.len);
+    try std.testing.expectEqual(MenuPatchOperationKind.upsert, decoded.operations[0].operation);
+    try std.testing.expectEqualStrings("NewFrame", decoded.operations[0].node.label[0..8]);
+    try std.testing.expectEqual(MenuPatchOperationKind.delete, decoded.operations[1].operation);
+
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeMenuPatch(a, bytes.items));
+    bytes.items[3] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeMenuPatch(a, bytes.items[0 .. bytes.items.len - 1]));
+    try std.testing.expectError(Error.InvalidMessage, encodeMenuPatch(a, .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .menu_id = 3,
+        .expected_generation = 5,
+        .new_generation = 5,
+    }, &operations, &bytes));
+
+    // Reject malformed node payloads at the raw trust boundary, not only
+    // through the validating encoder.
+    bytes.items[menu_patch_header_size + 13] = 0x80;
+    try std.testing.expectError(Error.InvalidReserved, decodeMenuPatch(a, bytes.items));
+    bytes.items[menu_patch_header_size + 13] = MenuNodeFlags.enabled | MenuNodeFlags.visible;
+    bytes.items[menu_patch_header_size + 20] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuPatch(a, bytes.items));
+    bytes.items[menu_patch_header_size + 20] = 'N';
+    bytes.items[menu_patch_header_size + menu_patch_operation_size] = 9;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuPatch(a, bytes.items));
+    bytes.items[menu_patch_header_size + menu_patch_operation_size] = @intFromEnum(MenuPatchOperationKind.delete);
+    std.mem.writeInt(u32, bytes.items[menu_patch_header_size + menu_patch_operation_size + 8 ..][0..4], 20, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuPatch(a, bytes.items));
+    std.mem.writeInt(u32, bytes.items[menu_patch_header_size + menu_patch_operation_size + 8 ..][0..4], 0, .little);
+    bytes.items[menu_patch_header_size + menu_patch_operation_size + 20] = 'x';
+    try std.testing.expectError(Error.InvalidReserved, decodeMenuPatch(a, bytes.items));
 }
 
 test "menu hover codecs enforce phase-specific bounded identity" {

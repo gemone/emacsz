@@ -3008,6 +3008,7 @@ pub const Scene = struct {
             protocol.Message.row_delete => try self.applyRowDelete(payload),
             protocol.Message.window_tree_snapshot => try self.applyWindowTreeSnapshot(payload),
             protocol.Message.menu_model => try self.applyMenuModel(payload),
+            protocol.Message.menu_patch => try self.applyMenuPatch(payload),
             protocol.Message.menu_open => try self.applyMenuOpen(payload),
             protocol.Message.menu_close => try self.applyMenuClose(payload),
             protocol.Message.glyph_run => try self.applyGlyphRun(payload),
@@ -4030,6 +4031,89 @@ pub const Scene = struct {
             return Error.InvalidMessage;
         _ = findMenuNode(model, close.item_id) orelse
             return Error.ResourceNotLive;
+        self.menu_open = null;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyMenuPatch(self: *Scene, payload: protocol.Payload) Error!void {
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        const decoded = try protocol.decodeMenuPatch(self.allocator, payload.bytes);
+        defer protocol.freeMenuPatchOperations(self.allocator, decoded.operations);
+        const current_model = self.menu_model orelse return Error.ResourceNotLive;
+        if (payload.envelope.frame_id != frame.frame_id or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation or
+            current_model.header.frame_id != decoded.header.frame_id or
+            current_model.header.frame_generation != decoded.header.frame_generation or
+            current_model.header.menu_id != decoded.header.menu_id or
+            current_model.header.menu_generation != decoded.header.expected_generation)
+            return Error.InvalidMessage;
+
+        var nodes: [protocol.max_menu_nodes]protocol.MenuNode = undefined;
+        var count: usize = current_model.nodes.len;
+        @memcpy(nodes[0..count], current_model.nodes);
+
+        for (decoded.operations) |operation| {
+            const item_id = operation.node.item_id;
+            var existing_index: ?usize = null;
+            for (nodes[0..count], 0..) |node, index| {
+                if (node.item_id == item_id) {
+                    existing_index = index;
+                    break;
+                }
+            }
+
+            switch (operation.operation) {
+                .upsert => {
+                    if (operation.node.parent_item_id != 0) {
+                        var parent_found = false;
+                        for (nodes[0..count]) |parent| {
+                            if (parent.item_id == operation.node.parent_item_id) {
+                                parent_found = true;
+                                break;
+                            }
+                        }
+                        if (!parent_found) return Error.ResourceNotLive;
+                    }
+                    if (existing_index) |index| {
+                        nodes[index] = operation.node;
+                    } else {
+                        if (count == protocol.max_menu_nodes) return Error.ResourceTableFull;
+                        nodes[count] = operation.node;
+                        count += 1;
+                    }
+                },
+                .delete => {
+                    const index = existing_index orelse return Error.ResourceNotLive;
+                    for (nodes[0..count]) |node| {
+                        if (node.parent_item_id == item_id) return Error.ResourceNotLive;
+                    }
+                    if (self.menu_open) |open| {
+                        if (open.item_id == item_id) return Error.ResourceNotLive;
+                    }
+                    if (index + 1 < count) {
+                        std.mem.copyForwards(protocol.MenuNode, nodes[index .. count - 1], nodes[index + 1 .. count]);
+                    }
+                    count -= 1;
+                },
+            }
+        }
+
+        const next_model: protocol.MenuModelSnapshot = .{
+            .header = .{
+                .frame_id = current_model.header.frame_id,
+                .frame_generation = current_model.header.frame_generation,
+                .menu_id = current_model.header.menu_id,
+                .menu_generation = decoded.header.new_generation,
+            },
+            .nodes = nodes[0..count],
+        };
+        try protocol.validateMenuModelSnapshot(next_model);
+        const owned_nodes = try self.allocator.alloc(protocol.MenuNode, count);
+        @memcpy(owned_nodes, nodes[0..count]);
+        if (self.menu_model) |*old| protocol.freeMenuModelSnapshot(self.allocator, old);
+        self.menu_model = .{ .header = next_model.header, .nodes = owned_nodes };
         self.menu_open = null;
         self.stats.control_messages += 1;
     }
@@ -5778,6 +5862,280 @@ test "menu model validates active frame and generation lifecycle" {
     try std.testing.expect(scene.menu_open == null);
     try std.testing.expect(scene.menu_model == null);
     try std.testing.expect(scene.frame == null);
+}
+
+test "menu patch applies ordered upserts and deletes atomically" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var nodes = [_]protocol.MenuNode{.{
+        .item_id = 20,
+        .parent_item_id = 0,
+        .kind = .submenu,
+        .flags = protocol.MenuNodeFlags.enabled | protocol.MenuNodeFlags.visible,
+        .depth = 0,
+        .label_len = 4,
+    }};
+    @memcpy(nodes[0].label[0..4], "File");
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeMenuModelSnapshot(a, .{
+        .header = .{ .frame_id = 7, .frame_generation = 1, .menu_id = 3, .menu_generation = 1 },
+        .nodes = &nodes,
+    }, &payload);
+    {
+        const model = try windowLifecycleMessage(a, protocol.Message.menu_model, 3, 7, payload.items);
+        defer a.free(model);
+        try scene.apply(model);
+    }
+
+    var operations = [_]protocol.MenuPatchOperation{
+        .{ .operation = .upsert, .node = .{
+            .item_id = 21,
+            .parent_item_id = 20,
+            .kind = .command,
+            .flags = protocol.MenuNodeFlags.enabled | protocol.MenuNodeFlags.visible,
+            .depth = 1,
+            .label_len = 8,
+        } },
+        .{ .operation = .upsert, .node = .{
+            .item_id = 20,
+            .parent_item_id = 0,
+            .kind = .submenu,
+            .flags = protocol.MenuNodeFlags.enabled | protocol.MenuNodeFlags.visible,
+            .depth = 0,
+            .label_len = 7,
+        } },
+    };
+    @memcpy(operations[0].node.label[0..8], "NewFrame");
+    @memcpy(operations[1].node.label[0..7], "FileNew");
+    payload.clearRetainingCapacity();
+    try protocol.encodeMenuPatch(a, .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .menu_id = 3,
+        .expected_generation = 1,
+        .new_generation = 2,
+    }, &operations, &payload);
+    {
+        const patch = try windowLifecycleMessage(a, protocol.Message.menu_patch, 4, 7, payload.items);
+        defer a.free(patch);
+        try scene.apply(patch);
+    }
+    try std.testing.expectEqualStrings("FileNew", scene.menu_model.?.nodes[0].label[0..7]);
+    try std.testing.expectEqualStrings("NewFrame", scene.menu_model.?.nodes[1].label[0..8]);
+    try std.testing.expectEqual(@as(u32, 2), scene.menu_model.?.header.menu_generation);
+
+    var delete_operations = [_]protocol.MenuPatchOperation{.{ .operation = .delete, .node = .{
+        .item_id = 21,
+        .parent_item_id = 0,
+        .kind = .command,
+        .flags = 0,
+        .depth = 0,
+    } }};
+    payload.clearRetainingCapacity();
+    try protocol.encodeMenuPatch(a, .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .menu_id = 3,
+        .expected_generation = 1,
+        .new_generation = 3,
+    }, &delete_operations, &payload);
+    {
+        const stale = try windowLifecycleMessage(a, protocol.Message.menu_patch, 5, 7, payload.items);
+        defer a.free(stale);
+        try std.testing.expectError(Error.InvalidMessage, scene.apply(stale));
+    }
+    try std.testing.expectEqual(@as(u32, 2), scene.menu_model.?.header.menu_generation);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeMenuPatch(a, .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .menu_id = 3,
+        .expected_generation = 2,
+        .new_generation = 3,
+    }, &delete_operations, &payload);
+    {
+        const deletion = try windowLifecycleMessage(a, protocol.Message.menu_patch, 5, 7, payload.items);
+        defer a.free(deletion);
+        try scene.apply(deletion);
+    }
+    try std.testing.expectEqual(@as(usize, 1), scene.menu_model.?.nodes.len);
+    try std.testing.expectEqual(@as(u32, 3), scene.menu_model.?.header.menu_generation);
+}
+
+test "menu patch enforces context, ordered hierarchy, and popup cleanup" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var root = protocol.MenuNode{
+        .item_id = 20,
+        .parent_item_id = 0,
+        .kind = .submenu,
+        .flags = protocol.MenuNodeFlags.enabled | protocol.MenuNodeFlags.visible,
+        .depth = 0,
+        .label_len = 4,
+    };
+    @memcpy(root.label[0..4], "File");
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeMenuModelSnapshot(a, .{
+        .header = .{ .frame_id = 7, .frame_generation = 1, .menu_id = 3, .menu_generation = 1 },
+        .nodes = &.{root},
+    }, &payload);
+    const model = try windowLifecycleMessage(a, protocol.Message.menu_model, 3, 7, payload.items);
+    defer a.free(model);
+    try scene.apply(model);
+
+    const delete_child = protocol.MenuNode{
+        .item_id = 21,
+        .parent_item_id = 0,
+        .kind = .command,
+        .flags = 0,
+        .depth = 0,
+    };
+    const delete_root = protocol.MenuNode{
+        .item_id = 20,
+        .parent_item_id = 0,
+        .kind = .command,
+        .flags = 0,
+        .depth = 0,
+    };
+
+    var child = protocol.MenuNode{
+        .item_id = 21,
+        .parent_item_id = 20,
+        .kind = .command,
+        .flags = protocol.MenuNodeFlags.enabled | protocol.MenuNodeFlags.visible,
+        .depth = 1,
+        .label_len = 8,
+    };
+    @memcpy(child.label[0..8], "NewFrame");
+    payload.clearRetainingCapacity();
+    try protocol.encodeMenuPatch(a, .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .menu_id = 3,
+        .expected_generation = 1,
+        .new_generation = 2,
+    }, &.{.{ .operation = .upsert, .node = child }}, &payload);
+    const add_child = try windowLifecycleMessage(a, protocol.Message.menu_patch, 4, 7, payload.items);
+    defer a.free(add_child);
+    try scene.apply(add_child);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeMenuOpen(a, .{
+        .menu_id = 3,
+        .menu_generation = 2,
+        .item_id = 20,
+        .window_id = 100,
+        .frame_generation = 1,
+        .x = 8,
+        .y = 8,
+        .width = 16,
+        .height = 12,
+    }, &payload);
+    const open = try windowLifecycleMessage(a, protocol.Message.menu_open, 5, 7, payload.items);
+    defer a.free(open);
+    try scene.apply(open);
+    try std.testing.expect(scene.menu_open != null);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeMenuPatch(a, .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .menu_id = 3,
+        .expected_generation = 2,
+        .new_generation = 3,
+    }, &.{.{ .operation = .upsert, .node = child }}, &payload);
+    const close_popup = try windowLifecycleMessage(a, protocol.Message.menu_patch, 6, 7, payload.items);
+    defer a.free(close_popup);
+    try scene.apply(close_popup);
+    try std.testing.expect(scene.menu_open == null);
+
+    // The envelope may not name a different frame from the patched model.
+    const wrong_frame = try windowLifecycleMessage(a, protocol.Message.menu_patch, 7, 8, payload.items);
+    defer a.free(wrong_frame);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_frame));
+
+    // The payload may not name a different live menu, and a parent delete
+    // earlier in the same patch leaves its current child without a parent.
+    payload.clearRetainingCapacity();
+    child.depth = 0;
+    try protocol.encodeMenuPatch(a, .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .menu_id = 4,
+        .expected_generation = 3,
+        .new_generation = 4,
+    }, &.{.{ .operation = .delete, .node = delete_child }}, &payload);
+    const wrong_menu = try windowLifecycleMessage(a, protocol.Message.menu_patch, 7, 7, payload.items);
+    defer a.free(wrong_menu);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_menu));
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeMenuPatch(a, .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .menu_id = 3,
+        .expected_generation = 3,
+        .new_generation = 4,
+    }, &.{
+        .{ .operation = .delete, .node = delete_root },
+        .{ .operation = .delete, .node = delete_child },
+    }, &payload);
+    const parent_first = try windowLifecycleMessage(a, protocol.Message.menu_patch, 7, 7, payload.items);
+    defer a.free(parent_first);
+    try std.testing.expectError(Error.ResourceNotLive, scene.apply(parent_first));
+    try std.testing.expectEqual(@as(u32, 3), scene.menu_model.?.header.menu_generation);
+
+    child.depth = 1;
+    var replacement = protocol.MenuNode{
+        .item_id = 22,
+        .parent_item_id = 0,
+        .kind = .submenu,
+        .flags = protocol.MenuNodeFlags.enabled | protocol.MenuNodeFlags.visible,
+        .depth = 0,
+        .label_len = 5,
+    };
+    @memcpy(replacement.label[0..5], "Extra");
+    payload.clearRetainingCapacity();
+    try protocol.encodeMenuPatch(a, .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .menu_id = 3,
+        .expected_generation = 3,
+        .new_generation = 4,
+    }, &.{
+        .{ .operation = .delete, .node = delete_child },
+        .{ .operation = .delete, .node = delete_root },
+        .{ .operation = .upsert, .node = replacement },
+    }, &payload);
+    const ordered = try windowLifecycleMessage(a, protocol.Message.menu_patch, 7, 7, payload.items);
+    defer a.free(ordered);
+    try scene.apply(ordered);
+    try std.testing.expectEqual(@as(u32, 4), scene.menu_model.?.header.menu_generation);
+    try std.testing.expectEqual(@as(usize, 1), scene.menu_model.?.nodes.len);
+    try std.testing.expectEqual(@as(u32, 22), scene.menu_model.?.nodes[0].item_id);
+
+    scene.resetForResync();
+    try std.testing.expect(scene.menu_model == null);
+    try std.testing.expect(scene.menu_open == null);
 }
 
 test "mouse highlight validates state and follows window and face lifecycle" {

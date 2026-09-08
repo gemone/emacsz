@@ -1694,6 +1694,59 @@ patches, open/close state, navigation, hover, result dispatch, native menus,
 disabled hit testing, accessibility, keymap execution, and PGTK menu parity
 remain pending.
 
+#### `MENU_PATCH` v1 (implemented bounded adapter contract)
+
+`MENU_PATCH = 0x0901` is an authoritative incremental update.  Its payload is a
+32-byte header followed by 1..32 exact 184-byte operations.  The header carries
+schema, active frame id/generation, menu id, expected and strictly newer
+generation, operation count, and reserved bytes.  Each operation has kind
+`upsert` or `delete`, the same 176-byte fixed node body as `MENU_MODEL`, and
+four reserved bytes.
+
+Header layout:
+
+| Offset | Size | Field | Requirement |
+|---:|---:|---|---|
+| `0` | 2 | schema | `1` |
+| `2` | 1 | flags | `0` |
+| `3` | 1 | reserved | `0` |
+| `4` | 4 | frame id | nonzero and equal to the envelope/live frame |
+| `8` | 4 | frame generation | nonzero and equal to the live frame generation |
+| `12` | 4 | menu id | nonzero and equal to the live menu id |
+| `16` | 4 | expected generation | exact live menu generation |
+| `20` | 4 | new generation | strictly greater than expected |
+| `24` | 4 | operation count | `1..32` |
+| `28` | 4 | reserved | zero |
+
+Operation layout:
+
+| Offset | Size | Field | Requirement |
+|---:|---:|---|---|
+| `0` | 1 | operation | `1=upsert`, `2=delete` |
+| `1` | 3 | reserved | zero |
+| `4` | 4 | item id | nonzero |
+| `8` | 4 | parent item id | upsert: `0` or live working-set parent; delete: `0` |
+| `12` | 1 | node kind | upsert: valid `MENU_MODEL` kind; delete: `command` |
+| `13` | 1 | flags | upsert: valid `MENU_MODEL` flags; delete: `0` |
+| `14` | 1 | depth | upsert: valid hierarchy depth; delete: `0` |
+| `15` | 1 | label length | upsert: bounded UTF-8 length; delete: `0` |
+| `16` | 1 | help length | upsert: bounded UTF-8 length; delete: `0` |
+| `17` | 1 | key length | upsert: bounded UTF-8 length; delete: `0` |
+| `18` | 2 | reserved | zero |
+| `20` | 64 | label | upsert: UTF-8 body and zero tail; delete: zero |
+| `84` | 64 | help | upsert: UTF-8 body and zero tail; delete: zero |
+| `148` | 32 | key | upsert: UTF-8 body and zero tail; delete: zero |
+| `180` | 4 | reserved | zero |
+
+Operations apply in wire order.  `upsert` inserts a validated node or replaces
+the item with the same id; a nonzero parent must already exist in the working
+set.  `delete` removes that item and is rejected while any child remains or
+while an open popup references the item.  After all operations, the Scene
+validates the complete tree, allocates the replacement model, advances the menu
+generation, closes any popup, and swaps atomically.  Move-as-delete-plus-add is
+permitted; dedicated move semantics, conflict resolution beyond ordered
+operations, and full menu policy remain pending.
+
 #### `MENU_OPEN` / `MENU_CLOSE` v1 (implemented bounded adapter contract)
 
 `MENU_OPEN = 0x0902` is an exact 48-byte record that names the live menu id and
@@ -1882,9 +1935,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 98 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 99 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 63 | Assigned for the target protocol but not implemented |
+| `planned` | 62 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every
