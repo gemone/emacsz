@@ -764,7 +764,29 @@ advance the expected sequence.  This message has no redisplay ownership,
 shaping, BiDi, face/font, atlas, image, widget, Emacs capture, or
 `output_proto` semantics.
 
-### 13.3 `CLEAR_AREA` v1 (implemented bounded adapter contract)
+### 13.3 `BORDER_UPDATE` v1 (implemented bounded adapter contract)
+
+`BORDER_UPDATE = 0x040a` is an exact 16-byte little-endian window-edge style
+record.  It styles borders of windows owned by the active Scene frame; it does
+not capture core border geometry or replace window-manager policy.
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 2 | `schema` | `u16`, little-endian, must be `1` |
+| 2 | 1 | `sides` | bit 0 top, bit 1 right, bit 2 bottom, bit 3 left; nonzero and no unknown bits |
+| 3 | 1 | reserved | zero |
+| 4 | 4 | `thickness` | 1..64 logical pixels |
+| 8 | 4 | color | RGBA bytes; alpha must be nonzero |
+| 12 | 4 | `frame_generation` | nonzero, active-frame generation |
+
+The codec validates schema, side mask, bounded thickness, opaque alpha, exact
+length, and active generation.  Scene stores one latest border policy per active
+frame and clears it on frame destruction, resync, or teardown.  The SDL draw
+list renders only selected edges with the requested color and thickness.  Core
+border geometry, resizable frame semantics, and complete WM policy remain
+pending.
+
+### 13.4 `CLEAR_AREA` v1 (implemented bounded adapter contract)
 
 `CLEAR_AREA = 0x040b` is an exact 40-byte little-endian rectangle filled with a
 live face's background color.  v1 intentionally uses a bounded render-control
@@ -790,7 +812,7 @@ authoritative `FRAME_UPDATE`, frame destruction, resync, or teardown.  Unknown
 flags, nonzero reserved bytes, invalid coordinates, stale generations, missing
 faces, and truncation are protocol errors.
 
-### 13.4 `SCROLL_RUN` v1 (implemented bounded adapter contract)
+### 13.5 `SCROLL_RUN` v1 (implemented bounded adapter contract)
 
 `SCROLL_RUN = 0x040c` is an exact 32-byte little-endian vertical scroll-copy
 hint.  v1 deliberately covers a full-window-width band only; horizontal scrolls,
@@ -814,7 +836,7 @@ authoritative `FRAME_UPDATE`, frame destruction, resync, or teardown.  The
 renderer policy computes overlap and an estimated RGBA upload saving; malformed
 geometry, stale generations, horizontal runs, and truncation are errors.
 
-### 13.5 `DAMAGE_RECTS` v1 (implemented bounded adapter contract)
+### 13.6 `DAMAGE_RECTS` v1 (implemented bounded adapter contract)
 
 `DAMAGE_RECTS = 0x040d` is a bounded variable-length damage array.  It carries
 an explicitly enumerated conservative rectangle set after an accepted
@@ -837,7 +859,7 @@ bytes, stale generations, and out-of-frame rectangles are protocol errors.
 Current bridge/smoke evidence carries the observed array through Scene; true
 partial present and redisplay-owned incremental damage remain pending.
 
-### 13.6 `FLUSH` v1 (implemented bounded adapter contract)
+### 13.7 `FLUSH` v1 (implemented bounded adapter contract)
 
 `FLUSH = 0x040e` is an exact 40-byte little-endian present boundary.  It marks
 the Scene state that a frontend may treat as one render/present epoch; it does
@@ -864,7 +886,7 @@ Unknown flags, unknown damage kinds, truncation, and trailing bytes are protocol
 errors.  Current smoke evidence proves Scene state and SDL acceptance; core
 redisplay emission and adaptive present scheduling remain pending.
 
-### 13.7 `RENDER_HINT` v1 (implemented bounded adapter contract)
+### 13.8 `RENDER_HINT` v1 (implemented bounded adapter contract)
 
 `RENDER_HINT = 0x040f` is an exact 32-byte little-endian, non-authoritative
 renderer preference.  A conformant frontend may honor it only when the selected
@@ -1394,9 +1416,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 63 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 64 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 98 | Assigned for the target protocol but not implemented |
+| `planned` | 97 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

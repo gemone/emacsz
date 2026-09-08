@@ -431,6 +431,65 @@ pub const max_image_resources: usize = 8;
 pub const max_image_placements: usize = 16;
 pub const max_clear_areas: usize = 64;
 pub const max_scroll_runs: usize = 32;
+pub const BorderSides = struct {
+    pub const top: u8 = 1 << 0;
+    pub const right: u8 = 1 << 1;
+    pub const bottom: u8 = 1 << 2;
+    pub const left: u8 = 1 << 3;
+    pub const known: u8 = top | right | bottom | left;
+};
+
+pub const max_border_thickness: i32 = 64;
+
+pub const BorderUpdate = struct {
+    schema: u16 = 1,
+    sides: u8,
+    reserved: u8 = 0,
+    thickness: u32,
+    color: [4]u8,
+    frame_generation: u32,
+};
+
+pub const border_update_size: usize = 16;
+
+pub fn encodeBorderUpdate(
+    a: std.mem.Allocator,
+    border: BorderUpdate,
+    out: *std.ArrayList(u8),
+) !void {
+    if (border.schema != 1 or border.reserved != 0 or
+        border.sides == 0 or border.sides & ~@as(u8, BorderSides.known) != 0 or
+        border.thickness == 0 or border.thickness > max_border_thickness or
+        border.color[3] == 0 or border.frame_generation == 0)
+        return Error.InvalidMessage;
+    var bytes: [border_update_size]u8 = [_]u8{0} ** border_update_size;
+    std.mem.writeInt(u16, bytes[0..2], border.schema, .little);
+    bytes[2] = border.sides;
+    bytes[3] = border.reserved;
+    std.mem.writeInt(u32, bytes[4..8], border.thickness, .little);
+    @memcpy(bytes[8..12], &border.color);
+    std.mem.writeInt(u32, bytes[12..16], border.frame_generation, .little);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeBorderUpdate(data: []const u8) Error!BorderUpdate {
+    if (data.len != border_update_size) return Error.InvalidTable;
+    const border: BorderUpdate = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .sides = data[2],
+        .reserved = data[3],
+        .thickness = std.mem.readInt(u32, data[4..8], .little),
+        .color = data[8..12][0..4].*,
+        .frame_generation = std.mem.readInt(u32, data[12..16], .little),
+    };
+    if (border.schema != 1 or border.reserved != 0 or
+        border.sides == 0 or border.sides & ~@as(u8, BorderSides.known) != 0 or
+        border.thickness == 0 or border.thickness > max_border_thickness or
+        border.color[3] == 0 or border.frame_generation == 0)
+        return Error.InvalidMessage;
+    return border;
+}
+
 pub const image_placement_record_size: usize = 64;
 pub const image_placement_schema: u16 = 1;
 pub const image_placement_kind: u8 = 3;
@@ -1482,6 +1541,7 @@ pub const Scene = struct {
     damage: std.ArrayList(Rect) = .empty,
     clear_areas: std.ArrayList(ClearArea) = .empty,
     scroll_runs: std.ArrayList(ScrollRun) = .empty,
+    border: ?BorderUpdate = null,
     text: std.ArrayList(TextLine) = .empty,
     title: ?[:0]u8 = null,
     alpha: ?protocol.FrameAlphaPayload = null,
@@ -1633,6 +1693,7 @@ pub const Scene = struct {
             protocol.Message.frame_size_hints => try self.applyFrameSizeHints(payload),
             protocol.Message.frame_z_order => try self.applyFrameZOrder(payload),
             protocol.Message.frame_parent => try self.applyFrameParent(payload),
+            protocol.Message.border_update => try self.applyBorderUpdate(payload),
             protocol.Message.window_create => try self.applyWindowCreate(payload),
             protocol.Message.window_delete => try self.applyWindowDelete(payload),
             protocol.Message.window_patch => try self.applyWindowPatch(payload),
@@ -1671,6 +1732,7 @@ pub const Scene = struct {
         self.size_hints = null;
         self.z_order = null;
         self.parent = null;
+        self.border = null;
         self.clearGlyphRuns();
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
@@ -2626,6 +2688,20 @@ pub const Scene = struct {
         self.viewport = viewport;
         self.stats.frame_updates += 1;
     }
+
+    fn applyBorderUpdate(self: *Scene, payload: protocol.Payload) Error!void {
+        const border = try decodeBorderUpdate(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != border.frame_generation or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation or
+            @as(i64, border.thickness) * 2 > @min(header.logical_width, header.logical_height))
+            return Error.InvalidMessage;
+        self.border = border;
+        self.stats.control_messages += 1;
+    }
     fn applyClearArea(self: *Scene, payload: protocol.Payload) Error!void {
         const area = try decodeClearArea(payload.bytes);
         const frame = self.frame orelse return Error.FrameNotActive;
@@ -2865,6 +2941,50 @@ test "scene atomically replaces damage with bounded active-frame rects" {
     defer a.free(wrong_envelope);
     try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_envelope));
     try std.testing.expectEqualSlices(Rect, &rects, scene.damage.items);
+}
+
+test "border update enforces strict form and active frame" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    const border: BorderUpdate = .{
+        .sides = BorderSides.top | BorderSides.left,
+        .thickness = 4,
+        .color = .{ 12, 34, 56, 255 },
+        .frame_generation = 1,
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeBorderUpdate(a, border, &payload);
+    try std.testing.expectEqual(border_update_size, payload.items.len);
+    try std.testing.expectEqual(border, try decodeBorderUpdate(payload.items));
+
+    const message = try windowLifecycleMessage(a, protocol.Message.border_update, 3, 7, payload.items);
+    defer a.free(message);
+    try scene.apply(message);
+    try std.testing.expectEqual(border, scene.border.?);
+
+    payload.items[2] = 0x10;
+    try std.testing.expectError(Error.InvalidMessage, decodeBorderUpdate(payload.items));
+    payload.items[2] = BorderSides.top | BorderSides.left;
+    payload.items[4] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeBorderUpdate(payload.items));
+    payload.items[4] = 4;
+    try std.testing.expectError(Error.InvalidTable, decodeBorderUpdate(payload.items[0 .. payload.items.len - 1]));
+
+    std.mem.writeInt(u32, payload.items[12..16], 2, .little);
+
+    const stale = try windowLifecycleMessage(a, protocol.Message.border_update, 4, 7, payload.items);
+    defer a.free(stale);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(stale));
+    try std.testing.expectEqual(border, scene.border.?);
 }
 
 test "clear area has exact wire form and validates active face" {

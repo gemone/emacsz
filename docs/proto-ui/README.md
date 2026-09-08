@@ -250,6 +250,12 @@ The runtime smoke now executes the copy through a scratch target snapshot and
 records planned bytes/submitted commands.  Redisplay-owned scroll semantics and
 GPU batching remain pending.
 
+P21 border-style preparation adds `BORDER_UPDATE` v1 as a bounded 16-byte
+side mask, thickness, RGBA color, and generation payload.  `Scene` validates
+the active frame and the SDL draw list renders selected window edges with the
+requested color/thickness.  This improves bounded border styling; full
+window-manager border semantics and core-owned geometry remain pending.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and

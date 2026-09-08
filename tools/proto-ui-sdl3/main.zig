@@ -2633,6 +2633,30 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (scene.render_hint == null or scene.render_hint.?.preferred_mode != .mailbox)
         return error.RuntimeBridgeRenderHintInvalid;
 
+    var border_payload: std.ArrayList(u8) = .empty;
+    defer border_payload.deinit(gpa);
+    try frontend.encodeBorderUpdate(gpa, .{
+        .sides = frontend.BorderSides.top | frontend.BorderSides.right |
+            frontend.BorderSides.bottom | frontend.BorderSides.left,
+        .thickness = 6,
+        .color = .{ 0x88, 0x22, 0xcc, 255 },
+        .frame_generation = bridge.eup_frame_generation,
+    }, &border_payload);
+    var border_update: std.ArrayList(u8) = .empty;
+    defer border_update.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.border_update,
+        .sequence = 29,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, border_payload.items, &border_update);
+    try scene.apply(border_update.items);
+    if (scene.border == null or scene.border.?.thickness != 6)
+        return error.RuntimeBridgeBorderInvalid;
+
     if (scene.windows.items.len != 1 or scene.rows.items.len != 1 or
         scene.glyph_runs.items.len != 1 or scene.cursor == null)
         return error.RuntimeBridgeSceneInvalid;
@@ -2938,7 +2962,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     try protocol.encodeEnvelope(gpa, .{
         .flags = 0,
         .message_type = protocol.Message.damage_rects,
-        .sequence = 29,
+        .sequence = 30,
         .ack_sequence = 0,
         .session_id = capability.session_id,
         .frame_id = @intCast(bridge.frame.id),
@@ -3036,7 +3060,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,
@@ -3048,6 +3072,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
             scroll_plan.estimated_upload_bytes > 0,
             frame_counters.scroll_copies == 1,
             scroll_plan.estimated_upload_bytes,
+            scene.border != null,
             scene.flush != null,
             scene.render_hint != null,
             opacity_supported,
@@ -4346,30 +4371,52 @@ fn buildSceneDrawList(
     }
 
     for (scene.windows.items) |window| {
-        try list.fillRect(.{
-            .x = @floatFromInt(window.x),
-            .y = @floatFromInt(window.y),
-            .width = @floatFromInt(window.width),
-            .height = pixel,
-        }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2 });
-        try list.fillRect(.{
-            .x = @floatFromInt(window.x),
-            .y = @as(f32, @floatFromInt(window.y + window.height)) - pixel,
-            .width = @floatFromInt(window.width),
-            .height = pixel,
-        }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2 });
-        try list.fillRect(.{
-            .x = @floatFromInt(window.x),
-            .y = @floatFromInt(window.y),
-            .width = pixel,
-            .height = @floatFromInt(window.height),
-        }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2 });
-        try list.fillRect(.{
-            .x = @as(f32, @floatFromInt(window.x + window.width)) - pixel,
-            .y = @floatFromInt(window.y),
-            .width = pixel,
-            .height = @floatFromInt(window.height),
-        }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2 });
+        const border = scene.border;
+        const thickness: f32 = if (border) |state|
+            @floatFromInt(state.thickness)
+        else
+            pixel;
+        const color: renderer_policy.Color = if (border) |state|
+            .{ .r = state.color[0], .g = state.color[1], .b = state.color[2], .a = state.color[3] }
+        else
+            .{ .r = 0x71, .g = 0xa6, .b = 0xf2 };
+        const sides: u8 = if (border) |state|
+            state.sides
+        else
+            frontend.BorderSides.top | frontend.BorderSides.right |
+                frontend.BorderSides.bottom | frontend.BorderSides.left;
+        if (sides & frontend.BorderSides.top != 0) {
+            try list.fillRect(.{
+                .x = @floatFromInt(window.x),
+                .y = @floatFromInt(window.y),
+                .width = @floatFromInt(window.width),
+                .height = thickness,
+            }, color);
+        }
+        if (sides & frontend.BorderSides.bottom != 0) {
+            try list.fillRect(.{
+                .x = @floatFromInt(window.x),
+                .y = @as(f32, @floatFromInt(window.y + window.height)) - thickness,
+                .width = @floatFromInt(window.width),
+                .height = thickness,
+            }, color);
+        }
+        if (sides & frontend.BorderSides.left != 0) {
+            try list.fillRect(.{
+                .x = @floatFromInt(window.x),
+                .y = @floatFromInt(window.y),
+                .width = thickness,
+                .height = @floatFromInt(window.height),
+            }, color);
+        }
+        if (sides & frontend.BorderSides.right != 0) {
+            try list.fillRect(.{
+                .x = @as(f32, @floatFromInt(window.x + window.width)) - thickness,
+                .y = @floatFromInt(window.y),
+                .width = thickness,
+                .height = @floatFromInt(window.height),
+            }, color);
+        }
     }
 
     if (scene.cursor) |cursor| {

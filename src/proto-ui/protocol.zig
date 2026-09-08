@@ -97,6 +97,7 @@ pub const Message = struct {
     pub const glyph_run_delete: u16 = 0x0406;
     pub const cursor_update: u16 = 0x0407;
     pub const clear_area: u16 = 0x040b;
+    pub const border_update: u16 = 0x040a;
     pub const scroll_run: u16 = 0x040c;
     pub const damage_rects: u16 = 0x040d;
     pub const flush: u16 = 0x040e;
