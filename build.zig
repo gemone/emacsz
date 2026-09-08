@@ -835,6 +835,50 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&install_host_contract.step);
         boundary_step.dependOn(&run_host_contract_gate.step);
 
+        // P2: model the pure-SDL3 host adapter as an explicitly unselected
+        // candidate until an approved R7 decision selects and links it.
+        const host_adapter_gen_tool = b.addExecutable(.{
+            .name = "proto-ui-host-adapter-gen",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/host_adapter_gen.zig"),
+            }),
+        });
+        host_adapter_gen_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_host_adapter_gen = b.addRunArtifact(host_adapter_gen_tool);
+        const host_adapter_artifact = run_host_adapter_gen.addOutputFileArg(
+            "host_adapter_selection.json",
+        );
+        const install_host_adapter = b.addInstallFile(
+            host_adapter_artifact,
+            "proto-ui/host_adapter_selection.json",
+        );
+
+        const host_adapter_gate_tool = b.addExecutable(.{
+            .name = "proto-ui-host-adapter-gate",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/host_adapter_gate.zig"),
+            }),
+        });
+        host_adapter_gate_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_host_adapter_gate = b.addRunArtifact(host_adapter_gate_tool);
+        run_host_adapter_gate.addFileArg(host_adapter_artifact);
+        run_host_adapter_gate.step.dependOn(&run_host_adapter_gen.step);
+
+        const host_adapter_step = b.step(
+            "proto-ui-host-adapter",
+            "Generate and audit the unselected pure-SDL3 host adapter candidate",
+        );
+        host_adapter_step.dependOn(&run_host_adapter_gen.step);
+        host_adapter_step.dependOn(&install_host_adapter.step);
+        host_adapter_step.dependOn(&run_host_adapter_gate.step);
+
+        boundary_step.dependOn(&install_host_adapter.step);
+        boundary_step.dependOn(&run_host_adapter_gate.step);
+
         // P2: the R7 proposal is review input only.  Its gate proves that the
         // pure-SDL3 registration request is coherent while registration and
         // runtime remain unavailable and fail closed.
@@ -6219,6 +6263,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true proto-ui-isolation-audit - disabled/default runtime isolation audit
         \\
         \\  zig build -Dproto-ui=true proto-ui-host-contract - pending registration decision audit
+        \\  zig build -Dproto-ui=true proto-ui-host-adapter - unselected pure-SDL3 host adapter audit
         \\  zig build -Dproto-ui=true proto-ui-runtime-manifest - fail-closed runtime manifest audit
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module - Emacs dynamic-module seam
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke - verify module seam in batch Emacs

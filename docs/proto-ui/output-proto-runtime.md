@@ -263,6 +263,9 @@ The newer terminal service additionally orchestrates fake-host
 create/activate/drain/delete callbacks with generation-safe registry state and
 drain retry/rollback handling; it still cannot select or register an Emacs
 terminal.
+The host-adapter selection manifest names the pure-SDL3 candidate but leaves it
+unselected until an approved, metadata-complete R7 decision; selection still
+requires an explicit activation path and never enables runtime automatically.
 
 ## 11. Acceptance for the first real SDL3 frame
 

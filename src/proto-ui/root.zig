@@ -16,6 +16,7 @@ pub const frame_service = @import("frame_service.zig");
 pub const runtime = @import("runtime.zig");
 pub const capture_service = @import("capture_service.zig");
 pub const host_contract = @import("host_contract.zig");
+pub const host_adapter = @import("host_adapter.zig");
 pub const r7_proposal = @import("r7_proposal.zig");
 pub const pgtk_parity = @import("pgtk_parity.zig");
 pub const runtime_host = @import("runtime_host.zig");
@@ -44,6 +45,7 @@ test {
     _ = runtime;
     _ = capture_service;
     _ = host_contract;
+    _ = host_adapter;
     _ = r7_proposal;
     _ = pgtk_parity;
     _ = runtime_host;

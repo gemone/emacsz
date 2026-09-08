@@ -528,6 +528,10 @@ failed drain safely and tracks rollback-pending cleanup, but cannot select or
 register an Emacs terminal until R7 is approved.
 `proto-ui-terminal-service` emits machine-readable lifecycle/rollback evidence
 and explicitly reports `emacs_registered=false` and `runtime_available=false`.
+`proto-ui-host-adapter` records the versioned pure-SDL3 `output_proto` candidate
+as unselected until R7 is approved with complete review metadata.  Its policy
+forbids inherited-source edits, PGTK/TTY runtime fallback, and frontend
+Elisp/layout ownership.
 `proto-ui-runtime-host-abi` projects that contract to a generated C header and
 compiles a conformance translation unit.  `proto-ui-runtime-host` defines and conformance-tests a versioned five-group
 PureRuntimeHostV1 ABI while keeping runtime unavailable.  It does not register a

@@ -228,7 +228,7 @@ fn metadataPresent() bool {
         decision.metadata.approval_scope != null;
 }
 
-fn metadataComplete() bool {
+pub fn metadataComplete() bool {
     return nonempty(decision.metadata.reviewer) and
         nonempty(decision.metadata.decision_id) and
         nonempty(decision.metadata.reviewed_at) and

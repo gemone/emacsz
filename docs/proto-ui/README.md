@@ -218,6 +218,13 @@ still absent.
 fake-host evidence gate and reports `emacs_registered=false` plus
 `runtime_available=false`.
 
+P16 host-adapter selection preparation adds a versioned pure-SDL3
+`output_proto` candidate policy.  While R7 is pending, the candidate remains
+`unselected`; approval and complete review metadata are required before
+selection.  The candidate forbids inherited-source edits, backend fallback, and
+frontend ownership.  The current gate still reports no activation, registration,
+or runtime.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and
