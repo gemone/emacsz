@@ -1489,6 +1489,17 @@ pub const ImageResources = struct {
     }
 };
 
+pub const AtlasGlyphPixels = struct {
+    bytes: []const u8,
+    page_width: u16,
+    page_height: u16,
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    advance_x: u16,
+};
+
 pub const AtlasPage = struct {
     page_index: u16 = 0,
     x: u16 = 0,
@@ -1555,9 +1566,43 @@ pub const AtlasResources = struct {
         return null;
     }
 
+    pub fn first(self: *const AtlasResources) ?*const AtlasState {
+        return if (self.atlases.items.len != 0) &self.atlases.items[0] else null;
+    }
+
     pub fn lookup(self: *const AtlasResources, atlas_id: u32) ?*const AtlasState {
         for (self.atlases.items) |*atlas| {
             if (atlas.atlas_id == atlas_id) return atlas;
+        }
+        return null;
+    }
+
+    pub fn findGlyphPixels(
+        self: *const AtlasResources,
+        font_hint: u32,
+        glyph_id: u32,
+    ) ?AtlasGlyphPixels {
+        for (self.atlases.items) |*atlas| {
+            for (atlas.glyphs.items) |glyph| {
+                if (glyph.glyph_id != glyph_id) continue;
+                if (font_hint != 0 and glyph.font_id != font_hint) continue;
+                for (atlas.pages) |*page| {
+                    if (page.bytes.len == 0) continue;
+                    if (glyph.x < page.x or glyph.y < page.y or
+                        glyph.x + glyph.width > page.x + page.width or
+                        glyph.y + glyph.height > page.y + page.height) continue;
+                    return .{
+                        .bytes = page.bytes,
+                        .page_width = page.width,
+                        .page_height = page.height,
+                        .x = glyph.x - page.x,
+                        .y = glyph.y - page.y,
+                        .width = glyph.width,
+                        .height = glyph.height,
+                        .advance_x = glyph.advance_x,
+                    };
+                }
+            }
         }
         return null;
     }

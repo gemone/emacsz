@@ -422,6 +422,7 @@ pub const FrameCounters = struct {
     clear_commands_total: u64 = 0,
     fill_commands_total: u64 = 0,
     text_commands_total: u64 = 0,
+    atlas_glyphs_total: u64 = 0,
     frame_path_total_ns: u64 = 0,
     frame_path_last_ns: u64 = 0,
     present_last_ns: u64 = 0,
@@ -523,6 +524,7 @@ pub const FrameCounters = struct {
         self.clear_commands_total += stats.clears;
         self.fill_commands_total += stats.fills;
         self.text_commands_total += stats.texts;
+        self.atlas_glyphs_total += stats.atlas_glyphs;
     }
 };
 
@@ -673,6 +675,13 @@ pub const DrawCommand = union(enum) {
     fill: struct { rect: LogicalRect, color: Color },
     text: struct { x: f32, y: f32, color: ?Color = null, bytes: []const u8 },
     image: struct { rect: LogicalRect, pixels: []const u8, width: u32, height: u32 },
+    image_region: struct {
+        destination: LogicalRect,
+        source: LogicalRect,
+        pixels: []const u8,
+        source_width: u32,
+        source_height: u32,
+    },
 };
 
 pub const DrawStats = struct {
@@ -683,6 +692,7 @@ pub const DrawStats = struct {
     fills: u64 = 0,
     texts: u64 = 0,
     images: u64 = 0,
+    atlas_glyphs: u64 = 0,
 };
 
 pub const FaceLineStyle = enum(u8) {
@@ -793,6 +803,7 @@ pub fn drawCommandIntersectsClip(command: DrawCommand, clip: LogicalRect) bool {
         .clear => true,
         .fill => |draw| logicalRectsIntersect(draw.rect, clip),
         .image => |draw| logicalRectsIntersect(draw.rect, clip),
+        .image_region => |draw| logicalRectsIntersect(draw.destination, clip),
         .text => |draw| logicalRectsIntersect(
             .{ .x = draw.x, .y = draw.y, .width = @floatFromInt(8 * draw.bytes.len), .height = 16 },
             clip,
@@ -856,6 +867,35 @@ pub const DrawList = struct {
         } });
         self.stats.commands += 1;
         self.stats.images += 1;
+    }
+
+    pub fn drawAtlasGlyph(
+        self: *DrawList,
+        destination: LogicalRect,
+        source: LogicalRect,
+        pixels: []const u8,
+        source_width: u32,
+        source_height: u32,
+    ) !void {
+        if (destination.width <= 0 or destination.height <= 0 or
+            source.width <= 0 or source.height <= 0 or source_width == 0 or source_height == 0)
+            return error.InvalidDrawAtlasGlyph;
+        if (source.x < 0 or source.y < 0 or
+            source.x + source.width > @as(f32, @floatFromInt(source_width)) or
+            source.y + source.height > @as(f32, @floatFromInt(source_height)))
+            return error.InvalidDrawAtlasGlyph;
+        if (pixels.len != @as(usize, source_width) * @as(usize, source_height) * 4)
+            return error.InvalidDrawAtlasGlyph;
+        try self.commands.append(self.allocator, .{ .image_region = .{
+            .destination = destination,
+            .source = source,
+            .pixels = pixels,
+            .source_width = source_width,
+            .source_height = source_height,
+        } });
+        self.stats.commands += 1;
+        self.stats.images += 1;
+        self.stats.atlas_glyphs += 1;
     }
 
     pub fn drawText(self: *DrawList, x: f32, y: f32, bytes: []const u8, color: ?Color) !void {
@@ -1341,4 +1381,22 @@ test "frame counters record cursor clipped and fallback frames" {
     try std.testing.expectEqual(@as(u64, 1), counters.cursor_clipped_frames);
     try std.testing.expectEqual(@as(u64, 1), counters.cursor_full_fallback_frames);
     try std.testing.expectEqual(@as(u64, 93), counters.clipped_draw_commands_total);
+}
+
+test "draw list records atlas glyph source and destination regions" {
+    var list: DrawList = .{ .allocator = std.testing.allocator };
+    defer list.deinit();
+    const pixels = [_]u8{ 1, 2, 3, 255 };
+    try list.drawAtlasGlyph(
+        .{ .x = 1, .y = 2, .width = 1, .height = 1 },
+        .{ .x = 0, .y = 0, .width = 1, .height = 1 },
+        &pixels,
+        1,
+        1,
+    );
+    try std.testing.expectEqual(@as(usize, 1), list.commands.items.len);
+    const command = list.commands.items[0].image_region;
+    try std.testing.expectEqual(@as(f32, 1), command.destination.x);
+    try std.testing.expectEqual(@as(f32, 0), command.source.x);
+    try std.testing.expectEqual(@as(u64, 1), list.stats.atlas_glyphs);
 }

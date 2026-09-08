@@ -46,8 +46,11 @@ const SDL_Surface = opaque {};
 const SDL_PixelFormat = c_uint;
 const SDL_TextureAccess = c_int;
 const SDL_ScaleMode = c_int;
+const SDL_BlendMode = c_int;
 const SDL_PIXELFORMAT_RGBA8888: SDL_PixelFormat = 0x1646_2004;
+const SDL_TEXTUREACCESS_STATIC: SDL_TextureAccess = 0;
 const SDL_TEXTUREACCESS_TARGET: SDL_TextureAccess = 2;
+const SDL_BLENDMODE_BLEND: SDL_BlendMode = 1;
 const SDL_SCALEMODE_NEAREST: SDL_ScaleMode = 1;
 
 const SDLInitFlags = c_uint;
@@ -107,6 +110,7 @@ extern fn SDL_CreateTexture(
 ) ?*SDL_Texture;
 extern fn SDL_DestroyTexture(texture: *SDL_Texture) void;
 extern fn SDL_SetTextureScaleMode(texture: *SDL_Texture, scale_mode: SDL_ScaleMode) bool;
+extern fn SDL_SetTextureBlendMode(texture: *SDL_Texture, mode: SDL_BlendMode) bool;
 extern fn SDL_UpdateTexture(texture: *SDL_Texture, rect: ?*const SDL_Rect, pixels: *const anyopaque, pitch: c_int) bool;
 extern fn SDL_RenderTexture(renderer: *SDL_Renderer, texture: *SDL_Texture, source: ?*const SDL_FRect, destination: ?*const SDL_FRect) bool;
 extern fn SDL_SetRenderTarget(renderer: *SDL_Renderer, texture: ?*SDL_Texture) bool;
@@ -842,6 +846,54 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
     if (config.synthetic_copy and !copy_applied) return error.ClipboardCopyNotApplied;
     if (config.synthetic_interactive and !input_applied) return error.InteractiveInputNotApplied;
 }
+
+const TextureCacheEntry = struct {
+    texture: *SDL_Texture,
+    source_width: u32,
+    source_height: u32,
+};
+
+const TextureCache = struct {
+    allocator: std.mem.Allocator,
+    entries: std.AutoHashMap(*const anyopaque, TextureCacheEntry),
+
+    fn init(allocator: std.mem.Allocator) TextureCache {
+        return .{ .allocator = allocator, .entries = std.AutoHashMap(*const anyopaque, TextureCacheEntry).init(allocator) };
+    }
+
+    fn deinit(self: *TextureCache) void {
+        var iterator = self.entries.valueIterator();
+        while (iterator.next()) |entry| SDL_DestroyTexture(entry.texture);
+        self.entries.deinit();
+    }
+
+    fn getOrCreate(
+        self: *TextureCache,
+        renderer: *SDL_Renderer,
+        pixels: []const u8,
+        width: u32,
+        height: u32,
+    ) !*SDL_Texture {
+        const key: *const anyopaque = @ptrCast(pixels.ptr);
+        if (self.entries.get(key)) |entry| {
+            if (entry.source_width == width and entry.source_height == height) return entry.texture;
+            return error.TextureCacheKeyCollision;
+        }
+        const texture = SDL_CreateTexture(
+            renderer,
+            SDL_PIXELFORMAT_RGBA8888,
+            SDL_TEXTUREACCESS_STATIC,
+            @intCast(width),
+            @intCast(height),
+        ) orelse return sdlFail("SDL_CreateTexture");
+        errdefer SDL_DestroyTexture(texture);
+        if (!SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_NEAREST)) return sdlFail("SDL_SetTextureScaleMode");
+        if (!SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND)) return sdlFail("SDL_SetTextureBlendMode");
+        if (!SDL_UpdateTexture(texture, null, pixels.ptr, @intCast(width * 4))) return sdlFail("SDL_UpdateTexture");
+        try self.entries.put(key, .{ .texture = texture, .source_width = width, .source_height = height });
+        return texture;
+    }
+};
 
 const SelectedRenderer = struct {
     handle: *SDL_Renderer,
@@ -3206,6 +3258,97 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (scene.fonts.lookup(8) == null)
         return error.RuntimeBridgeFontInvalid;
 
+    var atlas_define_message: std.ArrayList(u8) = .empty;
+    defer atlas_define_message.deinit(gpa);
+    var atlas_define_payload: std.ArrayList(u8) = .empty;
+    defer atlas_define_payload.deinit(gpa);
+    try protocol.encodeAtlasDefine(gpa, .{
+        .atlas_id = 7,
+        .generation = 1,
+        .width = 64,
+        .height = 8,
+        .page_count = 1,
+    }, &atlas_define_payload);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.atlas_define,
+        .sequence = 39,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, atlas_define_payload.items, &atlas_define_message);
+    try scene.apply(atlas_define_message.items);
+
+    var atlas_pixels: [2048]u8 = @splat(255);
+    var atlas_page_payload: std.ArrayList(u8) = .empty;
+    defer atlas_page_payload.deinit(gpa);
+    try protocol.encodeAtlasPageUpdate(gpa, .{
+        .atlas_id = 7,
+        .generation = 1,
+        .page_index = 0,
+        .page_count = 1,
+        .x = 0,
+        .y = 0,
+        .width = 64,
+        .height = 8,
+        .bytes = &atlas_pixels,
+    }, &atlas_page_payload);
+    var atlas_page_message: std.ArrayList(u8) = .empty;
+    defer atlas_page_message.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.atlas_page_update,
+        .sequence = 40,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, atlas_page_payload.items, &atlas_page_message);
+    try scene.apply(atlas_page_message.items);
+    if (scene.atlases.lookup(7) == null)
+        return error.RuntimeBridgeAtlasInvalid;
+
+    const atlas_glyphs = [_]protocol.AtlasGlyphAdd{
+        .{ .atlas_id = 7, .generation = 1, .glyph_id = 'E', .font_id = 8, .size_px = 8, .variation_hash = 0, .x = 0, .y = 0, .width = 6, .height = 8, .baseline = 8, .advance_x = 6 },
+        .{ .atlas_id = 7, .generation = 1, .glyph_id = 'm', .font_id = 8, .size_px = 8, .variation_hash = 0, .x = 8, .y = 0, .width = 8, .height = 8, .baseline = 8, .advance_x = 8 },
+        .{ .atlas_id = 7, .generation = 1, .glyph_id = 'a', .font_id = 8, .size_px = 8, .variation_hash = 0, .x = 18, .y = 0, .width = 6, .height = 8, .baseline = 8, .advance_x = 6 },
+        .{ .atlas_id = 7, .generation = 1, .glyph_id = 'c', .font_id = 8, .size_px = 8, .variation_hash = 0, .x = 26, .y = 0, .width = 6, .height = 8, .baseline = 8, .advance_x = 6 },
+        .{ .atlas_id = 7, .generation = 1, .glyph_id = 's', .font_id = 8, .size_px = 8, .variation_hash = 0, .x = 34, .y = 0, .width = 6, .height = 8, .baseline = 8, .advance_x = 6 },
+    };
+    for (atlas_glyphs, 0..) |glyph, index| {
+        var atlas_glyph_payload: std.ArrayList(u8) = .empty;
+        defer atlas_glyph_payload.deinit(gpa);
+        try protocol.encodeAtlasGlyphAdd(gpa, .{
+            .atlas_id = 7,
+            .generation = 1,
+            .glyph_id = glyph.glyph_id,
+            .font_id = glyph.font_id,
+            .size_px = glyph.size_px,
+            .variation_hash = glyph.variation_hash,
+            .x = glyph.x,
+            .y = glyph.y,
+            .width = glyph.width,
+            .height = glyph.height,
+            .baseline = glyph.baseline,
+            .advance_x = glyph.advance_x,
+        }, &atlas_glyph_payload);
+        var atlas_glyph_message: std.ArrayList(u8) = .empty;
+        defer atlas_glyph_message.deinit(gpa);
+        try protocol.encodeEnvelope(gpa, .{
+            .flags = 0,
+            .message_type = protocol.Message.atlas_glyph_add,
+            .sequence = 41 + @as(u64, @intCast(index)),
+            .ack_sequence = 0,
+            .session_id = capability.session_id,
+            .frame_id = @intCast(bridge.frame.id),
+            .timestamp_ns = 1,
+        }, atlas_glyph_payload.items, &atlas_glyph_message);
+        try scene.apply(atlas_glyph_message.items);
+    }
+    if (scene.atlases.lookup(7).?.glyphs.items.len != 5)
+        return error.RuntimeBridgeAtlasGlyphsInvalid;
+
     const explicit_clip = renderer_policy.explicitDamageClip(240, 96, &explicit_damage);
     if (explicit_clip == null) return error.RuntimeBridgeExplicitClipInvalid;
     frame_gate.dirty = true;
@@ -3227,6 +3370,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         frame_counters.explicit_skipped_commands == 0 or
         frame_counters.explicit_submitted_commands == 0)
         return error.RuntimeBridgeExplicitPresentInvalid;
+    if (frame_counters.atlas_glyphs_total < 5)
+        return error.RuntimeBridgeAtlasRenderInvalid;
 
     var key: runtime_host.InputEvent = .{
         .event_id = 11,
@@ -4759,12 +4904,46 @@ fn buildSceneDrawList(
         }
         // GLYPH_RUN remains bounded ASCII fallback; face color does not imply
         // shaped text, fonts, atlas rendering, or full Emacs face parity.
-        try list.drawText(
-            @floatFromInt(owner.x + run.x),
-            @floatFromInt(owner.y + run.y),
-            run.text,
-            foreground,
-        );
+        var atlas_rendered = scene.atlases.first() != null;
+        const pen_y: f32 = @floatFromInt(owner.y + run.y);
+        const preferred_font: u32 = if (face) |resource|
+            (if (resource.payload.presence.font) resource.payload.font_id else 0)
+        else
+            0;
+        if (atlas_rendered) {
+            for (run.text) |code| {
+                if (scene.atlases.findGlyphPixels(preferred_font, code) == null) {
+                    atlas_rendered = false;
+                    break;
+                }
+            }
+        }
+        var pen_x: f32 = @floatFromInt(owner.x + run.x);
+        if (atlas_rendered) {
+            for (run.text) |code| {
+                const sampled = scene.atlases.findGlyphPixels(preferred_font, code).?;
+                try list.drawAtlasGlyph(.{
+                    .x = pen_x,
+                    .y = pen_y,
+                    .width = @floatFromInt(sampled.width),
+                    .height = @floatFromInt(sampled.height),
+                }, .{
+                    .x = @floatFromInt(sampled.x),
+                    .y = @floatFromInt(sampled.y),
+                    .width = @floatFromInt(sampled.width),
+                    .height = @floatFromInt(sampled.height),
+                }, sampled.bytes, sampled.page_width, sampled.page_height);
+                pen_x += @floatFromInt(sampled.advance_x);
+            }
+        }
+        if (!atlas_rendered) {
+            try list.drawText(
+                @floatFromInt(owner.x + run.x),
+                pen_y,
+                run.text,
+                foreground,
+            );
+        }
     }
 
     for (scene.windows.items) |window| {
@@ -4881,6 +5060,7 @@ fn buildFactsDrawList(
 }
 
 fn executeDrawList(
+    cache: *TextureCache,
     list: *renderer_policy.DrawList,
     renderer: *SDL_Renderer,
     window: *SDL_Window,
@@ -4949,16 +5129,7 @@ fn executeDrawList(
                 executed.fills += 1;
             },
             .image => |draw| {
-                const texture = SDL_CreateTexture(
-                    renderer,
-                    SDL_PIXELFORMAT_RGBA8888,
-                    SDL_TEXTUREACCESS_TARGET,
-                    @intCast(draw.width),
-                    @intCast(draw.height),
-                ) orelse return sdlFail("SDL_CreateTexture");
-                defer SDL_DestroyTexture(texture);
-                if (!SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_NEAREST)) return sdlFail("SDL_SetTextureScaleMode");
-                if (!SDL_UpdateTexture(texture, null, draw.pixels.ptr, @intCast(draw.width * 4))) return sdlFail("SDL_UpdateTexture");
+                const texture = try cache.getOrCreate(renderer, draw.pixels, draw.width, draw.height);
                 const destination = SDL_FRect{
                     .x = draw.rect.x * @as(f32, @floatFromInt(output_width)) / list.logical_width,
                     .y = draw.rect.y * @as(f32, @floatFromInt(output_height)) / list.logical_height,
@@ -4968,6 +5139,25 @@ fn executeDrawList(
                 if (!SDL_RenderTexture(renderer, texture, null, &destination)) return sdlFail("SDL_RenderTexture");
                 executed.commands += 1;
                 executed.images += 1;
+            },
+            .image_region => |draw| {
+                const texture = try cache.getOrCreate(renderer, draw.pixels, draw.source_width, draw.source_height);
+                const source = SDL_FRect{
+                    .x = draw.source.x,
+                    .y = draw.source.y,
+                    .w = draw.source.width,
+                    .h = draw.source.height,
+                };
+                const destination = SDL_FRect{
+                    .x = draw.destination.x * @as(f32, @floatFromInt(output_width)) / list.logical_width,
+                    .y = draw.destination.y * @as(f32, @floatFromInt(output_height)) / list.logical_height,
+                    .w = draw.destination.width * @as(f32, @floatFromInt(output_width)) / list.logical_width,
+                    .h = draw.destination.height * @as(f32, @floatFromInt(output_height)) / list.logical_height,
+                };
+                if (!SDL_RenderTexture(renderer, texture, &source, &destination)) return sdlFail("SDL_RenderTexture");
+                executed.commands += 1;
+                executed.images += 1;
+                executed.atlas_glyphs += 1;
             },
             .text => |draw| {
                 var text: [121]u8 = undefined;
@@ -5144,6 +5334,8 @@ fn presentScene(
     gate: *renderer_policy.FrameGate,
     counters: *renderer_policy.FrameCounters,
 ) !void {
+    var texture_cache = TextureCache.init(std.heap.smp_allocator);
+    defer texture_cache.deinit();
     var width: c_int = 0;
     var height: c_int = 0;
     SDL_GetWindowSize(window, &width, &height);
@@ -5153,7 +5345,7 @@ fn presentScene(
     }
     const started_ticks = SDL_GetPerformanceCounter();
     try buildSceneDrawList(scene, list, @intCast(width), @intCast(height));
-    const execution = try executeDrawList(list, renderer, window, null, null, false);
+    const execution = try executeDrawList(&texture_cache, list, renderer, window, null, null, false);
     if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
     counters.recordDrawList(execution);
     const ended_ticks = SDL_GetPerformanceCounter();
@@ -5175,6 +5367,8 @@ fn presentSceneDamage(
     capabilities: capability.Set,
     explicit_clip: ?renderer_policy.LogicalRect,
 ) !void {
+    var texture_cache = TextureCache.init(std.heap.smp_allocator);
+    defer texture_cache.deinit();
     var width: c_int = 0;
     var height: c_int = 0;
     SDL_GetWindowSize(window, &width, &height);
@@ -5202,18 +5396,18 @@ fn presentSceneDamage(
     var execution: renderer_policy.DrawStats = .{};
     if (texture) |target| {
         if (clip) |rect| {
-            execution = try executeDrawList(list, renderer, window, target, rect, explicit_clip != null);
+            execution = try executeDrawList(&texture_cache, list, renderer, window, target, rect, explicit_clip != null);
             submitted = execution.commands;
             clipped = submitted != 0;
         }
         if (!clipped) {
-            execution = try executeDrawList(list, renderer, window, target, null, false);
+            execution = try executeDrawList(&texture_cache, list, renderer, window, target, null, false);
             submitted = execution.commands;
         }
         retained.primed = true;
         try presentRetainedOutput(renderer, target);
     } else {
-        execution = try executeDrawList(list, renderer, window, null, null, false);
+        execution = try executeDrawList(&texture_cache, list, renderer, window, null, null, false);
         submitted = execution.commands;
         if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
         retained.primed = false;
@@ -5236,6 +5430,8 @@ fn presentFacts(
     gate: *renderer_policy.FrameGate,
     counters: *renderer_policy.FrameCounters,
 ) !void {
+    var texture_cache = TextureCache.init(std.heap.smp_allocator);
+    defer texture_cache.deinit();
     var width: c_int = 0;
     var height: c_int = 0;
     SDL_GetWindowSize(window, &width, &height);
@@ -5245,7 +5441,7 @@ fn presentFacts(
     }
     const started_ticks = SDL_GetPerformanceCounter();
     try buildFactsDrawList(snapshot, list, @intCast(width), @intCast(height));
-    const execution = try executeDrawList(list, renderer, window, null, null, false);
+    const execution = try executeDrawList(&texture_cache, list, renderer, window, null, null, false);
     if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
     counters.recordDrawList(execution);
     const ended_ticks = SDL_GetPerformanceCounter();
