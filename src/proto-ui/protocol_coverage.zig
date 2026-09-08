@@ -110,7 +110,7 @@ const ranges = [_]Range{
     .{ .low = 0x0501, .high = 0x0501, .status = .implemented_codec, .domain = .resource, .family = "face-patch", .note = "bounded color patch, strict generation replacement, Scene validation; full face attributes pending" },
     .{ .low = 0x0502, .high = 0x0502, .status = .implemented_codec, .domain = .resource, .family = "face-delete", .note = "generation-qualified bounded delete" },
     .{ .low = 0x0503, .high = 0x0503, .status = .implemented_codec, .domain = .resource, .family = "font-define", .note = "bounded font resource codec and Scene ownership" },
-    .{ .low = 0x0504, .high = 0x0504, .status = .planned, .domain = .resource, .family = "font-patch", .note = "font attribute patch pending" },
+    .{ .low = 0x0504, .high = 0x0504, .status = .implemented_codec, .domain = .resource, .family = "font-patch", .note = "bounded scalar descriptor patch, exact generation replacement, stale shaped-run invalidation, Scene state, and runtime smoke; string/metric/full font patching pending" },
     .{ .low = 0x0505, .high = 0x0505, .status = .implemented_codec, .domain = .resource, .family = "font-metrics", .note = "bounded metrics patch, strict generation replacement, Scene validation" },
     .{ .low = 0x0506, .high = 0x0506, .status = .implemented_codec, .domain = .resource, .family = "font-delete", .note = "generation-qualified bounded delete" },
     .{ .low = 0x0507, .high = 0x0509, .status = .implemented_codec, .domain = .resource, .family = "image-lifecycle", .note = "bounded static RGBA define/data/delete codecs" },

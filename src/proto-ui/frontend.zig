@@ -2755,6 +2755,7 @@ pub const Scene = struct {
             protocol.Message.face_patch => try self.applyFacePatch(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.font_define => try self.applyFontDefine(payload),
+            protocol.Message.font_patch => try self.applyFontPatch(payload),
             protocol.Message.font_metrics => try self.applyFontMetrics(payload),
             protocol.Message.font_delete => try self.applyFontDelete(payload),
             protocol.Message.string_define => try self.applyStringDefine(payload),
@@ -3497,6 +3498,17 @@ pub const Scene = struct {
         }
     }
 
+    fn removeGlyphRunsForFont(self: *Scene, font_id: u32) void {
+        var index: usize = 0;
+        while (index < self.glyph_runs.items.len) {
+            if (self.glyph_runs.items[index].font_id == font_id) {
+                const owned = self.glyph_runs.items[index].text;
+                _ = self.glyph_runs.orderedRemove(index);
+                self.allocator.free(owned);
+            } else index += 1;
+        }
+    }
+
     fn applyWindowTreeSnapshot(self: *Scene, payload: protocol.Payload) Error!void {
         const frame = self.frame orelse return Error.FrameNotActive;
         var tree = try protocol.decodeWindowTreeSnapshot(self.allocator, payload.bytes);
@@ -3574,7 +3586,32 @@ pub const Scene = struct {
 
     fn applyFontDefine(self: *Scene, payload: protocol.Payload) Error!void {
         const font = try protocol.decodeFontDefine(payload.bytes);
+        const current = self.fonts.lookup(font.font_id);
+        const old_generation: ?u32 = if (current) |resource| resource.generation else null;
         try self.fonts.define(&self.resources, font);
+        if (old_generation != null) self.removeGlyphRunsForFont(font.font_id);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFontPatch(self: *Scene, payload: protocol.Payload) Error!void {
+        const patch = try protocol.decodeFontPatch(payload.bytes);
+        const current = self.fonts.lookup(patch.font_id) orelse return Error.ResourceNotLive;
+        if (current.generation != patch.expected_generation) return Error.StaleGeneration;
+        var patched = current.payload;
+        patched.generation = patch.new_generation;
+        patched.weight = patch.weight;
+        patched.width_percent = patch.width_percent;
+        patched.pixel_size = patch.pixel_size;
+        patched.point_size_tenths = patch.point_size_tenths;
+        patched.x_dpi = patch.x_dpi;
+        patched.y_dpi = patch.y_dpi;
+        patched.slant = patch.slant;
+        patched.spacing = patch.spacing;
+        patched.scalable = patch.scalable;
+        patched.fixed_pitch = patch.fixed_pitch;
+        try protocol.validateFontDefine(patched);
+        try self.fonts.define(&self.resources, patched);
+        self.removeGlyphRunsForFont(patch.font_id);
         self.stats.control_messages += 1;
     }
 
@@ -3591,6 +3628,7 @@ pub const Scene = struct {
         patched.max_advance = patch.max_advance;
         try protocol.validateFontDefine(patched);
         try self.fonts.define(&self.resources, patched);
+        self.removeGlyphRunsForFont(patch.font_id);
         self.stats.control_messages += 1;
     }
 
@@ -8330,6 +8368,74 @@ test "scene owns replaces looks up and deletes bounded font resources" {
     try std.testing.expectEqual(@as(u64, 3), scene.fonts.counters.rejections);
 }
 
+test "scene applies font patch and preserves retained font metadata" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    const font = frontendFontFixture(12, 1);
+    try protocol.encodeFontDefine(a, font, &payload);
+    const defined = try faceMessage(a, protocol.Message.font_define, 2, payload.items);
+    defer a.free(defined);
+    try scene.apply(defined);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeFontPatch(a, .{
+        .font_id = 12,
+        .expected_generation = 1,
+        .new_generation = 2,
+        .weight = 700,
+        .width_percent = 110,
+        .pixel_size = 18,
+        .point_size_tenths = 135,
+        .x_dpi = 96,
+        .y_dpi = 96,
+        .slant = .italic,
+        .spacing = .mono,
+        .scalable = true,
+        .fixed_pitch = true,
+    }, &payload);
+    const patched = try faceMessage(a, protocol.Message.font_patch, 3, payload.items);
+    defer a.free(patched);
+    try scene.apply(patched);
+
+    const updated = scene.fonts.lookup(12).?;
+    try std.testing.expectEqual(@as(u32, 2), updated.generation);
+    try std.testing.expectEqual(@as(u16, 700), updated.payload.weight);
+    try std.testing.expectEqual(@as(u16, 110), updated.payload.width_percent);
+    try std.testing.expectEqual(@as(u32, 18), updated.payload.pixel_size);
+    try std.testing.expectEqual(protocol.FontSlant.italic, updated.payload.slant);
+    try std.testing.expectEqualStrings("Test1", updated.payload.family[0..updated.payload.family_len]);
+    try std.testing.expectEqual(@as(i32, 10), updated.payload.ascent);
+    try std.testing.expectEqual(@as(u32, 14), updated.payload.line_height);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeFontPatch(a, .{
+        .font_id = 12,
+        .expected_generation = 1,
+        .new_generation = 3,
+        .weight = 700,
+        .width_percent = 110,
+        .pixel_size = 18,
+        .point_size_tenths = 135,
+        .x_dpi = 96,
+        .y_dpi = 96,
+        .slant = .italic,
+        .spacing = .mono,
+        .scalable = true,
+        .fixed_pitch = true,
+    }, &payload);
+    const stale = try faceMessage(a, protocol.Message.font_patch, 4, payload.items);
+    defer a.free(stale);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(stale));
+    try std.testing.expectEqual(@as(u32, 2), scene.fonts.lookup(12).?.generation);
+}
+
 test "font table remains bounded and permits in-place generation replacement" {
     var resources = lifecycle.ResourceRegistry{};
     var fonts = FontResources{};
@@ -9383,4 +9489,26 @@ test "shaped atlas glyph run validates face font and atlas entries" {
     try std.testing.expect(scene.glyph_runs.items[0].shaped);
     try std.testing.expectEqual(@as(usize, 1), scene.glyph_runs.items[0].shaped_count);
     try std.testing.expectEqual(@as(u32, 101), scene.glyph_runs.items[0].shaped_glyphs[0].glyph_id);
+
+    var font_patch_payload: std.ArrayList(u8) = .empty;
+    defer font_patch_payload.deinit(a);
+    try protocol.encodeFontPatch(a, .{
+        .font_id = 8,
+        .expected_generation = 1,
+        .new_generation = 2,
+        .weight = 700,
+        .width_percent = 100,
+        .pixel_size = 16,
+        .point_size_tenths = 0,
+        .x_dpi = 96,
+        .y_dpi = 96,
+        .slant = .roman,
+        .spacing = .mono,
+        .scalable = false,
+        .fixed_pitch = true,
+    }, &font_patch_payload);
+    const font_patch = try faceMessage(a, protocol.Message.font_patch, 9, font_patch_payload.items);
+    defer a.free(font_patch);
+    try scene.apply(font_patch);
+    try std.testing.expectEqual(@as(usize, 0), scene.glyph_runs.items.len);
 }

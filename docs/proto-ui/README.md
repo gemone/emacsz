@@ -337,6 +337,11 @@ containment, exact live face generation, window deletion, face lifecycle, and
 authoritative-update cleanup; SDL renders the validated rect.  Pointer motion,
 Emacs mouse-face resolution, overlays, and PGTK parity remain pending.
 
+P43 font-patch preparation adds `FONT_PATCH` v1 for bounded scalar descriptor
+evolution with strict generation replacement and stale shaped-run invalidation.
+Runtime smoke proves weight/generation evolution; real font objects, metadata and
+metric patching, frame font changes, and PGTK parity remain pending.
+
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by
 atlas/page identity, generation, and page revision.  The runtime smoke requires
 one upload followed by at least four cache hits; smoke-level renderer-reset clearing is wired; production-wide renderer-loss

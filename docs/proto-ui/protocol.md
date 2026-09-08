@@ -1264,6 +1264,25 @@ protocol-global: frame destroy retains them, while resync and scene teardown
 clear them.  The active table is bounded to 64; replacement remains available
 at capacity.
 
+#### `FONT_PATCH` v1 (implemented bounded scalar descriptor contract)
+
+`FONT_PATCH = 0x0504` is an exact 44-byte little-endian scalar descriptor
+patch.  Layout: schema (`u16=1`), zero flags and reserved byte, nonzero font id,
+expected and strictly newer generation, weight (`1..1000`), width percentage
+(`50..200`), pixel size, point size in tenths, X/Y DPI, slant, spacing,
+scalable/fixed-pitch booleans, and four reserved bytes.  X and Y DPI remain
+either both unspecified or both specified; mono/proportional spacing constraints
+carry over from `FONT_DEFINE`.
+
+The Scene requires an exact live expected generation, applies the scalar values
+over the retained descriptor, revalidates the complete font, and advances the
+generation atomically.  Family, foundry, style bytes, vertical metrics, advances,
+underline metadata, and extension counts are retained.  Stale shaped glyph runs
+that reference the font are removed so they cannot survive with stale font
+semantics.  This is bounded adapter evidence only: no real font object, no
+string/style metadata patch, no metric patch, no rasterization/shaping change,
+and no Emacs frame-font or PGTK font parity claim is made.
+
 ### Image resource v1 (implemented bounded adapter contract)
 
 `IMAGE_DEFINE` is a fixed, little-endian 72-byte record.  It declares an
@@ -1650,9 +1669,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 84 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 85 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 77 | Assigned for the target protocol but not implemented |
+| `planned` | 76 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

@@ -117,6 +117,7 @@ pub const Message = struct {
     pub const flush: u16 = 0x040e;
     pub const render_hint: u16 = 0x040f;
     pub const font_define: u16 = 0x0503;
+    pub const font_patch: u16 = 0x0504;
     pub const font_metrics: u16 = 0x0505;
     pub const font_delete: u16 = 0x0506;
     pub const image_define: u16 = 0x0507;
@@ -1474,6 +1475,103 @@ pub const FontMetricsPatch = struct {
 };
 
 pub const font_metrics_patch_size: usize = 36;
+
+pub const FontPatch = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    font_id: u32,
+    expected_generation: u32,
+    new_generation: u32,
+    weight: u16,
+    width_percent: u16,
+    pixel_size: u32,
+    point_size_tenths: u32,
+    x_dpi: u32,
+    y_dpi: u32,
+    slant: FontSlant,
+    spacing: FontSpacing,
+    scalable: bool,
+    fixed_pitch: bool,
+    reserved_tail: [4]u8 = @splat(0),
+};
+
+pub const font_patch_size: usize = 44;
+
+fn validateFontPatch(patch: FontPatch) Error!void {
+    if (patch.schema != 1 or patch.flags != 0 or patch.reserved != 0 or
+        !std.mem.allEqual(u8, &patch.reserved_tail, 0) or
+        patch.font_id == 0 or patch.expected_generation == 0 or
+        patch.new_generation <= patch.expected_generation or
+        patch.weight < 1 or patch.weight > 1000 or
+        patch.width_percent < 50 or patch.width_percent > 200 or
+        patch.pixel_size > max_font_metric or
+        patch.point_size_tenths > max_font_metric or
+        patch.x_dpi > 4096 or patch.y_dpi > 4096 or
+        (patch.x_dpi == 0) != (patch.y_dpi == 0) or
+        (patch.fixed_pitch and patch.spacing == .proportional) or
+        (patch.spacing == .mono and !patch.fixed_pitch))
+        return Error.InvalidMessage;
+}
+
+pub fn encodeFontPatch(a: std.mem.Allocator, patch: FontPatch, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    try validateFontPatch(patch);
+    var b: [font_patch_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], patch.schema, .little);
+    b[2] = patch.flags;
+    b[3] = patch.reserved;
+    std.mem.writeInt(u32, b[4..8], patch.font_id, .little);
+    std.mem.writeInt(u32, b[8..12], patch.expected_generation, .little);
+    std.mem.writeInt(u32, b[12..16], patch.new_generation, .little);
+    std.mem.writeInt(u16, b[16..18], patch.weight, .little);
+    std.mem.writeInt(u16, b[18..20], patch.width_percent, .little);
+    std.mem.writeInt(u32, b[20..24], patch.pixel_size, .little);
+    std.mem.writeInt(u32, b[24..28], patch.point_size_tenths, .little);
+    std.mem.writeInt(u32, b[28..32], patch.x_dpi, .little);
+    std.mem.writeInt(u32, b[32..36], patch.y_dpi, .little);
+    b[36] = @intFromEnum(patch.slant);
+    b[37] = @intFromEnum(patch.spacing);
+    b[38] = @intFromBool(patch.scalable);
+    b[39] = @intFromBool(patch.fixed_pitch);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeFontPatch(data: []const u8) Error!FontPatch {
+    if (data.len != font_patch_size) return Error.InvalidTable;
+    const patch: FontPatch = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .font_id = std.mem.readInt(u32, data[4..8], .little),
+        .expected_generation = std.mem.readInt(u32, data[8..12], .little),
+        .new_generation = std.mem.readInt(u32, data[12..16], .little),
+        .weight = std.mem.readInt(u16, data[16..18], .little),
+        .width_percent = std.mem.readInt(u16, data[18..20], .little),
+        .pixel_size = std.mem.readInt(u32, data[20..24], .little),
+        .point_size_tenths = std.mem.readInt(u32, data[24..28], .little),
+        .x_dpi = std.mem.readInt(u32, data[28..32], .little),
+        .y_dpi = std.mem.readInt(u32, data[32..36], .little),
+        .slant = switch (data[36]) {
+            0 => .unspecified,
+            1 => .roman,
+            2 => .italic,
+            3 => .oblique,
+            else => return Error.InvalidStyle,
+        },
+        .spacing = switch (data[37]) {
+            0 => .unspecified,
+            1 => .mono,
+            2 => .proportional,
+            else => return Error.InvalidStyle,
+        },
+        .scalable = data[38] == 1,
+        .fixed_pitch = data[39] == 1,
+        .reserved_tail = data[40..44][0..4].*,
+    };
+    if (data[38] > 1 or data[39] > 1) return Error.InvalidBoolean;
+    try validateFontPatch(patch);
+    return patch;
+}
 
 pub fn encodeFontMetricsPatch(a: std.mem.Allocator, patch: FontMetricsPatch, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
     try validateFontMetricsPatch(patch);
@@ -5166,6 +5264,49 @@ test "font resource codecs enforce fixed bounded UTF-8 metadata" {
     try std.testing.expectError(Error.InvalidTable, decodeFontDefine(bytes.items[0 .. bytes.items.len - 1]));
     try bytes.append(a, 0);
     try std.testing.expectError(Error.InvalidTable, decodeFontDefine(bytes.items));
+}
+
+test "font patch codec enforces scalar identity and generation rules" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    const patch: FontPatch = .{
+        .font_id = 31,
+        .expected_generation = 5,
+        .new_generation = 6,
+        .weight = 700,
+        .width_percent = 100,
+        .pixel_size = 18,
+        .point_size_tenths = 135,
+        .x_dpi = 96,
+        .y_dpi = 96,
+        .slant = .roman,
+        .spacing = .mono,
+        .scalable = true,
+        .fixed_pitch = true,
+    };
+    try encodeFontPatch(a, patch, &bytes);
+    try std.testing.expectEqual(font_patch_size, bytes.items.len);
+    try std.testing.expectEqual(patch, try decodeFontPatch(bytes.items));
+
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFontPatch(bytes.items));
+    bytes.items[3] = 0;
+    bytes.items[40] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFontPatch(bytes.items));
+    bytes.items[40] = 0;
+    bytes.items[38] = 2;
+    try std.testing.expectError(Error.InvalidBoolean, decodeFontPatch(bytes.items));
+    bytes.items[38] = 1;
+
+    std.mem.writeInt(u32, bytes.items[12..16], 5, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFontPatch(bytes.items));
+    std.mem.writeInt(u32, bytes.items[12..16], patch.new_generation, .little);
+    std.mem.writeInt(u32, bytes.items[28..32], 96, .little);
+    std.mem.writeInt(u32, bytes.items[32..36], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFontPatch(bytes.items));
+    try std.testing.expectError(Error.InvalidTable, decodeFontPatch(bytes.items[0 .. bytes.items.len - 1]));
 }
 
 test "font resource codecs reject invalid enums booleans ranges and extensions" {
