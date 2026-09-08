@@ -91,7 +91,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P17-prep runtime activation contract | Implemented a selection-gated controller plus explicit activation/rollback sequences; current gate remains blocked by pending R7 with no registration or runtime |
 | P18-prep explicit damage array | Implemented bounded `DAMAGE_RECTS` codec, atomic Scene replacement, bridge emission, union clipping, clipped retained-target present, and command-culling counters with smoke evidence; redisplay-owned incremental damage pending |
 | P19-prep clear-area render control | Implemented a 40-byte face-colored `CLEAR_AREA` v1 codec with bounded Scene table, active-frame/window bounds, live-face validation, and SDL render evidence; not redisplay capture |
-| P20-prep scroll-copy policy | Implemented bounded full-width vertical `SCROLL_RUN` v1, Scene band validation, overlap planning, and estimated RGBA upload metrics; SDL copy execution and redisplay ownership pending |
+| P20-prep scroll-copy execution | Implemented bounded full-width vertical `SCROLL_RUN` v1, Scene band validation, overlap planning, estimated RGBA upload metrics, and scratch-target SDL retained-frame copy execution; redisplay ownership and GPU batching pending |
 
 | P9-prep authoritative geometry | Implemented in runtime bridge with host rectangle caching and frame/window/damage bounds; real monitor/DPI events pending |
 | P10-prep face-bound debug runs | Implemented with GLYPH_RUN v2, exact live-face validation, and colored SDL fallback; not production face/shaping parity |
@@ -3271,6 +3271,11 @@ bands against the active owner and retains at most 32 runs until the next
 authoritative update.  `renderer.planScrollCopy` computes overlap and estimated
 RGBA upload bytes; actual SDL copy execution and redisplay-owned scroll capture
 remain pending.
+The SDL runtime smoke executes the planned copy by snapshotting the source band
+into a scratch target and drawing that snapshot to the destination.  It records
+planned bytes, submitted copy commands, and presents the retained output without
+sample-sampling the active render target.  Redisplay-owned scroll capture and
+general GPU batching remain pending.
 P12 maximize preparation adds `FRAME_MAXIMIZE` v1 for horizontal and vertical
 axis flags.  The diagnostic SDL bridge applies and restores both-axis
 maximization; single-axis mapping and redisplay adaptation remain pending.

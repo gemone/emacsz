@@ -2911,6 +2911,22 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
             return error.RuntimeBridgeDroppedFeedbackInvalid;
     } else return error.RuntimeBridgeFrameHeaderInvalid;
 
+    var scroll_scratch: ScrollCopyScratch = .{};
+    defer destroyScrollCopyScratch(&scroll_scratch);
+    const scroll_header = scene.frame_header orelse return error.RuntimeBridgeFrameHeaderInvalid;
+    const scroll_commands = try executeScrollCopy(
+        selected_renderer.handle,
+        window,
+        &retained_frame,
+        &scroll_scratch,
+        scroll_plan,
+        @intCast(scroll_header.logical_width),
+        @intCast(scroll_header.logical_height),
+    );
+    frame_counters.recordScrollCopy(scroll_plan.estimated_upload_bytes, scroll_commands);
+    try presentRetainedOutput(selected_renderer.handle, retained_frame.texture.?);
+    frame_counters.recordPresent(1, 1);
+
     const explicit_damage = [_]renderer_policy.I32Rect{.{ .x = 16, .y = 8, .width = 96, .height = 48 }};
     var explicit_payload: std.ArrayList(u8) = .empty;
     defer explicit_payload.deinit(gpa);
@@ -3020,7 +3036,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,
@@ -3030,6 +3046,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
             cursor_update_rendered,
             scene.damage.items.len != 0,
             scroll_plan.estimated_upload_bytes > 0,
+            frame_counters.scroll_copies == 1,
+            scroll_plan.estimated_upload_bytes,
             scene.flush != null,
             scene.render_hint != null,
             opacity_supported,
@@ -4547,6 +4565,90 @@ const RetainedFrame = struct {
     height: c_int = 0,
     primed: bool = false,
 };
+
+const ScrollCopyScratch = struct {
+    texture: ?*SDL_Texture = null,
+    width: c_int = 0,
+    height: c_int = 0,
+};
+
+fn destroyScrollCopyScratch(scratch: *ScrollCopyScratch) void {
+    if (scratch.texture) |texture| SDL_DestroyTexture(texture);
+    scratch.* = .{};
+}
+
+fn scrollCopyScratchTexture(
+    renderer: *SDL_Renderer,
+    scratch: *ScrollCopyScratch,
+    width: c_int,
+    height: c_int,
+) ?*SDL_Texture {
+    if (width <= 0 or height <= 0) return null;
+    if (scratch.width != width or scratch.height != height) destroyScrollCopyScratch(scratch);
+    if (scratch.texture) |texture| return texture;
+
+    const texture = SDL_CreateTexture(
+        renderer,
+        SDL_PIXELFORMAT_RGBA8888,
+        SDL_TEXTUREACCESS_TARGET,
+        width,
+        height,
+    ) orelse return null;
+    if (!SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_NEAREST)) {
+        SDL_DestroyTexture(texture);
+        return null;
+    }
+    scratch.* = .{ .texture = texture, .width = width, .height = height };
+    return texture;
+}
+
+fn executeScrollCopy(
+    renderer: *SDL_Renderer,
+    window: *SDL_Window,
+    retained: *RetainedFrame,
+    scratch: *ScrollCopyScratch,
+    plan: renderer_policy.ScrollCopyPlan,
+    logical_width: i32,
+    logical_height: i32,
+) !u64 {
+    if (retained.texture == null or !retained.primed or
+        logical_width <= 0 or logical_height <= 0) return error.ScrollCopyTargetInvalid;
+    var output_width: c_int = 0;
+    var output_height: c_int = 0;
+    SDL_GetWindowSize(window, &output_width, &output_height);
+    if (output_width <= 0 or output_height <= 0) return error.ScrollCopyTargetInvalid;
+
+    const scale_x: f32 = @as(f32, @floatFromInt(retained.width)) / @as(f32, @floatFromInt(logical_width));
+    const scale_y: f32 = @as(f32, @floatFromInt(retained.height)) / @as(f32, @floatFromInt(logical_height));
+    const copy_width: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(plan.width)) * scale_x)));
+    const copy_height: c_int = @max(1, @as(c_int, @intFromFloat(@as(f32, @floatFromInt(plan.height)) * scale_y)));
+    const source_texture = scrollCopyScratchTexture(renderer, scratch, copy_width, copy_height) orelse
+        return error.ScrollCopyScratchInvalid;
+
+    // A render target cannot safely sample itself. Snapshot the source band to
+    // scratch first, then draw that snapshot to the destination band.
+    if (!SDL_SetRenderTarget(renderer, source_texture)) return sdlFail("SDL_SetRenderTarget");
+    if (!SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255)) return sdlFail("SDL_SetRenderDrawColor");
+    if (!SDL_RenderClear(renderer)) return sdlFail("SDL_RenderClear");
+    const source = SDL_FRect{
+        .x = 0,
+        .y = @as(f32, @floatFromInt(plan.source_y)) * scale_y,
+        .w = @floatFromInt(copy_width),
+        .h = @floatFromInt(copy_height),
+    };
+    if (!SDL_RenderTexture(renderer, retained.texture.?, &source, null)) return sdlFail("SDL_RenderTexture");
+
+    if (!SDL_SetRenderTarget(renderer, retained.texture.?)) return sdlFail("SDL_SetRenderTarget");
+    const destination = SDL_FRect{
+        .x = 0,
+        .y = @as(f32, @floatFromInt(plan.destination_y)) * scale_y,
+        .w = @floatFromInt(copy_width),
+        .h = @floatFromInt(copy_height),
+    };
+    if (!SDL_RenderTexture(renderer, source_texture, null, &destination)) return sdlFail("SDL_RenderTexture");
+    if (!SDL_SetRenderTarget(renderer, null)) return sdlFail("SDL_SetRenderTarget");
+    return 1;
+}
 
 fn destroyRetainedFrame(frame: *RetainedFrame) void {
     if (frame.texture) |texture| SDL_DestroyTexture(texture);

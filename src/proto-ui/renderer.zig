@@ -433,6 +433,9 @@ pub const FrameCounters = struct {
     unchanged_frames: u64 = 0,
     cursor_clipped_frames: u64 = 0,
     cursor_full_fallback_frames: u64 = 0,
+    scroll_copies: u64 = 0,
+    scroll_copy_commands: u64 = 0,
+    scroll_copy_planned_bytes: u64 = 0,
     explicit_damage_frames: u64 = 0,
     explicit_clipped_frames: u64 = 0,
     explicit_full_fallback_frames: u64 = 0,
@@ -470,6 +473,12 @@ pub const FrameCounters = struct {
         } else {
             self.cursor_full_fallback_frames += 1;
         }
+    }
+
+    pub fn recordScrollCopy(self: *FrameCounters, planned_bytes: u64, submitted_commands: u64) void {
+        self.scroll_copies += 1;
+        self.scroll_copy_planned_bytes += planned_bytes;
+        self.scroll_copy_commands += submitted_commands;
     }
 
     pub fn recordExplicitDamage(

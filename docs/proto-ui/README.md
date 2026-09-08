@@ -246,8 +246,9 @@ render-control evidence, not redisplay-owned capture.
 P20 scroll-optimization preparation adds `SCROLL_RUN` v1 as a bounded
 full-window-width vertical copy.  `Scene` validates both bands against the
 owner and the renderer policy reports overlap plus estimated RGBA upload bytes.
-Actual SDL retained-frame copying and redisplay-owned scroll semantics remain
-pending.
+The runtime smoke now executes the copy through a scratch target snapshot and
+records planned bytes/submitted commands.  Redisplay-owned scroll semantics and
+GPU batching remain pending.
 
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
