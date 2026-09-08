@@ -103,6 +103,33 @@ pub const header =
     \\  uint8_t text[120];
     \\} ProtoUiRunRecord;
     \\
+    \\typedef struct ProtoUiShapedGlyphRecord {
+    \\  uint32_t glyph_id;
+    \\  uint32_t cluster;
+    \\  int16_t x_offset;
+    \\  int16_t y_offset;
+    \\  uint16_t advance_x;
+    \\  uint16_t advance_y;
+    \\} ProtoUiShapedGlyphRecord;
+    \\
+    \\typedef struct ProtoUiShapedRunRecord {
+    \\  uint64_t run_id;
+    \\  uint64_t window_id;
+    \\  uint32_t row_index;
+    \\  uint32_t face_id;
+    \\  uint32_t face_generation;
+    \\  uint32_t font_id;
+    \\  uint32_t glyph_count;
+    \\  uint16_t direction;
+    \\  uint16_t flags;
+    \\  uint32_t reserved;
+    \\  int32_t x;
+    \\  int32_t y;
+    \\  int32_t width;
+    \\  int32_t height;
+    \\  ProtoUiShapedGlyphRecord glyphs[7];
+    \\} ProtoUiShapedRunRecord;
+    \\
     \\typedef struct ProtoUiCursorRecord {
     \\  uint64_t window_id;
     \\  uint32_t row_index;
@@ -222,6 +249,9 @@ pub const header =
     \\typedef ProtoUiPureRuntimeStatus (*ProtoUiCaptureRunFn)(
     \\  void *context, const ProtoUiIdentity *session,
     \\  const ProtoUiRunRecord *record);
+    \\typedef ProtoUiPureRuntimeStatus (*ProtoUiCaptureShapedRunFn)(
+    \\  void *context, const ProtoUiIdentity *session,
+    \\  const ProtoUiShapedRunRecord *record);
     \\typedef ProtoUiPureRuntimeStatus (*ProtoUiCaptureCursorFn)(
     \\  void *context, const ProtoUiIdentity *session,
     \\  const ProtoUiCursorRecord *record);
@@ -286,11 +316,19 @@ pub const header =
     \\  ProtoUiCaptureDamageFn observe_damage;
     \\  ProtoUiCaptureFaceFn observe_face;
     \\  ProtoUiCaptureFontFn observe_font;
+    \\  ProtoUiCaptureShapedRunFn observe_shaped_run;
     \\  ProtoUiCaptureImageDefineFn observe_image_define;
     \\  ProtoUiCaptureImageFragmentFn observe_image_fragment;
     \\  ProtoUiCaptureOperationFn commit_capture;
     \\  ProtoUiCaptureOperationFn cancel_capture;
     \\} ProtoUiRedisplayGroupV1;
+    \\
+    \\_Static_assert(offsetof(ProtoUiRedisplayGroupV1, observe_run) <
+    \\              offsetof(ProtoUiRedisplayGroupV1, observe_shaped_run),
+    \\              "invalid shaped callback ordering");
+    \\_Static_assert(offsetof(ProtoUiRedisplayGroupV1, observe_font) <
+    \\              offsetof(ProtoUiRedisplayGroupV1, observe_shaped_run),
+    \\              "invalid shaped callback ordering");
     \\
     \\typedef struct ProtoUiInputGroupV1 {
     \\  uint32_t abi_version;
@@ -343,6 +381,12 @@ pub const header =
     \\              "invalid ImageDefineRecord ABI");
     \\_Static_assert(sizeof(ProtoUiImageFragmentRecord) == 1044u,
     \\              "invalid ImageFragmentRecord ABI");
+    \\_Static_assert(sizeof(ProtoUiShapedGlyphRecord) == 16u,
+    \\              "invalid ShapedGlyphRecord ABI");
+    \\_Static_assert(offsetof(ProtoUiShapedRunRecord, glyphs) == 60u,
+    \\              "invalid ShapedRunRecord ABI");
+    \\_Static_assert(sizeof(ProtoUiShapedRunRecord) == 176u,
+    \\              "invalid ShapedRunRecord ABI");
     \\_Static_assert(sizeof(ProtoUiRunRecord) == 176u,
     \\              "invalid RunRecord ABI");
     \\_Static_assert(offsetof(ProtoUiInputEvent, payload) == 32u,
@@ -373,7 +417,7 @@ pub const conformance =
     \\  ProtoUiFrameGroupV1 frame = {1, sizeof(ProtoUiFrameGroupV1), (void *)&frame,
     \\    NULL, stub_identity_op, NULL, NULL};
     \\  ProtoUiRedisplayGroupV1 redisplay = {1, sizeof(ProtoUiRedisplayGroupV1), (void *)&redisplay,
-    \\    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+    \\    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
     \\  ProtoUiInputGroupV1 input = {1, sizeof(ProtoUiInputGroupV1), (void *)&input,
     \\    NULL, NULL, NULL};
     \\  ProtoUiLifecycleGroupV1 lifecycle = {1, sizeof(ProtoUiLifecycleGroupV1), (void *)&lifecycle,

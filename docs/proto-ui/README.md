@@ -322,6 +322,11 @@ bounded glyph records, face/font linkage, atlas-entry validation, and SDL
 atlas-backed glyph drawing. Full shaping, BiDi, persistent run capture, and
 complete font parity remain pending.
 
+P40 runtime shaped-run capture preparation adds a bounded `ShapedRunRecord`
+observation to the PureRuntimeHostV1 redisplay ABI, with duplicate-run rejection,
+live face/font checks, and schema-3 EUP emission.  Real Emacs redisplay
+attachment remains pending.
+
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by
 atlas/page identity, generation, and page revision.  The runtime smoke requires
 one upload followed by at least four cache hits; smoke-level renderer-reset clearing is wired; production-wide renderer-loss

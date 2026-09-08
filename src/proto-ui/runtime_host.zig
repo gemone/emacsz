@@ -108,6 +108,35 @@ pub const RunRecord = extern struct {
 
 pub const RunKind = enum(u8) { text = 1, glyphless = 2, composition = 3, image = 4, stretch = 5, rectangle = 6 };
 
+pub const ShapedGlyphRecord = extern struct {
+    glyph_id: u32 = 0,
+    cluster: u32 = 0,
+    x_offset: i16 = 0,
+    y_offset: i16 = 0,
+    advance_x: u16 = 0,
+    advance_y: u16 = 0,
+};
+
+pub const max_shaped_run_glyphs: usize = 7;
+
+pub const ShapedRunRecord = extern struct {
+    run_id: u64 = 0,
+    window_id: u64 = 0,
+    row_index: u32 = 0,
+    face_id: u32 = 0,
+    face_generation: u32 = 0,
+    font_id: u32 = 0,
+    glyph_count: u32 = 0,
+    direction: u16 = 1,
+    flags: u16 = 0,
+    reserved: u32 = 0,
+    x: i32 = 0,
+    y: i32 = 0,
+    width: i32 = 0,
+    height: i32 = 0,
+    glyphs: [max_shaped_run_glyphs]ShapedGlyphRecord = undefined,
+};
+
 pub const CursorRecord = extern struct {
     window_id: u64 = 0,
     row_index: u32 = 0,
@@ -231,6 +260,7 @@ pub const CaptureCursorFn = *const fn (*anyopaque, *const Identity, *const Curso
 pub const CaptureDamageFn = *const fn (*anyopaque, *const Identity, *const DamageRecord) callconv(.c) Status;
 pub const CaptureFaceFn = *const fn (*anyopaque, *const Identity, *const FaceRecord) callconv(.c) Status;
 pub const CaptureFontFn = *const fn (*anyopaque, *const Identity, *const FontRecord) callconv(.c) Status;
+pub const CaptureShapedRunFn = *const fn (*anyopaque, *const Identity, *const ShapedRunRecord) callconv(.c) Status;
 pub const CaptureImageDefineFn = *const fn (*anyopaque, *const Identity, *const ImageDefineRecord) callconv(.c) Status;
 pub const CaptureImageFragmentFn = *const fn (*anyopaque, *const Identity, *const ImageFragmentRecord) callconv(.c) Status;
 pub const CaptureOperationFn = *const fn (*anyopaque, *const Identity) callconv(.c) Status;
@@ -272,6 +302,7 @@ pub const RedisplayGroupV1 = extern struct {
     observe_damage: ?CaptureDamageFn = null,
     observe_face: ?CaptureFaceFn = null,
     observe_font: ?CaptureFontFn = null,
+    observe_shaped_run: ?CaptureShapedRunFn = null,
     observe_image_define: ?CaptureImageDefineFn = null,
     observe_image_fragment: ?CaptureImageFragmentFn = null,
     commit_capture: ?CaptureOperationFn = null,
@@ -324,6 +355,7 @@ pub const operation_names = [_][]const u8{
     "redisplay.observe_damage",
     "redisplay.observe_face",
     "redisplay.observe_font",
+    "redisplay.observe_shaped_run",
     "redisplay.observe_image_define",
     "redisplay.observe_image_fragment",
     "redisplay.commit_capture",
@@ -384,7 +416,7 @@ pub fn validateGeometry(geometry: *const adapter.Geometry) Error!void {
 
 pub fn validateCaptureRequest(request: *const CaptureRequest) Error!void {
     try validateIdentity(&request.frame);
-    if (request.redisplay_generation == 0 or request.reserved != 0) return error.InvalidRuntimeHost;
+    if (request.redisplay_generation == 0 or request.redisplay_generation > std.math.maxInt(u32) or request.reserved != 0) return error.InvalidRuntimeHost;
 }
 
 pub fn validateWindowRecord(record: *const WindowRecord) Error!void {
@@ -400,7 +432,7 @@ pub fn validateRowRecord(record: *const RowRecord) Error!void {
 }
 
 pub fn validateRunRecord(record: *const RunRecord) Error!void {
-    if (record.run_id == 0 or record.window_id == 0 or record.text_length == 0 or
+    if (record.run_id == 0 or record.run_id > std.math.maxInt(u32) or record.window_id == 0 or record.text_length == 0 or
         record.text_length > record.text.len or record.x < 0 or record.y < 0 or
         record.width < 0 or record.height < 0 or record.direction != 1 or
         record.reserved != 0) return error.InvalidRuntimeHost;
@@ -421,6 +453,19 @@ pub fn validateRunRecord(record: *const RunRecord) Error!void {
         @intFromEnum(RunKind.rectangle),
         => {},
         else => return error.InvalidRuntimeHost,
+    }
+}
+
+pub fn validateShapedRunRecord(record: *const ShapedRunRecord) Error!void {
+    if (record.run_id == 0 or record.run_id > std.math.maxInt(u32) or record.window_id == 0 or
+        record.face_id == 0 or record.face_generation == 0 or
+        record.font_id == 0 or record.glyph_count == 0 or
+        record.glyph_count > record.glyphs.len or
+        record.direction != 1 or record.flags != 0 or record.reserved != 0 or
+        record.x < 0 or record.y < 0 or record.width < 0 or record.height < 0)
+        return error.InvalidRuntimeHost;
+    for (record.glyphs[0..record.glyph_count]) |glyph| {
+        if (glyph.glyph_id == 0) return error.InvalidRuntimeHost;
     }
 }
 
@@ -710,6 +755,15 @@ pub const FakeHost = struct {
         return .ok;
     }
 
+    pub fn observeShapedRun(context: *anyopaque, session: *const Identity, record: *const ShapedRunRecord) callconv(.c) Status {
+        const self: *FakeHost = @ptrCast(@alignCast(context));
+        if (invalidIfError(validateShapedRunRecord(record)) != .ok or
+            !self.capture_active or session.id != self.capture.id)
+            return .invalid;
+        self.observations += 1;
+        return .ok;
+    }
+
     fn observeCursor(context: *anyopaque, session: *const Identity, record: *const CursorRecord) callconv(.c) Status {
         const self: *FakeHost = @ptrCast(@alignCast(context));
         if (invalidIfError(validateCursorRecord(record)) != .ok or
@@ -835,7 +889,7 @@ pub fn fakeTable(host: *FakeHost) PureRuntimeHostV1 {
     host.* = .{
         .terminal_group = .{ .context = host, .create_terminal = FakeHost.createTerminal, .activate_terminal = FakeHost.activateTerminal, .delete_terminal = FakeHost.deleteTerminal },
         .frame_group = .{ .context = host, .register_frame = FakeHost.registerFrame, .unregister_frame = FakeHost.unregisterFrame, .read_frame_state = FakeHost.readFrameState, .read_geometry = FakeHost.readGeometry },
-        .redisplay_group = .{ .context = host, .begin_capture = FakeHost.beginCapture, .observe_window = FakeHost.observeWindow, .observe_row = FakeHost.observeRow, .observe_run = FakeHost.observeRun, .observe_cursor = FakeHost.observeCursor, .observe_damage = FakeHost.observeDamage, .observe_face = FakeHost.observeFace, .observe_font = FakeHost.observeFont, .observe_image_define = FakeHost.observeImageDefine, .observe_image_fragment = FakeHost.observeImageFragment, .commit_capture = FakeHost.commitCapture, .cancel_capture = FakeHost.cancelCapture },
+        .redisplay_group = .{ .context = host, .begin_capture = FakeHost.beginCapture, .observe_window = FakeHost.observeWindow, .observe_row = FakeHost.observeRow, .observe_run = FakeHost.observeRun, .observe_shaped_run = FakeHost.observeShapedRun, .observe_cursor = FakeHost.observeCursor, .observe_damage = FakeHost.observeDamage, .observe_face = FakeHost.observeFace, .observe_font = FakeHost.observeFont, .observe_image_define = FakeHost.observeImageDefine, .observe_image_fragment = FakeHost.observeImageFragment, .commit_capture = FakeHost.commitCapture, .cancel_capture = FakeHost.cancelCapture },
         .input_group = .{ .context = host, .deliver_event = FakeHost.deliverEvent, .deliver_result = FakeHost.deliverResult, .deliver_completion_status = FakeHost.deliverCompletion },
         .lifecycle_group = .{ .context = host, .heartbeat = FakeHost.heartbeat, .flush = FakeHost.flush, .diagnostic = FakeHost.diagnostic, .cancel_all_pending_work = FakeHost.cancelAll },
     };

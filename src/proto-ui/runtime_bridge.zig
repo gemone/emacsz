@@ -26,6 +26,8 @@ pub const Error = runtime_host.Error || frontend.Error || protocol.Error ||
         TooManyWindows,
         TooManyRows,
         TooManyRuns,
+        TooManyShapedRuns,
+        DuplicateShapedRun,
         TooManyFaces,
         TooManyFonts,
         TooManyImages,
@@ -40,6 +42,7 @@ pub const Error = runtime_host.Error || frontend.Error || protocol.Error ||
 pub const max_windows: usize = 4;
 pub const max_rows: usize = 32;
 pub const max_runs: usize = 64;
+pub const max_shaped_runs: usize = 16;
 pub const max_faces: usize = 8;
 pub const max_fonts: usize = 8;
 pub const max_images: usize = 4;
@@ -65,6 +68,17 @@ fn invalidIdentityTerminalCreate(
     _ = request;
     result.* = .{};
     return .ok;
+}
+
+fn failingShapedRun(
+    context: *anyopaque,
+    session: *const runtime_host.Identity,
+    record: *const runtime_host.ShapedRunRecord,
+) callconv(.c) runtime_host.Status {
+    _ = context;
+    _ = session;
+    _ = record;
+    return .failed;
 }
 
 fn invalidIdentityCaptureBegin(
@@ -117,6 +131,7 @@ pub const Counts = struct {
     windows: usize = 0,
     rows: usize = 0,
     runs: usize = 0,
+    shaped_runs: usize = 0,
     faces: usize = 0,
     fonts: usize = 0,
     images: usize = 0,
@@ -154,6 +169,7 @@ pub const Bridge = struct {
     windows: [max_windows]runtime_host.WindowRecord = undefined,
     rows: [max_rows]runtime_host.RowRecord = undefined,
     runs: [max_runs]runtime_host.RunRecord = undefined,
+    shaped_runs: [max_shaped_runs]runtime_host.ShapedRunRecord = undefined,
     faces: [max_faces]protocol.FaceDefine = undefined,
     fonts: [max_fonts]protocol.FontDefine = undefined,
     images: [max_images]ImageCapture = undefined,
@@ -239,7 +255,7 @@ pub const Bridge = struct {
             .frame_registered, .captured => {},
             else => return error.InvalidState,
         }
-        if (redisplay_generation == 0 or
+        if (redisplay_generation == 0 or redisplay_generation > std.math.maxInt(u32) or
             (self.state == .captured and redisplay_generation <= self.redisplay_generation))
             return error.InvalidFrameIdentity;
         const request: runtime_host.CaptureRequest = .{
@@ -322,6 +338,9 @@ pub const Bridge = struct {
         for (self.runs[0..self.counts.runs]) |existing| {
             if (existing.run_id == record.run_id) return error.DuplicateRun;
         }
+        for (self.shaped_runs[0..self.counts.shaped_runs]) |existing| {
+            if (existing.run_id == record.run_id) return error.DuplicateRun;
+        }
         if (record.face_id != 0) {
             const face = self.findFace(record.face_id) orelse return error.InvalidState;
             if (face.generation != record.face_generation) return error.InvalidState;
@@ -332,6 +351,31 @@ pub const Bridge = struct {
         try runtime_host.ensureOk(callback(context, &self.capture, &record));
         self.runs[self.counts.runs] = record;
         self.counts.runs += 1;
+    }
+
+    pub fn observeShapedRun(self: *Bridge, record: runtime_host.ShapedRunRecord) Error!void {
+        try self.requireState(.capturing);
+        try runtime_host.validateShapedRunRecord(&record);
+        try self.requireObservedWindow(record.window_id);
+        if (self.counts.shaped_runs == max_shaped_runs) return error.TooManyShapedRuns;
+        for (self.runs[0..self.counts.runs]) |existing| {
+            if (existing.run_id == record.run_id) return error.DuplicateShapedRun;
+        }
+        for (self.shaped_runs[0..self.counts.shaped_runs]) |existing| {
+            if (existing.run_id == record.run_id) return error.DuplicateShapedRun;
+        }
+        const face = self.findFace(record.face_id) orelse return error.InvalidState;
+        if (face.generation != record.face_generation or
+            !face.presence.font or face.font_id != record.font_id)
+            return error.InvalidState;
+        const font = self.findFont(record.font_id) orelse return error.InvalidState;
+        if (font.generation != face.font_generation) return error.InvalidState;
+        const group = try self.redisplayGroup();
+        const context = group.context orelse return error.InvalidRuntimeHost;
+        const callback = group.observe_shaped_run orelse return error.InvalidRuntimeHost;
+        try runtime_host.ensureOk(callback(context, &self.capture, &record));
+        self.shaped_runs[self.counts.shaped_runs] = record;
+        self.counts.shaped_runs += 1;
     }
 
     pub fn observeFace(self: *Bridge, record: runtime_host.FaceRecord) Error!void {
@@ -881,6 +925,60 @@ pub const Bridge = struct {
             .width = record.width,
             .height = record.height,
             .text = record.text[0..record.text_length],
+        }, &payload);
+        try protocol.encodeEnvelope(gpa, .{
+            .flags = protocol.Flags.debug,
+            .message_type = protocol.Message.glyph_run,
+            .sequence = sequence,
+            .ack_sequence = 0,
+            .session_id = session_id,
+            .frame_id = @intCast(self.frame.id),
+            .timestamp_ns = timestamp_ns,
+        }, payload.items, out);
+    }
+
+    pub fn encodeShapedRun(
+        self: *const Bridge,
+        gpa: std.mem.Allocator,
+        run_index: usize,
+        sequence: u64,
+        session_id: u64,
+        timestamp_ns: u64,
+        out: *std.ArrayList(u8),
+    ) Error!void {
+        try self.requireState(.captured);
+        if (run_index >= self.counts.shaped_runs) return error.InvalidState;
+        const record = self.shaped_runs[run_index];
+        var glyphs: [runtime_host.max_shaped_run_glyphs]frontend.ShapedGlyph = undefined;
+        for (record.glyphs[0..record.glyph_count], 0..) |source, index| {
+            glyphs[index] = .{
+                .glyph_id = source.glyph_id,
+                .cluster = source.cluster,
+                .x_offset = source.x_offset,
+                .y_offset = source.y_offset,
+                .advance_x = source.advance_x,
+                .advance_y = source.advance_y,
+            };
+        }
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(gpa);
+        try frontend.encodeGlyphRun(gpa, .{
+            .schema = 3,
+            .flags = frontend.glyph_shaped_atlas,
+            .run_id = @intCast(record.run_id),
+            .generation = @intCast(self.redisplay_generation),
+            .window_id = record.window_id,
+            .row_index = record.row_index,
+            .face_id = record.face_id,
+            .face_generation = record.face_generation,
+            .font_id = record.font_id,
+            .x = record.x,
+            .y = record.y,
+            .width = record.width,
+            .height = record.height,
+            .text = "",
+            .glyphs = glyphs,
+            .glyph_count = record.glyph_count,
         }, &payload);
         try protocol.encodeEnvelope(gpa, .{
             .flags = protocol.Flags.debug,
@@ -1720,4 +1818,137 @@ test "bridge rejects observations outside capturing state without mutation" {
     try std.testing.expectError(error.InvalidState, bridge.observeWindow(.{ .id = 1, .generation = 1 }));
     try std.testing.expectEqual(State.idle, bridge.state);
     try std.testing.expectEqual(Counts{}, bridge.snapshotCounts());
+}
+
+test "runtime bridge validates shaped run capture against face and font" {
+    var host: runtime_host.FakeHost = undefined;
+    const table = runtime_host.fakeTable(&host);
+    var bridge = try Bridge.init(table);
+    try bridge.createTerminal(.{ .requested_generation = 1 });
+    try bridge.activateTerminal();
+    try bridge.registerFrame(.{ .id = 22, .generation = 1 });
+    _ = try bridge.refreshFrameGeometry();
+    try bridge.beginCapture(1);
+    try bridge.observeWindow(.{ .id = 10, .generation = 1, .width = 40, .height = 10 });
+    try bridge.observeRow(.{ .window_id = 10, .row_index = 0, .width = 40, .height = 10, .ascent = 8, .descent = 2, .baseline = 8, .visible_height = 10 });
+
+    var family: [64]u8 = @splat(0);
+    @memcpy(family[0..7], "Adaptor");
+    var foundry: [32]u8 = @splat(0);
+    @memcpy(foundry[0..4], "Test");
+    var style: [32]u8 = @splat(0);
+    @memcpy(style[0..4], "Mono");
+    const font_bytes = try protocol.encodeFontDefineBytes(.{
+        .font_id = 8,
+        .generation = 1,
+        .family = family,
+        .family_len = "Adaptor".len,
+        .foundry = foundry,
+        .foundry_len = "Test".len,
+        .style = style,
+        .style_len = "Mono".len,
+        .fixed_pitch = true,
+        .spacing = .mono,
+    });
+    try bridge.observeFont(.{ .bytes = font_bytes });
+
+    const face_bytes = try protocol.encodeFaceDefineBytes(.{
+        .face_id = 7,
+        .generation = 1,
+        .presence = .{ .font = true },
+        .font_id = 8,
+        .font_generation = 1,
+    });
+    try bridge.observeFace(.{ .bytes = face_bytes });
+
+    var shaped: runtime_host.ShapedRunRecord = .{
+        .run_id = 21,
+        .window_id = 10,
+        .row_index = 0,
+        .face_id = 7,
+        .face_generation = 1,
+        .font_id = 8,
+        .glyph_count = 1,
+        .width = 6,
+        .height = 8,
+    };
+    shaped.glyphs[0] = .{ .glyph_id = 101, .cluster = 0, .advance_x = 6 };
+    try bridge.observeShapedRun(shaped);
+    try std.testing.expectEqual(@as(usize, 1), bridge.counts.shaped_runs);
+    try std.testing.expectError(error.DuplicateShapedRun, bridge.observeShapedRun(shaped));
+}
+
+test "shaped run capture enforces collisions atomicity and reset" {
+    var host: runtime_host.FakeHost = undefined;
+    const table = runtime_host.fakeTable(&host);
+    var bridge = try Bridge.init(table);
+    try bridge.createTerminal(.{ .requested_generation = 1 });
+    try bridge.activateTerminal();
+    try bridge.registerFrame(.{ .id = 22, .generation = 1 });
+    _ = try bridge.refreshFrameGeometry();
+    try bridge.beginCapture(1);
+    try bridge.observeWindow(.{ .id = 10, .generation = 1, .width = 40, .height = 10 });
+    try bridge.observeRow(.{ .window_id = 10, .row_index = 0, .width = 40, .height = 10, .ascent = 8, .descent = 2, .baseline = 8, .visible_height = 10 });
+
+    var family: [64]u8 = @splat(0);
+    @memcpy(family[0..7], "Adaptor");
+    var foundry: [32]u8 = @splat(0);
+    @memcpy(foundry[0..4], "Test");
+    var style: [32]u8 = @splat(0);
+    @memcpy(style[0..4], "Mono");
+    const font_bytes = try protocol.encodeFontDefineBytes(.{
+        .font_id = 8,
+        .generation = 1,
+        .family = family,
+        .family_len = "Adaptor".len,
+        .foundry = foundry,
+        .foundry_len = "Test".len,
+        .style = style,
+        .style_len = "Mono".len,
+        .fixed_pitch = true,
+        .spacing = .mono,
+    });
+    try bridge.observeFont(.{ .bytes = font_bytes });
+    const face_bytes = try protocol.encodeFaceDefineBytes(.{
+        .face_id = 7,
+        .generation = 1,
+        .presence = .{ .font = true },
+        .font_id = 8,
+        .font_generation = 1,
+    });
+    try bridge.observeFace(.{ .bytes = face_bytes });
+
+    var regular: runtime_host.RunRecord = .{ .run_id = 1, .window_id = 10, .row_index = 0, .width = 6, .height = 8, .text_length = 1 };
+    regular.text[0] = 'A';
+    try bridge.observeRun(regular);
+    var shaped: runtime_host.ShapedRunRecord = .{ .run_id = 1, .window_id = 10, .row_index = 0, .face_id = 7, .face_generation = 1, .font_id = 8, .glyph_count = 1, .width = 6, .height = 8 };
+    shaped.glyphs[0] = .{ .glyph_id = 101, .cluster = 0, .advance_x = 6 };
+    try std.testing.expectError(error.DuplicateShapedRun, bridge.observeShapedRun(shaped));
+
+    shaped.run_id = 2;
+    try bridge.observeShapedRun(shaped);
+    regular.run_id = 2;
+    try std.testing.expectError(error.DuplicateRun, bridge.observeRun(regular));
+
+    const counts_before = bridge.snapshotCounts();
+    host.redisplay_group.observe_shaped_run = failingShapedRun;
+    shaped.run_id = 3;
+    try std.testing.expectError(error.HostCallbackFailed, bridge.observeShapedRun(shaped));
+    try std.testing.expectEqual(counts_before, bridge.snapshotCounts());
+    host.redisplay_group.observe_shaped_run = runtime_host.FakeHost.observeShapedRun;
+    try bridge.observeShapedRun(shaped);
+    try bridge.commitCapture();
+
+    var encoded: std.ArrayList(u8) = .empty;
+    defer encoded.deinit(std.testing.allocator);
+    try bridge.encodeShapedRun(std.testing.allocator, 1, 9, 9, 9, &encoded);
+    const decoded_envelope = try protocol.decodeEnvelope(encoded.items);
+    const decoded_wire = try frontend.decodeGlyphRun(decoded_envelope.bytes);
+    try std.testing.expectEqual(@as(u16, 3), decoded_wire.schema);
+    try std.testing.expectEqual(@as(u32, 8), decoded_wire.font_id);
+    try std.testing.expectEqual(@as(usize, 1), decoded_wire.glyph_count);
+    try std.testing.expectEqual(@as(u32, 101), decoded_wire.glyphs[0].glyph_id);
+
+    try bridge.beginCapture(2);
+    try std.testing.expectEqual(@as(usize, 0), bridge.counts.shaped_runs);
 }
