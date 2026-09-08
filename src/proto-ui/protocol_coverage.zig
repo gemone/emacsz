@@ -92,7 +92,7 @@ const ranges = [_]Range{
     .{ .low = 0x0307, .high = 0x0307, .status = .implemented_codec, .domain = .window, .family = "window-position", .note = "bounded diagnostic buffer identity/start/point codec, active-frame/window validation, and Scene upsert; no text/layout transport" },
     .{ .low = 0x0308, .high = 0x0308, .status = .implemented_codec, .domain = .window, .family = "scroll-state", .note = "bounded scrollbar state codec, active-frame/window validation, Scene upsert, SDL render evidence" },
     .{ .low = 0x0309, .high = 0x0309, .status = .implemented_codec, .domain = .window, .family = "scroll-request", .note = "bounded absolute/relative reverse intent codec and delivery journal queue" },
-    .{ .low = 0x030a, .high = 0x030a, .status = .planned, .domain = .window, .family = "window-interaction", .note = "mouse-highlight payload pending" },
+    .{ .low = 0x030a, .high = 0x030a, .status = .implemented_codec, .domain = .window, .family = "mouse-highlight", .note = "bounded visible mouse-face rect codec, live face/window validation, Scene upsert, SDL render evidence; full mouse-face semantics pending" },
     .{ .low = 0x0400, .high = 0x0401, .status = .implemented_codec, .domain = .render, .family = "render-debug", .note = "strict BEGIN/END update boundary codecs, active-frame validation, and Scene nesting/state lifecycle" },
     .{ .low = 0x0402, .high = 0x0404, .status = .implemented_codec, .domain = .render, .family = "row-lifecycle", .note = "bounded row snapshot/update/delete codecs with owner bounds, generation validation, and Scene lifecycle" },
     .{ .low = 0x0405, .high = 0x0405, .status = .implemented_codec, .domain = .render, .family = "glyph-run", .note = "bounded ASCII v1/v2 and shaped atlas v3 with Scene validation" },

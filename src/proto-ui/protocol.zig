@@ -73,6 +73,7 @@ pub const Message = struct {
     pub const window_zones: u16 = 0x0305;
     pub const window_face: u16 = 0x0306;
     pub const window_position: u16 = 0x0307;
+    pub const mouse_highlight: u16 = 0x030a;
     pub const window_scroll_state: u16 = 0x0308;
     pub const window_patch: u16 = 0x0302;
     pub const frame_destroy: u16 = 0x0206;

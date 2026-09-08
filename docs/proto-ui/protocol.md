@@ -564,6 +564,27 @@ horizontal.  Delivery requires negotiated `window.scroll_request_v1`, while
 actual application remains core-owned.  Horizontal rendering and full scrollbar
 semantics remain pending.
 
+#### `WINDOW_MOUSE_HIGHLIGHT` v1 (implemented bounded adapter contract)
+
+`WINDOW_MOUSE_HIGHLIGHT = 0x030a` is an exact 48-byte little-endian
+mouse-highlight state record.  Layout: schema (`u16=1`), flags, reserved byte,
+nonzero window id, active-frame generation, a 16-byte rectangle, nonzero face id
+and exact live face generation, then eight reserved bytes.  The only defined
+flag is `visible`; unknown flags, nonzero reserved bytes, nonpositive width or
+height, negative coordinates, stale identities or generations, and truncation
+are rejected.
+
+The envelope and frame header must identify the same active frame generation.
+`Scene` validates that the rectangle is contained by the owner window and that
+the face is live with the exact declared generation, then upserts one state per
+window with a bounded table of 32 states.  Window deletion removes dependent
+states.  Face replacement, generation-advancing patch, and exact-generation
+delete remove dependent states.  An authoritative `FRAME_UPDATE` clears the
+table.  SDL renders a visible highlight with the live face background when that
+face declares one.  This is bounded visual-state evidence only: pointer motion,
+Emacs mouse-face resolution, overlays, derived faces, redisplay-owned capture,
+and complete PGTK parity remain pending.
+
 ### 11.1 `WINDOW_TREE_SNAPSHOT` v1 (implemented bounded adapter contract)
 
 `WINDOW_TREE_SNAPSHOT = 0x0300` is an authoritative complete-tree state message.
@@ -1629,9 +1650,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 83 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 84 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 78 | Assigned for the target protocol but not implemented |
+| `planned` | 77 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

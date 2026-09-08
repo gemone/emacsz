@@ -600,6 +600,7 @@ pub const max_window_faces: usize = 32;
 pub const max_window_geometries: usize = 32;
 pub const max_window_zones: usize = 32;
 pub const max_window_positions: usize = 32;
+pub const max_mouse_highlights: usize = 32;
 
 pub const WindowGeometryState = struct {
     schema: u16 = 1,
@@ -855,6 +856,73 @@ pub fn decodeWindowPositionState(data: []const u8) Error!WindowPositionState {
     };
     try validateWindowPositionState(state);
     return state;
+}
+
+pub const MouseHighlightFlags = struct {
+    pub const visible: u8 = 1 << 0;
+    pub const known: u8 = visible;
+};
+
+pub const MouseHighlightState = struct {
+    schema: u16 = 1,
+    flags: u8,
+    reserved: u8 = 0,
+    window_id: u64,
+    frame_generation: u32,
+    rect: Rect,
+    face_id: u32,
+    face_generation: u32,
+    reserved_tail: [8]u8 = @splat(0),
+};
+
+pub const mouse_highlight_state_size: usize = 48;
+
+pub fn encodeMouseHighlightState(a: std.mem.Allocator, state: MouseHighlightState, out: *std.ArrayList(u8)) !void {
+    try validateMouseHighlightState(state);
+    var b: [mouse_highlight_state_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], state.schema, .little);
+    b[2] = state.flags;
+    b[3] = state.reserved;
+    std.mem.writeInt(u64, b[4..12], state.window_id, .little);
+    std.mem.writeInt(u32, b[12..16], state.frame_generation, .little);
+    inline for (.{ state.rect.x, state.rect.y, state.rect.width, state.rect.height }, 0..) |value, index| {
+        std.mem.writeInt(i32, b[16 + index * 4 ..][0..4], value, .little);
+    }
+    std.mem.writeInt(u32, b[32..36], state.face_id, .little);
+    std.mem.writeInt(u32, b[36..40], state.face_generation, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeMouseHighlightState(data: []const u8) Error!MouseHighlightState {
+    if (data.len != mouse_highlight_state_size) return Error.InvalidTable;
+    const state: MouseHighlightState = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .window_id = std.mem.readInt(u64, data[4..12], .little),
+        .frame_generation = std.mem.readInt(u32, data[12..16], .little),
+        .rect = .{
+            .x = @bitCast(std.mem.readInt(u32, data[16..20], .little)),
+            .y = @bitCast(std.mem.readInt(u32, data[20..24], .little)),
+            .width = @bitCast(std.mem.readInt(u32, data[24..28], .little)),
+            .height = @bitCast(std.mem.readInt(u32, data[28..32], .little)),
+        },
+        .face_id = std.mem.readInt(u32, data[32..36], .little),
+        .face_generation = std.mem.readInt(u32, data[36..40], .little),
+        .reserved_tail = data[40..48][0..8].*,
+    };
+    try validateMouseHighlightState(state);
+    return state;
+}
+
+fn validateMouseHighlightState(state: MouseHighlightState) Error!void {
+    if (state.schema != 1 or state.flags & ~MouseHighlightFlags.known != 0 or
+        state.reserved != 0 or !std.mem.allEqual(u8, &state.reserved_tail, 0) or
+        state.window_id == 0 or state.frame_generation == 0 or
+        state.face_id == 0 or state.face_generation == 0 or
+        state.rect.width <= 0 or state.rect.height <= 0 or
+        state.rect.x < 0 or state.rect.y < 0)
+        return Error.InvalidMessage;
 }
 
 fn validateWindowPositionState(state: WindowPositionState) Error!void {
@@ -2486,6 +2554,8 @@ pub const Scene = struct {
     window_geometries: std.ArrayList(WindowGeometryState) = .empty,
     window_zones: std.ArrayList(WindowZonesState) = .empty,
     window_positions: std.ArrayList(WindowPositionState) = .empty,
+    mouse_highlights: [max_mouse_highlights]MouseHighlightState = undefined,
+    mouse_highlight_count: usize = 0,
     atlases: AtlasResources = undefined,
     border: ?BorderUpdate = null,
     text: std.ArrayList(TextLine) = .empty,
@@ -2596,7 +2666,9 @@ pub const Scene = struct {
             if (payload.envelope.session_id != expected) return Error.InvalidMessage;
         }
         if (self.next_sequence) |expected| {
-            if (payload.envelope.sequence != expected) return Error.InvalidSequence;
+            if (payload.envelope.sequence != expected) {
+                return Error.InvalidSequence;
+            }
         }
         const next_sequence = std.math.add(u64, payload.envelope.sequence, 1) catch return Error.InvalidSequence;
 
@@ -2668,6 +2740,7 @@ pub const Scene = struct {
             protocol.Message.window_geometry => try self.applyWindowGeometry(payload),
             protocol.Message.window_zones => try self.applyWindowZones(payload),
             protocol.Message.window_position => try self.applyWindowPosition(payload),
+            protocol.Message.mouse_highlight => try self.applyMouseHighlight(payload),
             protocol.Message.cursor_update => try self.applyCursorUpdate(payload),
             protocol.Message.clear_area => try self.applyClearArea(payload),
             protocol.Message.scroll_run => try self.applyScrollRun(payload),
@@ -3144,6 +3217,7 @@ pub const Scene = struct {
         self.removeWindowGeometriesForWindow(window_id);
         self.removeWindowZonesForWindow(window_id);
         self.removeWindowPositionsForWindow(window_id);
+        self.removeMouseHighlightsForWindow(window_id);
         self.stats.control_messages += 1;
     }
 
@@ -3397,6 +3471,32 @@ pub const Scene = struct {
         }
     }
 
+    fn removeMouseHighlightsForWindow(self: *Scene, window_id: u64) void {
+        var index: usize = 0;
+        while (index < self.mouse_highlight_count) {
+            if (self.mouse_highlights[index].window_id == window_id) {
+                if (index + 1 < self.mouse_highlight_count) {
+                    std.mem.copyForwards(MouseHighlightState, self.mouse_highlights[index .. self.mouse_highlight_count - 1], self.mouse_highlights[index + 1 .. self.mouse_highlight_count]);
+                }
+                self.mouse_highlight_count -= 1;
+            } else index += 1;
+        }
+    }
+
+    fn removeMouseHighlightsForFace(self: *Scene, face_id: u32, face_generation: u32) void {
+        var index: usize = 0;
+        while (index < self.mouse_highlight_count) {
+            if (self.mouse_highlights[index].face_id == face_id and
+                self.mouse_highlights[index].face_generation == face_generation)
+            {
+                if (index + 1 < self.mouse_highlight_count) {
+                    std.mem.copyForwards(MouseHighlightState, self.mouse_highlights[index .. self.mouse_highlight_count - 1], self.mouse_highlights[index + 1 .. self.mouse_highlight_count]);
+                }
+                self.mouse_highlight_count -= 1;
+            } else index += 1;
+        }
+    }
+
     fn applyWindowTreeSnapshot(self: *Scene, payload: protocol.Payload) Error!void {
         const frame = self.frame orelse return Error.FrameNotActive;
         var tree = try protocol.decodeWindowTreeSnapshot(self.allocator, payload.bytes);
@@ -3420,6 +3520,7 @@ pub const Scene = struct {
         try self.faces.define(&self.resources, face);
         if (old_generation) |generation| self.removeGlyphRunsForFace(face.face_id, generation);
         if (old_generation) |generation| self.removeWindowFacesForFace(face.face_id, generation);
+        if (old_generation) |generation| self.removeMouseHighlightsForFace(face.face_id, generation);
         self.stats.control_messages += 1;
     }
 
@@ -3428,6 +3529,7 @@ pub const Scene = struct {
         try self.faces.delete(&self.resources, face);
         self.removeGlyphRunsForFace(face.face_id, face.generation);
         self.removeWindowFacesForFace(face.face_id, face.generation);
+        self.removeMouseHighlightsForFace(face.face_id, face.generation);
         self.stats.control_messages += 1;
     }
 
@@ -3454,6 +3556,7 @@ pub const Scene = struct {
         try self.faces.define(&self.resources, patched);
         self.removeGlyphRunsForFace(patch.face_id, current.generation);
         self.removeWindowFacesForFace(patch.face_id, current.generation);
+        self.removeMouseHighlightsForFace(patch.face_id, current.generation);
         self.stats.control_messages += 1;
     }
 
@@ -3804,6 +3907,7 @@ pub const Scene = struct {
         self.window_geometries.clearRetainingCapacity();
         self.window_zones.clearRetainingCapacity();
         self.window_positions.clearRetainingCapacity();
+        self.mouse_highlight_count = 0;
         self.image_placements = image_placements;
         self.image_placement_count = image_placement_count;
         windows = old_windows;
@@ -4089,6 +4193,35 @@ pub const Scene = struct {
         }
         if (self.window_positions.items.len == max_window_positions) return Error.Unsupported;
         try self.window_positions.append(self.allocator, state);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyMouseHighlight(self: *Scene, payload: protocol.Payload) Error!void {
+        const state = try decodeMouseHighlightState(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != state.frame_generation or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation)
+            return Error.InvalidMessage;
+        const owner = findWindow(self.windows.items, state.window_id) orelse
+            return Error.InvalidMessage;
+        if (!inside(state.rect.x, state.rect.width, owner.width) or
+            !inside(state.rect.y, state.rect.height, owner.height))
+            return Error.InvalidMessage;
+        const face = self.faces.lookup(state.face_id) orelse return Error.ResourceNotLive;
+        if (face.generation != state.face_generation) return Error.StaleGeneration;
+        for (self.mouse_highlights[0..self.mouse_highlight_count], 0..) |*old, index| {
+            if (old.window_id == state.window_id) {
+                self.mouse_highlights[index] = state;
+                self.stats.control_messages += 1;
+                return;
+            }
+        }
+        if (self.mouse_highlight_count == max_mouse_highlights) return Error.Unsupported;
+        self.mouse_highlights[self.mouse_highlight_count] = state;
+        self.mouse_highlight_count += 1;
         self.stats.control_messages += 1;
     }
 
@@ -4636,6 +4769,162 @@ test "window scroll state validates geometry and upserts per window" {
     payload.clearRetainingCapacity();
     try std.testing.expectError(Error.InvalidMessage, encodeWindowScrollState(a, invalid, &payload));
     try std.testing.expectEqual(@as(u32, 800), scene.scroll_states.items[0].position);
+}
+
+test "mouse highlight validates state and follows window and face lifecycle" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var face_payload: std.ArrayList(u8) = .empty;
+    defer face_payload.deinit(a);
+    try protocol.encodeFaceDefine(a, .{
+        .face_id = 8,
+        .generation = 1,
+        .presence = .{ .background = true },
+        .background = .{ 0x60, 0x80, 0xa0, 255 },
+    }, &face_payload);
+    const face_defined = try faceMessage(a, protocol.Message.face_define, 3, face_payload.items);
+    defer a.free(face_defined);
+    try scene.apply(face_defined);
+
+    var state: MouseHighlightState = .{
+        .flags = MouseHighlightFlags.visible,
+        .window_id = 100,
+        .frame_generation = 1,
+        .rect = .{ .x = 8, .y = 8, .width = 16, .height = 8 },
+        .face_id = 8,
+        .face_generation = 1,
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeMouseHighlightState(a, state, &payload);
+    try std.testing.expectEqual(mouse_highlight_state_size, payload.items.len);
+    try std.testing.expectEqual(state, try decodeMouseHighlightState(payload.items));
+    payload.items[40] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeMouseHighlightState(payload.items));
+    payload.items[40] = 0;
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.mouse_highlight, 4, 7, payload.items);
+        defer a.free(message);
+        try scene.apply(message);
+    }
+    try std.testing.expectEqual(state, scene.mouse_highlights[0]);
+    try std.testing.expectEqual(@as(usize, 1), scene.mouse_highlight_count);
+
+    const second = try windowCreateMessage(a, 5, 7, .{
+        .window_id = 101,
+        .parent_window_id = 100,
+        .x = 0,
+        .y = 8,
+        .width = 40,
+        .height = 20,
+        .flags = protocol.window_tree_flag_visible,
+        .default_face_id = 0,
+        .depth = 1,
+    });
+    defer a.free(second);
+    try scene.apply(second);
+    var second_state = state;
+    second_state.window_id = 101;
+    second_state.rect = .{ .x = 0, .y = 0, .width = 8, .height = 4 };
+    payload.clearRetainingCapacity();
+    try encodeMouseHighlightState(a, second_state, &payload);
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.mouse_highlight, 6, 7, payload.items);
+        defer a.free(message);
+        try scene.apply(message);
+    }
+    try std.testing.expectEqual(@as(usize, 2), scene.mouse_highlight_count);
+
+    var invalid = state;
+    invalid.frame_generation = 2;
+    payload.clearRetainingCapacity();
+    try encodeMouseHighlightState(a, invalid, &payload);
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.mouse_highlight, 7, 7, payload.items);
+        defer a.free(message);
+        try std.testing.expectError(Error.InvalidMessage, scene.apply(message));
+    }
+
+    invalid = state;
+    invalid.window_id = 999;
+    payload.clearRetainingCapacity();
+    try encodeMouseHighlightState(a, invalid, &payload);
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.mouse_highlight, 7, 7, payload.items);
+        defer a.free(message);
+        try std.testing.expectError(Error.InvalidMessage, scene.apply(message));
+    }
+
+    invalid = state;
+    invalid.rect = .{ .x = 79, .y = 0, .width = 2, .height = 8 };
+    payload.clearRetainingCapacity();
+    try encodeMouseHighlightState(a, invalid, &payload);
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.mouse_highlight, 7, 7, payload.items);
+        defer a.free(message);
+        try std.testing.expectError(Error.InvalidMessage, scene.apply(message));
+    }
+
+    invalid = state;
+    invalid.face_generation = 2;
+    payload.clearRetainingCapacity();
+    try encodeMouseHighlightState(a, invalid, &payload);
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.mouse_highlight, 7, 7, payload.items);
+        defer a.free(message);
+        try std.testing.expectError(Error.StaleGeneration, scene.apply(message));
+    }
+    try std.testing.expectEqual(@as(usize, 2), scene.mouse_highlight_count);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeFacePatch(a, .{
+        .flags = protocol.FacePatchFlags.background,
+        .face_id = 8,
+        .expected_generation = 1,
+        .new_generation = 2,
+        .foreground = .{ 0, 0, 0, 0 },
+        .background = .{ 0xa0, 0x80, 0x60, 255 },
+    }, &payload);
+    const face_patched = try faceMessage(a, protocol.Message.face_patch, 7, payload.items);
+    defer a.free(face_patched);
+    try scene.apply(face_patched);
+    try std.testing.expectEqual(@as(usize, 0), scene.mouse_highlight_count);
+
+    state.face_generation = 2;
+    second_state.face_generation = 2;
+    payload.clearRetainingCapacity();
+    try encodeMouseHighlightState(a, state, &payload);
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.mouse_highlight, 8, 7, payload.items);
+        defer a.free(message);
+        try scene.apply(message);
+    }
+    payload.clearRetainingCapacity();
+    try encodeMouseHighlightState(a, second_state, &payload);
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.mouse_highlight, 9, 7, payload.items);
+        defer a.free(message);
+        try scene.apply(message);
+    }
+
+    const child_delete = try windowDeleteMessage(a, 10, 7, 101);
+    defer a.free(child_delete);
+    try scene.apply(child_delete);
+    try std.testing.expectEqual(@as(usize, 1), scene.mouse_highlight_count);
+    try std.testing.expectEqual(state, scene.mouse_highlights[0]);
+
+    const authoritative_update = try updateMessage(a, 11, 7, 7, 80, 0);
+    defer a.free(authoritative_update);
+    try scene.apply(authoritative_update);
+    try std.testing.expectEqual(@as(usize, 0), scene.mouse_highlight_count);
 }
 
 test "window face state validates live resources and follows face lifecycle" {

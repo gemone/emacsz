@@ -73,7 +73,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P6-prep reverse input bridge | Implemented for bounded SDL key/text intents through PureRuntimeHostV1 delivery/result/completion; not keymap/command parity |
 | P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
 | P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
-| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 83 implemented codecs, 3 partial, and 78 planned; prevents an unclassified or overclaimed protocol table |
+| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 84 implemented codecs, 3 partial, and 77 planned; prevents an unclassified or overclaimed protocol table |
 | Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
 | P12-prep EUP session setup | Implemented standard HELLO/HELLO_ACK/SESSION_READY/READY_ACK codecs and bounded state machine; not yet wired to EPXL transport |
 | P12-prep EUP session control | Implemented all eight standard-control codecs, automatic PONG, Scene integration, and EPXL transport for every control, including fatal VERSION_MISMATCH |
@@ -3146,7 +3146,7 @@ P9 geometry preparation adds `refreshFrameGeometry`, authoritative frame
 bounds, and observation validation in `runtime_bridge`; real monitor and scale
 events remain pending.
 P29 protocol coverage remains source-authoritative for every assigned EUP ID;
-current counts are 83 implemented codecs, 3 partial, and 78 planned.
+current counts are 84 implemented codecs, 3 partial, and 77 planned.
 P12 session-setup preparation adds concrete standard EUP HELLO, HELLO_ACK,
 SESSION_READY, and READY_ACK codecs with a bounded frontend state machine.  The
 authenticated EPXL handshake remains the current transport path.
@@ -3311,6 +3311,7 @@ P38 atlas-render preparation adds an SDL `image_region` draw command, a per-fram
 P39 shaped-atlas-run preparation adds `GLYPH_RUN` schema 3 with fixed glyph ID/cluster/offset/advance records, live face-font validation, atlas-entry checks, and SDL atlas-backed drawing.  It is bounded to seven glyphs and does not claim complete shaping, BiDi, or PGTK parity.
 P40 runtime shaped-run capture preparation adds a 176-byte `ShapedRunRecord` observation to the PureRuntimeHostV1 redisplay ABI, with seven bounded glyph records, duplicate-run rejection, live face/font linkage, and schema-3 EUP emission.  Real Emacs redisplay capture, BiDi reordering, and full shaping parity remain pending.
 P41 R7-readiness audit synchronizes the runtime callback inventory with the PureRuntimeHostV1 redisplay ABI and adds implemented prerequisite records for resource, shaped-run, face, font, and image capture.  The R7 decision itself remains pending and fail-closed.
+P42 mouse-highlight preparation adds `WINDOW_MOUSE_HIGHLIGHT` v1 as an exact 48-byte visible face rectangle.  The Scene validates active frame/header identity, owner containment, and exact live face generation, upserts one bounded state per window, clears it on authoritative updates, and invalidates dependent states on window/face lifecycle changes.  SDL rendering proves the bounded rect only; pointer motion, Emacs mouse-face resolution, overlays, and PGTK parity remain pending.
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by atlas/page identity, generation, and revision.  Runtime smoke proves one upload plus at least four hits; smoke-level renderer-loss clearing is wired; production-wide integration and replacement/eviction policy remain pending.
 P23 fringe preparation adds a 40-byte `FRINGE_UPDATE` v1 color-band subset with
 left/right placement, strict generation replacement, active-frame/window bounds,

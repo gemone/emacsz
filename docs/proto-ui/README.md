@@ -331,6 +331,12 @@ P41 R7-readiness audit synchronizes the fail-closed runtime contract with the
 full redisplay callback inventory and records resource/shaped-run capture as
 implemented adapter prerequisites.  The R7 decision remains pending.
 
+P42 mouse-highlight preparation adds `WINDOW_MOUSE_HIGHLIGHT` v1 as a bounded,
+visible face rectangle.  The Scene validates active frame/header identity, owner
+containment, exact live face generation, window deletion, face lifecycle, and
+authoritative-update cleanup; SDL renders the validated rect.  Pointer motion,
+Emacs mouse-face resolution, overlays, and PGTK parity remain pending.
+
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by
 atlas/page identity, generation, and page revision.  The runtime smoke requires
 one upload followed by at least four cache hits; smoke-level renderer-reset clearing is wired; production-wide renderer-loss

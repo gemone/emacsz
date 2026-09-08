@@ -56,6 +56,7 @@ Unknown optional capabilities are ignored. Unknown required messages trigger con
 | `window.zones_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded disjoint zone state and diagnostic top-boundary render |
 | `window.position_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded diagnostic buffer/start/point state only |
 | `window.face_state_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded default-face/background evidence only |
+| `window.mouse_highlight_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded visible mouse-face rectangle only, with no pointer-motion or Emacs face-resolution parity |
 | `glyph_rows` | Required | core/backend | Backend cannot operate |
 | `shaped_glyphs` | Required | core/font stack + frontend | Incomplete text fallback |
 | `bidi` | Required | core/redisplay | RTL text nonconformant |
@@ -242,7 +243,7 @@ Priorities:
 | XWidget glyphs | EXP | Pending | W12/W16 PGTK parity gate not met |
 | Faces | P0 | Degraded | Bounded face resources and `WINDOW_FACE` v1 validate exact live generations and SDL renders one default-face background; redisplay capture, overlays, derived faces, shaping, and PGTK face parity pending |
 | Cursor styles | P0 | Degraded | Single filled rectangle; no shape, blink, or face model |
-| Mouse face | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Mouse face | P1 | Degraded | `WINDOW_MOUSE_HIGHLIGHT` v1 validates active frame/window, rect containment, and exact live face generation, with bounded SDL rendering; pointer motion, face resolution, overlays, and PGTK parity pending |
 | Fringe bitmaps | P1 | Degraded | `FRINGE_UPDATE` v1 validates side/geometry/generation and SDL renders color bands; bitmap glyphs and draggable fringe semantics pending |
 | Window divider | P1 | Degraded | `DIVIDER_UPDATE` v1 validates orientation/bounds/generation and SDL renders fixed-color divider; draggable/resize semantics pending |
 | Vertical border | P1 | Pending | W12/W16 PGTK parity gate not met |
@@ -477,7 +478,7 @@ parity.
 
 | Layer | Working now | Still required for parity | Evidence |
 |---|---|---|---|
-| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 83 implemented codecs, 3 partial, and 78 planned; no unassigned or unclassified ID | Production implementation of the remaining face/text/graphics protocol gaps |
+| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 84 implemented codecs, 3 partial, and 77 planned; no unassigned or unclassified ID | Production implementation of the remaining face/text/graphics protocol gaps |
 | Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry, deterministic ordered/resync/ACK-loss/ERP1 convergence differential with
 `RESOURCE_SNAPSHOT`-aware concrete face/font/string/image fingerprints, bounded EPXL capability negotiation/status manifest, frame visibility/focus state codec, bounded resource payload cache/eviction policy, request/evict codecs, bounded string define/delete, fixed-layout face/font/image define/data/delete, and atomic concrete `RESOURCE_SNAPSHOT` v1 restore with frontend ownership, optional host frame-state ABI seam, terminal-lifecycle core and fake-host runtime service, generated read-only C adapter, dynamically linkable observation library, bounded host-frame to EUP-frame service mapping, deterministic atomic capture batches, deterministic protocol fuzz hardening, and bounded process-level frontend crash isolation, and negotiated strict focus/window observation | General resource/widget capability coverage, arbitrary recovery, remote safety, runtime terminal registration | `proto-ui-conformance`, `proto-ui-unit`, `proto-ui-terminal-service`, `proto-ui-fuzz`, `proto-ui-recovery-diff`, `proto-ui-crash-isolation`, `proto-ui-shim-conformance`, `proto-ui-shim-library-conformance`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
 | Emacs observation | Real Emacs process publishes public frame/window geometry, bounded printable-ASCII text, point/cursor, and viewport facts; W12c creates/deletes one real display-backed frame and synchronizes one EUP/SDL3 frame lifecycle; W10e renders that public-facts marker through the bounded glyph-run debug fallback | Redisplay-owned rows/glyphs/faces/fonts, full window tree, `output_proto`-owned frame creation/deletion, runtime visibility/focus events | `proto-ui-module-smoke`, `sdl3-emacs-smoke`, `sdl3-epxl-facts-smoke`, `sdl3-frame-smoke` |
