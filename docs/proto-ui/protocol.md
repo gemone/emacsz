@@ -234,6 +234,42 @@ normal positive-path session closes.
 | `0x0213` | `FRAME_PARENT` | C→F | Parent frame or null | Child-frame relation |
 | `0x0214` | `FRAME_DECORATIONS` | C→F | Decorated/undecorated | Window decoration policy |
 
+#### `FRAME_PATCH` v1 (implemented bounded adapter contract)
+
+`FRAME_PATCH = 0x0201` is an exact 40-byte atomic parameter patch.  Layout:
+
+```text
+offset size field
+0      2    schema = 1
+2      2    presence mask (nonzero; no unknown bits)
+4      4    frame generation (nonzero)
+8      1    visibility enum (0 hidden, 1 visible, 2 iconified)
+9      1    focused strict boolean
+10     1    decorated strict boolean
+11     1    reserved = 0
+12     2    active opacity (0..10000)
+14     2    inactive opacity (0..10000)
+16     2    background opacity (0..10000)
+18     2    reserved = 0
+20     4    scale (finite, >0, <=64)
+24     4    DPI X (finite, >0, <=4096)
+28     4    DPI Y (finite, >0, <=4096)
+32     8    reserved = 0
+```
+
+The presence mask selects visibility, focus, alpha, decorations, or scale;
+unknown or empty masks are rejected. All fields, including fields excluded by
+the mask, are decoded and range-checked. A selected nonvisible state clears
+stored focus; explicit `focused=1` together with that nonvisible state, or while
+the current frame is nonvisible, is rejected before any field is applied.
+
+The Scene validates the active frame/envelope identity and current lifecycle
+state before applying any selected field.  It updates visibility/focus in the
+frame registry and stores alpha, decoration, and scale values.  This patch is
+bounded batch evidence only: title, geometry, monitor, z-order, parent, size
+hints, fullscreen, maximize, icon, complete frame snapshot, and full PGTK frame
+semantics remain pending.
+
 #### Frame presentation feedback
 
 `FRAME_PRESENTED` (`0x0204`) is a fixed 56-byte frontend-to-core record:
@@ -1773,9 +1809,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 95 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 96 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 66 | Assigned for the target protocol but not implemented |
+| `planned` | 65 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

@@ -78,6 +78,7 @@ pub const Message = struct {
     pub const window_patch: u16 = 0x0302;
     pub const frame_destroy: u16 = 0x0206;
     pub const frame_update: u16 = 0x0203;
+    pub const frame_patch: u16 = 0x0201;
     pub const frame_presented: u16 = 0x0204;
     pub const frame_dropped: u16 = 0x0205;
     pub const frame_visibility: u16 = 0x0208;
@@ -1740,6 +1741,112 @@ pub const FrameVisibilityPayload = struct {
     frame_generation: u32,
     state: FrameVisibilityState,
 };
+
+pub const FramePatchFlags = struct {
+    pub const visibility: u16 = 1 << 0;
+    pub const focus: u16 = 1 << 1;
+    pub const alpha: u16 = 1 << 2;
+    pub const decorations: u16 = 1 << 3;
+    pub const scale: u16 = 1 << 4;
+    pub const known: u16 = visibility | focus | alpha | decorations | scale;
+};
+
+pub const FramePatch = struct {
+    schema: u16 = 1,
+    presence: u16,
+    frame_generation: u32,
+    visibility: FrameVisibilityState = .visible,
+    focused: bool = false,
+    decorated: bool = true,
+    reserved_after_decorated: u8 = 0,
+    active_opacity: u16 = 10000,
+    inactive_opacity: u16 = 10000,
+    background_opacity: u16 = 10000,
+    scale: f32 = 1,
+    dpi_x: f32 = 96,
+    dpi_y: f32 = 96,
+    reserved_tail: [8]u8 = @splat(0),
+};
+
+pub const frame_patch_size: usize = 40;
+
+fn validateFramePatch(payload: FramePatch) Error!void {
+    if (payload.schema != 1 or payload.presence == 0 or
+        payload.presence & ~FramePatchFlags.known != 0 or
+        payload.frame_generation == 0 or payload.reserved_after_decorated != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0))
+        return Error.InvalidMessage;
+    switch (payload.visibility) {
+        .hidden, .visible, .iconified => {},
+    }
+    if (payload.active_opacity > max_opacity or
+        payload.inactive_opacity > max_opacity or
+        payload.background_opacity > max_opacity)
+        return Error.InvalidMessage;
+    if (!std.math.isFinite(payload.scale) or payload.scale <= 0 or
+        payload.scale > max_frame_scale or
+        !std.math.isFinite(payload.dpi_x) or payload.dpi_x <= 0 or
+        payload.dpi_x > max_frame_dpi or
+        !std.math.isFinite(payload.dpi_y) or payload.dpi_y <= 0 or
+        payload.dpi_y > max_frame_dpi)
+        return Error.InvalidMessage;
+    if (payload.presence & FramePatchFlags.visibility != 0 and
+        payload.visibility != .visible and payload.focused)
+        return Error.InvalidMessage;
+}
+
+pub fn encodeFramePatch(a: std.mem.Allocator, payload: FramePatch, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    try validateFramePatch(payload);
+    var b: [frame_patch_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    std.mem.writeInt(u16, b[2..4], payload.presence, .little);
+    std.mem.writeInt(u32, b[4..8], payload.frame_generation, .little);
+    b[8] = @intFromEnum(payload.visibility);
+    b[9] = @intFromBool(payload.focused);
+    b[10] = @intFromBool(payload.decorated);
+    std.mem.writeInt(u16, b[12..14], payload.active_opacity, .little);
+    std.mem.writeInt(u16, b[14..16], payload.inactive_opacity, .little);
+    std.mem.writeInt(u16, b[16..18], payload.background_opacity, .little);
+    std.mem.writeInt(u32, b[20..24], @bitCast(payload.scale), .little);
+    std.mem.writeInt(u32, b[24..28], @bitCast(payload.dpi_x), .little);
+    std.mem.writeInt(u32, b[28..32], @bitCast(payload.dpi_y), .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeFramePatch(data: []const u8) Error!FramePatch {
+    if (data.len != frame_patch_size) return Error.InvalidTable;
+    const payload: FramePatch = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .presence = std.mem.readInt(u16, data[2..4], .little),
+        .frame_generation = std.mem.readInt(u32, data[4..8], .little),
+        .visibility = switch (data[8]) {
+            0 => .hidden,
+            1 => .visible,
+            2 => .iconified,
+            else => return Error.InvalidTable,
+        },
+        .focused = switch (data[9]) {
+            0 => false,
+            1 => true,
+            else => return Error.InvalidBoolean,
+        },
+        .decorated = switch (data[10]) {
+            0 => false,
+            1 => true,
+            else => return Error.InvalidBoolean,
+        },
+        .reserved_after_decorated = data[11],
+        .active_opacity = std.mem.readInt(u16, data[12..14], .little),
+        .inactive_opacity = std.mem.readInt(u16, data[14..16], .little),
+        .background_opacity = std.mem.readInt(u16, data[16..18], .little),
+        .scale = @bitCast(std.mem.readInt(u32, data[20..24], .little)),
+        .dpi_x = @bitCast(std.mem.readInt(u32, data[24..28], .little)),
+        .dpi_y = @bitCast(std.mem.readInt(u32, data[28..32], .little)),
+        .reserved_tail = data[32..40][0..8].*,
+    };
+    try validateFramePatch(payload);
+    return payload;
+}
 
 pub const FrameTitlePayload = struct {
     schema: u16 = 1,
@@ -4947,6 +5054,58 @@ test "frame visibility and focus payloads enforce strict wire form" {
     try std.testing.expectError(Error.InvalidTable, decodeFrameFocus(bytes.items));
     try std.testing.expectError(Error.InvalidMessage, encodeFrameVisibility(a, .{ .frame_id = 0, .frame_generation = 1, .state = .visible }, &bytes));
     try std.testing.expectError(Error.InvalidMessage, encodeFrameFocus(a, .{ .frame_id = 7, .frame_generation = 0, .focused = false }, &bytes));
+}
+
+test "frame patch payload enforces bounded atomic presence" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    const patch: FramePatch = .{
+        .presence = FramePatchFlags.visibility | FramePatchFlags.focus |
+            FramePatchFlags.alpha | FramePatchFlags.decorations |
+            FramePatchFlags.scale,
+        .frame_generation = 2,
+        .visibility = .visible,
+        .focused = true,
+        .decorated = false,
+        .active_opacity = 9000,
+        .inactive_opacity = 7000,
+        .background_opacity = 9500,
+        .scale = 1.25,
+        .dpi_x = 96,
+        .dpi_y = 120,
+    };
+    try encodeFramePatch(a, patch, &bytes);
+    try std.testing.expectEqual(frame_patch_size, bytes.items.len);
+    try std.testing.expectEqual(patch, try decodeFramePatch(bytes.items));
+
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFramePatch(bytes.items));
+    bytes.items[3] = 0;
+    bytes.items[11] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFramePatch(bytes.items));
+    bytes.items[11] = 0;
+    std.mem.writeInt(u16, bytes.items[2..4], FramePatchFlags.visibility, .little);
+    bytes.items[8] = @intFromEnum(FrameVisibilityState.hidden);
+    bytes.items[9] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFramePatch(bytes.items));
+    bytes.items[9] = 0;
+    bytes.items[8] = 3;
+    try std.testing.expectError(Error.InvalidTable, decodeFramePatch(bytes.items));
+    bytes.items[8] = @intFromEnum(FrameVisibilityState.visible);
+    bytes.items[9] = 1;
+    bytes.items[10] = 2;
+    try std.testing.expectError(Error.InvalidBoolean, decodeFramePatch(bytes.items));
+    bytes.items[10] = 0;
+    bytes.items[39] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFramePatch(bytes.items));
+    std.mem.writeInt(u16, bytes.items[2..4], FramePatchFlags.known, .little);
+    bytes.items[39] = 0;
+    try std.testing.expectEqual(patch, try decodeFramePatch(bytes.items));
+    std.mem.writeInt(u16, bytes.items[2..4], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFramePatch(bytes.items));
+    try std.testing.expectError(Error.InvalidTable, decodeFramePatch(bytes.items[0 .. bytes.items.len - 1]));
 }
 
 test "frame title payload enforces strict wire form" {

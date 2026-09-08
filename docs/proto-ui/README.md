@@ -367,6 +367,11 @@ P48 menu-result preparation adds `MENU_RESULT`/`CANCEL` v1 as bounded, ordered,
 acknowledged reverse intents with live model/window/frame identity.  Hit testing,
 keyboard navigation, core command execution, and PGTK parity remain pending.
 
+P49 frame-patch preparation adds `FRAME_PATCH` v1, an exact 40-byte atomic batch
+for selected visibility/focus/opacity/decoration/scale state with active-frame
+lifecycle checks and SDL runtime evidence.  Complete frame snapshot and PGTK
+frame parity remain pending.
+
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by
 atlas/page identity, generation, and page revision.  The runtime smoke requires
 one upload followed by at least four cache hits; smoke-level renderer-reset clearing is wired; production-wide renderer-loss

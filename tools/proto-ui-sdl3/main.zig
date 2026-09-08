@@ -97,6 +97,8 @@ extern fn SDL_SetRenderVSync(renderer: *SDL_Renderer, vsync: c_int) bool;
 extern fn SDL_GetWindowSize(window: *SDL_Window, w: *c_int, h: *c_int) void;
 extern fn SDL_SetRenderDrawColor(renderer: *SDL_Renderer, r: u8, g: u8, b: u8, a: u8) bool;
 extern fn SDL_RenderClear(renderer: *SDL_Renderer) bool;
+extern fn SDL_SetRenderScale(renderer: *SDL_Renderer, scale_x: f32, scale_y: f32) bool;
+extern fn SDL_GetRenderScale(renderer: *SDL_Renderer, scale_x: *f32, scale_y: *f32) void;
 extern fn SDL_RenderFillRect(renderer: *SDL_Renderer, rect: ?*const SDL_Rect) bool;
 extern fn SDL_RenderPresent(renderer: *SDL_Renderer) bool;
 extern fn SDL_SetRenderClipRect(renderer: *SDL_Renderer, rect: ?*const SDL_Rect) bool;
@@ -3886,6 +3888,77 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (menu_close_box_rendered or menu_close_text_rendered)
         return error.RuntimeBridgeMenuCloseStillRendered;
 
+    var frame_patch_payload: std.ArrayList(u8) = .empty;
+    defer frame_patch_payload.deinit(gpa);
+    try protocol.encodeFramePatch(gpa, .{
+        .presence = protocol.FramePatchFlags.visibility |
+            protocol.FramePatchFlags.focus | protocol.FramePatchFlags.alpha |
+            protocol.FramePatchFlags.decorations | protocol.FramePatchFlags.scale,
+        .frame_generation = bridge.eup_frame_generation,
+        .visibility = .visible,
+        .focused = true,
+        .decorated = false,
+        .active_opacity = 9000,
+        .inactive_opacity = 7000,
+        .background_opacity = 9500,
+        .scale = 1.25,
+        .dpi_x = 96,
+        .dpi_y = 120,
+    }, &frame_patch_payload);
+    var frame_patch_update: std.ArrayList(u8) = .empty;
+    defer frame_patch_update.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_patch,
+        .sequence = 55,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, frame_patch_payload.items, &frame_patch_update);
+    try scene.apply(frame_patch_update.items);
+    if (scene.alpha == null or scene.alpha.?.active_opacity != 9000 or
+        scene.decorations == null or scene.decorations.?.decorated or
+        scene.scale == null or scene.scale.?.scale != 1.25 or
+        scene.scale.?.dpi_x != 96 or scene.scale.?.dpi_y != 120)
+        return error.RuntimeBridgeFramePatchInvalid;
+
+    const frame_patch_opacity = @as(f32, @floatFromInt(scene.alpha.?.active_opacity)) / 10000.0;
+    var frame_patch_opacity_applied = SDL_SetWindowOpacity(window, frame_patch_opacity);
+    if (frame_patch_opacity_applied and
+        @abs(SDL_GetWindowOpacity(window) - frame_patch_opacity) > 0.001)
+        frame_patch_opacity_applied = false;
+    _ = SDL_SetWindowOpacity(window, 1.0);
+
+    var frame_patch_decorations_applied = SDL_SetWindowBordered(
+        window,
+        scene.decorations.?.decorated,
+    );
+    if (frame_patch_decorations_applied and
+        (SDL_GetWindowFlags(window) & SDL_WINDOW_BORDERLESS) == 0)
+        frame_patch_decorations_applied = false;
+    _ = SDL_SetWindowBordered(window, true);
+
+    const frame_patch_scale = scene.scale.?.scale;
+    const frame_patch_scale_applied = SDL_SetRenderScale(
+        selected_renderer.handle,
+        frame_patch_scale,
+        frame_patch_scale,
+    );
+    if (frame_patch_scale_applied) {
+        var actual_scale_x: f32 = 0;
+        var actual_scale_y: f32 = 0;
+        SDL_GetRenderScale(selected_renderer.handle, &actual_scale_x, &actual_scale_y);
+        if (@abs(actual_scale_x - frame_patch_scale) > 0.001 or
+            @abs(actual_scale_y - frame_patch_scale) > 0.001)
+            return error.RuntimeBridgeFramePatchScaleUnreadable;
+        if (!SDL_SetRenderScale(selected_renderer.handle, 1, 1))
+            return error.RuntimeBridgeFramePatchScaleRestoreInvalid;
+    }
+    if (!frame_patch_opacity_applied or !frame_patch_decorations_applied or
+        !frame_patch_scale_applied)
+        return error.RuntimeBridgeFramePatchNotApplied;
+
     const explicit_clip = renderer_policy.explicitDamageClip(240, 96, &explicit_damage);
     if (explicit_clip == null) return error.RuntimeBridgeExplicitClipInvalid;
     frame_gate.dirty = true;
@@ -3986,7 +4059,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"tooltip\":true,\"menu_model\":true,\"menu_open\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"tooltip\":true,\"menu_model\":true,\"menu_open\":true,\"frame_patch\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,

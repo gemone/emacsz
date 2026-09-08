@@ -2998,6 +2998,7 @@ pub const Scene = struct {
 
         switch (payload.envelope.message_type) {
             protocol.Message.frame_create => try self.applyFrameCreate(payload.envelope, payload.bytes),
+            protocol.Message.frame_patch => try self.applyFramePatch(payload),
             protocol.Message.frame_update => try self.applyFrameUpdate(payload),
             protocol.Message.begin_update => try self.applyBeginUpdate(payload),
             protocol.Message.end_update => try self.applyEndUpdate(payload),
@@ -3264,6 +3265,64 @@ pub const Scene = struct {
             if (frame.frame_id == frame_id and frame.generation == generation) self.frame = null;
         }
         self.clearVisualState();
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFramePatch(self: *Scene, payload: protocol.Payload) Error!void {
+        // Decode and derive every selected field before the first mutation so
+        // an invalid patch cannot leave mixed frame/visual state behind.
+        const patch = try protocol.decodeFramePatch(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (payload.envelope.frame_id != frame.frame_id or
+            frame.generation != patch.frame_generation)
+            return Error.InvalidMessage;
+        const current = self.frames.lookup(frame.frame_id) orelse
+            return Error.FrameNotActive;
+        if (current.status != .active or current.generation != frame.generation)
+            return Error.FrameNotActive;
+
+        const next_visibility = if (patch.presence & protocol.FramePatchFlags.visibility != 0)
+            patch.visibility
+        else
+            current.visibility;
+        const requested_focused = if (patch.presence & protocol.FramePatchFlags.focus != 0)
+            patch.focused
+        else
+            current.focused;
+        if (patch.presence & protocol.FramePatchFlags.focus != 0 and
+            patch.focused and next_visibility != .visible) return Error.InvalidMessage;
+        const next_focused = if (next_visibility != .visible)
+            false
+        else
+            requested_focused;
+        if (next_focused and next_visibility != .visible) return Error.InvalidMessage;
+
+        if (patch.presence & protocol.FramePatchFlags.visibility != 0)
+            try self.frames.setVisibility(frame.frame_id, frame.generation, patch.visibility);
+        if (patch.presence & protocol.FramePatchFlags.focus != 0)
+            try self.frames.setFocus(frame.frame_id, frame.generation, patch.focused);
+        if (patch.presence & protocol.FramePatchFlags.alpha != 0) {
+            self.alpha = .{
+                .active_opacity = patch.active_opacity,
+                .inactive_opacity = patch.inactive_opacity,
+                .background_opacity = patch.background_opacity,
+                .frame_generation = frame.generation,
+            };
+        }
+        if (patch.presence & protocol.FramePatchFlags.decorations != 0) {
+            self.decorations = .{
+                .decorated = patch.decorated,
+                .frame_generation = frame.generation,
+            };
+        }
+        if (patch.presence & protocol.FramePatchFlags.scale != 0) {
+            self.scale = .{
+                .scale = patch.scale,
+                .dpi_x = patch.dpi_x,
+                .dpi_y = patch.dpi_y,
+                .frame_generation = frame.generation,
+            };
+        }
         self.stats.control_messages += 1;
     }
 
@@ -7907,6 +7966,118 @@ test "scene applies visibility and focus against the active frame" {
     try std.testing.expectEqual(lifecycle.FrameVisibility.hidden, scene.frames.frames[0].visibility);
     try std.testing.expectEqual(false, scene.frames.frames[0].focused);
     try std.testing.expectEqual(lifecycle.FrameStatus.destroyed, scene.frames.frames[0].status);
+}
+
+test "scene applies frame patch atomically to bounded frame state" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeFramePatch(a, .{
+        .presence = protocol.FramePatchFlags.visibility |
+            protocol.FramePatchFlags.focus | protocol.FramePatchFlags.alpha |
+            protocol.FramePatchFlags.decorations | protocol.FramePatchFlags.scale,
+        .frame_generation = 1,
+        .visibility = .visible,
+        .focused = true,
+        .decorated = false,
+        .active_opacity = 9000,
+        .inactive_opacity = 7000,
+        .background_opacity = 9500,
+    }, &payload);
+    {
+        const patch = try windowLifecycleMessage(a, protocol.Message.frame_patch, 3, 7, payload.items);
+        defer a.free(patch);
+        try scene.apply(patch);
+    }
+    try std.testing.expectEqual(lifecycle.FrameVisibility.visible, scene.frames.frames[0].visibility);
+    try std.testing.expectEqual(true, scene.frames.frames[0].focused);
+    try std.testing.expectEqual(@as(u16, 9000), scene.alpha.?.active_opacity);
+    try std.testing.expectEqual(false, scene.decorations.?.decorated);
+    try std.testing.expectEqual(@as(f32, 1), scene.scale.?.scale);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeFramePatch(a, .{
+        .presence = protocol.FramePatchFlags.alpha,
+        .frame_generation = 2,
+        .active_opacity = 1000,
+        .inactive_opacity = 1000,
+        .background_opacity = 1000,
+    }, &payload);
+    {
+        const stale = try windowLifecycleMessage(a, protocol.Message.frame_patch, 4, 7, payload.items);
+        defer a.free(stale);
+        try std.testing.expectError(Error.InvalidMessage, scene.apply(stale));
+    }
+    try std.testing.expectEqual(@as(u16, 9000), scene.alpha.?.active_opacity);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeFramePatch(a, .{
+        .presence = protocol.FramePatchFlags.alpha,
+        .frame_generation = 1,
+        .active_opacity = 5000,
+        .inactive_opacity = 4000,
+        .background_opacity = 6000,
+    }, &payload);
+    {
+        const alpha_only = try windowLifecycleMessage(a, protocol.Message.frame_patch, 4, 7, payload.items);
+        defer a.free(alpha_only);
+        try scene.apply(alpha_only);
+    }
+    try std.testing.expectEqual(@as(u16, 5000), scene.alpha.?.active_opacity);
+    try std.testing.expectEqual(false, scene.decorations.?.decorated);
+
+    const iconified = try frameStateMessage(a, 5, protocol.Message.frame_visibility, 7, 7, 1, 2);
+    defer a.free(iconified);
+    try scene.apply(iconified);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeFramePatch(a, .{
+        .presence = protocol.FramePatchFlags.alpha | protocol.FramePatchFlags.focus,
+        .frame_generation = 1,
+        .focused = true,
+        .active_opacity = 1000,
+        .inactive_opacity = 1000,
+        .background_opacity = 1000,
+    }, &payload);
+    {
+        const rejected = try windowLifecycleMessage(a, protocol.Message.frame_patch, 6, 7, payload.items);
+        defer a.free(rejected);
+        try std.testing.expectError(Error.InvalidMessage, scene.apply(rejected));
+    }
+    try std.testing.expectEqual(@as(u16, 5000), scene.alpha.?.active_opacity);
+    try std.testing.expectEqual(lifecycle.FrameVisibility.iconified, scene.frames.frames[0].visibility);
+    try std.testing.expectEqual(false, scene.frames.frames[0].focused);
+
+    try std.testing.expectError(Error.InvalidMessage, protocol.encodeFramePatch(a, .{
+        .presence = protocol.FramePatchFlags.visibility | protocol.FramePatchFlags.focus,
+        .frame_generation = 1,
+        .visibility = .hidden,
+        .focused = true,
+    }, &payload));
+    try std.testing.expectEqual(false, scene.frames.frames[0].focused);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeFramePatch(a, .{
+        .presence = protocol.FramePatchFlags.visibility,
+        .frame_generation = 1,
+        .visibility = .hidden,
+    }, &payload);
+    {
+        const hidden = try windowLifecycleMessage(a, protocol.Message.frame_patch, 6, 7, payload.items);
+        defer a.free(hidden);
+        try scene.apply(hidden);
+    }
+    try std.testing.expectEqual(lifecycle.FrameVisibility.hidden, scene.frames.frames[0].visibility);
+    try std.testing.expectEqual(false, scene.frames.frames[0].focused);
 }
 
 test "scene applies title only for live active-generation strings" {
