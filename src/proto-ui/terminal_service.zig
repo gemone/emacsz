@@ -234,3 +234,59 @@ test "terminal service rolls back an unregistrable host terminal" {
     try std.testing.expectEqual(runtime_host.TerminalState.deleted, host.terminal);
     try std.testing.expectEqual(@as(u64, 1), service.counters.rolled_back);
 }
+
+fn successfulTerminalCreate(
+    context: *anyopaque,
+    request: *const runtime_host.TerminalCreateRequest,
+    result: *runtime_host.Identity,
+) callconv(.c) runtime_host.Status {
+    _ = context;
+    result.* = .{ .id = 1, .generation = request.requested_generation };
+    return .ok;
+}
+
+fn failedTerminalDelete(
+    context: *anyopaque,
+    identity: *const runtime_host.Identity,
+) callconv(.c) runtime_host.Status {
+    _ = context;
+    _ = identity;
+    return .failed;
+}
+
+fn successfulTerminalDelete(
+    context: *anyopaque,
+    identity: *const runtime_host.Identity,
+) callconv(.c) runtime_host.Status {
+    _ = context;
+    _ = identity;
+    return .ok;
+}
+
+test "terminal service can complete rollback pending cleanup" {
+    var host: runtime_host.FakeHost = undefined;
+    const table = runtime_host.fakeTable(&host);
+    var terminals: terminal.TerminalRegistry = .{};
+    for (1..terminal.max_terminals + 1) |id| {
+        terminals.terminals[id - 1] = .{
+            .id = @intCast(id),
+            .generation = 2,
+            .state = .deleted,
+        };
+    }
+    terminals.len = terminal.max_terminals;
+    host.terminal_group.create_terminal = successfulTerminalCreate;
+    host.terminal_group.delete_terminal = failedTerminalDelete;
+    var service = try TerminalService.init(table, &terminals);
+
+    try std.testing.expectError(terminal.Error.TerminalTableFull, service.create(1));
+    try std.testing.expectEqual(State.rollback_pending, service.state);
+    try std.testing.expect(service.host_identity != null);
+    try std.testing.expectError(error.HostCallbackFailed, service.completeRollback());
+    try std.testing.expectEqual(State.rollback_pending, service.state);
+
+    host.terminal_group.delete_terminal = successfulTerminalDelete;
+    try service.completeRollback();
+    try std.testing.expectEqual(State.idle, service.state);
+    try std.testing.expectEqual(@as(u64, 1), service.counters.rolled_back);
+}

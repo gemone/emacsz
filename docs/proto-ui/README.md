@@ -214,6 +214,9 @@ existing no-reuse terminal registry.  Fake-host tests cover activation, safe
 drain retry after host deletion failure, and rollback-pending cleanup.  This
 remains fail-closed preparation; R7 approval and a real Emacs terminal are
 still absent.
+`zig build -Dproto-ui=true proto-ui-terminal-service` runs the deterministic
+fake-host evidence gate and reports `emacs_registered=false` plus
+`runtime_available=false`.
 
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and

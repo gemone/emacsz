@@ -295,7 +295,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .resource_v1, .status = .pending, .evidence = "W12 resource model pending" },
     .{ .feature = .runtime_host_registration_contract, .status = .pending, .evidence = "runtime manifest reports host_registration_contract_missing" },
     .{ .feature = .runtime_frame_service_mapping, .status = .degraded, .evidence = "proto-ui-unit" },
-    .{ .feature = .runtime_terminal_service_v1, .status = .degraded, .evidence = "proto-ui-unit fake-host lifecycle; R7 approval and Emacs terminal registration pending" },
+    .{ .feature = .runtime_terminal_service_v1, .status = .degraded, .evidence = "proto-ui-unit and proto-ui-terminal-service fake-host lifecycle; R7 approval and Emacs terminal registration pending" },
     .{ .feature = .runtime_fail_closed_manifest, .status = .degraded, .evidence = "proto-ui-runtime-manifest" },
     .{ .feature = .adapter_generated_c_shim, .status = .degraded, .evidence = "proto-ui-shim-conformance" },
     .{ .feature = .adapter_host_shim_library, .status = .degraded, .evidence = "proto-ui-shim-library-conformance" },

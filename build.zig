@@ -436,6 +436,24 @@ pub fn build(b: *std.Build) void {
         );
         proto_ui_unit_step.dependOn(&run_proto_ui_tests.step);
 
+        // R8 preparation: the terminal service is audited only against the
+        // fake PureRuntimeHostV1 fixture.  Emacs registration stays absent.
+        const terminal_service_smoke_tool = b.addExecutable(.{
+            .name = "proto-ui-terminal-service",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("tools/proto-ui-terminal-service/main.zig"),
+            }),
+        });
+        terminal_service_smoke_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_terminal_service_smoke = b.addRunArtifact(terminal_service_smoke_tool);
+        const terminal_service_step = b.step(
+            "proto-ui-terminal-service",
+            "Audit fake-host terminal create/activate/drain/rollback orchestration",
+        );
+        terminal_service_step.dependOn(&run_terminal_service_smoke.step);
+
         // W4c-b1-b0: the adapter owns the authoritative ownership manifest;
         // Zig build emits a versioned C header and a non-normative ABI
         // summary.  They never overwrite tracked inherited C files.
@@ -766,6 +784,7 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&install_shim_library.step);
         boundary_step.dependOn(&run_shim_library_conformance.step);
         boundary_step.dependOn(&run_boundary_audit.step);
+        boundary_step.dependOn(terminal_service_step);
         boundary_step.dependOn(&run_fuzz.step);
         boundary_step.dependOn(&run_crash_isolation.step);
         boundary_step.dependOn(&run_recovery_diff.step);

@@ -87,7 +87,7 @@ pub const implemented_groundwork = [_]Groundwork{
     .{
         .name = "terminal.runtime_service",
         .status = "implemented",
-        .evidence = "proto-ui-unit PureRuntimeHostV1 fake-host create/activate/drain/delete service",
+        .evidence = "proto-ui-unit and proto-ui-terminal-service fake-host create/activate/drain/delete service",
         .owner = "proto-ui-adapter",
         .boundary = "host-callback orchestration and rollback state only; no R7 approval, Emacs terminal registration, or runtime enablement",
     },
