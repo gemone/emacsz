@@ -299,6 +299,10 @@ observation, bounded `FACE_DEFINE` emission, and live-face checks for captured
 runs.  This is an adapter-owned fake-host seam; real Emacs redisplay attachment
 and complete face parity remain pending.
 
+P35 runtime-font preparation adds a `PureRuntimeHostV1` redisplay font
+observation, bounded `FONT_DEFINE` emission, and live font checks for
+font-backed faces.  Real font rasterization and shaped rendering remain pending.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and

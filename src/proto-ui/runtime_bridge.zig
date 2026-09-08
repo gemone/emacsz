@@ -20,11 +20,13 @@ pub const Error = runtime_host.Error || frontend.Error || protocol.Error ||
         DuplicateRow,
         DuplicateRun,
         DuplicateFace,
+        DuplicateFont,
         DuplicateCursor,
         TooManyWindows,
         TooManyRows,
         TooManyRuns,
         TooManyFaces,
+        TooManyFonts,
         TooManyCursors,
         TooManyDamage,
         DuplicateInput,
@@ -36,6 +38,7 @@ pub const max_windows: usize = 4;
 pub const max_rows: usize = 32;
 pub const max_runs: usize = 64;
 pub const max_faces: usize = 8;
+pub const max_fonts: usize = 8;
 pub const max_cursors: usize = 4;
 pub const max_damage: usize = 32;
 pub const max_tracked_inputs: usize = 16;
@@ -108,6 +111,7 @@ pub const Counts = struct {
     rows: usize = 0,
     runs: usize = 0,
     faces: usize = 0,
+    fonts: usize = 0,
     cursors: usize = 0,
     damage: usize = 0,
 };
@@ -133,6 +137,7 @@ pub const Bridge = struct {
     rows: [max_rows]runtime_host.RowRecord = undefined,
     runs: [max_runs]runtime_host.RunRecord = undefined,
     faces: [max_faces]protocol.FaceDefine = undefined,
+    fonts: [max_fonts]protocol.FontDefine = undefined,
     cursors: [max_cursors]runtime_host.CursorRecord = undefined,
     damage: [max_damage]runtime_host.DamageRecord = undefined,
     counts: Counts = .{},
@@ -318,12 +323,32 @@ pub const Bridge = struct {
         for (self.faces[0..self.counts.faces]) |existing| {
             if (existing.face_id == face.face_id) return error.DuplicateFace;
         }
+        if (face.presence.font) {
+            const font = self.findFont(face.font_id) orelse return error.InvalidState;
+            if (font.generation != face.font_generation) return error.InvalidState;
+        }
         const group = try self.redisplayGroup();
         const context = group.context orelse return error.InvalidRuntimeHost;
         const callback = group.observe_face orelse return error.InvalidRuntimeHost;
         try runtime_host.ensureOk(callback(context, &self.capture, &record));
         self.faces[self.counts.faces] = face;
         self.counts.faces += 1;
+    }
+
+    pub fn observeFont(self: *Bridge, record: runtime_host.FontRecord) Error!void {
+        try self.requireState(.capturing);
+        try runtime_host.validateFontRecord(&record);
+        const font = try protocol.decodeFontDefine(&record.bytes);
+        if (self.counts.fonts == max_fonts) return error.TooManyFonts;
+        for (self.fonts[0..self.counts.fonts]) |existing| {
+            if (existing.font_id == font.font_id) return error.DuplicateFont;
+        }
+        const group = try self.redisplayGroup();
+        const context = group.context orelse return error.InvalidRuntimeHost;
+        const callback = group.observe_font orelse return error.InvalidRuntimeHost;
+        try runtime_host.ensureOk(callback(context, &self.capture, &record));
+        self.fonts[self.counts.fonts] = font;
+        self.counts.fonts += 1;
     }
 
     pub fn observeCursor(self: *Bridge, record: runtime_host.CursorRecord) Error!void {
@@ -824,9 +849,41 @@ pub const Bridge = struct {
         }, payload.items, out);
     }
 
+    pub fn encodeFontDefine(
+        self: *const Bridge,
+        gpa: std.mem.Allocator,
+        font_index: usize,
+        sequence: u64,
+        session_id: u64,
+        timestamp_ns: u64,
+        out: *std.ArrayList(u8),
+    ) Error!void {
+        try self.requireState(.captured);
+        if (font_index >= self.counts.fonts) return error.InvalidState;
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(gpa);
+        try protocol.encodeFontDefine(gpa, self.fonts[font_index], &payload);
+        try protocol.encodeEnvelope(gpa, .{
+            .flags = 0,
+            .message_type = protocol.Message.font_define,
+            .sequence = sequence,
+            .ack_sequence = 0,
+            .session_id = session_id,
+            .frame_id = @intCast(self.frame.id),
+            .timestamp_ns = timestamp_ns,
+        }, payload.items, out);
+    }
+
     fn findFace(self: *const Bridge, face_id: u32) ?protocol.FaceDefine {
         for (self.faces[0..self.counts.faces]) |face| {
             if (face.face_id == face_id) return face;
+        }
+        return null;
+    }
+
+    fn findFont(self: *const Bridge, font_id: u32) ?protocol.FontDefine {
+        for (self.fonts[0..self.counts.fonts]) |font| {
+            if (font.font_id == font_id) return font;
         }
         return null;
     }
@@ -1184,6 +1241,68 @@ test "runtime bridge rejects invalid duplicate face captures" {
     const bytes = try protocol.encodeFaceDefineBytes(.{ .face_id = 7, .generation = 1 });
     try bridge.observeFace(.{ .bytes = bytes });
     try std.testing.expectError(error.DuplicateFace, bridge.observeFace(.{ .bytes = bytes }));
+}
+
+test "runtime bridge validates captured font-backed faces" {
+    var host: runtime_host.FakeHost = undefined;
+    const table = runtime_host.fakeTable(&host);
+    var bridge = try Bridge.init(table);
+    try bridge.createTerminal(.{ .requested_generation = 1 });
+    try bridge.activateTerminal();
+    try bridge.registerFrame(.{ .id = 22, .generation = 1 });
+    _ = try bridge.refreshFrameGeometry();
+    try bridge.beginCapture(1);
+
+    var family: [64]u8 = @splat(0);
+    @memcpy(family[0..7], "Adaptor");
+    var foundry: [32]u8 = @splat(0);
+    @memcpy(foundry[0..4], "Test");
+    var style: [32]u8 = @splat(0);
+    @memcpy(style[0..4], "Mono");
+    const font_bytes = try protocol.encodeFontDefineBytes(.{
+        .font_id = 8,
+        .generation = 1,
+        .family = family,
+        .family_len = "Adaptor".len,
+        .foundry = foundry,
+        .foundry_len = "Test".len,
+        .style = style,
+        .style_len = "Mono".len,
+        .pixel_size = 16,
+        .x_dpi = 96,
+        .y_dpi = 96,
+        .ascent = 10,
+        .descent = 3,
+        .line_height = 13,
+        .average_advance = 8,
+        .space_advance = 8,
+        .max_advance = 8,
+        .min_advance = 8,
+        .fixed_pitch = true,
+        .spacing = .mono,
+    });
+    try bridge.observeFont(.{ .bytes = font_bytes });
+    try std.testing.expectError(error.DuplicateFont, bridge.observeFont(.{ .bytes = font_bytes }));
+
+    const stale_face = try protocol.encodeFaceDefineBytes(.{
+        .face_id = 7,
+        .generation = 1,
+        .presence = .{ .font = true },
+        .font_id = 8,
+        .font_generation = 2,
+    });
+    try std.testing.expectError(error.InvalidState, bridge.observeFace(.{ .bytes = stale_face }));
+
+    const face = try protocol.encodeFaceDefineBytes(.{
+        .face_id = 7,
+        .generation = 1,
+        .presence = .{ .font = true },
+        .font_id = 8,
+        .font_generation = 1,
+    });
+    try bridge.observeFace(.{ .bytes = face });
+    try std.testing.expectEqual(@as(usize, 1), bridge.counts.fonts);
+    try std.testing.expectEqual(@as(usize, 1), bridge.counts.faces);
 }
 
 test "runtime bridge rejects stale run face before host observation" {

@@ -498,7 +498,7 @@ verified bounded subset and the parity gap that remains.
 2. **Redisplay-owned rendering.** EUP carries bounded facts rows, not authoritative glyph rows, runs, faces, fonts, or redisplay damage.
 3. **Frame lifecycle and focus.** W12c proves one bounded real-frame create/update/delete bridge and W12d defines strict visibility/focus scene state, but `output_proto` frame ownership and runtime focus/visibility round trips remain absent.
 4. **Capability coverage.** The bounded EPXL profile now negotiates, but resources, widgets, and the full EUP feature table are outside that set.
-5. **Resource model.** Generation declarations, a bounded payload cache/eviction policy, request/evict wire contracts, bounded `STRING_DEFINE`/`STRING_DELETE`, fixed-layout `FACE_DEFINE`/`FACE_DELETE`, `FONT_DEFINE`/`FONT_DELETE`, and bounded `IMAGE_DEFINE`/`IMAGE_DATA`/`IMAGE_DELETE`, and atomic concrete `RESOURCE_SNAPSHOT` v1 restore exist. The host ABI now has a bounded face-observation seam, but snapshot presentation, runtime recovery activation, real redisplay capture, font/image capture, and full resource parity remain pending.
+5. **Resource model.** Generation declarations, a bounded payload cache/eviction policy, request/evict wire contracts, bounded `STRING_DEFINE`/`STRING_DELETE`, fixed-layout `FACE_DEFINE`/`FACE_DELETE`, `FONT_DEFINE`/`FONT_DELETE`, and bounded `IMAGE_DEFINE`/`IMAGE_DATA`/`IMAGE_DELETE`, and atomic concrete `RESOURCE_SNAPSHOT` v1 restore exist. The host ABI now has a bounded face-observation seam, but snapshot presentation, runtime recovery activation, real redisplay capture, image capture, and full resource parity remain pending. Font capture is bounded adapter groundwork only.
 
 ### 12.3 Minimum next milestone
 
@@ -524,6 +524,10 @@ not keymap or command parity.
 record through the redisplay ABI, rejects runs whose referenced face is absent
 or stale, and emits the captured resource before run application.  Real Emacs
 redisplay attachment and complete face semantics remain pending.
+`runtime_bridge` also observes a bounded `FONT_DEFINE` record and rejects a
+face-backed font reference when the font is absent or stale.  Real font
+rasterization, metrics-driven shaping, and Emacs redisplay attachment remain
+pending.
 `sdl3-runtime-bridge-smoke` presents that fake-host bridge scene through SDL3
 without Emacs registration.  `runtime_bridge` can also project bounded host ASCII run payloads into existing
 debug `GLYPH_RUN` messages; this remains fallback diagnostic rendering.

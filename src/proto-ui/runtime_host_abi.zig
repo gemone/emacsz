@@ -129,6 +129,10 @@ pub const header =
     \\  uint8_t bytes[96];
     \\} ProtoUiFaceRecord;
     \\
+    \\typedef struct ProtoUiFontRecord {
+    \\  uint8_t bytes[224];
+    \\} ProtoUiFontRecord;
+    \\
     \\typedef struct ProtoUiInputEvent {
     \\  uint64_t event_id;
     \\  uint64_t frame_id;
@@ -213,6 +217,9 @@ pub const header =
     \\typedef ProtoUiPureRuntimeStatus (*ProtoUiCaptureFaceFn)(
     \\  void *context, const ProtoUiIdentity *session,
     \\  const ProtoUiFaceRecord *record);
+    \\typedef ProtoUiPureRuntimeStatus (*ProtoUiCaptureFontFn)(
+    \\  void *context, const ProtoUiIdentity *session,
+    \\  const ProtoUiFontRecord *record);
     \\typedef ProtoUiPureRuntimeStatus (*ProtoUiCaptureOperationFn)(
     \\  void *context, const ProtoUiIdentity *session);
     \\typedef ProtoUiPureRuntimeStatus (*ProtoUiInputDeliverFn)(
@@ -258,6 +265,7 @@ pub const header =
     \\  ProtoUiCaptureCursorFn observe_cursor;
     \\  ProtoUiCaptureDamageFn observe_damage;
     \\  ProtoUiCaptureFaceFn observe_face;
+    \\  ProtoUiCaptureFontFn observe_font;
     \\  ProtoUiCaptureOperationFn commit_capture;
     \\  ProtoUiCaptureOperationFn cancel_capture;
     \\} ProtoUiRedisplayGroupV1;
@@ -307,6 +315,8 @@ pub const header =
     \\              "invalid RunRecord ABI");
     \\_Static_assert(sizeof(ProtoUiFaceRecord) == 96u,
     \\              "invalid FaceRecord ABI");
+    \\_Static_assert(sizeof(ProtoUiFontRecord) == 224u,
+    \\              "invalid FontRecord ABI");
     \\_Static_assert(sizeof(ProtoUiRunRecord) == 176u,
     \\              "invalid RunRecord ABI");
     \\_Static_assert(offsetof(ProtoUiInputEvent, payload) == 32u,
@@ -337,7 +347,7 @@ pub const conformance =
     \\  ProtoUiFrameGroupV1 frame = {1, sizeof(ProtoUiFrameGroupV1), (void *)&frame,
     \\    NULL, stub_identity_op, NULL, NULL};
     \\  ProtoUiRedisplayGroupV1 redisplay = {1, sizeof(ProtoUiRedisplayGroupV1), (void *)&redisplay,
-    \\    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+    \\    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
     \\  ProtoUiInputGroupV1 input = {1, sizeof(ProtoUiInputGroupV1), (void *)&input,
     \\    NULL, NULL, NULL};
     \\  ProtoUiLifecycleGroupV1 lifecycle = {1, sizeof(ProtoUiLifecycleGroupV1), (void *)&lifecycle,

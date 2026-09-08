@@ -2090,6 +2090,36 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     });
     try bridge.observeFace(.{ .bytes = captured_face });
 
+    var family: [64]u8 = @splat(0);
+    @memcpy(family[0..7], "Adaptor");
+    var foundry: [32]u8 = @splat(0);
+    @memcpy(foundry[0..4], "Test");
+    var style: [32]u8 = @splat(0);
+    @memcpy(style[0..4], "Mono");
+    const captured_font = try protocol.encodeFontDefineBytes(.{
+        .font_id = 8,
+        .generation = 1,
+        .family = family,
+        .family_len = "Adaptor".len,
+        .foundry = foundry,
+        .foundry_len = "Test".len,
+        .style = style,
+        .style_len = "Mono".len,
+        .pixel_size = 16,
+        .x_dpi = 96,
+        .y_dpi = 96,
+        .ascent = 10,
+        .descent = 3,
+        .line_height = 13,
+        .average_advance = 8,
+        .space_advance = 8,
+        .max_advance = 8,
+        .min_advance = 8,
+        .fixed_pitch = true,
+        .spacing = .mono,
+    });
+    try bridge.observeFont(.{ .bytes = captured_font });
+
     try bridge.observeWindow(.{
         .id = 10,
         .generation = 1,
@@ -3183,6 +3213,13 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     try scene.apply(explicit_message.items);
     if (scene.damage.items.len != 1 or scene.damage.items[0].width != explicit_damage[0].width)
         return error.RuntimeBridgeDamageRectsInvalid;
+
+    var captured_font_message: std.ArrayList(u8) = .empty;
+    defer captured_font_message.deinit(gpa);
+    try bridge.encodeFontDefine(gpa, 0, 38, capability.session_id, 38, &captured_font_message);
+    try scene.apply(captured_font_message.items);
+    if (scene.fonts.lookup(8) == null)
+        return error.RuntimeBridgeFontInvalid;
 
     const explicit_clip = renderer_policy.explicitDamageClip(240, 96, &explicit_damage);
     if (explicit_clip == null) return error.RuntimeBridgeExplicitClipInvalid;

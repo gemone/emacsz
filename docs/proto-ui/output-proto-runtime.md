@@ -223,8 +223,9 @@ manifest must record:
 P5 preparation extends `PureRuntimeHostV1.RunRecord` with a bounded
 printable-ASCII payload and geometry so `runtime_bridge` can project host runs
 into existing debug `GLYPH_RUN` messages.  Production shaped runs remain pending.
-It also adds a `FaceRecord` observation plus bounded `FACE_DEFINE` emission;
-run captures must reference a live matching face.
+It also adds `FaceRecord` and `FontRecord` observations plus bounded
+`FACE_DEFINE`/`FONT_DEFINE` emission.  Face captures may reference a live
+captured font, and run captures must reference a live matching face.
 A P4-preparation `runtime_bridge` now drives validated `PureRuntimeHostV1`
 callbacks and emits bounded frame lifecycle/update messages for fake-host
 conformance.  It is not linked to an Emacs host and does not authorize terminal
