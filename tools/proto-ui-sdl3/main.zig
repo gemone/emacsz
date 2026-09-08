@@ -928,12 +928,12 @@ const AtlasTextureCacheEntry = struct {
 
 const AtlasTextureCache = struct {
     allocator: std.mem.Allocator,
-    entries: std.AutoHashMap(u64, AtlasTextureCacheEntry),
+    entries: std.AutoHashMap(AtlasTextureKey, AtlasTextureCacheEntry),
     uploads: u64 = 0,
     hits: u64 = 0,
 
     fn init(allocator: std.mem.Allocator) AtlasTextureCache {
-        return .{ .allocator = allocator, .entries = std.AutoHashMap(u64, AtlasTextureCacheEntry).init(allocator) };
+        return .{ .allocator = allocator, .entries = std.AutoHashMap(AtlasTextureKey, AtlasTextureCacheEntry).init(allocator) };
     }
 
     fn deinit(self: *AtlasTextureCache) void {
@@ -955,16 +955,14 @@ const AtlasTextureCache = struct {
         width: u32,
         height: u32,
     ) !*SDL_Texture {
-        const hashed_key = key.hash();
-        if (self.entries.get(hashed_key)) |entry| {
-            if (entry.key.eql(key) and
-                entry.revision == key.revision and
+        if (self.entries.get(key)) |entry| {
+            if (entry.revision == key.revision and
                 entry.source_width == width and entry.source_height == height)
             {
                 self.hits += 1;
                 return entry.texture;
             }
-            _ = self.entries.remove(hashed_key);
+            _ = self.entries.remove(key);
             SDL_DestroyTexture(entry.texture);
         }
         const texture = SDL_CreateTexture(
@@ -978,7 +976,7 @@ const AtlasTextureCache = struct {
         if (!SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_NEAREST)) return sdlFail("SDL_SetTextureScaleMode");
         if (!SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND)) return sdlFail("SDL_SetTextureBlendMode");
         if (!SDL_UpdateTexture(texture, null, pixels.ptr, @intCast(width * 4))) return sdlFail("SDL_UpdateTexture");
-        try self.entries.put(hashed_key, .{
+        try self.entries.put(key, .{
             .texture = texture,
             .key = key,
             .revision = key.revision,
@@ -5011,8 +5009,29 @@ fn buildSceneDrawList(
                 try list.fillRect(bar.rect, bar.color);
             }
         }
-        // GLYPH_RUN remains bounded ASCII fallback; face color does not imply
-        // shaped text, fonts, atlas rendering, or full Emacs face parity.
+        if (run.shaped) {
+            if (scene.atlases.first() == null) return error.AtlasGlyphsMissing;
+            var shaped_pen_x: f32 = @floatFromInt(owner.x + run.x);
+            for (run.shaped_glyphs[0..run.shaped_count]) |glyph| {
+                const sampled = scene.atlases.findGlyphPixels(run.font_id, glyph.glyph_id) orelse
+                    return error.AtlasGlyphsMissing;
+                try list.drawAtlasGlyph(.{
+                    .x = shaped_pen_x + @as(f32, @floatFromInt(glyph.x_offset)),
+                    .y = @floatFromInt(owner.y + run.y + glyph.y_offset),
+                    .width = @floatFromInt(sampled.width),
+                    .height = @floatFromInt(sampled.height),
+                }, .{
+                    .x = @floatFromInt(sampled.x),
+                    .y = @floatFromInt(sampled.y),
+                    .width = @floatFromInt(sampled.width),
+                    .height = @floatFromInt(sampled.height),
+                }, sampled.bytes, sampled.page_width, sampled.page_height, sampled.cache_key, sampled.cache_revision, sampled.atlas_id, sampled.page_index, sampled.generation);
+                shaped_pen_x += @floatFromInt(glyph.advance_x);
+            }
+            continue;
+        }
+        // ASCII GLYPH_RUN v1/v2 remains a fallback; it does not imply shaped
+        // text, full fonts, complete atlas rendering, or full Emacs face parity.
         var atlas_rendered = scene.atlases.first() != null;
         const pen_y: f32 = @floatFromInt(owner.y + run.y);
         const preferred_font: u32 = if (face) |resource|

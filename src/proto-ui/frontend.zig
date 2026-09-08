@@ -180,6 +180,18 @@ pub const max_glyph_runs: usize = 64;
 pub const glyph_record_size: usize = 60;
 pub const glyph_delete_record_size: usize = 24;
 pub const glyph_debug_fallback: u16 = 1 << 0;
+pub const glyph_shaped_atlas: u16 = 1 << 1;
+pub const shaped_glyph_record_size: usize = 16;
+pub const max_shaped_glyphs: usize = 7;
+
+pub const ShapedGlyph = struct {
+    glyph_id: u32,
+    cluster: u32,
+    x_offset: i16,
+    y_offset: i16,
+    advance_x: u16,
+    advance_y: u16,
+};
 
 pub const GlyphRun = struct {
     run_id: u32,
@@ -188,11 +200,15 @@ pub const GlyphRun = struct {
     row_index: u32,
     face_id: u32,
     face_generation: u32,
+    font_id: u32 = 0,
     x: i32,
     y: i32,
     width: i32,
     height: i32,
     text: [:0]u8,
+    shaped: bool = false,
+    shaped_glyphs: [max_shaped_glyphs]ShapedGlyph = undefined,
+    shaped_count: usize = 0,
 };
 
 pub const GlyphRunWire = struct {
@@ -211,6 +227,8 @@ pub const GlyphRunWire = struct {
     width: i32,
     height: i32,
     text: []const u8,
+    glyphs: [max_shaped_glyphs]ShapedGlyph = undefined,
+    glyph_count: usize = 0,
 
     fn valid(self: GlyphRunWire) bool {
         return self.run_id != 0 and self.generation != 0 and self.window_id != 0 and
@@ -227,12 +245,18 @@ pub const GlyphRunDeleteWire = struct {
 
 pub fn encodeGlyphRun(a: std.mem.Allocator, run: GlyphRunWire, out: *std.ArrayList(u8)) !void {
     const face_bound = run.schema == 2;
-    if ((run.schema != 1 and run.schema != 2) or run.flags != glyph_debug_fallback or
-        run.direction != 1 or run.font_id != 0 or run.run_id == 0 or
-        run.generation == 0 or run.window_id == 0 or
-        !validGlyphRunText(run.text)) return Error.InvalidMessage;
+    const shaped_atlas = run.schema == 3;
+    if ((run.schema != 1 and run.schema != 2 and run.schema != 3) or
+        run.direction != 1 or run.run_id == 0 or
+        run.generation == 0 or run.window_id == 0) return Error.InvalidMessage;
+    if (!shaped_atlas and (run.flags != glyph_debug_fallback or run.font_id != 0 or
+        !validGlyphRunText(run.text))) return Error.InvalidMessage;
+    if (shaped_atlas and (run.flags != glyph_shaped_atlas or run.font_id == 0 or
+        run.glyph_count == 0 or run.glyph_count > max_shaped_glyphs or
+        run.text.len != 0)) return Error.InvalidMessage;
     if ((face_bound and (run.face_id == 0 or run.face_generation == 0)) or
-        (!face_bound and (run.face_id != 0 or run.face_generation != 0)))
+        (!face_bound and !shaped_atlas and (run.face_id != 0 or run.face_generation != 0)) or
+        (shaped_atlas and (run.face_id == 0 or run.face_generation == 0 or run.font_id == 0)))
         return Error.InvalidMessage;
     if (run.x < 0 or run.y < 0 or run.width < 0 or run.height < 0)
         return Error.InvalidMessage;
@@ -255,23 +279,55 @@ pub fn encodeGlyphRun(a: std.mem.Allocator, run: GlyphRunWire, out: *std.ArrayLi
     var reserved: [8]u8 = [_]u8{0} ** 8;
     std.mem.writeInt(u32, reserved[0..4], run.face_generation, .little);
     try out.appendSlice(a, &reserved);
-    try out.appendSlice(a, run.text);
+    if (shaped_atlas) {
+        for (run.glyphs[0..run.glyph_count]) |glyph| {
+            try putU32(out, a, glyph.glyph_id);
+            try putU32(out, a, glyph.cluster);
+            try putI16(out, a, glyph.x_offset);
+            try putI16(out, a, glyph.y_offset);
+            try putU16(out, a, glyph.advance_x);
+            try putU16(out, a, glyph.advance_y);
+        }
+    } else {
+        try out.appendSlice(a, run.text);
+    }
 }
 
 pub fn decodeGlyphRun(bytes: []const u8) Error!GlyphRunWire {
-    if (bytes.len < glyph_record_size + 1 or bytes.len > glyph_record_size + max_glyph_text_bytes)
+    if (bytes.len < glyph_record_size or bytes.len > glyph_record_size + max_glyph_text_bytes)
         return Error.InvalidTable;
     const header = bytes[0..glyph_record_size];
-    const text = bytes[glyph_record_size..];
+    const body = bytes[glyph_record_size..];
     const schema = std.mem.readInt(u16, header[0..2], .little);
     const flags = std.mem.readInt(u16, header[2..4], .little);
     const direction = std.mem.readInt(u16, header[4..6], .little);
     const face_generation = std.mem.readInt(u32, header[52..56], .little);
-    if ((schema != 1 and schema != 2) or flags != glyph_debug_fallback or direction != 1 or
+    if ((schema != 1 and schema != 2 and schema != 3) or direction != 1 or
         std.mem.readInt(u16, header[6..8], .little) != 0) return Error.InvalidVersion;
-    if ((schema == 1 and (face_generation != 0)) or
-        (schema == 2 and face_generation == 0)) return Error.InvalidVersion;
+    if ((schema == 1 and (face_generation != 0 or flags != glyph_debug_fallback)) or
+        (schema == 2 and (face_generation == 0 or flags != glyph_debug_fallback)) or
+        (schema == 3 and (face_generation == 0 or flags != glyph_shaped_atlas)))
+        return Error.InvalidVersion;
+    const text: []const u8 = if (schema == 3) &.{} else body;
+    var glyphs: [max_shaped_glyphs]ShapedGlyph = undefined;
+    var glyph_count: usize = 0;
+    if (schema == 3) {
+        glyph_count = body.len / shaped_glyph_record_size;
+        var offset: usize = 0;
+        while (offset < glyph_count) : (offset += 1) {
+            const base = body[offset * shaped_glyph_record_size ..][0..shaped_glyph_record_size];
+            glyphs[offset] = .{
+                .glyph_id = std.mem.readInt(u32, base[0..4], .little),
+                .cluster = std.mem.readInt(u32, base[4..8], .little),
+                .x_offset = @bitCast(std.mem.readInt(u16, base[8..10], .little)),
+                .y_offset = @bitCast(std.mem.readInt(u16, base[10..12], .little)),
+                .advance_x = std.mem.readInt(u16, base[12..14], .little),
+                .advance_y = std.mem.readInt(u16, base[14..16], .little),
+            };
+        }
+    }
     const run: GlyphRunWire = .{
+        .schema = schema,
         .run_id = std.mem.readInt(u32, header[8..12], .little),
         .generation = std.mem.readInt(u32, header[12..16], .little),
         .window_id = std.mem.readInt(u64, header[16..24], .little),
@@ -284,11 +340,22 @@ pub fn decodeGlyphRun(bytes: []const u8) Error!GlyphRunWire {
         .width = @bitCast(std.mem.readInt(u32, header[44..48], .little)),
         .height = @bitCast(std.mem.readInt(u32, header[48..52], .little)),
         .text = text,
+        .glyphs = glyphs,
+        .glyph_count = glyph_count,
     };
     if (!std.mem.allEqual(u8, header[56..60], 0)) return Error.InvalidReserved;
     if ((schema == 1 and run.face_id != 0) or
         (schema == 2 and run.face_id == 0)) return Error.InvalidMessage;
-    if (!run.valid() or !validGlyphRunText(text)) return Error.InvalidMessage;
+    if ((schema != 3 and run.font_id != 0) or
+        (schema == 3 and (run.face_id == 0 or run.font_id == 0))) return Error.InvalidMessage;
+    if (!run.valid()) return Error.InvalidMessage;
+    if (schema != 3) {
+        if (body.len < 1 or !validGlyphRunText(text)) return Error.InvalidMessage;
+    } else {
+        if (body.len < shaped_glyph_record_size or body.len % shaped_glyph_record_size != 0 or
+            body.len / shaped_glyph_record_size > max_shaped_glyphs)
+            return Error.InvalidMessage;
+    }
     return run;
 }
 
@@ -1730,6 +1797,10 @@ fn putU16(out: *std.ArrayList(u8), a: std.mem.Allocator, value: u16) !void {
     try out.appendSlice(a, &bytes);
 }
 
+fn putI16(out: *std.ArrayList(u8), a: std.mem.Allocator, value: i16) !void {
+    try putU16(out, a, @bitCast(value));
+}
+
 fn putU32(out: *std.ArrayList(u8), a: std.mem.Allocator, value: u32) !void {
     var bytes: [4]u8 = undefined;
     std.mem.writeInt(u32, &bytes, value, .little);
@@ -2717,7 +2788,19 @@ pub const Scene = struct {
         if (!inside(wire.x, wire.width, header.logical_width) or
             !inside(wire.y, wire.height, header.logical_height)) return Error.InvalidMessage;
 
-        if (wire.face_id != 0) {
+        if (wire.schema == 3) {
+            if (wire.face_id == 0) return Error.InvalidMessage;
+            const face = self.faces.lookup(wire.face_id) orelse return Error.ResourceNotLive;
+            if (face.generation != wire.face_generation) return Error.StaleGeneration;
+            if (!face.payload.presence.font or face.payload.font_id != wire.font_id)
+                return Error.InvalidMessage;
+            const font = self.fonts.lookup(wire.font_id) orelse return Error.ResourceNotLive;
+            if (font.generation != face.payload.font_generation) return Error.StaleGeneration;
+            for (wire.glyphs[0..wire.glyph_count]) |glyph| {
+                if (self.atlases.findGlyphPixels(wire.font_id, glyph.glyph_id) == null)
+                    return Error.ResourceNotLive;
+            }
+        } else if (wire.face_id != 0) {
             const face = self.faces.lookup(wire.face_id) orelse return Error.ResourceNotLive;
             if (face.generation != wire.face_generation) return Error.StaleGeneration;
         }
@@ -2738,19 +2821,23 @@ pub const Scene = struct {
 
         const owned = try self.allocator.dupeZ(u8, wire.text);
         errdefer self.allocator.free(owned);
-        const next: GlyphRun = .{
+        var next: GlyphRun = .{
             .run_id = wire.run_id,
             .generation = wire.generation,
             .window_id = wire.window_id,
             .row_index = wire.row_index,
             .face_id = wire.face_id,
             .face_generation = wire.face_generation,
+            .font_id = wire.font_id,
             .x = wire.x,
             .y = wire.y,
             .width = wire.width,
             .height = wire.height,
             .text = owned,
+            .shaped = wire.schema == 3,
+            .shaped_count = wire.glyph_count,
         };
+        if (wire.schema == 3) @memcpy(next.shaped_glyphs[0..wire.glyph_count], wire.glyphs[0..wire.glyph_count]);
         if (existing_index) |index| {
             const old = self.glyph_runs.items[index].text;
             self.glyph_runs.items[index] = next;
@@ -8799,4 +8886,212 @@ test "atlas resources validate define page glyph and invalidation" {
     const page_state = scene.atlases.lookup(7).?;
     try std.testing.expect(page_state.pages[0].revision > 0);
     try std.testing.expectEqual(@as(u32, 9), page_state.pages[0].bytes[0]);
+}
+
+test "shaped atlas glyph run validates face font and atlas entries" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var family: [64]u8 = @splat(0);
+    @memcpy(family[0..7], "Adaptor");
+    var foundry: [32]u8 = @splat(0);
+    @memcpy(foundry[0..4], "Test");
+    var style: [32]u8 = @splat(0);
+    @memcpy(style[0..4], "Mono");
+    var font_payload: std.ArrayList(u8) = .empty;
+    defer font_payload.deinit(a);
+    try protocol.encodeFontDefine(a, .{
+        .font_id = 8,
+        .generation = 1,
+        .family = family,
+        .family_len = "Adaptor".len,
+        .foundry = foundry,
+        .foundry_len = "Test".len,
+        .style = style,
+        .style_len = "Mono".len,
+        .pixel_size = 16,
+        .x_dpi = 96,
+        .y_dpi = 96,
+        .ascent = 10,
+        .descent = 3,
+        .line_height = 13,
+        .average_advance = 6,
+        .space_advance = 6,
+        .max_advance = 6,
+        .min_advance = 6,
+        .fixed_pitch = true,
+        .spacing = .mono,
+    }, &font_payload);
+    const font_define = try faceMessage(a, protocol.Message.font_define, 3, font_payload.items);
+    defer a.free(font_define);
+    try scene.apply(font_define);
+
+    var face_payload: std.ArrayList(u8) = .empty;
+    defer face_payload.deinit(a);
+    try protocol.encodeFaceDefine(a, .{
+        .face_id = 11,
+        .generation = 2,
+        .presence = .{ .font = true },
+        .font_id = 8,
+        .font_generation = 1,
+    }, &face_payload);
+    const face_define = try faceMessage(a, protocol.Message.face_define, 4, face_payload.items);
+    defer a.free(face_define);
+    try scene.apply(face_define);
+
+    var atlas_payload: std.ArrayList(u8) = .empty;
+    defer atlas_payload.deinit(a);
+    try protocol.encodeAtlasDefine(a, .{
+        .atlas_id = 7,
+        .generation = 1,
+        .width = 32,
+        .height = 8,
+        .page_count = 1,
+    }, &atlas_payload);
+    const atlas_define = try faceMessage(a, protocol.Message.atlas_define, 5, atlas_payload.items);
+    defer a.free(atlas_define);
+    try scene.apply(atlas_define);
+
+    atlas_payload.clearRetainingCapacity();
+    try protocol.encodeAtlasPageUpdate(a, .{
+        .atlas_id = 7,
+        .generation = 1,
+        .page_index = 0,
+        .page_count = 1,
+        .x = 0,
+        .y = 0,
+        .width = 32,
+        .height = 8,
+        .bytes = &([_]u8{255} ** 1024),
+    }, &atlas_payload);
+    const atlas_page = try faceMessage(a, protocol.Message.atlas_page_update, 6, atlas_payload.items);
+    defer a.free(atlas_page);
+    try scene.apply(atlas_page);
+
+    atlas_payload.clearRetainingCapacity();
+    try protocol.encodeAtlasGlyphAdd(a, .{
+        .atlas_id = 7,
+        .generation = 1,
+        .glyph_id = 101,
+        .font_id = 8,
+        .size_px = 16,
+        .variation_hash = 7,
+        .x = 0,
+        .y = 0,
+        .width = 6,
+        .height = 8,
+        .baseline = 8,
+        .advance_x = 6,
+    }, &atlas_payload);
+    const atlas_glyph = try faceMessage(a, protocol.Message.atlas_glyph_add, 7, atlas_payload.items);
+    defer a.free(atlas_glyph);
+    try scene.apply(atlas_glyph);
+
+    var glyphs: [max_shaped_glyphs]ShapedGlyph = undefined;
+    glyphs[0] = .{ .glyph_id = 101, .cluster = 0, .x_offset = 0, .y_offset = 0, .advance_x = 6, .advance_y = 0 };
+    var shaped_payload: std.ArrayList(u8) = .empty;
+    defer shaped_payload.deinit(a);
+    try encodeGlyphRun(a, .{
+        .schema = 3,
+        .flags = glyph_shaped_atlas,
+        .run_id = 21,
+        .generation = 2,
+        .window_id = 100,
+        .row_index = 0,
+        .face_id = 11,
+        .face_generation = 2,
+        .font_id = 8,
+        .x = 1,
+        .y = 1,
+        .width = 12,
+        .height = 8,
+        .text = "",
+        .glyphs = glyphs,
+        .glyph_count = 1,
+    }, &shaped_payload);
+    var faceless_payload: std.ArrayList(u8) = .empty;
+    defer faceless_payload.deinit(a);
+    try std.testing.expectError(Error.InvalidMessage, encodeGlyphRun(a, .{
+        .schema = 3,
+        .flags = glyph_shaped_atlas,
+        .run_id = 22,
+        .generation = 2,
+        .window_id = 100,
+        .row_index = 0,
+        .face_id = 0,
+        .face_generation = 0,
+        .font_id = 8,
+        .x = 1,
+        .y = 1,
+        .width = 12,
+        .height = 8,
+        .text = "",
+        .glyphs = glyphs,
+        .glyph_count = 1,
+    }, &faceless_payload));
+
+    glyphs[0] = .{ .glyph_id = 999, .cluster = 0, .x_offset = 0, .y_offset = 0, .advance_x = 6, .advance_y = 0 };
+    var missing_atlas_payload: std.ArrayList(u8) = .empty;
+    defer missing_atlas_payload.deinit(a);
+    try encodeGlyphRun(a, .{
+        .schema = 3,
+        .flags = glyph_shaped_atlas,
+        .run_id = 22,
+        .generation = 2,
+        .window_id = 100,
+        .row_index = 0,
+        .face_id = 11,
+        .face_generation = 2,
+        .font_id = 8,
+        .x = 1,
+        .y = 1,
+        .width = 12,
+        .height = 8,
+        .text = "",
+        .glyphs = glyphs,
+        .glyph_count = 1,
+    }, &missing_atlas_payload);
+
+    glyphs[0] = .{ .glyph_id = 101, .cluster = 0, .x_offset = 0, .y_offset = 0, .advance_x = 6, .advance_y = 0 };
+    var missing_atlas_envelope: std.ArrayList(u8) = .empty;
+    defer missing_atlas_envelope.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = protocol.Flags.debug,
+        .message_type = protocol.Message.glyph_run,
+        .sequence = 8,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 7,
+        .timestamp_ns = 8,
+    }, missing_atlas_payload.items, &missing_atlas_envelope);
+    const missing_atlas = try missing_atlas_envelope.toOwnedSlice(a);
+    defer a.free(missing_atlas);
+    try std.testing.expectError(Error.ResourceNotLive, scene.apply(missing_atlas));
+    glyphs[0] = .{ .glyph_id = 101, .cluster = 0, .x_offset = 0, .y_offset = 0, .advance_x = 6, .advance_y = 0 };
+
+    var shaped_envelope: std.ArrayList(u8) = .empty;
+    defer shaped_envelope.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = protocol.Flags.debug,
+        .message_type = protocol.Message.glyph_run,
+        .sequence = 8,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 7,
+        .timestamp_ns = 8,
+    }, shaped_payload.items, &shaped_envelope);
+    const shaped = try shaped_envelope.toOwnedSlice(a);
+    defer a.free(shaped);
+    try scene.apply(shaped);
+    try std.testing.expectEqual(@as(usize, 1), scene.glyph_runs.items.len);
+    try std.testing.expect(scene.glyph_runs.items[0].shaped);
+    try std.testing.expectEqual(@as(usize, 1), scene.glyph_runs.items[0].shaped_count);
+    try std.testing.expectEqual(@as(u32, 101), scene.glyph_runs.items[0].shaped_glyphs[0].glyph_id);
 }

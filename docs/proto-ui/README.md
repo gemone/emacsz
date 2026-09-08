@@ -317,6 +317,11 @@ page texture cache, and ASCII atlas-glyph rendering with debug-text fallback.
 Persistent atlases, shaping, eviction policy, and full font parity remain
 pending.
 
+P39 shaped-atlas-run preparation adds `GLYPH_RUN` schema 3 with up to seven
+bounded glyph records, face/font linkage, atlas-entry validation, and SDL
+atlas-backed glyph drawing. Full shaping, BiDi, persistent run capture, and
+complete font parity remain pending.
+
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by
 atlas/page identity, generation, and page revision.  The runtime smoke requires
 one upload followed by at least four cache hits; smoke-level renderer-reset clearing is wired; production-wide renderer-loss

@@ -837,6 +837,17 @@ or deleting the face removes dependent debug runs.  This remains a diagnostic
 ASCII fallback and does not provide shaped text, BiDi, fonts, atlas rendering, or
 full Emacs face parity.
 
+#### `GLYPH_RUN` v3 — bounded shaped atlas run (implemented adapter contract)
+
+Schema 3 uses the same 60-byte header but changes the body to a bounded shaped
+glyph array. It requires `flags = 0x0002`, LTR `direction = 1`, a live
+generation-qualified face, a nonzero `font_id`, and `1..7` fixed 16-byte glyph
+records. Each record contains `glyph_id`, `cluster`, signed `x_offset/y_offset`,
+and unsigned `advance_x/advance_y`. The Scene validates the face/font linkage and
+requires each referenced atlas glyph to exist. SDL may render the records by
+atlas lookup. This is a bounded atlas-run contract, not complete OpenHarfbuzz-
+level shaping, BiDi reordering, color fonts, or Emacs display parity.
+
 ### 13.2 `GLYPH_RUN_DELETE` debug-fallback v1 (implemented bounded adapter contract)
 
 `GLYPH_RUN_DELETE = 0x0406` is the exact identity delete for the bounded W10d
