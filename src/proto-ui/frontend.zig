@@ -1936,6 +1936,7 @@ pub const Scene = struct {
             protocol.Message.face_patch => try self.applyFacePatch(payload),
             protocol.Message.face_delete => try self.applyFaceDelete(payload),
             protocol.Message.font_define => try self.applyFontDefine(payload),
+            protocol.Message.font_metrics => try self.applyFontMetrics(payload),
             protocol.Message.font_delete => try self.applyFontDelete(payload),
             protocol.Message.string_define => try self.applyStringDefine(payload),
             protocol.Message.string_delete => try self.applyStringDelete(payload),
@@ -2621,6 +2622,22 @@ pub const Scene = struct {
     fn applyFontDefine(self: *Scene, payload: protocol.Payload) Error!void {
         const font = try protocol.decodeFontDefine(payload.bytes);
         try self.fonts.define(&self.resources, font);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFontMetrics(self: *Scene, payload: protocol.Payload) Error!void {
+        const patch = try protocol.decodeFontMetricsPatch(payload.bytes);
+        const current = self.fonts.lookup(patch.font_id) orelse return Error.ResourceNotLive;
+        if (current.generation != patch.expected_generation) return Error.StaleGeneration;
+        var patched = current.payload;
+        patched.generation = patch.new_generation;
+        patched.ascent = patch.ascent;
+        patched.descent = patch.descent;
+        patched.line_height = patch.line_height;
+        patched.average_advance = patch.average_advance;
+        patched.max_advance = patch.max_advance;
+        try protocol.validateFontDefine(patched);
+        try self.fonts.define(&self.resources, patched);
         self.stats.control_messages += 1;
     }
 

@@ -109,6 +109,7 @@ pub const Message = struct {
     pub const flush: u16 = 0x040e;
     pub const render_hint: u16 = 0x040f;
     pub const font_define: u16 = 0x0503;
+    pub const font_metrics: u16 = 0x0505;
     pub const font_delete: u16 = 0x0506;
     pub const image_define: u16 = 0x0507;
     pub const image_data: u16 = 0x0508;
@@ -688,11 +689,23 @@ fn validateFontMetadata(
 
 const max_font_metric: i64 = 1 << 20;
 
+fn validateFontMetricsPatch(patch: FontMetricsPatch) Error!void {
+    if (patch.schema != 1 or patch.flags != 0 or patch.reserved != 0 or
+        !std.mem.allEqual(u8, &patch.reserved_tail, 0) or patch.font_id == 0 or
+        patch.expected_generation == 0 or patch.new_generation <= patch.expected_generation)
+        return Error.InvalidMessage;
+    if (!fontMetricInRange(patch.ascent) or !fontMetricInRange(patch.descent) or
+        !fontMetricInRange(patch.line_height) or !fontMetricInRange(patch.average_advance) or
+        !fontMetricInRange(patch.max_advance) or patch.average_advance > patch.max_advance or
+        patch.line_height < @as(u32, @intCast(patch.ascent + patch.descent)))
+        return Error.InvalidMessage;
+}
+
 fn fontMetricInRange(value: i64) bool {
     return value >= 0 and value <= max_font_metric;
 }
 
-fn validateFontDefine(payload: FontDefine) Error!void {
+pub fn validateFontDefine(payload: FontDefine) Error!void {
     if (payload.font_id == 0 or payload.generation == 0) return Error.InvalidMessage;
     try validateFontMetadata(&payload.family, payload.family_len);
     try validateFontMetadata(&payload.foundry, payload.foundry_len);
@@ -1167,6 +1180,58 @@ pub fn decodeFacePatch(data: []const u8) Error!FacePatch {
         .reserved_tail = data[24..28][0..4].*,
     };
     try validateFacePatch(patch);
+    return patch;
+}
+
+pub const FontMetricsPatch = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    font_id: u32,
+    expected_generation: u32,
+    new_generation: u32,
+    ascent: i32,
+    descent: i32,
+    line_height: u32,
+    average_advance: u32,
+    max_advance: u32,
+    reserved_tail: [4]u8 = .{ 0, 0, 0, 0 },
+};
+
+pub const font_metrics_patch_size: usize = 36;
+
+pub fn encodeFontMetricsPatch(a: std.mem.Allocator, patch: FontMetricsPatch, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    try validateFontMetricsPatch(patch);
+    var b: [font_metrics_patch_size]u8 = [_]u8{0} ** font_metrics_patch_size;
+    std.mem.writeInt(u16, b[0..2], patch.schema, .little);
+    std.mem.writeInt(u32, b[4..8], patch.font_id, .little);
+    std.mem.writeInt(u32, b[8..12], patch.expected_generation, .little);
+    std.mem.writeInt(u32, b[12..16], patch.new_generation, .little);
+    std.mem.writeInt(i32, b[16..20], patch.ascent, .little);
+    std.mem.writeInt(i32, b[20..24], patch.descent, .little);
+    std.mem.writeInt(u32, b[24..28], patch.line_height, .little);
+    std.mem.writeInt(u32, b[28..32], patch.average_advance, .little);
+    std.mem.writeInt(u32, b[32..36], patch.max_advance, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeFontMetricsPatch(data: []const u8) Error!FontMetricsPatch {
+    if (data.len != font_metrics_patch_size) return Error.InvalidTable;
+    const patch: FontMetricsPatch = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .font_id = std.mem.readInt(u32, data[4..8], .little),
+        .expected_generation = std.mem.readInt(u32, data[8..12], .little),
+        .new_generation = std.mem.readInt(u32, data[12..16], .little),
+        .ascent = @bitCast(std.mem.readInt(u32, data[16..20], .little)),
+        .descent = @bitCast(std.mem.readInt(u32, data[20..24], .little)),
+        .line_height = std.mem.readInt(u32, data[24..28], .little),
+        .average_advance = std.mem.readInt(u32, data[28..32], .little),
+        .max_advance = std.mem.readInt(u32, data[32..36], .little),
+        .reserved_tail = data[32..36][0..4].*,
+    };
+    try validateFontMetricsPatch(patch);
     return patch;
 }
 

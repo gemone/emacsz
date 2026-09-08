@@ -73,7 +73,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P6-prep reverse input bridge | Implemented for bounded SDL key/text intents through PureRuntimeHostV1 delivery/result/completion; not keymap/command parity |
 | P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
 | P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
-| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 70 implemented codecs, 3 partial, and 91 planned; prevents an unclassified or overclaimed protocol table |
+| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 71 implemented codecs, 3 partial, and 90 planned; prevents an unclassified or overclaimed protocol table |
 | Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
 | P12-prep EUP session setup | Implemented standard HELLO/HELLO_ACK/SESSION_READY/READY_ACK codecs and bounded state machine; not yet wired to EPXL transport |
 | P12-prep EUP session control | Implemented all eight standard-control codecs, automatic PONG, Scene integration, and EPXL transport for every control, including fatal VERSION_MISMATCH |
@@ -3292,6 +3292,7 @@ validated fixed-color geometry.  Draggable divider semantics and redisplay-owned
 layout remain pending.
 P24 face-decoration preparation converts face underline, overline,
 P25 row-lifecycle preparation adds granular `ROW_SNAPSHOT`, `ROW_UPDATE`, and `ROW_DELETE` v1 codecs.  `Scene` validates active generation, owner window, logical bounds, flags, and metric non-negativity; snapshots upsert rows, updates require existing rows, and deletes remove dependent row text while rejecting live glyph runs.  This advances the bounded row model; redisplay-owned capture remains pending.
+P26 font-metrics preparation adds `FONT_METRICS` v1, a bounded metrics patch that updates ascent, descent, line height, average advance, and max advance with strict expected/new generation checks.  This improves resource evolution; real font metrics and shaped rendering remain pending.
 strike-through, and box policies into bounded bars in the SDL debug glyph path.
 Style-color variants use their dedicated RGBA colors, while single styles use
 the face foreground.  These are conservative approximation bars, not shaped-text
