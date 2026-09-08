@@ -317,6 +317,11 @@ page texture cache, and ASCII atlas-glyph rendering with debug-text fallback.
 Persistent atlases, shaping, eviction policy, and full font parity remain
 pending.
 
+P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by
+atlas/page identity, generation, and page revision.  The runtime smoke requires
+one upload followed by at least four cache hits; smoke-level renderer-reset clearing is wired; production-wide renderer-loss
+integration and eviction policy remain pending.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and

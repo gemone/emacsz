@@ -1156,7 +1156,8 @@ pub fn validateAtlasInvalidate(payload: AtlasInvalidate) Error!void {
         if (payload.target != 0) return Error.InvalidMessage;
     } else {
         if (payload.flags & AtlasInvalidateFlags.all != 0 or
-            payload.target == 0) return Error.InvalidMessage;
+            (payload.flags == AtlasInvalidateFlags.glyph and payload.target == 0))
+            return Error.InvalidMessage;
     }
 }
 

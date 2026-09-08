@@ -1491,6 +1491,11 @@ pub const ImageResources = struct {
 
 pub const AtlasGlyphPixels = struct {
     bytes: []const u8,
+    cache_key: u64,
+    cache_revision: u32,
+    atlas_id: u32,
+    page_index: u16,
+    generation: u32,
     page_width: u16,
     page_height: u16,
     x: u16,
@@ -1502,6 +1507,7 @@ pub const AtlasGlyphPixels = struct {
 
 pub const AtlasPage = struct {
     page_index: u16 = 0,
+    revision: u32 = 0,
     x: u16 = 0,
     y: u16 = 0,
     width: u16 = 0,
@@ -1528,6 +1534,7 @@ pub const AtlasState = struct {
     width: u32,
     height: u32,
     page_count: u16,
+    page_revision: u32 = 0,
     pages: []AtlasPage = &.{},
     glyphs: std.ArrayList(AtlasGlyph) = .empty,
 
@@ -1591,8 +1598,19 @@ pub const AtlasResources = struct {
                     if (glyph.x < page.x or glyph.y < page.y or
                         glyph.x + glyph.width > page.x + page.width or
                         glyph.y + glyph.height > page.y + page.height) continue;
+                    var key_hasher = std.hash.Wyhash.init(0);
+                    key_hasher.update(std.mem.asBytes(&atlas.atlas_id));
+                    key_hasher.update(std.mem.asBytes(&page.page_index));
+                    key_hasher.update(std.mem.asBytes(&atlas.generation));
+                    key_hasher.update(std.mem.asBytes(&page.revision));
+                    const cache_key = key_hasher.final();
                     return .{
                         .bytes = page.bytes,
+                        .cache_key = cache_key,
+                        .cache_revision = page.revision,
+                        .atlas_id = atlas.atlas_id,
+                        .page_index = page.page_index,
+                        .generation = atlas.generation,
                         .page_width = page.width,
                         .page_height = page.height,
                         .x = glyph.x - page.x,
@@ -1636,8 +1654,10 @@ pub const AtlasResources = struct {
         errdefer self.allocator.free(bytes);
         const page = &atlas.pages[payload.page_index];
         if (page.bytes.len != 0) self.allocator.free(page.bytes);
+        atlas.page_revision +%= 1;
         page.* = .{
             .page_index = payload.page_index,
+            .revision = atlas.page_revision,
             .x = payload.x,
             .y = payload.y,
             .width = payload.width,
@@ -1676,7 +1696,8 @@ pub const AtlasResources = struct {
         if (payload.flags & protocol.AtlasInvalidateFlags.all != 0) {
             for (atlas.pages) |*page| {
                 if (page.bytes.len != 0) self.allocator.free(page.bytes);
-                page.* = .{ .page_index = page.page_index };
+                atlas.page_revision +%= 1;
+                page.* = .{ .page_index = page.page_index, .revision = atlas.page_revision };
             }
             atlas.glyphs.clearRetainingCapacity();
             return;
@@ -1685,7 +1706,8 @@ pub const AtlasResources = struct {
             if (payload.target >= atlas.page_count) return Error.InvalidMessage;
             const page = &atlas.pages[payload.target];
             if (page.bytes.len != 0) self.allocator.free(page.bytes);
-            page.* = .{ .page_index = page.page_index };
+            atlas.page_revision +%= 1;
+            page.* = .{ .page_index = page.page_index, .revision = atlas.page_revision };
             return;
         }
         var index: usize = 0;
@@ -8735,6 +8757,19 @@ test "atlas resources validate define page glyph and invalidation" {
     try std.testing.expectEqual(@as(usize, 0), scene.atlases.lookup(7).?.glyphs.items.len);
 
     payload.clearRetainingCapacity();
+    try protocol.encodeAtlasInvalidate(a, .{
+        .flags = protocol.AtlasInvalidateFlags.page,
+        .atlas_id = 7,
+        .generation = 1,
+        .target = 0,
+    }, &payload);
+    const page_invalidate = try faceMessage(a, protocol.Message.atlas_invalidate, 5, payload.items);
+    defer a.free(page_invalidate);
+    try scene.apply(page_invalidate);
+    try std.testing.expectEqual(@as(usize, 0), scene.atlases.lookup(7).?.pages[0].bytes.len);
+    try std.testing.expectEqual(@as(u32, 2), scene.atlases.lookup(7).?.pages[0].revision);
+
+    payload.clearRetainingCapacity();
     try std.testing.expectError(Error.InvalidMessage, protocol.encodeAtlasInvalidate(a, .{
         .flags = protocol.AtlasInvalidateFlags.page |
             protocol.AtlasInvalidateFlags.glyph,
@@ -8742,16 +8777,26 @@ test "atlas resources validate define page glyph and invalidation" {
         .generation = 1,
         .target = 1,
     }, &payload));
+    try std.testing.expectEqual(@as(u32, 2), scene.atlases.lookup(7).?.pages[0].revision);
+
+    // A page replacement changes both bytes and cache identity even when the
+    // atlas generation stays unchanged.
     payload.clearRetainingCapacity();
-    try std.testing.expectError(Error.InvalidMessage, protocol.encodeAtlasPageUpdate(a, .{
+    try protocol.encodeAtlasPageUpdate(a, .{
         .atlas_id = 7,
         .generation = 1,
         .page_index = 0,
         .page_count = 1,
-        .x = 65535,
-        .y = 65535,
-        .width = 65535,
-        .height = 65535,
-        .bytes = &.{ 1, 2, 3, 4 },
-    }, &payload));
+        .x = 8,
+        .y = 8,
+        .width = 1,
+        .height = 1,
+        .bytes = &.{ 9, 8, 7, 6 },
+    }, &payload);
+    const replacement_page = try faceMessage(a, protocol.Message.atlas_page_update, 6, payload.items);
+    defer a.free(replacement_page);
+    try scene.apply(replacement_page);
+    const page_state = scene.atlases.lookup(7).?;
+    try std.testing.expect(page_state.pages[0].revision > 0);
+    try std.testing.expectEqual(@as(u32, 9), page_state.pages[0].bytes[0]);
 }

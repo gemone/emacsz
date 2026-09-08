@@ -1310,7 +1310,7 @@ The active table is bounded to 256 glyphs.
 
 `ATLAS_INVALIDATE = 0x0516` is an exact 16-byte record with exactly one flag:
 `all=1`, `page=2`, or `glyph=4`. `all` requires target zero and clears page
-pixels and glyph entries; `page` and `glyph` require a nonzero target. A glyph
+pixels and glyph entries; `page` requires a page index; `glyph` requires a nonzero glyph ID. A glyph
 target is a glyph ID and invalidates matching entries for every font in the
 atlas. Stale generation, wrong page ranges, unknown atlases, malformed flags,
 and truncation are rejected. Authenticated resync and scene teardown release

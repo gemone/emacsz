@@ -681,6 +681,11 @@ pub const DrawCommand = union(enum) {
         pixels: []const u8,
         source_width: u32,
         source_height: u32,
+        cache_key: u64,
+        cache_revision: u32,
+        atlas_id: u32,
+        page_index: u16,
+        generation: u32,
     },
 };
 
@@ -876,6 +881,11 @@ pub const DrawList = struct {
         pixels: []const u8,
         source_width: u32,
         source_height: u32,
+        cache_key: u64,
+        cache_revision: u32,
+        atlas_id: u32,
+        page_index: u16,
+        generation: u32,
     ) !void {
         if (destination.width <= 0 or destination.height <= 0 or
             source.width <= 0 or source.height <= 0 or source_width == 0 or source_height == 0)
@@ -892,6 +902,11 @@ pub const DrawList = struct {
             .pixels = pixels,
             .source_width = source_width,
             .source_height = source_height,
+            .cache_key = cache_key,
+            .cache_revision = cache_revision,
+            .atlas_id = atlas_id,
+            .page_index = page_index,
+            .generation = generation,
         } });
         self.stats.commands += 1;
         self.stats.images += 1;
@@ -1393,6 +1408,11 @@ test "draw list records atlas glyph source and destination regions" {
         &pixels,
         1,
         1,
+        77,
+        3,
+        9,
+        1,
+        4,
     );
     try std.testing.expectEqual(@as(usize, 1), list.commands.items.len);
     const command = list.commands.items[0].image_region;

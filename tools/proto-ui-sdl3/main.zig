@@ -820,9 +820,9 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
         }
 
         if (snapshot_scene) |*scene| {
-            try presentScene(scene, &draw_list, renderer, window, &frame_gate, &frame_counters);
+            try presentScene(scene, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
         } else {
-            try presentFacts(latest, &draw_list, renderer, window, &frame_gate, &frame_counters);
+            try presentFacts(latest, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
         }
         SDL_Delay(10);
     }
@@ -847,28 +847,28 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
     if (config.synthetic_interactive and !input_applied) return error.InteractiveInputNotApplied;
 }
 
-const TextureCacheEntry = struct {
+const FrameTextureCacheEntry = struct {
     texture: *SDL_Texture,
     source_width: u32,
     source_height: u32,
 };
 
-const TextureCache = struct {
+const FrameTextureCache = struct {
     allocator: std.mem.Allocator,
-    entries: std.AutoHashMap(*const anyopaque, TextureCacheEntry),
+    entries: std.AutoHashMap(*const anyopaque, FrameTextureCacheEntry),
 
-    fn init(allocator: std.mem.Allocator) TextureCache {
-        return .{ .allocator = allocator, .entries = std.AutoHashMap(*const anyopaque, TextureCacheEntry).init(allocator) };
+    fn init(allocator: std.mem.Allocator) FrameTextureCache {
+        return .{ .allocator = allocator, .entries = std.AutoHashMap(*const anyopaque, FrameTextureCacheEntry).init(allocator) };
     }
 
-    fn deinit(self: *TextureCache) void {
+    fn deinit(self: *FrameTextureCache) void {
         var iterator = self.entries.valueIterator();
         while (iterator.next()) |entry| SDL_DestroyTexture(entry.texture);
         self.entries.deinit();
     }
 
     fn getOrCreate(
-        self: *TextureCache,
+        self: *FrameTextureCache,
         renderer: *SDL_Renderer,
         pixels: []const u8,
         width: u32,
@@ -891,6 +891,101 @@ const TextureCache = struct {
         if (!SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND)) return sdlFail("SDL_SetTextureBlendMode");
         if (!SDL_UpdateTexture(texture, null, pixels.ptr, @intCast(width * 4))) return sdlFail("SDL_UpdateTexture");
         try self.entries.put(key, .{ .texture = texture, .source_width = width, .source_height = height });
+        return texture;
+    }
+};
+
+const AtlasTextureKey = struct {
+    atlas_id: u32,
+    page_index: u16,
+    generation: u32,
+    revision: u32,
+
+    fn eql(self: AtlasTextureKey, other: AtlasTextureKey) bool {
+        return self.atlas_id == other.atlas_id and
+            self.page_index == other.page_index and
+            self.generation == other.generation and
+            self.revision == other.revision;
+    }
+
+    fn hash(self: AtlasTextureKey) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(std.mem.asBytes(&self.atlas_id));
+        hasher.update(std.mem.asBytes(&self.page_index));
+        hasher.update(std.mem.asBytes(&self.generation));
+        hasher.update(std.mem.asBytes(&self.revision));
+        return hasher.final();
+    }
+};
+
+const AtlasTextureCacheEntry = struct {
+    texture: *SDL_Texture,
+    key: AtlasTextureKey,
+    revision: u32,
+    source_width: u32,
+    source_height: u32,
+};
+
+const AtlasTextureCache = struct {
+    allocator: std.mem.Allocator,
+    entries: std.AutoHashMap(u64, AtlasTextureCacheEntry),
+    uploads: u64 = 0,
+    hits: u64 = 0,
+
+    fn init(allocator: std.mem.Allocator) AtlasTextureCache {
+        return .{ .allocator = allocator, .entries = std.AutoHashMap(u64, AtlasTextureCacheEntry).init(allocator) };
+    }
+
+    fn deinit(self: *AtlasTextureCache) void {
+        self.clear();
+        self.entries.deinit();
+    }
+
+    fn clear(self: *AtlasTextureCache) void {
+        var iterator = self.entries.valueIterator();
+        while (iterator.next()) |entry| SDL_DestroyTexture(entry.texture);
+        self.entries.clearRetainingCapacity();
+    }
+
+    fn getOrCreate(
+        self: *AtlasTextureCache,
+        renderer: *SDL_Renderer,
+        key: AtlasTextureKey,
+        pixels: []const u8,
+        width: u32,
+        height: u32,
+    ) !*SDL_Texture {
+        const hashed_key = key.hash();
+        if (self.entries.get(hashed_key)) |entry| {
+            if (entry.key.eql(key) and
+                entry.revision == key.revision and
+                entry.source_width == width and entry.source_height == height)
+            {
+                self.hits += 1;
+                return entry.texture;
+            }
+            _ = self.entries.remove(hashed_key);
+            SDL_DestroyTexture(entry.texture);
+        }
+        const texture = SDL_CreateTexture(
+            renderer,
+            SDL_PIXELFORMAT_RGBA8888,
+            SDL_TEXTUREACCESS_STATIC,
+            @intCast(width),
+            @intCast(height),
+        ) orelse return sdlFail("SDL_CreateTexture");
+        errdefer SDL_DestroyTexture(texture);
+        if (!SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_NEAREST)) return sdlFail("SDL_SetTextureScaleMode");
+        if (!SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND)) return sdlFail("SDL_SetTextureBlendMode");
+        if (!SDL_UpdateTexture(texture, null, pixels.ptr, @intCast(width * 4))) return sdlFail("SDL_UpdateTexture");
+        try self.entries.put(hashed_key, .{
+            .texture = texture,
+            .key = key,
+            .revision = key.revision,
+            .source_width = width,
+            .source_height = height,
+        });
+        self.uploads += 1;
         return texture;
     }
 };
@@ -2052,7 +2147,7 @@ fn runGlyphRunSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         (run_rendered or !stale_text_rendered))
         return error.GlyphRunDeleteFallbackFailed;
 
-    try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+    try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
     var quit = false;
     const started = SDL_GetTicks();
     while (!quit and SDL_GetTicks() - started < config.auto_quit_ms) {
@@ -2060,7 +2155,7 @@ fn runGlyphRunSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) quit = true;
         }
-        try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+        try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
         SDL_Delay(10);
     }
     if (frame_counters.text_commands_total == 0) return error.GlyphRunNotRendered;
@@ -3155,6 +3250,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     var frame_counters: renderer_policy.FrameCounters = .{};
     var retained_frame: RetainedFrame = .{};
     defer destroyRetainedFrame(&retained_frame);
+    var atlas_texture_cache = AtlasTextureCache.init(gpa);
+    defer atlas_texture_cache.deinit();
     var partial_capabilities: capability.Set = .{};
     partial_capabilities.insert(.damage_retained_clip);
     try presentSceneDamage(
@@ -3168,6 +3265,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         .{ .kind = .initial },
         partial_capabilities,
         null,
+        &atlas_texture_cache,
     );
     if (frame_counters.presented_frames != 1) return error.RuntimeBridgePresentCounterInvalid;
     if (scene.frame_header) |header| {
@@ -3363,6 +3461,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         .{ .kind = .region, .clip = explicit_clip },
         partial_capabilities,
         explicit_clip,
+        &atlas_texture_cache,
     );
     if (frame_counters.explicit_damage_frames != 1 or
         frame_counters.explicit_clipped_frames != 1 or
@@ -3372,6 +3471,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         return error.RuntimeBridgeExplicitPresentInvalid;
     if (frame_counters.atlas_glyphs_total < 5)
         return error.RuntimeBridgeAtlasRenderInvalid;
+    if (atlas_texture_cache.uploads != 1 or atlas_texture_cache.hits < 4)
+        return error.RuntimeBridgeAtlasCacheInvalid;
 
     var key: runtime_host.InputEvent = .{
         .event_id = 11,
@@ -3398,6 +3499,13 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) {
                 quit = true;
+                continue;
+            }
+            if (event.type == SDL_EVENT_RENDER_TARGETS_RESET or
+                event.type == SDL_EVENT_RENDER_DEVICE_RESET or
+                event.type == SDL_EVENT_RENDER_DEVICE_LOST)
+            {
+                atlas_texture_cache.clear();
                 continue;
             }
             var input: runtime_host.InputEvent = .{
@@ -3433,7 +3541,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
                 delivered_text = true;
             }
         }
-        try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+        try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
         SDL_Delay(10);
     }
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
@@ -4473,9 +4581,10 @@ fn runEpxlInteractiveFrontend(
                 decision,
                 negotiated.effective,
                 null,
+                null,
             );
         } else {
-            try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+            try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
         }
     }
 
@@ -4932,7 +5041,7 @@ fn buildSceneDrawList(
                     .y = @floatFromInt(sampled.y),
                     .width = @floatFromInt(sampled.width),
                     .height = @floatFromInt(sampled.height),
-                }, sampled.bytes, sampled.page_width, sampled.page_height);
+                }, sampled.bytes, sampled.page_width, sampled.page_height, sampled.cache_key, sampled.cache_revision, sampled.atlas_id, sampled.page_index, sampled.generation);
                 pen_x += @floatFromInt(sampled.advance_x);
             }
         }
@@ -5060,7 +5169,8 @@ fn buildFactsDrawList(
 }
 
 fn executeDrawList(
-    cache: *TextureCache,
+    cache: *FrameTextureCache,
+    atlas_cache: ?*AtlasTextureCache,
     list: *renderer_policy.DrawList,
     renderer: *SDL_Renderer,
     window: *SDL_Window,
@@ -5141,7 +5251,15 @@ fn executeDrawList(
                 executed.images += 1;
             },
             .image_region => |draw| {
-                const texture = try cache.getOrCreate(renderer, draw.pixels, draw.source_width, draw.source_height);
+                const texture = if (atlas_cache) |persistent|
+                    try persistent.getOrCreate(renderer, .{
+                        .atlas_id = draw.atlas_id,
+                        .page_index = draw.page_index,
+                        .generation = draw.generation,
+                        .revision = draw.cache_revision,
+                    }, draw.pixels, draw.source_width, draw.source_height)
+                else
+                    try cache.getOrCreate(renderer, draw.pixels, draw.source_width, draw.source_height);
                 const source = SDL_FRect{
                     .x = draw.source.x,
                     .y = draw.source.y,
@@ -5333,8 +5451,9 @@ fn presentScene(
     window: *SDL_Window,
     gate: *renderer_policy.FrameGate,
     counters: *renderer_policy.FrameCounters,
+    atlas_cache: ?*AtlasTextureCache,
 ) !void {
-    var texture_cache = TextureCache.init(std.heap.smp_allocator);
+    var texture_cache = FrameTextureCache.init(std.heap.smp_allocator);
     defer texture_cache.deinit();
     var width: c_int = 0;
     var height: c_int = 0;
@@ -5345,7 +5464,7 @@ fn presentScene(
     }
     const started_ticks = SDL_GetPerformanceCounter();
     try buildSceneDrawList(scene, list, @intCast(width), @intCast(height));
-    const execution = try executeDrawList(&texture_cache, list, renderer, window, null, null, false);
+    const execution = try executeDrawList(&texture_cache, atlas_cache, list, renderer, window, null, null, false);
     if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
     counters.recordDrawList(execution);
     const ended_ticks = SDL_GetPerformanceCounter();
@@ -5366,8 +5485,9 @@ fn presentSceneDamage(
     decision: renderer_policy.DamageDecision,
     capabilities: capability.Set,
     explicit_clip: ?renderer_policy.LogicalRect,
+    atlas_cache: ?*AtlasTextureCache,
 ) !void {
-    var texture_cache = TextureCache.init(std.heap.smp_allocator);
+    var texture_cache = FrameTextureCache.init(std.heap.smp_allocator);
     defer texture_cache.deinit();
     var width: c_int = 0;
     var height: c_int = 0;
@@ -5396,18 +5516,18 @@ fn presentSceneDamage(
     var execution: renderer_policy.DrawStats = .{};
     if (texture) |target| {
         if (clip) |rect| {
-            execution = try executeDrawList(&texture_cache, list, renderer, window, target, rect, explicit_clip != null);
+            execution = try executeDrawList(&texture_cache, atlas_cache, list, renderer, window, target, rect, explicit_clip != null);
             submitted = execution.commands;
             clipped = submitted != 0;
         }
         if (!clipped) {
-            execution = try executeDrawList(&texture_cache, list, renderer, window, target, null, false);
+            execution = try executeDrawList(&texture_cache, atlas_cache, list, renderer, window, target, null, false);
             submitted = execution.commands;
         }
         retained.primed = true;
         try presentRetainedOutput(renderer, target);
     } else {
-        execution = try executeDrawList(&texture_cache, list, renderer, window, null, null, false);
+        execution = try executeDrawList(&texture_cache, atlas_cache, list, renderer, window, null, null, false);
         submitted = execution.commands;
         if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
         retained.primed = false;
@@ -5429,8 +5549,9 @@ fn presentFacts(
     window: *SDL_Window,
     gate: *renderer_policy.FrameGate,
     counters: *renderer_policy.FrameCounters,
+    atlas_cache: ?*AtlasTextureCache,
 ) !void {
-    var texture_cache = TextureCache.init(std.heap.smp_allocator);
+    var texture_cache = FrameTextureCache.init(std.heap.smp_allocator);
     defer texture_cache.deinit();
     var width: c_int = 0;
     var height: c_int = 0;
@@ -5441,7 +5562,7 @@ fn presentFacts(
     }
     const started_ticks = SDL_GetPerformanceCounter();
     try buildFactsDrawList(snapshot, list, @intCast(width), @intCast(height));
-    const execution = try executeDrawList(&texture_cache, list, renderer, window, null, null, false);
+    const execution = try executeDrawList(&texture_cache, atlas_cache, list, renderer, window, null, null, false);
     if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
     counters.recordDrawList(execution);
     const ended_ticks = SDL_GetPerformanceCounter();
@@ -5883,9 +6004,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             }
             if (quit) break;
             if (snapshot_scene) |*scene| {
-                try presentScene(scene, &draw_list, renderer, window, &frame_gate, &frame_counters);
+                try presentScene(scene, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
             } else {
-                try presentFacts(latest, &draw_list, renderer, window, &frame_gate, &frame_counters);
+                try presentFacts(latest, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
             }
 
             SDL_Delay(50);
@@ -6080,7 +6201,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     var draw_list: renderer_policy.DrawList = .{ .allocator = gpa };
     defer draw_list.deinit();
 
-    try presentScene(&scene, &draw_list, renderer, window, &frame_gate, &frame_counters);
+    try presentScene(&scene, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
 
     var quit = false;
     const started_ticks = SDL_GetTicks();
@@ -6093,7 +6214,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                 frame_gate.dirty = true;
             }
         }
-        try presentScene(&scene, &draw_list, renderer, window, &frame_gate, &frame_counters);
+        try presentScene(&scene, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
         SDL_Delay(10);
     }
 
@@ -6365,7 +6486,7 @@ fn runFrameLifecycleSmoke(
             if (!SDL_RenderPresent(selected_renderer.handle)) return sdlFail("SDL_RenderPresent");
             SDL_Delay(250);
         } else {
-            try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+            try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
         }
     }
     if (scene.stats.frame_updates != 1 or scene.frame == null or
@@ -6392,7 +6513,7 @@ fn runFrameLifecycleSmoke(
     try scene.apply(glyph_message.items);
     if (producer_scene.next_sequence != 8 or scene.next_sequence != 8)
         return error.FrameLifecycleRoundTripFailed;
-    try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+    try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
     if (scene.glyph_runs.items.len != 1) return error.GlyphRunSceneStateInvalid;
     const active_run = scene.glyph_runs.items[0];
     if (!std.mem.eql(u8, active_run.text, marker) or
@@ -6414,7 +6535,7 @@ fn runFrameLifecycleSmoke(
     if (producer_scene.next_sequence != 9 or scene.next_sequence != 9 or
         scene.glyph_runs.items.len != 0 or !sceneHasText(&scene, marker))
         return error.GlyphRunDeleteFailed;
-    try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters);
+    try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
     var marker_rendered = false;
     for (draw_list.commands.items) |command| {
         if (command == .text and std.mem.eql(u8, command.text.bytes, marker))
