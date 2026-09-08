@@ -89,7 +89,7 @@ const ranges = [_]Range{
     .{ .low = 0x0304, .high = 0x0304, .status = .implemented_codec, .domain = .window, .family = "window-geometry", .note = "bounded content/body geometry codec, owner validation, Scene upsert, SDL body-boundary render evidence" },
     .{ .low = 0x0305, .high = 0x0305, .status = .implemented_codec, .domain = .window, .family = "window-zones", .note = "bounded mode/header/tab/margin/fringe/scrollbar zone codec, disjoint owner validation, Scene upsert, SDL render evidence" },
     .{ .low = 0x0306, .high = 0x0306, .status = .implemented_codec, .domain = .window, .family = "window-face", .note = "bounded window default-face state codec, active resource validation, Scene upsert, SDL render evidence" },
-    .{ .low = 0x0307, .high = 0x0307, .status = .planned, .domain = .window, .family = "window-state", .note = "position payload pending" },
+    .{ .low = 0x0307, .high = 0x0307, .status = .implemented_codec, .domain = .window, .family = "window-position", .note = "bounded diagnostic buffer identity/start/point codec, active-frame/window validation, and Scene upsert; no text/layout transport" },
     .{ .low = 0x0308, .high = 0x0308, .status = .implemented_codec, .domain = .window, .family = "scroll-state", .note = "bounded scrollbar state codec, active-frame/window validation, Scene upsert, SDL render evidence" },
     .{ .low = 0x0309, .high = 0x0309, .status = .implemented_codec, .domain = .window, .family = "scroll-request", .note = "bounded absolute/relative reverse intent codec and delivery journal queue" },
     .{ .low = 0x030a, .high = 0x030a, .status = .planned, .domain = .window, .family = "window-interaction", .note = "mouse-highlight payload pending" },
@@ -284,7 +284,7 @@ test "implemented and planned protocol coverage remain honest" {
     const window_face = entryFor(0x0306) catch unreachable;
     try std.testing.expectEqual(Status.implemented_codec, window_face.status);
     const position = entryFor(0x0307) catch unreachable;
-    try std.testing.expectEqual(Status.planned, position.status);
+    try std.testing.expectEqual(Status.implemented_codec, position.status);
     try std.testing.expectError(error.UnknownMessageId, entryFor(0xffff));
 }
 

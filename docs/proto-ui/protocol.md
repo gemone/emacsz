@@ -471,6 +471,23 @@ diagnostic renderer draws the top edge of each present zone as evidence. This is
 not redisplay-owned layout, complete zone semantics, edge/baseline rendering, or
 PGTK parity.
 
+#### `WINDOW_POSITION` v1 (implemented bounded diagnostic contract)
+
+`WINDOW_POSITION = 0x0307` is an exact 40-byte little-endian record. After
+`schema=1`, a known flags byte, a zero reserved byte, a nonzero live window ID,
+and the active frame generation, it carries `buffer_id`, `buffer_generation`,
+`window_start`, and `point` as nonzero `u32` values, followed by eight zero
+reserved bytes. Flag bit 0 means the point is visible in the window; other
+flags are invalid.
+
+Buffer IDs are generation-qualified display identities, not buffer text. The
+message carries no string, line content, overlay, match-data, narrowing, or
+encoding metadata. `Scene` validates the active frame/header and live owner,
+performs one diagnostic upsert per window with a 32-state cap, clears it on
+authoritative frame updates/resync/teardown, and removes it on window deletion.
+It is not a cursor/render command and does not implement complete point,
+narrowing, invisible-text, BiDi, or viewport semantics.
+
 #### Window patch v1 (implemented bounded adapter contract)
 
 `WINDOW_PATCH` (`0x0302`) is a fixed 56-byte little-endian record. It starts
@@ -1571,9 +1588,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 78 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 79 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 83 | Assigned for the target protocol but not implemented |
+| `planned` | 82 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

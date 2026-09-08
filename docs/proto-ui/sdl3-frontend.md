@@ -149,6 +149,7 @@ window region
 zone geometry
 window content/body geometry
 window zones
+window diagnostic position
 window default-face state
 row
 render item
@@ -174,7 +175,8 @@ The scene is rebuilt incrementally where possible. A full rebuild occurs after s
 4. Replace or update rows.
 5. Replace or update render items.
 6. Clear window content/body geometry, then update cursor, window default face,
-   window zones, fringe, divider, border, and scrollbar state.
+   window zones, window diagnostic position, fringe, divider, border, and
+   scrollbar state.
 7. Merge damage rectangles.
 8. Record present hint and deadline.
 

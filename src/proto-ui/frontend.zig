@@ -529,6 +529,7 @@ pub const max_scrollbar_states: usize = 32;
 pub const max_window_faces: usize = 32;
 pub const max_window_geometries: usize = 32;
 pub const max_window_zones: usize = 32;
+pub const max_window_positions: usize = 32;
 
 pub const WindowGeometryState = struct {
     schema: u16 = 1,
@@ -728,6 +729,72 @@ fn validateWindowGeometryState(state: WindowGeometryState) Error!void {
 }
 
 pub const window_face_state_size: usize = 24;
+
+pub const WindowPositionFlags = struct {
+    pub const point_visible: u8 = 1 << 0;
+    pub const known: u8 = point_visible;
+};
+
+pub const WindowPositionState = struct {
+    schema: u16 = 1,
+    flags: u8,
+    reserved: u8 = 0,
+    window_id: u64,
+    frame_generation: u32,
+    buffer_id: u32,
+    buffer_generation: u32,
+    window_start: u32,
+    point: u32,
+    reserved_tail: [8]u8 = @splat(0),
+};
+
+pub const window_position_state_size: usize = 40;
+
+pub fn encodeWindowPositionState(
+    a: std.mem.Allocator,
+    state: WindowPositionState,
+    out: *std.ArrayList(u8),
+) !void {
+    try validateWindowPositionState(state);
+    var b: [window_position_state_size]u8 = [_]u8{0} ** window_position_state_size;
+    std.mem.writeInt(u16, b[0..2], state.schema, .little);
+    b[2] = state.flags;
+    b[3] = state.reserved;
+    std.mem.writeInt(u64, b[4..12], state.window_id, .little);
+    std.mem.writeInt(u32, b[12..16], state.frame_generation, .little);
+    std.mem.writeInt(u32, b[16..20], state.buffer_id, .little);
+    std.mem.writeInt(u32, b[20..24], state.buffer_generation, .little);
+    std.mem.writeInt(u32, b[24..28], state.window_start, .little);
+    std.mem.writeInt(u32, b[28..32], state.point, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeWindowPositionState(data: []const u8) Error!WindowPositionState {
+    if (data.len != window_position_state_size) return Error.InvalidTable;
+    const state: WindowPositionState = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .window_id = std.mem.readInt(u64, data[4..12], .little),
+        .frame_generation = std.mem.readInt(u32, data[12..16], .little),
+        .buffer_id = std.mem.readInt(u32, data[16..20], .little),
+        .buffer_generation = std.mem.readInt(u32, data[20..24], .little),
+        .window_start = std.mem.readInt(u32, data[24..28], .little),
+        .point = std.mem.readInt(u32, data[28..32], .little),
+        .reserved_tail = data[32..40][0..8].*,
+    };
+    try validateWindowPositionState(state);
+    return state;
+}
+
+fn validateWindowPositionState(state: WindowPositionState) Error!void {
+    if (state.schema != 1 or state.flags & ~WindowPositionFlags.known != 0 or
+        state.reserved != 0 or !std.mem.allEqual(u8, &state.reserved_tail, 0) or
+        state.window_id == 0 or state.frame_generation == 0 or
+        state.buffer_id == 0 or state.buffer_generation == 0 or
+        state.window_start == 0 or state.point == 0)
+        return Error.InvalidMessage;
+}
 
 pub fn encodeWindowFaceState(a: std.mem.Allocator, state: WindowFaceState, out: *std.ArrayList(u8)) !void {
     try validateWindowFaceState(state);
@@ -2109,6 +2176,7 @@ pub const Scene = struct {
     window_faces: std.ArrayList(WindowFaceState) = .empty,
     window_geometries: std.ArrayList(WindowGeometryState) = .empty,
     window_zones: std.ArrayList(WindowZonesState) = .empty,
+    window_positions: std.ArrayList(WindowPositionState) = .empty,
     border: ?BorderUpdate = null,
     text: std.ArrayList(TextLine) = .empty,
     title: ?[:0]u8 = null,
@@ -2149,6 +2217,7 @@ pub const Scene = struct {
         self.window_faces.deinit(self.allocator);
         self.window_geometries.deinit(self.allocator);
         self.window_zones.deinit(self.allocator);
+        self.window_positions.deinit(self.allocator);
         self.strings.deinit(self.allocator);
         self.faces = .{};
         self.fonts = .{};
@@ -2179,6 +2248,7 @@ pub const Scene = struct {
         self.window_faces = .empty;
         self.window_geometries = .empty;
         self.window_zones = .empty;
+        self.window_positions = .empty;
         self.strings = .{};
         self.faces = .{};
         self.fonts = .{};
@@ -2286,6 +2356,7 @@ pub const Scene = struct {
             protocol.Message.window_patch => try self.applyWindowPatch(payload),
             protocol.Message.window_geometry => try self.applyWindowGeometry(payload),
             protocol.Message.window_zones => try self.applyWindowZones(payload),
+            protocol.Message.window_position => try self.applyWindowPosition(payload),
             protocol.Message.cursor_update => try self.applyCursorUpdate(payload),
             protocol.Message.clear_area => try self.applyClearArea(payload),
             protocol.Message.scroll_run => try self.applyScrollRun(payload),
@@ -2340,6 +2411,7 @@ pub const Scene = struct {
         self.window_faces.deinit(self.allocator);
         self.window_geometries.deinit(self.allocator);
         self.window_zones.deinit(self.allocator);
+        self.window_positions.deinit(self.allocator);
         for (self.text.items) |line| self.allocator.free(line.bytes);
         self.text.deinit(self.allocator);
         self.windows = .empty;
@@ -2354,6 +2426,7 @@ pub const Scene = struct {
         self.window_faces = .empty;
         self.window_geometries = .empty;
         self.window_zones = .empty;
+        self.window_positions = .empty;
         self.text = .empty;
         self.frame_header = null;
         self.cursor = null;
@@ -2735,6 +2808,7 @@ pub const Scene = struct {
         self.removeWindowFacesForWindow(window_id);
         self.removeWindowGeometriesForWindow(window_id);
         self.removeWindowZonesForWindow(window_id);
+        self.removeWindowPositionsForWindow(window_id);
         self.stats.control_messages += 1;
     }
 
@@ -2975,6 +3049,15 @@ pub const Scene = struct {
         while (index < self.window_zones.items.len) {
             if (self.window_zones.items[index].window_id == window_id) {
                 _ = self.window_zones.orderedRemove(index);
+            } else index += 1;
+        }
+    }
+
+    fn removeWindowPositionsForWindow(self: *Scene, window_id: u64) void {
+        var index: usize = 0;
+        while (index < self.window_positions.items.len) {
+            if (self.window_positions.items[index].window_id == window_id) {
+                _ = self.window_positions.orderedRemove(index);
             } else index += 1;
         }
     }
@@ -3385,6 +3468,7 @@ pub const Scene = struct {
         self.window_faces.clearRetainingCapacity();
         self.window_geometries.clearRetainingCapacity();
         self.window_zones.clearRetainingCapacity();
+        self.window_positions.clearRetainingCapacity();
         self.image_placements = image_placements;
         self.image_placement_count = image_placement_count;
         windows = old_windows;
@@ -3647,6 +3731,29 @@ pub const Scene = struct {
         }
         if (self.window_zones.items.len == max_window_zones) return Error.Unsupported;
         try self.window_zones.append(self.allocator, state);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyWindowPosition(self: *Scene, payload: protocol.Payload) Error!void {
+        const state = try decodeWindowPositionState(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != state.frame_generation or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation)
+            return Error.InvalidMessage;
+        _ = findWindow(self.windows.items, state.window_id) orelse
+            return Error.InvalidMessage;
+        for (self.window_positions.items, 0..) |*old, index| {
+            if (old.window_id == state.window_id) {
+                self.window_positions.items[index] = state;
+                self.stats.control_messages += 1;
+                return;
+            }
+        }
+        if (self.window_positions.items.len == max_window_positions) return Error.Unsupported;
+        try self.window_positions.append(self.allocator, state);
         self.stats.control_messages += 1;
     }
 
@@ -4544,6 +4651,73 @@ test "window zones validate disjoint owner regions and lifecycle" {
     defer a.free(shrink);
     try scene.apply(shrink);
     try std.testing.expectEqual(@as(usize, 0), scene.window_zones.items.len);
+}
+
+test "window position validates diagnostic state and upserts per window" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    const state: WindowPositionState = .{
+        .flags = WindowPositionFlags.point_visible,
+        .window_id = 100,
+        .frame_generation = 1,
+        .buffer_id = 31,
+        .buffer_generation = 7,
+        .window_start = 101,
+        .point = 122,
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeWindowPositionState(a, state, &payload);
+    try std.testing.expectEqual(window_position_state_size, payload.items.len);
+    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, payload.items[0..2], .little));
+    try std.testing.expectEqual(state, try decodeWindowPositionState(payload.items));
+
+    const message = try windowLifecycleMessage(a, protocol.Message.window_position, 3, 7, payload.items);
+    defer a.free(message);
+    try scene.apply(message);
+    try std.testing.expectEqual(state, scene.window_positions.items[0]);
+
+    var replacement = state;
+    replacement.point = 133;
+    replacement.flags = 0;
+    payload.clearRetainingCapacity();
+    try encodeWindowPositionState(a, replacement, &payload);
+    const replacement_message = try windowLifecycleMessage(a, protocol.Message.window_position, 4, 7, payload.items);
+    defer a.free(replacement_message);
+    try scene.apply(replacement_message);
+    try std.testing.expectEqual(@as(usize, 1), scene.window_positions.items.len);
+    try std.testing.expectEqual(replacement, scene.window_positions.items[0]);
+
+    var invalid = replacement;
+    invalid.flags = 0x80;
+    payload.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidMessage, encodeWindowPositionState(a, invalid, &payload));
+
+    payload.clearRetainingCapacity();
+    try encodeWindowPositionState(a, replacement, &payload);
+    payload.items[payload.items.len - 1] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeWindowPositionState(payload.items));
+
+    var missing_owner = replacement;
+    missing_owner.window_id = 999;
+    payload.clearRetainingCapacity();
+    try encodeWindowPositionState(a, missing_owner, &payload);
+    const missing_message = try windowLifecycleMessage(a, protocol.Message.window_position, 5, 7, payload.items);
+    defer a.free(missing_message);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(missing_message));
+
+    const authoritative_update = try updateMessage(a, 5, 7, 7, 80, 0);
+    defer a.free(authoritative_update);
+    try scene.apply(authoritative_update);
+    try std.testing.expectEqual(@as(usize, 0), scene.window_positions.items.len);
 }
 
 test "divider update validates generation and owner bounds" {
