@@ -879,6 +879,50 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&install_host_adapter.step);
         boundary_step.dependOn(&run_host_adapter_gate.step);
 
+        // P2: activation is explicitly modeled but blocked while R7 remains
+        // pending.  The artifact records the approved-path order and rollback.
+        const runtime_activation_gen_tool = b.addExecutable(.{
+            .name = "proto-ui-runtime-activation-gen",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/runtime_activation_gen.zig"),
+            }),
+        });
+        runtime_activation_gen_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_runtime_activation_gen = b.addRunArtifact(runtime_activation_gen_tool);
+        const runtime_activation_artifact = run_runtime_activation_gen.addOutputFileArg(
+            "runtime_activation.json",
+        );
+        const install_runtime_activation = b.addInstallFile(
+            runtime_activation_artifact,
+            "proto-ui/runtime_activation.json",
+        );
+
+        const runtime_activation_gate_tool = b.addExecutable(.{
+            .name = "proto-ui-runtime-activation-gate",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/runtime_activation_gate.zig"),
+            }),
+        });
+        runtime_activation_gate_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_runtime_activation_gate = b.addRunArtifact(runtime_activation_gate_tool);
+        run_runtime_activation_gate.addFileArg(runtime_activation_artifact);
+        run_runtime_activation_gate.step.dependOn(&run_runtime_activation_gen.step);
+
+        const runtime_activation_step = b.step(
+            "proto-ui-runtime-activation",
+            "Audit the explicit runtime activation plan blocked by pending R7",
+        );
+        runtime_activation_step.dependOn(&run_runtime_activation_gen.step);
+        runtime_activation_step.dependOn(&install_runtime_activation.step);
+        runtime_activation_step.dependOn(&run_runtime_activation_gate.step);
+
+        boundary_step.dependOn(&install_runtime_activation.step);
+        boundary_step.dependOn(&run_runtime_activation_gate.step);
+
         // P2: the R7 proposal is review input only.  Its gate proves that the
         // pure-SDL3 registration request is coherent while registration and
         // runtime remain unavailable and fail closed.
@@ -6264,6 +6308,7 @@ pub fn build(b: *std.Build) void {
         \\
         \\  zig build -Dproto-ui=true proto-ui-host-contract - pending registration decision audit
         \\  zig build -Dproto-ui=true proto-ui-host-adapter - unselected pure-SDL3 host adapter audit
+        \\  zig build -Dproto-ui=true proto-ui-runtime-activation - blocked runtime activation audit
         \\  zig build -Dproto-ui=true proto-ui-runtime-manifest - fail-closed runtime manifest audit
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module - Emacs dynamic-module seam
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke - verify module seam in batch Emacs

@@ -266,6 +266,9 @@ terminal.
 The host-adapter selection manifest names the pure-SDL3 candidate but leaves it
 unselected until an approved, metadata-complete R7 decision; selection still
 requires an explicit activation path and never enables runtime automatically.
+The activation contract records the approved-path order and reverse rollback
+order.  Its current gate remains blocked by pending R7 and performs no host
+callback.
 
 ## 11. Acceptance for the first real SDL3 frame
 

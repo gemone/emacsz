@@ -532,6 +532,10 @@ and explicitly reports `emacs_registered=false` and `runtime_available=false`.
 as unselected until R7 is approved with complete review metadata.  Its policy
 forbids inherited-source edits, PGTK/TTY runtime fallback, and frontend
 Elisp/layout ownership.
+`runtime_activation` defines the approved activation sequence and reverse
+rollback sequence.  The controller is selection-gated and conformance tests can
+exercise an approved fake-host path, but the current manifest remains
+`blocked_by_r7` with no registration or runtime.
 `proto-ui-runtime-host-abi` projects that contract to a generated C header and
 compiles a conformance translation unit.  `proto-ui-runtime-host` defines and conformance-tests a versioned five-group
 PureRuntimeHostV1 ABI while keeping runtime unavailable.  It does not register a

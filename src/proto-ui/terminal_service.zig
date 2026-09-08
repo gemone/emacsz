@@ -157,7 +157,34 @@ pub const TerminalService = struct {
     pub fn completeRollback(self: *TerminalService) Error!void {
         if (self.state != .rollback_pending) return error.InvalidServiceState;
         try self.rollbackHostTerminal();
+        if (self.registry_terminal_id) |registry_id| {
+            const record = self.terminals.lookup(registry_id) orelse
+                return error.InvalidServiceState;
+            const failed_generation = try self.terminals.fail(registry_id, record.generation);
+            _ = try self.terminals.completeCleanup(registry_id, failed_generation);
+            self.registry_terminal_id = null;
+        }
         self.state = .idle;
+    }
+
+    /// Rolls back a host terminal that was created but not yet activated.  A
+    /// failed host delete leaves rollback-pending state for bounded retry.
+    pub fn cancelActivation(self: *TerminalService) Error!void {
+        if (self.state != .registering) return error.InvalidServiceState;
+        const host = self.host_identity orelse return error.InvalidHostIdentity;
+        self.callIdentity("delete_terminal", host) catch |err| {
+            self.state = .rollback_pending;
+            return err;
+        };
+        const registry_id = self.registry_terminal_id orelse return error.InvalidServiceState;
+        const record = self.terminals.lookup(registry_id) orelse
+            return error.InvalidServiceState;
+        const failed_generation = try self.terminals.fail(registry_id, record.generation);
+        _ = try self.terminals.completeCleanup(registry_id, failed_generation);
+        self.host_identity = null;
+        self.registry_terminal_id = null;
+        self.state = .idle;
+        self.counters.rolled_back += 1;
     }
 
     pub fn activeTerminal(self: *const TerminalService) Error!terminal.Terminal {
@@ -289,4 +316,55 @@ test "terminal service can complete rollback pending cleanup" {
     try service.completeRollback();
     try std.testing.expectEqual(State.idle, service.state);
     try std.testing.expectEqual(@as(u64, 1), service.counters.rolled_back);
+}
+
+fn failedTerminalActivate(
+    context: *anyopaque,
+    identity: *const runtime_host.Identity,
+) callconv(.c) runtime_host.Status {
+    _ = context;
+    _ = identity;
+    return .failed;
+}
+
+fn successfulTerminalActivate(
+    context: *anyopaque,
+    identity: *const runtime_host.Identity,
+) callconv(.c) runtime_host.Status {
+    _ = context;
+    _ = identity;
+    return .ok;
+}
+
+test "terminal service rolls back a failed activation" {
+    var host: runtime_host.FakeHost = undefined;
+    const table = runtime_host.fakeTable(&host);
+    var terminals: terminal.TerminalRegistry = .{};
+    host.terminal_group.activate_terminal = failedTerminalActivate;
+    var service = try TerminalService.init(table, &terminals);
+
+    _ = try service.create(terminal.initial_generation);
+    try std.testing.expectError(error.HostCallbackFailed, service.activate());
+    try service.cancelActivation();
+    try std.testing.expectEqual(State.idle, service.state);
+    try std.testing.expectEqual(terminal.TerminalState.deleted, terminals.lookup(1).?.state);
+    try std.testing.expectEqual(@as(u64, 1), service.counters.rolled_back);
+}
+
+test "terminal service retains activation rollback for bounded retry" {
+    var host: runtime_host.FakeHost = undefined;
+    const table = runtime_host.fakeTable(&host);
+    var terminals: terminal.TerminalRegistry = .{};
+    host.terminal_group.activate_terminal = failedTerminalActivate;
+    host.terminal_group.delete_terminal = failedTerminalDelete;
+    var service = try TerminalService.init(table, &terminals);
+
+    _ = try service.create(terminal.initial_generation);
+    try std.testing.expectError(error.HostCallbackFailed, service.cancelActivation());
+    try std.testing.expectEqual(State.rollback_pending, service.state);
+
+    host.terminal_group.delete_terminal = successfulTerminalDelete;
+    try service.completeRollback();
+    try std.testing.expectEqual(State.idle, service.state);
+    try std.testing.expectEqual(terminal.TerminalState.deleted, terminals.lookup(1).?.state);
 }

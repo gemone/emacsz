@@ -225,6 +225,11 @@ selection.  The candidate forbids inherited-source edits, backend fallback, and
 frontend ownership.  The current gate still reports no activation, registration,
 or runtime.
 
+P17 runtime-activation preparation defines the approved activation order and
+reverse rollback order.  A selection-gated controller can exercise the path with
+a fake host, but the repository's current activation gate is `blocked_by_r7`,
+performs no host callback, and still reports `runtime_available=false`.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and

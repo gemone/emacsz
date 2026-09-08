@@ -88,6 +88,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P14-prep continuous capture generations | Implemented monotonic host-capture reuse from `captured` to `capturing`, atomic observation reset, stale-generation rejection, monotonic encoded/accepted `FRAME_UPDATE` identity, host-flush-bound `FLUSH` emission, and frame-lifetime render hints; no real Emacs host |
 | P15-prep terminal runtime service | Implemented `proto-ui-terminal-service` for fake-host create/activate/drain/delete orchestration with no-reuse registry IDs, drain retry, rollback-pending cleanup, and strict identity validation; no R7 approval or Emacs terminal |
 | P16-prep host adapter selection | Implemented the versioned pure-SDL3 `output_proto` candidate as unselected until an approved, metadata-complete R7 decision; machine-readable gate records no activation, registration, or runtime |
+| P17-prep runtime activation contract | Implemented a selection-gated controller plus explicit activation/rollback sequences; current gate remains blocked by pending R7 with no registration or runtime |
 
 | P9-prep authoritative geometry | Implemented in runtime bridge with host rectangle caching and frame/window/damage bounds; real monitor/DPI events pending |
 | P10-prep face-bound debug runs | Implemented with GLYPH_RUN v2, exact live-face validation, and colored SDL fallback; not production face/shaping parity |
@@ -3243,6 +3244,12 @@ pending it remains `unselected`; an approved decision also requires complete
 review metadata before selection can be marked selected.  Selection never
 implies activation: the current source and gate remain registered=false and
 runtime_available=false.
+P17 activation preparation adds a selection-gated controller and an explicit
+seven-step activation sequence with the reverse rollback order.  While R7 is
+pending, the controller rejects activation before any host callback and the
+manifest reports `blocked_by_r7`.  Unit conformance uses an approved fake-host
+decision to prove activate, rollback-on-failure, and drain paths; no real Emacs
+terminal is registered and runtime remains unavailable.
 P12 maximize preparation adds `FRAME_MAXIMIZE` v1 for horizontal and vertical
 axis flags.  The diagnostic SDL bridge applies and restores both-axis
 maximization; single-axis mapping and redisplay adaptation remain pending.
