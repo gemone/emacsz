@@ -1010,6 +1010,185 @@ fn validateWindowScrollState(state: WindowScrollState) Error!void {
         return Error.InvalidMessage;
 }
 
+pub const max_tooltip_text: usize = 120;
+
+pub const TooltipShow = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    tooltip_id: u32,
+    generation: u32,
+    window_id: u64,
+    frame_generation: u32,
+    x: i32,
+    y: i32,
+    max_width: u32,
+    max_height: u32,
+    text_length: u16 = 0,
+    reserved_tail: [2]u8 = @splat(0),
+    text: [max_tooltip_text]u8 = @splat(0),
+};
+
+pub const tooltip_show_size: usize = 164;
+
+pub const TooltipMove = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    tooltip_id: u32,
+    generation: u32,
+    window_id: u64,
+    frame_generation: u32,
+    x: i32,
+    y: i32,
+    reserved_tail: [8]u8 = @splat(0),
+};
+
+pub const tooltip_move_size: usize = 40;
+
+pub const TooltipHide = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    tooltip_id: u32,
+    generation: u32,
+    reserved_tail: [4]u8 = @splat(0),
+};
+
+pub const tooltip_hide_size: usize = 16;
+
+fn validateTooltipIdentity(payload: anytype) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or payload.reserved != 0 or
+        payload.tooltip_id == 0 or payload.generation == 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0))
+        return Error.InvalidMessage;
+    if (comptime @hasField(@TypeOf(payload), "window_id")) {
+        if (payload.window_id == 0) return Error.InvalidMessage;
+    }
+    if (comptime @hasField(@TypeOf(payload), "frame_generation")) {
+        if (payload.frame_generation == 0) return Error.InvalidMessage;
+    }
+    if (comptime @hasField(@TypeOf(payload), "max_width")) {
+        if (payload.max_width == 0 or payload.max_height == 0 or
+            payload.max_width > 16384 or payload.max_height > 16384 or
+            payload.text_length == 0 or payload.text_length > max_tooltip_text or
+            !validBoundedUtf8Text(payload.text[0..payload.text_length], max_tooltip_text) or
+            !std.mem.allEqual(u8, payload.text[payload.text_length..], 0))
+            return Error.InvalidMessage;
+    }
+}
+
+pub fn encodeTooltipShow(a: std.mem.Allocator, payload: TooltipShow, out: *std.ArrayList(u8)) !void {
+    if (payload.max_width == 0 or payload.max_height == 0 or
+        payload.max_width > 16384 or payload.max_height > 16384 or
+        payload.text_length == 0 or payload.text_length > max_tooltip_text or
+        !validBoundedUtf8Text(payload.text[0..payload.text_length], max_tooltip_text) or
+        !std.mem.allEqual(u8, payload.text[payload.text_length..], 0))
+        return Error.InvalidMessage;
+    try validateTooltipIdentity(payload);
+    var b: [tooltip_show_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = payload.flags;
+    b[3] = payload.reserved;
+    std.mem.writeInt(u32, b[4..8], payload.tooltip_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.generation, .little);
+    std.mem.writeInt(u64, b[12..20], payload.window_id, .little);
+    std.mem.writeInt(u32, b[20..24], payload.frame_generation, .little);
+    std.mem.writeInt(i32, b[24..28], payload.x, .little);
+    std.mem.writeInt(i32, b[28..32], payload.y, .little);
+    std.mem.writeInt(u32, b[32..36], payload.max_width, .little);
+    std.mem.writeInt(u32, b[36..40], payload.max_height, .little);
+    std.mem.writeInt(u16, b[40..42], payload.text_length, .little);
+    @memcpy(b[44..164], payload.text[0..max_tooltip_text]);
+    try out.appendSlice(a, &b);
+}
+
+fn decodeTooltipShow(data: []const u8) Error!TooltipShow {
+    if (data.len != tooltip_show_size) return Error.InvalidTable;
+    const payload: TooltipShow = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .tooltip_id = std.mem.readInt(u32, data[4..8], .little),
+        .generation = std.mem.readInt(u32, data[8..12], .little),
+        .window_id = std.mem.readInt(u64, data[12..20], .little),
+        .frame_generation = std.mem.readInt(u32, data[20..24], .little),
+        .x = @bitCast(std.mem.readInt(u32, data[24..28], .little)),
+        .y = @bitCast(std.mem.readInt(u32, data[28..32], .little)),
+        .max_width = std.mem.readInt(u32, data[32..36], .little),
+        .max_height = std.mem.readInt(u32, data[36..40], .little),
+        .text_length = std.mem.readInt(u16, data[40..42], .little),
+        .reserved_tail = data[42..44][0..2].*,
+        .text = data[44..164][0..max_tooltip_text].*,
+    };
+    if (payload.max_width == 0 or payload.max_height == 0 or
+        payload.max_width > 16384 or payload.max_height > 16384 or
+        payload.text_length == 0 or payload.text_length > max_tooltip_text or
+        !validBoundedUtf8Text(payload.text[0..payload.text_length], max_tooltip_text) or
+        !std.mem.allEqual(u8, payload.text[payload.text_length..], 0))
+        return Error.InvalidMessage;
+    try validateTooltipIdentity(payload);
+    return payload;
+}
+
+pub fn encodeTooltipMove(a: std.mem.Allocator, payload: TooltipMove, out: *std.ArrayList(u8)) !void {
+    try validateTooltipIdentity(payload);
+    var b: [tooltip_move_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = payload.flags;
+    b[3] = payload.reserved;
+    std.mem.writeInt(u32, b[4..8], payload.tooltip_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.generation, .little);
+    std.mem.writeInt(u64, b[12..20], payload.window_id, .little);
+    std.mem.writeInt(u32, b[20..24], payload.frame_generation, .little);
+    std.mem.writeInt(i32, b[24..28], payload.x, .little);
+    std.mem.writeInt(i32, b[28..32], payload.y, .little);
+    try out.appendSlice(a, &b);
+}
+
+fn decodeTooltipMove(data: []const u8) Error!TooltipMove {
+    if (data.len != tooltip_move_size) return Error.InvalidTable;
+    const payload: TooltipMove = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .tooltip_id = std.mem.readInt(u32, data[4..8], .little),
+        .generation = std.mem.readInt(u32, data[8..12], .little),
+        .window_id = std.mem.readInt(u64, data[12..20], .little),
+        .frame_generation = std.mem.readInt(u32, data[20..24], .little),
+        .x = @bitCast(std.mem.readInt(u32, data[24..28], .little)),
+        .y = @bitCast(std.mem.readInt(u32, data[28..32], .little)),
+        .reserved_tail = data[32..40][0..8].*,
+    };
+    try validateTooltipIdentity(payload);
+    return payload;
+}
+
+pub fn encodeTooltipHide(a: std.mem.Allocator, payload: TooltipHide, out: *std.ArrayList(u8)) !void {
+    try validateTooltipIdentity(payload);
+    var b: [tooltip_hide_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = payload.flags;
+    b[3] = payload.reserved;
+    std.mem.writeInt(u32, b[4..8], payload.tooltip_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.generation, .little);
+    try out.appendSlice(a, &b);
+}
+
+fn decodeTooltipHide(data: []const u8) Error!TooltipHide {
+    if (data.len != tooltip_hide_size) return Error.InvalidTable;
+    const payload: TooltipHide = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .tooltip_id = std.mem.readInt(u32, data[4..8], .little),
+        .generation = std.mem.readInt(u32, data[8..12], .little),
+        .reserved_tail = data[12..16][0..4].*,
+    };
+    try validateTooltipIdentity(payload);
+    return payload;
+}
+
 pub const BorderSides = struct {
     pub const top: u8 = 1 << 0;
     pub const right: u8 = 1 << 1;
@@ -2658,6 +2837,7 @@ pub const Scene = struct {
     window_positions: std.ArrayList(WindowPositionState) = .empty,
     mouse_highlights: [max_mouse_highlights]MouseHighlightState = undefined,
     mouse_highlight_count: usize = 0,
+    tooltip: ?TooltipShow = null,
     atlases: AtlasResources = undefined,
     border: ?BorderUpdate = null,
     text: std.ArrayList(TextLine) = .empty,
@@ -2749,6 +2929,7 @@ pub const Scene = struct {
         self.render_hint = null;
         self.active_update_id = null;
         self.viewport = null;
+        self.tooltip = null;
         if (self.window_tree) |*tree| protocol.freeWindowTreeSnapshot(self.allocator, tree);
         self.window_tree = null;
         self.control = .{};
@@ -2844,6 +3025,9 @@ pub const Scene = struct {
             protocol.Message.window_zones => try self.applyWindowZones(payload),
             protocol.Message.window_position => try self.applyWindowPosition(payload),
             protocol.Message.mouse_highlight => try self.applyMouseHighlight(payload),
+            protocol.Message.tooltip_show => try self.applyTooltipShow(payload),
+            protocol.Message.tooltip_move => try self.applyTooltipMove(payload),
+            protocol.Message.tooltip_hide => try self.applyTooltipHide(payload),
             protocol.Message.cursor_update => try self.applyCursorUpdate(payload),
             protocol.Message.clear_area => try self.applyClearArea(payload),
             protocol.Message.scroll_run => try self.applyScrollRun(payload),
@@ -2932,6 +3116,7 @@ pub const Scene = struct {
         self.flush = null;
         self.render_hint = null;
         self.viewport = null;
+        self.tooltip = null;
         if (self.window_tree) |*tree| protocol.freeWindowTreeSnapshot(self.allocator, tree);
         self.window_tree = null;
     }
@@ -3324,6 +3509,9 @@ pub const Scene = struct {
         self.removeWindowZonesForWindow(window_id);
         self.removeWindowPositionsForWindow(window_id);
         self.removeMouseHighlightsForWindow(window_id);
+        if (self.tooltip) |tip| {
+            if (tip.window_id == window_id) self.tooltip = null;
+        }
         self.stats.control_messages += 1;
     }
 
@@ -4367,6 +4555,63 @@ pub const Scene = struct {
         self.stats.control_messages += 1;
     }
 
+    fn validateActiveTooltipOwner(self: *Scene, envelope_frame_id: u32, window_id: u64, frame_generation: u32) Error!Window {
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != envelope_frame_id or
+            frame.generation != frame_generation or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation)
+            return Error.InvalidMessage;
+        return findWindow(self.windows.items, window_id) orelse Error.InvalidMessage;
+    }
+
+    fn applyTooltipShow(self: *Scene, payload: protocol.Payload) Error!void {
+        const tip = try decodeTooltipShow(payload.bytes);
+        const owner = try self.validateActiveTooltipOwner(payload.envelope.frame_id, tip.window_id, tip.frame_generation);
+        if (tip.x < 0 or tip.y < 0 or
+            @as(i64, tip.x) + tip.max_width > owner.width or
+            @as(i64, tip.y) + tip.max_height > owner.height)
+            return Error.InvalidMessage;
+        if (self.tooltip) |old| {
+            if (old.tooltip_id == tip.tooltip_id and tip.generation <= old.generation)
+                return Error.StaleGeneration;
+        }
+        self.tooltip = tip;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyTooltipMove(self: *Scene, payload: protocol.Payload) Error!void {
+        const move = try decodeTooltipMove(payload.bytes);
+        const owner = try self.validateActiveTooltipOwner(payload.envelope.frame_id, move.window_id, move.frame_generation);
+        const tip = self.tooltip orelse return Error.ResourceNotLive;
+        if (tip.tooltip_id != move.tooltip_id or tip.generation != move.generation or
+            tip.window_id != move.window_id)
+            return Error.InvalidMessage;
+        if (move.x < 0 or move.y < 0 or
+            @as(i64, move.x) + tip.max_width > owner.width or
+            @as(i64, move.y) + tip.max_height > owner.height)
+            return Error.InvalidMessage;
+        self.tooltip.?.x = move.x;
+        self.tooltip.?.y = move.y;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyTooltipHide(self: *Scene, payload: protocol.Payload) Error!void {
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation)
+            return Error.InvalidMessage;
+        const hide = try decodeTooltipHide(payload.bytes);
+        const tip = self.tooltip orelse return Error.ResourceNotLive;
+        if (tip.tooltip_id != hide.tooltip_id or tip.generation != hide.generation)
+            return Error.StaleGeneration;
+        self.tooltip = null;
+        self.stats.control_messages += 1;
+    }
+
     fn applyMouseHighlight(self: *Scene, payload: protocol.Payload) Error!void {
         const state = try decodeMouseHighlightState(payload.bytes);
         const frame = self.frame orelse return Error.FrameNotActive;
@@ -4940,6 +5185,160 @@ test "window scroll state validates geometry and upserts per window" {
     payload.clearRetainingCapacity();
     try std.testing.expectError(Error.InvalidMessage, encodeWindowScrollState(a, invalid, &payload));
     try std.testing.expectEqual(@as(u32, 800), scene.scroll_states.items[0].position);
+}
+
+test "tooltip lifecycle validates frame owner and bounded text" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var show: TooltipShow = .{
+        .tooltip_id = 8,
+        .generation = 1,
+        .window_id = 100,
+        .frame_generation = 1,
+        .x = 8,
+        .y = 8,
+        .max_width = 32,
+        .max_height = 16,
+    };
+    const text = "Emacs";
+    show.text_length = text.len;
+    @memcpy(show.text[0..text.len], text);
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    var invalid = show;
+    invalid.window_id = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeTooltipShow(a, invalid, &payload));
+    invalid = show;
+    invalid.frame_generation = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeTooltipShow(a, invalid, &payload));
+    invalid = show;
+    invalid.x = -1;
+    payload.clearRetainingCapacity();
+    try encodeTooltipShow(a, invalid, &payload);
+    {
+        const outside_owner = try windowLifecycleMessage(a, protocol.Message.tooltip_show, 3, 7, payload.items);
+        defer a.free(outside_owner);
+        try std.testing.expectError(Error.InvalidMessage, scene.apply(outside_owner));
+    }
+    try std.testing.expect(scene.tooltip == null);
+    payload.clearRetainingCapacity();
+    try encodeTooltipShow(a, show, &payload);
+    try std.testing.expectEqual(tooltip_show_size, payload.items.len);
+    try std.testing.expectEqual(show, try decodeTooltipShow(payload.items));
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.tooltip_show, 3, 7, payload.items);
+        defer a.free(message);
+        try scene.apply(message);
+    }
+    try std.testing.expectEqual(show, scene.tooltip.?);
+
+    payload.clearRetainingCapacity();
+    try encodeTooltipShow(a, show, &payload);
+    {
+        const stale = try windowLifecycleMessage(a, protocol.Message.tooltip_show, 4, 7, payload.items);
+        defer a.free(stale);
+        try std.testing.expectError(Error.StaleGeneration, scene.apply(stale));
+    }
+
+    payload.clearRetainingCapacity();
+    try encodeTooltipHide(a, .{ .tooltip_id = 8, .generation = 1 }, &payload);
+    {
+        const cross_frame = try windowLifecycleMessage(a, protocol.Message.tooltip_hide, 4, 8, payload.items);
+        defer a.free(cross_frame);
+        try std.testing.expectError(Error.InvalidMessage, scene.apply(cross_frame));
+    }
+
+    const move: TooltipMove = .{
+        .tooltip_id = 8,
+        .generation = 1,
+        .window_id = 100,
+        .frame_generation = 1,
+        .x = 24,
+        .y = 20,
+    };
+    payload.clearRetainingCapacity();
+    try encodeTooltipMove(a, move, &payload);
+    try std.testing.expectEqual(tooltip_move_size, payload.items.len);
+    try std.testing.expectEqual(move, try decodeTooltipMove(payload.items));
+    {
+        const accepted = try windowLifecycleMessage(a, protocol.Message.tooltip_move, 4, 7, payload.items);
+        defer a.free(accepted);
+        try scene.apply(accepted);
+    }
+    try std.testing.expectEqual(@as(i32, 24), scene.tooltip.?.x);
+    try std.testing.expectEqual(@as(i32, 20), scene.tooltip.?.y);
+
+    const hide: TooltipHide = .{ .tooltip_id = 8, .generation = 1 };
+    payload.clearRetainingCapacity();
+    try encodeTooltipHide(a, hide, &payload);
+    try std.testing.expectEqual(tooltip_hide_size, payload.items.len);
+    try std.testing.expectEqual(hide, try decodeTooltipHide(payload.items));
+    {
+        const accepted = try windowLifecycleMessage(a, protocol.Message.tooltip_hide, 5, 7, payload.items);
+        defer a.free(accepted);
+        try scene.apply(accepted);
+    }
+    try std.testing.expect(scene.tooltip == null);
+
+    payload.clearRetainingCapacity();
+    try encodeTooltipHide(a, hide, &payload);
+    {
+        const repeat = try windowLifecycleMessage(a, protocol.Message.tooltip_hide, 6, 7, payload.items);
+        defer a.free(repeat);
+        try std.testing.expectError(Error.ResourceNotLive, scene.apply(repeat));
+    }
+
+    show.text_length = text.len;
+    @memcpy(show.text[0..text.len], text);
+    payload.clearRetainingCapacity();
+    try encodeTooltipShow(a, show, &payload);
+    {
+        const shown = try windowLifecycleMessage(a, protocol.Message.tooltip_show, 6, 7, payload.items);
+        defer a.free(shown);
+        try scene.apply(shown);
+    }
+    scene.rows.deinit(a);
+    scene.rows = .empty;
+    {
+        const deleted = try windowDeleteMessage(a, 7, 7, 100);
+        defer a.free(deleted);
+        try scene.apply(deleted);
+    }
+    try std.testing.expect(scene.tooltip == null);
+
+    {
+        const recreated = try windowCreateMessage(a, 8, 7, .{
+            .window_id = 100,
+            .parent_window_id = 0,
+            .x = 0,
+            .y = 0,
+            .width = 80,
+            .height = 60,
+            .flags = 2,
+            .default_face_id = 0,
+            .depth = 0,
+        });
+        defer a.free(recreated);
+        try scene.apply(recreated);
+    }
+    {
+        const shown = try windowLifecycleMessage(a, protocol.Message.tooltip_show, 9, 7, payload.items);
+        defer a.free(shown);
+        try scene.apply(shown);
+    }
+    try std.testing.expect(scene.tooltip != null);
+    scene.clearVisualState();
+    try std.testing.expect(scene.tooltip == null);
+    scene.resetForResync();
+    try std.testing.expect(scene.tooltip == null);
 }
 
 test "mouse highlight validates state and follows window and face lifecycle" {

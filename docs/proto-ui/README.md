@@ -348,6 +348,11 @@ restore, and stale placement cleanup; SDL expands validated bits into a live
 fringe placement.  Color bitmaps, authoring semantics, and PGTK parity remain
 pending.
 
+P45 bounded-tooltip preparation adds `TOOLTIP_SHOW`/`MOVE`/`HIDE` v1 with active
+frame/window validation, exact-generation lifecycle, bounded strict UTF-8 text,
+authoritative cleanup, and SDL box/text rendering.  Platform tooltip policy,
+Unicode glyph rendering, accessibility, and PGTK parity remain pending.
+
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by
 atlas/page identity, generation, and page revision.  The runtime smoke requires
 one upload followed by at least four cache hits; smoke-level renderer-reset clearing is wired; production-wide renderer-loss

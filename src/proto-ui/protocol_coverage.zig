@@ -125,7 +125,9 @@ const ranges = [_]Range{
     .{ .low = 0x0608, .high = 0x060c, .status = .planned, .domain = .input, .family = "extended-platform", .note = "extended platform input intents pending" },
     .{ .low = 0x0700, .high = 0x0719, .status = .planned, .domain = .ime, .family = "ime", .note = "IME composition and candidate payloads pending" },
     .{ .low = 0x0800, .high = 0x0826, .status = .planned, .domain = .selection, .family = "selection-clipboard-dnd", .note = "MIME, PRIMARY/SECONDARY, and DND codecs pending" },
-    .{ .low = 0x0900, .high = 0x0941, .status = .planned, .domain = .widget, .family = "widgets", .note = "menu/toolbar/dialog/tooltip/scrollbar models pending" },
+    .{ .low = 0x0900, .high = 0x092f, .status = .planned, .domain = .widget, .family = "menu-toolbar", .note = "menu and tool bar models pending" },
+    .{ .low = 0x0930, .high = 0x0932, .status = .implemented_codec, .domain = .widget, .family = "tooltip", .note = "bounded show/move/hide codec, active frame/window validation, exact-generation lifecycle, authoritative clear, and SDL box/text render; Unicode text state validates but debug glyphs are ASCII-only" },
+    .{ .low = 0x0933, .high = 0x0941, .status = .planned, .domain = .widget, .family = "dialog-tooltip-scrollbar", .note = "dialog, remaining tooltip policies, and scrollbar model messages pending" },
     .{ .low = 0x0a00, .high = 0x0a09, .status = .planned, .domain = .diagnostic, .family = "diagnostics", .note = "performance/trace/replay diagnostic payloads pending" },
 };
 

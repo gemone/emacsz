@@ -1588,6 +1588,27 @@ Menu item fields include ID, parent, label, help, key binding, icon, enabled, se
 
 Dialog kinds include message, question, yes/no, yes/no/cancel, OK/cancel, prompt, error, progress, file open/save, font, color, and custom.
 
+#### `TOOLTIP_SHOW` / `MOVE` / `HIDE` v1 (implemented bounded adapter contract)
+
+`TOOLTIP_SHOW = 0x0930` is an exact 164-byte little-endian record: schema
+(`u16=1`), zero flags/reserved, nonzero tooltip id and generation, nonzero
+window id and active-frame generation, nonnegative owner-relative origin, a
+nonzero box up to 16,384 pixels per axis, UTF-8 length, two reserved bytes, and
+at most 120 strict UTF-8 bytes with the unused tail zero-filled.
+`TOOLTIP_MOVE = 0x0931` is an exact 40-byte placement record carrying the same
+live identity and frame/window context.  `TOOLTIP_HIDE = 0x0932` is an exact
+16-byte identity record.
+
+The envelope, frame header, payload frame generation, and live owner must agree.
+`SHOW` upserts one active tooltip; an equal/stale generation is rejected.  Move
+must name the exact live tooltip and keep its declared box inside the owner.
+Hide removes the exact live generation.  Window deletion, frame destruction or
+resync, and authoritative `FRAME_UPDATE` clear the active tooltip.  SDL draws
+the bounded box and ASCII debug text; Unicode text is validated and retained but
+is not a shaped-text or platform-tooltip contract.  Delay, dismissal policy,
+platform positioning, hit testing, accessibility, and PGTK tooltip parity remain
+pending.
+
 ## 19. Diagnostic messages
 
 | ID | Name | Direction | Payload |
@@ -1689,9 +1710,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 87 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 90 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 74 | Assigned for the target protocol but not implemented |
+| `planned` | 71 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

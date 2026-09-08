@@ -3236,6 +3236,8 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     var window_zones_rendered = false;
     var mouse_highlight_rendered = false;
     var fringe_bitmap_rendered = false;
+    var tooltip_box_rendered = false;
+    var tooltip_text_rendered = false;
     var cursor_update_rendered = false;
     for (draw_list.commands.items) |command| {
         switch (command) {
@@ -3549,6 +3551,131 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     }
     if (!fringe_bitmap_rendered) return error.RuntimeBridgeFringeBitmapNotRendered;
 
+    var tooltip_show: frontend.TooltipShow = .{
+        .tooltip_id = 10,
+        .generation = 1,
+        .window_id = 10,
+        .frame_generation = bridge.eup_frame_generation,
+        .x = 16,
+        .y = 16,
+        .max_width = 32,
+        .max_height = 16,
+    };
+    const tooltip_text = "Tooltip";
+    tooltip_show.text_length = tooltip_text.len;
+    @memcpy(tooltip_show.text[0..tooltip_text.len], tooltip_text);
+    var tooltip_payload: std.ArrayList(u8) = .empty;
+    defer tooltip_payload.deinit(gpa);
+    try frontend.encodeTooltipShow(gpa, tooltip_show, &tooltip_payload);
+    var tooltip_update: std.ArrayList(u8) = .empty;
+    defer tooltip_update.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.tooltip_show,
+        .sequence = 49,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, tooltip_payload.items, &tooltip_update);
+    try scene.apply(tooltip_update.items);
+
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .fill => |fill| {
+                if (fill.rect.x == 24 and fill.rect.y == 24 and
+                    fill.rect.width == 32 and fill.rect.height == 16 and
+                    fill.color.r == 0x20 and fill.color.g == 0x24 and fill.color.b == 0x2c)
+                    tooltip_box_rendered = true;
+            },
+            .text => |text| {
+                if (text.x == 28 and text.y == 27 and std.mem.eql(u8, text.bytes, tooltip_text))
+                    tooltip_text_rendered = true;
+            },
+            else => {},
+        }
+    }
+    if (!tooltip_box_rendered or !tooltip_text_rendered)
+        return error.RuntimeBridgeTooltipNotRendered;
+
+    tooltip_payload.clearRetainingCapacity();
+    try frontend.encodeTooltipMove(gpa, .{
+        .tooltip_id = 10,
+        .generation = 1,
+        .window_id = 10,
+        .frame_generation = bridge.eup_frame_generation,
+        .x = 24,
+        .y = 24,
+    }, &tooltip_payload);
+    tooltip_update.clearRetainingCapacity();
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.tooltip_move,
+        .sequence = 50,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, tooltip_payload.items, &tooltip_update);
+    try scene.apply(tooltip_update.items);
+    if (scene.tooltip.?.x != 24 or scene.tooltip.?.y != 24)
+        return error.RuntimeBridgeTooltipMoveInvalid;
+
+    var moved_tooltip_box = false;
+    var moved_tooltip_text = false;
+    var stale_tooltip_box = false;
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .fill => |fill| {
+                if (fill.rect.x == 32 and fill.rect.y == 32 and
+                    fill.rect.width == 32 and fill.rect.height == 16 and
+                    fill.color.r == 0x20 and fill.color.g == 0x24 and fill.color.b == 0x2c)
+                    moved_tooltip_box = true;
+                if (fill.rect.x == 24 and fill.rect.y == 24 and
+                    fill.rect.width == 32 and fill.rect.height == 16 and
+                    fill.color.r == 0x20 and fill.color.g == 0x24 and fill.color.b == 0x2c)
+                    stale_tooltip_box = true;
+            },
+            .text => |text| {
+                if (text.x == 36 and text.y == 35 and std.mem.eql(u8, text.bytes, tooltip_text))
+                    moved_tooltip_text = true;
+            },
+            else => {},
+        }
+    }
+    if (!moved_tooltip_box or !moved_tooltip_text or stale_tooltip_box)
+        return error.RuntimeBridgeTooltipMoveNotRendered;
+
+    tooltip_payload.clearRetainingCapacity();
+    try frontend.encodeTooltipHide(gpa, .{ .tooltip_id = 10, .generation = 1 }, &tooltip_payload);
+    tooltip_update.clearRetainingCapacity();
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.tooltip_hide,
+        .sequence = 51,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, tooltip_payload.items, &tooltip_update);
+    try scene.apply(tooltip_update.items);
+    if (scene.tooltip != null) return error.RuntimeBridgeTooltipHideInvalid;
+
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .fill => |fill| {
+                if (fill.rect.x == 32 and fill.rect.y == 32 and
+                    fill.rect.width == 32 and fill.rect.height == 16 and
+                    fill.color.r == 0x20 and fill.color.g == 0x24 and fill.color.b == 0x2c)
+                    return error.RuntimeBridgeTooltipHideNotRendered;
+            },
+            else => {},
+        }
+    }
+
     const explicit_clip = renderer_policy.explicitDamageClip(240, 96, &explicit_damage);
     if (explicit_clip == null) return error.RuntimeBridgeExplicitClipInvalid;
     frame_gate.dirty = true;
@@ -3649,7 +3776,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"tooltip\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,
@@ -5278,6 +5405,27 @@ fn buildSceneDrawList(
             .width = @floatFromInt(size.width),
             .height = @floatFromInt(size.height),
         }, .{ .r = 0xff, .g = 0xd5, .b = 0x4d });
+    }
+
+    if (scene.tooltip) |tip| {
+        const owner = findSceneWindow(scene, tip.window_id) orelse return error.TooltipWithoutWindow;
+        const rect = renderer_policy.LogicalRect{
+            .x = @floatFromInt(owner.x + tip.x),
+            .y = @floatFromInt(owner.y + tip.y),
+            .width = @floatFromInt(tip.max_width),
+            .height = @floatFromInt(tip.max_height),
+        };
+        try list.fillRect(rect, .{ .r = 0x20, .g = 0x24, .b = 0x2c });
+        try list.fillRect(.{ .x = rect.x, .y = rect.y, .width = rect.width, .height = 1 }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2 });
+        try list.fillRect(.{ .x = rect.x, .y = rect.y + rect.height - 1, .width = rect.width, .height = 1 }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2 });
+        try list.fillRect(.{ .x = rect.x, .y = rect.y, .width = 1, .height = rect.height }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2 });
+        try list.fillRect(.{ .x = rect.x + rect.width - 1, .y = rect.y, .width = 1, .height = rect.height }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2 });
+        const text = tip.text[0..tip.text_length];
+        // The debug text path is ASCII-only; Unicode tooltip state is validated
+        // and retained, but full font rendering is not claimed here.
+        if (input_policy.isAsciiText(text)) {
+            try list.drawText(rect.x + 4, rect.y + 3, text, .{ .r = 0xff, .g = 0xd5, .b = 0x4d });
+        }
     }
 }
 
