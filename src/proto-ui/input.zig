@@ -453,6 +453,99 @@ pub const TextEvent = struct {
     }
 };
 
+pub const ScrollbarDragTracker = struct {
+    active: bool = false,
+    window_id: u64 = 0,
+    frame_generation: u32 = 0,
+    pointer_buttons: u32 = 0,
+    start_y: i32 = 0,
+    last_y: i32 = 0,
+
+    pub fn hitTestTrack(
+        state: frontend.WindowScrollState,
+        owner: frontend.Window,
+        x: i32,
+        y: i32,
+    ) bool {
+        if (state.flags & frontend.WindowScrollFlags.vertical_visible == 0 or
+            state.window_id != owner.id or state.track_width == 0 or
+            state.track_width > owner.width or state.content_size <= state.viewport_size)
+            return false;
+        const left = owner.x + owner.width - @as(i32, @intCast(state.track_width));
+        return x >= left and x < owner.x + owner.width and
+            y >= owner.y and y < owner.y + owner.height;
+    }
+
+    pub fn begin(
+        self: *ScrollbarDragTracker,
+        state: frontend.WindowScrollState,
+        owner: frontend.Window,
+        x: i32,
+        y: i32,
+        buttons: u32,
+    ) !void {
+        if (self.active) return error.ScrollbarDragActive;
+        if (state.frame_generation == 0 or !hitTestTrack(state, owner, x, y))
+            return error.NotOnScrollbar;
+        if (buttons == 0) return error.InvalidPointerButtons;
+        self.* = .{
+            .active = true,
+            .window_id = state.window_id,
+            .frame_generation = state.frame_generation,
+            .pointer_buttons = buttons,
+            .start_y = y,
+            .last_y = y,
+        };
+    }
+
+    pub fn drag(self: *ScrollbarDragTracker, x: i32, y: i32, buttons: u32) !?protocol.ScrollRequest {
+        if (!self.active) return error.ScrollbarDragInactive;
+        if (buttons != self.pointer_buttons) return error.PointerButtonsChanged;
+        if (x == std.math.minInt(i32)) return error.InvalidScrollbarPoint;
+        const delta_i64: i64 = @as(i64, y) - @as(i64, self.last_y);
+        if (delta_i64 == 0) return null;
+        if (delta_i64 > std.math.maxInt(i32) or delta_i64 < std.math.minInt(i32))
+            return error.InvalidScrollDelta;
+        const delta: i32 = @intCast(delta_i64);
+        const request: protocol.ScrollRequest = .{
+            .kind = .relative,
+            .axis = .vertical,
+            .window_id = self.window_id,
+            .position = 0,
+            .delta = delta,
+            .frame_generation = self.frame_generation,
+        };
+        protocol.validateScrollRequest(request) catch return error.InvalidScrollRequest;
+        self.last_y = y;
+        return request;
+    }
+
+    pub fn dragBy(
+        self: *ScrollbarDragTracker,
+        delta: i32,
+        buttons: u32,
+    ) !?protocol.ScrollRequest {
+        if (!self.active) return error.ScrollbarDragInactive;
+        if (buttons != self.pointer_buttons) return error.PointerButtonsChanged;
+        if (delta == 0) return null;
+        const request: protocol.ScrollRequest = .{
+            .kind = .relative,
+            .axis = .vertical,
+            .window_id = self.window_id,
+            .delta = delta,
+            .frame_generation = self.frame_generation,
+        };
+        protocol.validateScrollRequest(request) catch return error.InvalidScrollRequest;
+        self.last_y += delta;
+        return request;
+    }
+
+    pub fn release(self: *ScrollbarDragTracker, buttons: u32) void {
+        if (!self.active or buttons != self.pointer_buttons) return;
+        self.* = .{};
+    }
+};
+
 pub const TranslatedEvent = union(enum) {
     key: frontend.KeyEvent,
     key_v2: FullKeyEvent,
@@ -1204,6 +1297,42 @@ test "scroll requests negotiate and preserve bounded intent order" {
     try std.testing.expectEqual(absolute, sent.?.event.scroll);
     if (!journal.acknowledge(sent.?.sequence)) return error.AckMismatch;
     try std.testing.expect((journal.take() catch unreachable) == null);
+}
+
+test "scrollbar drag tracker emits bounded relative requests" {
+    const state: frontend.WindowScrollState = .{
+        .flags = frontend.WindowScrollFlags.vertical_visible,
+        .window_id = 10,
+        .frame_generation = 4,
+        .content_size = 2000,
+        .viewport_size = 400,
+        .position = 100,
+        .track_width = 12,
+    };
+    const owner: frontend.Window = .{
+        .id = 10,
+        .frame_id = 7,
+        .x = 40,
+        .y = 30,
+        .width = 300,
+        .height = 500,
+    };
+    try std.testing.expect(ScrollbarDragTracker.hitTestTrack(state, owner, 330, 80));
+    try std.testing.expect(!ScrollbarDragTracker.hitTestTrack(state, owner, 320, 80));
+
+    var tracker: ScrollbarDragTracker = .{};
+    try tracker.begin(state, owner, 330, 80, 1);
+    try std.testing.expectEqual(@as(?protocol.ScrollRequest, null), try tracker.drag(330, 80, 1));
+
+    const first = (try tracker.drag(330, 85, 1)).?;
+    try std.testing.expectEqual(protocol.ScrollRequestKind.relative, first.kind);
+    try std.testing.expectEqual(@as(i32, 5), first.delta);
+    const second = (try tracker.drag(330, 82, 1)).?;
+    try std.testing.expectEqual(@as(i32, -3), second.delta);
+    try std.testing.expectError(error.PointerButtonsChanged, tracker.drag(330, 84, 0));
+    tracker.release(1);
+    try std.testing.expect(!tracker.active);
+    try std.testing.expectError(error.ScrollbarDragInactive, tracker.drag(330, 86, 1));
 }
 
 test "delivery journal retries the same intent and sequence after reconnect" {
