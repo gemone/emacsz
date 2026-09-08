@@ -476,6 +476,17 @@ range, zero/oversized track width, truncation, or stale generation are rejected.
 track/thumb. Drag requests, horizontal scroll, and core-owned scroll semantics
 remain pending.
 
+#### `WINDOW_SCROLL_REQUEST` v1 (implemented bounded adapter contract)
+
+`WINDOW_SCROLL_REQUEST = 0x0309` is an exact 40-byte little-endian reverse
+intent.  Layout: schema (`u16=1`), kind, axis, reserved, nonzero window id,
+64-bit position, 32-bit delta, active-frame generation, and four reserved
+bytes.  Kind `absolute` requires nonnegative position and zero delta; kind
+`relative` requires nonzero delta and zero position.  Axis is vertical or
+horizontal.  Delivery requires negotiated `window.scroll_request_v1`, while
+actual application remains core-owned.  Horizontal rendering and full scrollbar
+semantics remain pending.
+
 ### 11.1 `WINDOW_TREE_SNAPSHOT` v1 (implemented bounded adapter contract)
 
 `WINDOW_TREE_SNAPSHOT = 0x0300` is an authoritative complete-tree state message.

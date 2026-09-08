@@ -613,6 +613,8 @@ fn writeTranslatedEvent(
         // Emacs core fallback and no local mutation.
         .focus => {},
         .window => {},
+        // Reverse scroll intents are EPXL-only and require negotiated capability.
+        .scroll => {},
     }
 }
 
@@ -1428,6 +1430,10 @@ fn sendDeliveryEvent(
             try protocol.encodeWindowRequest(gpa, request, &payload);
             break :blk protocol.Message.window_request;
         },
+        .scroll => |request| blk: {
+            try protocol.encodeScrollRequest(gpa, request, &payload);
+            break :blk protocol.Message.scroll_request;
+        },
     };
     var input_message: std.ArrayList(u8) = .empty;
     defer input_message.deinit(gpa);
@@ -1612,6 +1618,7 @@ fn awaitFrameAck(
                 const is_wheel = payload.envelope.message_type == protocol.Message.wheel_event;
                 const is_focus = payload.envelope.message_type == protocol.Message.focus_event;
                 const is_window = payload.envelope.message_type == protocol.Message.window_request;
+                const is_scroll_request = payload.envelope.message_type == protocol.Message.scroll_request;
                 var copy_action = false;
                 if (is_key_v2) {
                     full_key = try input_policy.decodeFullKeyEvent(payload.bytes);
@@ -1627,7 +1634,8 @@ fn awaitFrameAck(
                         (is_pointer and !is_pointer_v2 and capabilities.contains(.input_pointer_bounded))) or
                     (is_wheel and capabilities.contains(.input_wheel_line)) or
                     (is_focus and capabilities.contains(.platform_focus_window_events)) or
-                    (is_window and capabilities.contains(.platform_focus_window_events));
+                    (is_window and capabilities.contains(.platform_focus_window_events)) or
+                    (is_scroll_request and capabilities.contains(.window_scroll_request_v1));
                 if (!input_allowed or
                     payload.envelope.flags & protocol.Flags.requires_ack == 0 or
                     payload.envelope.ack_sequence != 0 or
@@ -1680,6 +1688,22 @@ fn awaitFrameAck(
                     );
                     defer gpa.free(value);
                     try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "platform-focus", value);
+                } else if (is_scroll_request) {
+                    const event = try protocol.decodeScrollRequest(payload.bytes);
+                    const value = try std.fmt.allocPrint(
+                        gpa,
+                        "{{\"kind\":\"{s}\",\"axis\":\"{s}\",\"window_id\":{d},\"position\":{d},\"delta\":{d},\"frame_generation\":{d},\"execution\":\"observed\"}}",
+                        .{
+                            @tagName(event.kind),
+                            @tagName(event.axis),
+                            event.window_id,
+                            event.position,
+                            event.delta,
+                            event.frame_generation,
+                        },
+                    );
+                    defer gpa.free(value);
+                    try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "scroll-request", value);
                 } else if (is_window) {
                     const event = try protocol.decodeWindowRequest(payload.bytes);
                     const value = try std.fmt.allocPrint(
@@ -3430,6 +3454,7 @@ fn inputEventAllowed(capabilities: capability.Set, event: input_policy.Translate
         .wheel => capabilities.contains(.input_wheel_line),
         .focus => capabilities.contains(.platform_focus_window_events),
         .window => capabilities.contains(.platform_focus_window_events),
+        .scroll => capabilities.contains(.window_scroll_request_v1),
     };
 }
 

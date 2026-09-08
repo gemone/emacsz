@@ -3295,6 +3295,7 @@ P25 row-lifecycle preparation adds granular `ROW_SNAPSHOT`, `ROW_UPDATE`, and `R
 P26 font-metrics preparation adds `FONT_METRICS` v1, a bounded metrics patch that updates ascent, descent, line height, average advance, and max advance with strict expected/new generation checks.  This improves resource evolution; real font metrics and shaped rendering remain pending.
 P27 update-boundary preparation adds strict `BEGIN_UPDATE`/`END_UPDATE` v1 codecs with active-frame checks, non-nested IDs, and deterministic close validation.  Redisplay wiring remains pending.
 P28 scrollbar-state preparation adds `WINDOW_SCROLL_STATE` v1 with content/viewport/position validation and one upsert per window.  The SDL draw list renders a proportional vertical track/thumb; drag requests and core-owned scroll semantics remain pending.
+P29 scroll-request preparation adds a bounded absolute/relative reverse intent for vertical or horizontal scrolling, negotiated queue delivery, and EPXL encoding/acknowledgement.  Actual core application of the intent remains pending.
 strike-through, and box policies into bounded bars in the SDL debug glyph path.
 Style-color variants use their dedicated RGBA colors, while single styles use
 the face foreground.  These are conservative approximation bars, not shaped-text

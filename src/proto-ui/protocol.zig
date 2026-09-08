@@ -125,6 +125,7 @@ pub const Message = struct {
     pub const wheel_event: u16 = 0x0603;
     pub const focus_event: u16 = 0x0606;
     pub const window_request: u16 = 0x0607;
+    pub const scroll_request: u16 = 0x0309;
     pub const extension: u16 = 0xf000;
     pub const invalid: u16 = 0xffff;
 };
@@ -1594,6 +1595,83 @@ pub fn decodeFocusEvent(data: []const u8) Error!FocusEvent {
         .sdl_window_id = std.mem.readInt(u32, data[8..12], .little),
     };
     try validateFocusEvent(payload);
+    return payload;
+}
+
+pub const ScrollRequestKind = enum(u8) {
+    absolute = 1,
+    relative = 2,
+};
+
+pub const ScrollAxis = enum(u8) {
+    vertical = 1,
+    horizontal = 2,
+};
+
+pub const ScrollRequest = struct {
+    schema: u16 = 1,
+    kind: ScrollRequestKind,
+    axis: ScrollAxis,
+    reserved: u8 = 0,
+    window_id: u64,
+    position: i64,
+    delta: i32,
+    frame_generation: u32,
+    reserved_tail: [4]u8 = @splat(0),
+};
+
+pub const scroll_request_size: usize = 40;
+pub const scroll_request_schema: u16 = 1;
+
+pub fn validateScrollRequest(payload: ScrollRequest) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or payload.window_id == 0 or
+        payload.frame_generation == 0 or !std.mem.allEqual(u8, &payload.reserved_tail, 0))
+        return Error.InvalidMessage;
+    switch (payload.kind) {
+        .absolute => {
+            if (payload.position < 0 or payload.delta != 0) return Error.InvalidMessage;
+        },
+        .relative => {
+            if (payload.delta == 0 or payload.position != 0) return Error.InvalidMessage;
+        },
+    }
+}
+
+pub fn encodeScrollRequest(a: std.mem.Allocator, payload: ScrollRequest, out: *std.ArrayList(u8)) !void {
+    try validateScrollRequest(payload);
+    var bytes: [scroll_request_size]u8 = @splat(0);
+    std.mem.writeInt(u16, bytes[0..2], payload.schema, .little);
+    bytes[2] = @intFromEnum(payload.kind);
+    bytes[3] = @intFromEnum(payload.axis);
+    std.mem.writeInt(u64, bytes[8..16], payload.window_id, .little);
+    std.mem.writeInt(i64, bytes[16..24], payload.position, .little);
+    std.mem.writeInt(i32, bytes[24..28], payload.delta, .little);
+    std.mem.writeInt(u32, bytes[28..32], payload.frame_generation, .little);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeScrollRequest(data: []const u8) Error!ScrollRequest {
+    if (data.len != scroll_request_size) return Error.InvalidTable;
+    if (std.mem.readInt(u16, data[0..2], .little) != scroll_request_schema)
+        return Error.InvalidTable;
+    if (data[4] != 0 or !std.mem.allEqual(u8, data[32..40], 0)) return Error.InvalidReserved;
+    const payload: ScrollRequest = .{
+        .kind = switch (data[2]) {
+            1 => .absolute,
+            2 => .relative,
+            else => return Error.InvalidTable,
+        },
+        .axis = switch (data[3]) {
+            1 => .vertical,
+            2 => .horizontal,
+            else => return Error.InvalidTable,
+        },
+        .window_id = std.mem.readInt(u64, data[8..16], .little),
+        .position = std.mem.readInt(i64, data[16..24], .little),
+        .delta = std.mem.readInt(i32, data[24..28], .little),
+        .frame_generation = std.mem.readInt(u32, data[28..32], .little),
+    };
+    try validateScrollRequest(payload);
     return payload;
 }
 

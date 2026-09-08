@@ -462,6 +462,7 @@ pub const TranslatedEvent = union(enum) {
     wheel: frontend.WheelInput,
     focus: protocol.FocusEvent,
     window: protocol.WindowRequest,
+    scroll: protocol.ScrollRequest,
 };
 
 pub const TextSupport = enum { ascii, unicode };
@@ -530,6 +531,13 @@ pub const Queue = struct {
         self.length += 1;
     }
 
+    pub fn pushScrollRequest(self: *Queue, event: protocol.ScrollRequest) !void {
+        protocol.validateScrollRequest(event) catch return error.InvalidScrollRequest;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .scroll = event };
+        self.length += 1;
+    }
+
     pub fn pushText(self: *Queue, text: []const u8) !void {
         if (!validTextInput(text)) return error.InvalidInputText;
         if (self.length == queue_capacity) return error.InputQueueFull;
@@ -577,6 +585,7 @@ pub const DeliveryJournal = struct {
     key_v2_negotiated: bool = false,
     pointer_v2_negotiated: bool = false,
     platform_negotiated: bool = false,
+    scroll_request_negotiated: bool = false,
     pointer_v2_buttons: u32 = 0,
     pointer_v2_clicks: u8 = 0,
 
@@ -678,6 +687,12 @@ pub const DeliveryJournal = struct {
         if (!self.platform_negotiated) return error.PlatformCapabilityNotNegotiated;
         if (self.pointer_active) return error.PointerSessionActive;
         try self.queue.pushWindow(event);
+    }
+
+    pub fn pushScrollRequest(self: *DeliveryJournal, event: protocol.ScrollRequest) !void {
+        if (!self.scroll_request_negotiated) return error.ScrollRequestCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushScrollRequest(event);
     }
 
     /// SDL poll paths use this for incidental platform observations.  The
@@ -1158,6 +1173,37 @@ test "queue and journal accept bounded pointer intents" {
     const sent = (try journal.take()).?;
     try std.testing.expectEqual(frontend.PointerPhase.release, sent.event.pointer.phase);
     try std.testing.expect(journal.acknowledge(sent.sequence));
+}
+
+test "scroll requests negotiate and preserve bounded intent order" {
+    var journal: DeliveryJournal = .{};
+    const absolute: protocol.ScrollRequest = .{
+        .kind = .absolute,
+        .axis = .vertical,
+        .window_id = 10,
+        .position = 120,
+        .delta = 0,
+        .frame_generation = 3,
+    };
+
+    try std.testing.expectError(error.ScrollRequestCapabilityNotNegotiated, journal.pushScrollRequest(absolute));
+    journal.scroll_request_negotiated = true;
+    try journal.pushScrollRequest(absolute);
+
+    const invalid: protocol.ScrollRequest = .{
+        .kind = .relative,
+        .axis = .vertical,
+        .window_id = 10,
+        .position = 999,
+        .delta = 0,
+        .frame_generation = 3,
+    };
+    try std.testing.expectError(error.InvalidScrollRequest, journal.pushScrollRequest(invalid));
+
+    const sent = try journal.take();
+    try std.testing.expectEqual(absolute, sent.?.event.scroll);
+    if (!journal.acknowledge(sent.?.sequence)) return error.AckMismatch;
+    try std.testing.expect((journal.take() catch unreachable) == null);
 }
 
 test "delivery journal retries the same intent and sequence after reconnect" {
