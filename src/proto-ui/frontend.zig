@@ -2859,6 +2859,7 @@ pub const Scene = struct {
     active_update_id: ?u32 = null,
     viewport: ?Viewport = null,
     window_tree: ?protocol.WindowTreeSnapshot = null,
+    menu_model: ?protocol.MenuModelSnapshot = null,
     control: session.Control = .{},
     stats: ApplyStats = .{},
 
@@ -2932,6 +2933,8 @@ pub const Scene = struct {
         self.tooltip = null;
         if (self.window_tree) |*tree| protocol.freeWindowTreeSnapshot(self.allocator, tree);
         self.window_tree = null;
+        if (self.menu_model) |*model| protocol.freeMenuModelSnapshot(self.allocator, model);
+        self.menu_model = null;
         self.control = .{};
         self.image_placement_count = 0;
         self.stats = .{};
@@ -3000,6 +3003,7 @@ pub const Scene = struct {
             protocol.Message.row_update => try self.applyRowUpdate(payload),
             protocol.Message.row_delete => try self.applyRowDelete(payload),
             protocol.Message.window_tree_snapshot => try self.applyWindowTreeSnapshot(payload),
+            protocol.Message.menu_model => try self.applyMenuModel(payload),
             protocol.Message.glyph_run => try self.applyGlyphRun(payload),
             protocol.Message.glyph_run_delete => try self.applyGlyphRunDelete(payload),
             protocol.Message.frame_visibility => try self.applyFrameVisibility(payload),
@@ -3119,6 +3123,8 @@ pub const Scene = struct {
         self.tooltip = null;
         if (self.window_tree) |*tree| protocol.freeWindowTreeSnapshot(self.allocator, tree);
         self.window_tree = null;
+        if (self.menu_model) |*model| protocol.freeMenuModelSnapshot(self.allocator, model);
+        self.menu_model = null;
     }
 
     fn clearGlyphRuns(self: *Scene) void {
@@ -3824,6 +3830,33 @@ pub const Scene = struct {
         }
         if (self.window_tree) |*old| protocol.freeWindowTreeSnapshot(self.allocator, old);
         self.window_tree = tree;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyMenuModel(self: *Scene, payload: protocol.Payload) Error!void {
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        var model = try protocol.decodeMenuModelSnapshot(self.allocator, payload.bytes);
+        errdefer protocol.freeMenuModelSnapshot(self.allocator, &model);
+        if (payload.envelope.frame_id != frame.frame_id or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation or
+            model.header.frame_id != frame.frame_id or
+            model.header.frame_generation != frame.generation)
+        {
+            protocol.freeMenuModelSnapshot(self.allocator, &model);
+            return Error.InvalidMessage;
+        }
+        if (self.menu_model) |old| {
+            if (old.header.menu_id == model.header.menu_id and
+                model.header.menu_generation <= old.header.menu_generation)
+            {
+                protocol.freeMenuModelSnapshot(self.allocator, &model);
+                return Error.StaleGeneration;
+            }
+        }
+        if (self.menu_model) |*old| protocol.freeMenuModelSnapshot(self.allocator, old);
+        self.menu_model = model;
         self.stats.control_messages += 1;
     }
 
@@ -5339,6 +5372,79 @@ test "tooltip lifecycle validates frame owner and bounded text" {
     try std.testing.expect(scene.tooltip == null);
     scene.resetForResync();
     try std.testing.expect(scene.tooltip == null);
+}
+
+test "menu model validates active frame and generation lifecycle" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var nodes = [_]protocol.MenuNode{.{
+        .item_id = 20,
+        .parent_item_id = 0,
+        .kind = .submenu,
+        .flags = protocol.MenuNodeFlags.enabled | protocol.MenuNodeFlags.visible,
+        .depth = 0,
+        .label_len = 4,
+    }};
+    @memcpy(nodes[0].label[0..4], "File");
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeMenuModelSnapshot(a, .{
+        .header = .{ .frame_id = 7, .frame_generation = 1, .menu_id = 3, .menu_generation = 1 },
+        .nodes = &nodes,
+    }, &payload);
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.menu_model, 3, 7, payload.items);
+        defer a.free(message);
+        try scene.apply(message);
+    }
+    try std.testing.expectEqualStrings("File", scene.menu_model.?.nodes[0].label[0..4]);
+
+    {
+        const stale = try windowLifecycleMessage(a, protocol.Message.menu_model, 4, 7, payload.items);
+        defer a.free(stale);
+        try std.testing.expectError(Error.StaleGeneration, scene.apply(stale));
+    }
+    try std.testing.expectEqual(@as(u32, 1), scene.menu_model.?.header.menu_generation);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeMenuModelSnapshot(a, .{
+        .header = .{ .frame_id = 7, .frame_generation = 1, .menu_id = 3, .menu_generation = 2 },
+        .nodes = &nodes,
+    }, &payload);
+    {
+        const replacement = try windowLifecycleMessage(a, protocol.Message.menu_model, 4, 7, payload.items);
+        defer a.free(replacement);
+        try scene.apply(replacement);
+    }
+    try std.testing.expectEqual(@as(u32, 2), scene.menu_model.?.header.menu_generation);
+
+    {
+        var destroy_payload: [8]u8 = undefined;
+        std.mem.writeInt(u32, destroy_payload[0..4], 7, .little);
+        std.mem.writeInt(u32, destroy_payload[4..8], 1, .little);
+        var destroy_message: std.ArrayList(u8) = .empty;
+        defer destroy_message.deinit(a);
+        try protocol.encodeEnvelope(a, .{
+            .flags = 0,
+            .message_type = protocol.Message.frame_destroy,
+            .sequence = 5,
+            .ack_sequence = 0,
+            .session_id = 9,
+            .frame_id = 7,
+            .timestamp_ns = 5,
+        }, &destroy_payload, &destroy_message);
+        try scene.apply(destroy_message.items);
+    }
+    try std.testing.expect(scene.menu_model == null);
+    try std.testing.expect(scene.frame == null);
 }
 
 test "mouse highlight validates state and follows window and face lifecycle" {

@@ -1588,6 +1588,32 @@ Menu item fields include ID, parent, label, help, key binding, icon, enabled, se
 
 Dialog kinds include message, question, yes/no, yes/no/cancel, OK/cancel, prompt, error, progress, file open/save, font, color, and custom.
 
+#### `MENU_MODEL` v1 (implemented bounded adapter contract)
+
+`MENU_MODEL = 0x0900` is an authoritative complete menu-tree snapshot.  Its
+little-endian payload is a 32-byte header followed by 1..32 fixed 176-byte node
+records.  The header carries schema (`u16=1`), zero flags/reserved, active frame
+id/generation, nonzero menu id and strictly advancing generation, node count,
+and eight reserved bytes.
+
+Each node carries nonzero item id, optional parent item id, kind, flags, depth
+(`0..4`), and three exact UTF-8 byte strings: label, help text, and key binding.
+The fixed fields are 64-byte label, 64-byte help, and 32-byte key tails; unused
+tail bytes must be zero.  Kinds are `separator`, `command`, `checkbox`, `radio`,
+and `submenu`.  Flags are enabled, visible, and selected.  Separators have no
+text and no enabled/selected state; every other item requires a label.  Selected
+is valid only for enabled visible checkbox/radio items.  A child must have a
+visible enabled submenu parent, exact parent depth plus one, and no cycle.
+
+The envelope, payload frame identity, and active frame/header must agree.  The
+Scene replaces a complete model when the menu id is new or the generation is
+strictly newer, and clears it on frame destroy, resync, or teardown.  SDL renders
+a diagnostic menu bar for top-level visible items and ASCII debug labels.
+Unicode labels validate but the debug glyph path does not render them.  Menu
+patches, open/close state, navigation, hover, result dispatch, native menus,
+disabled hit testing, accessibility, keymap execution, and PGTK menu parity
+remain pending.
+
 #### `TOOLTIP_SHOW` / `MOVE` / `HIDE` v1 (implemented bounded adapter contract)
 
 `TOOLTIP_SHOW = 0x0930` is an exact 164-byte little-endian record: schema
@@ -1710,9 +1736,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 90 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 91 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 71 | Assigned for the target protocol but not implemented |
+| `planned` | 70 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

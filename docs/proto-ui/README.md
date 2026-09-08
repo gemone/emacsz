@@ -353,6 +353,11 @@ frame/window validation, exact-generation lifecycle, bounded strict UTF-8 text,
 authoritative cleanup, and SDL box/text rendering.  Platform tooltip policy,
 Unicode glyph rendering, accessibility, and PGTK parity remain pending.
 
+P46 menu-model preparation adds `MENU_MODEL` v1 with a bounded authoritative
+menu tree, strict UTF-8 and hierarchy validation, generation replacement, Scene
+ownership, and a diagnostic SDL menu bar.  Open state, navigation, result
+dispatch, native menus, and full menu semantics remain pending.
+
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by
 atlas/page identity, generation, and page revision.  The runtime smoke requires
 one upload followed by at least four cache hits; smoke-level renderer-reset clearing is wired; production-wide renderer-loss

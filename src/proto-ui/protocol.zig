@@ -134,6 +134,7 @@ pub const Message = struct {
     pub const tooltip_show: u16 = 0x0930;
     pub const tooltip_move: u16 = 0x0931;
     pub const tooltip_hide: u16 = 0x0932;
+    pub const menu_model: u16 = 0x0900;
     pub const key_event: u16 = 0x0600;
     pub const text_input: u16 = 0x0601;
     pub const pointer_event: u16 = 0x0602;
@@ -2335,6 +2336,239 @@ pub fn decodeWindowTreeSnapshot(
 }
 
 pub fn freeWindowTreeSnapshot(a: std.mem.Allocator, snapshot: *WindowTreeSnapshot) void {
+    a.free(snapshot.nodes);
+    snapshot.nodes = &.{};
+}
+
+pub const MenuNodeKind = enum(u8) {
+    separator = 1,
+    command = 2,
+    checkbox = 3,
+    radio = 4,
+    submenu = 5,
+};
+
+pub const MenuNodeFlags = struct {
+    pub const enabled: u8 = 1 << 0;
+    pub const visible: u8 = 1 << 1;
+    pub const selected: u8 = 1 << 2;
+    pub const known: u8 = enabled | visible | selected;
+};
+
+pub const MenuModelHeader = struct {
+    frame_id: u32,
+    frame_generation: u32,
+    menu_id: u32,
+    menu_generation: u32,
+};
+
+pub const MenuNode = struct {
+    item_id: u32,
+    parent_item_id: u32,
+    kind: MenuNodeKind,
+    flags: u8,
+    depth: u8,
+    label: [64]u8 = @splat(0),
+    label_len: u8 = 0,
+    help: [64]u8 = @splat(0),
+    help_len: u8 = 0,
+    key: [32]u8 = @splat(0),
+    key_len: u8 = 0,
+};
+
+pub const MenuModelSnapshot = struct {
+    header: MenuModelHeader,
+    nodes: []const MenuNode,
+};
+
+pub const menu_model_header_size: usize = 32;
+pub const menu_node_size: usize = 176;
+pub const menu_model_schema: u16 = 1;
+pub const max_menu_nodes: usize = 32;
+pub const max_menu_depth: u8 = 4;
+
+fn validateMenuText(bytes: []const u8) Error!void {
+    if (bytes.len == 0) return Error.InvalidMessage;
+    if (std.mem.indexOfScalar(u8, bytes, 0) != null) return Error.InvalidMessage;
+    for (bytes) |byte| {
+        if (byte < 0x20 or byte == 0x7f) return Error.InvalidMessage;
+    }
+    if (!std.unicode.utf8ValidateSlice(bytes)) return Error.InvalidUtf8;
+}
+
+fn validateMenuModelSnapshot(snapshot: MenuModelSnapshot) Error!void {
+    const header = snapshot.header;
+    if (header.frame_id == 0 or header.frame_generation == 0 or
+        header.menu_id == 0 or header.menu_generation == 0)
+        return Error.InvalidMessage;
+    if (snapshot.nodes.len == 0 or snapshot.nodes.len > max_menu_nodes)
+        return Error.InvalidMessage;
+
+    for (snapshot.nodes, 0..) |node, index| {
+        if (node.item_id == 0) return Error.InvalidMessage;
+        if (node.flags & ~MenuNodeFlags.known != 0) return Error.InvalidReserved;
+        if (node.depth > max_menu_depth) return Error.InvalidMessage;
+        if (node.parent_item_id == 0 and node.depth != 0) return Error.InvalidMessage;
+        if (node.label_len > node.label.len or
+            node.help_len > node.help.len or
+            node.key_len > node.key.len) return Error.InvalidMessage;
+        if (!std.mem.allEqual(u8, node.label[node.label_len..], 0) or
+            !std.mem.allEqual(u8, node.help[node.help_len..], 0) or
+            !std.mem.allEqual(u8, node.key[node.key_len..], 0))
+            return Error.InvalidReserved;
+        if (node.label_len != 0) try validateMenuText(node.label[0..node.label_len]);
+        if (node.help_len != 0) try validateMenuText(node.help[0..node.help_len]);
+        if (node.key_len != 0) try validateMenuText(node.key[0..node.key_len]);
+        const visible = node.flags & MenuNodeFlags.visible != 0;
+        const enabled = node.flags & MenuNodeFlags.enabled != 0;
+        const selected = node.flags & MenuNodeFlags.selected != 0;
+        if (!visible and (enabled or selected)) return Error.InvalidMessage;
+        if (selected and !(node.kind == .checkbox or node.kind == .radio))
+            return Error.InvalidMessage;
+        switch (node.kind) {
+            .separator => {
+                if (node.label_len != 0 or node.help_len != 0 or node.key_len != 0 or
+                    enabled or selected)
+                    return Error.InvalidMessage;
+            },
+            .submenu => {
+                if (node.label_len == 0 or selected) return Error.InvalidMessage;
+            },
+            else => {
+                if (node.label_len == 0) return Error.InvalidMessage;
+            },
+        }
+        for (snapshot.nodes[0..index]) |prior| {
+            if (prior.item_id == node.item_id) return Error.InvalidTable;
+        }
+    }
+
+    var top_level: usize = 0;
+    for (snapshot.nodes) |node| {
+        if (node.parent_item_id == 0) {
+            top_level += 1;
+            continue;
+        }
+        var parent: ?MenuNode = null;
+        for (snapshot.nodes) |candidate| {
+            if (candidate.item_id == node.parent_item_id) {
+                parent = candidate;
+                break;
+            }
+        }
+        const parent_node = parent orelse return Error.InvalidMessage;
+        if (parent_node.kind != .submenu or parent_node.depth + 1 != node.depth or
+            (parent_node.flags & (MenuNodeFlags.visible | MenuNodeFlags.enabled)) !=
+                (MenuNodeFlags.visible | MenuNodeFlags.enabled))
+            return Error.InvalidMessage;
+        var current = parent_node;
+        var hops: usize = 0;
+        while (current.parent_item_id != 0) {
+            hops += 1;
+            if (hops > max_menu_depth) return Error.InvalidMessage;
+            parent = null;
+            for (snapshot.nodes) |candidate| {
+                if (candidate.item_id == current.parent_item_id) {
+                    parent = candidate;
+                    break;
+                }
+            }
+            current = parent orelse return Error.InvalidMessage;
+        }
+    }
+    if (top_level == 0) return Error.InvalidMessage;
+}
+
+pub fn encodeMenuModelSnapshot(
+    a: std.mem.Allocator,
+    snapshot: MenuModelSnapshot,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateMenuModelSnapshot(snapshot);
+    var header: [menu_model_header_size]u8 = @splat(0);
+    std.mem.writeInt(u16, header[0..2], menu_model_schema, .little);
+    std.mem.writeInt(u32, header[4..8], snapshot.header.frame_id, .little);
+    std.mem.writeInt(u32, header[8..12], snapshot.header.frame_generation, .little);
+    std.mem.writeInt(u32, header[12..16], snapshot.header.menu_id, .little);
+    std.mem.writeInt(u32, header[16..20], snapshot.header.menu_generation, .little);
+    std.mem.writeInt(u32, header[20..24], @intCast(snapshot.nodes.len), .little);
+    try out.appendSlice(a, &header);
+    for (snapshot.nodes) |node| {
+        var bytes: [menu_node_size]u8 = @splat(0);
+        std.mem.writeInt(u32, bytes[0..4], node.item_id, .little);
+        std.mem.writeInt(u32, bytes[4..8], node.parent_item_id, .little);
+        bytes[8] = @intFromEnum(node.kind);
+        bytes[9] = node.flags;
+        bytes[10] = node.depth;
+        bytes[11] = node.label_len;
+        bytes[12] = node.help_len;
+        bytes[13] = node.key_len;
+        @memcpy(bytes[16..80], &node.label);
+        @memcpy(bytes[80..144], &node.help);
+        @memcpy(bytes[144..176], &node.key);
+        try out.appendSlice(a, &bytes);
+    }
+}
+
+pub fn decodeMenuModelSnapshot(
+    a: std.mem.Allocator,
+    data: []const u8,
+) (Error || std.mem.Allocator.Error)!MenuModelSnapshot {
+    if (data.len < menu_model_header_size) return Error.InvalidTable;
+    var reader = Reader{ .data = data };
+    if (try reader.readU16() != menu_model_schema) return Error.InvalidVersion;
+    const flags = try reader.readByte();
+    const reserved = try reader.readByte();
+    const frame_id = try reader.readU32();
+    const frame_generation = try reader.readU32();
+    const menu_id = try reader.readU32();
+    const menu_generation = try reader.readU32();
+    const node_count = try reader.readU32();
+    try reader.expectZeros(8);
+    if (flags != 0 or reserved != 0) return Error.InvalidReserved;
+    if (node_count == 0 or node_count > max_menu_nodes) return Error.InvalidTable;
+    if (data.len != menu_model_header_size + @as(usize, node_count) * menu_node_size)
+        return Error.InvalidTable;
+
+    const nodes = try a.alloc(MenuNode, node_count);
+    errdefer a.free(nodes);
+    for (nodes) |*node| {
+        node.* = .{
+            .item_id = try reader.readU32(),
+            .parent_item_id = try reader.readU32(),
+            .kind = switch (try reader.readByte()) {
+                1 => .separator,
+                2 => .command,
+                3 => .checkbox,
+                4 => .radio,
+                5 => .submenu,
+                else => return Error.InvalidMessage,
+            },
+            .flags = try reader.readByte(),
+            .depth = try reader.readByte(),
+            .label_len = try reader.readByte(),
+            .help_len = try reader.readByte(),
+            .key_len = try reader.readByte(),
+        };
+        try reader.expectZeros(2);
+        node.label = (try reader.bytes(64))[0..64].*;
+        node.help = (try reader.bytes(64))[0..64].*;
+        node.key = (try reader.bytes(32))[0..32].*;
+    }
+    const snapshot: MenuModelSnapshot = .{
+        .header = .{
+            .frame_id = frame_id,
+            .frame_generation = frame_generation,
+            .menu_id = menu_id,
+            .menu_generation = menu_generation,
+        },
+        .nodes = nodes,
+    };
+    try validateMenuModelSnapshot(snapshot);
+    return snapshot;
+}
+
+pub fn freeMenuModelSnapshot(a: std.mem.Allocator, snapshot: *MenuModelSnapshot) void {
     a.free(snapshot.nodes);
     snapshot.nodes = &.{};
 }
@@ -6133,4 +6367,117 @@ test "window tree rejects unknown parent and cycle" {
         .header = .{ .frame_id = 7, .frame_generation = 1, .selected_window_id = 11, .root_window_id = 10 },
         .nodes = &cycle,
     }));
+}
+
+test "menu model round trips bounded UTF-8 tree" {
+    const a = std.testing.allocator;
+    var nodes = [_]MenuNode{
+        .{
+            .item_id = 20,
+            .parent_item_id = 0,
+            .kind = .submenu,
+            .flags = MenuNodeFlags.enabled | MenuNodeFlags.visible,
+            .depth = 0,
+            .label_len = 4,
+            .help_len = 4,
+            .key_len = 1,
+        },
+        .{
+            .item_id = 21,
+            .parent_item_id = 20,
+            .kind = .command,
+            .flags = MenuNodeFlags.enabled | MenuNodeFlags.visible,
+            .depth = 1,
+            .label_len = 8,
+        },
+    };
+    @memcpy(nodes[0].label[0..4], "File");
+    @memcpy(nodes[0].help[0..4], "File");
+    @memcpy(nodes[0].key[0..1], "F");
+    @memcpy(nodes[1].label[0..8], "NewFrame");
+    const snapshot: MenuModelSnapshot = .{
+        .header = .{ .frame_id = 7, .frame_generation = 2, .menu_id = 3, .menu_generation = 4 },
+        .nodes = &nodes,
+    };
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeMenuModelSnapshot(a, snapshot, &bytes);
+    try std.testing.expectEqual(menu_model_header_size + 2 * menu_node_size, bytes.items.len);
+    var decoded = try decodeMenuModelSnapshot(a, bytes.items);
+    defer freeMenuModelSnapshot(a, &decoded);
+    try std.testing.expectEqual(@as(usize, 2), decoded.nodes.len);
+    try std.testing.expectEqualStrings("File", decoded.nodes[0].label[0..4]);
+    try std.testing.expectEqualStrings("NewFrame", decoded.nodes[1].label[0..8]);
+}
+
+test "menu model rejects invalid hierarchy and metadata" {
+    var valid = [_]MenuNode{
+        .{
+            .item_id = 20,
+            .parent_item_id = 0,
+            .kind = .submenu,
+            .flags = MenuNodeFlags.enabled | MenuNodeFlags.visible,
+            .depth = 0,
+            .label_len = 4,
+        },
+        .{
+            .item_id = 21,
+            .parent_item_id = 20,
+            .kind = .command,
+            .flags = MenuNodeFlags.enabled | MenuNodeFlags.visible,
+            .depth = 1,
+            .label_len = 8,
+        },
+    };
+    @memcpy(valid[0].label[0..4], "File");
+    @memcpy(valid[1].label[0..8], "NewFrame");
+    const header: MenuModelHeader = .{ .frame_id = 7, .frame_generation = 1, .menu_id = 3, .menu_generation = 1 };
+    try validateMenuModelSnapshot(.{ .header = header, .nodes = &valid });
+
+    var duplicate = valid;
+    duplicate[1].item_id = 20;
+    try std.testing.expectError(Error.InvalidTable, validateMenuModelSnapshot(.{ .header = header, .nodes = &duplicate }));
+
+    var command_parent = valid;
+    command_parent[0].kind = .command;
+    try std.testing.expectError(Error.InvalidMessage, validateMenuModelSnapshot(.{ .header = header, .nodes = &command_parent }));
+
+    var bad_label = valid;
+    bad_label[1].label[0] = 0xff;
+    try std.testing.expectError(Error.InvalidUtf8, validateMenuModelSnapshot(.{ .header = header, .nodes = &bad_label }));
+
+    var hidden_parent = valid;
+    hidden_parent[0].flags = MenuNodeFlags.enabled;
+    try std.testing.expectError(Error.InvalidMessage, validateMenuModelSnapshot(.{ .header = header, .nodes = &hidden_parent }));
+
+    var disabled_parent = valid;
+    disabled_parent[0].flags = MenuNodeFlags.visible;
+    try std.testing.expectError(Error.InvalidMessage, validateMenuModelSnapshot(.{ .header = header, .nodes = &disabled_parent }));
+
+    var non_root_depth = valid;
+    non_root_depth[1].parent_item_id = 0;
+    try std.testing.expectError(Error.InvalidMessage, validateMenuModelSnapshot(.{ .header = header, .nodes = &non_root_depth }));
+
+    var oversize_label = valid;
+    oversize_label[1].label_len = oversize_label[1].label.len + 1;
+    try std.testing.expectError(Error.InvalidMessage, validateMenuModelSnapshot(.{ .header = header, .nodes = &oversize_label }));
+
+    var oversize_key = valid;
+    oversize_key[1].key_len = oversize_key[1].key.len + 1;
+    try std.testing.expectError(Error.InvalidMessage, validateMenuModelSnapshot(.{ .header = header, .nodes = &oversize_key }));
+
+    const wire_allocator = std.testing.allocator;
+    var round_trip: std.ArrayList(u8) = .empty;
+    defer round_trip.deinit(wire_allocator);
+    try encodeMenuModelSnapshot(wire_allocator, .{ .header = header, .nodes = &valid }, &round_trip);
+    var oversize_wire = try wire_allocator.dupe(u8, round_trip.items);
+    defer wire_allocator.free(oversize_wire);
+    const second_label_len = menu_model_header_size + menu_node_size + 10;
+    oversize_wire[second_label_len] = 65;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuModelSnapshot(wire_allocator, oversize_wire));
+
+    @memcpy(oversize_wire, round_trip.items);
+    const second_key_len = menu_model_header_size + menu_node_size + 12;
+    oversize_wire[second_key_len] = 33;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuModelSnapshot(wire_allocator, oversize_wire));
 }

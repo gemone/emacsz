@@ -60,6 +60,7 @@ Unknown optional capabilities are ignored. Unknown required messages trigger con
 | `font.descriptor_patch_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded scalar descriptor evolution only, with no real font-object or frame-font parity |
 | `fringe.bitmap_resource_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded monochrome bitmap rendering only, with no full fringe semantics or PGTK parity |
 | `widget.tooltip_bounded_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded frontend box only, with no platform tooltip policy or full PGTK parity |
+| `widget.menu_model_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded complete-tree model and diagnostic menu bar only, with no navigation/result or full PGTK menu parity |
 | `glyph_rows` | Required | core/backend | Backend cannot operate |
 | `shaped_glyphs` | Required | core/font stack + frontend | Incomplete text fallback |
 | `bidi` | Required | core/redisplay | RTL text nonconformant |
@@ -338,6 +339,7 @@ Priorities:
 | Capability | Priority | Status | Evidence |
 |---|---|---|---|
 | Menu bar model | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Bounded menu tree | P1 | Degraded | `MENU_MODEL` v1 validates a complete 32-node UTF-8 hierarchy and SDL renders a diagnostic menu bar; patch/open/navigation/result and full menu semantics pending |
 | Popup menu model | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Native menu | Optional | Pending | No platform menu bridge |
 | Tool bar model | P1 | Pending | W12/W16 PGTK parity gate not met |
@@ -482,7 +484,7 @@ parity.
 
 | Layer | Working now | Still required for parity | Evidence |
 |---|---|---|---|
-| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 90 implemented codecs, 3 partial, and 71 planned; no unassigned or unclassified ID | Production implementation of the remaining face/text/graphics protocol gaps |
+| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 91 implemented codecs, 3 partial, and 70 planned; no unassigned or unclassified ID | Production implementation of the remaining face/text/graphics protocol gaps |
 | Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry, deterministic ordered/resync/ACK-loss/ERP1 convergence differential with
 `RESOURCE_SNAPSHOT`-aware concrete face/font/string/image fingerprints, bounded EPXL capability negotiation/status manifest, frame visibility/focus state codec, bounded resource payload cache/eviction policy, request/evict codecs, bounded string define/delete, fixed-layout face/font/image define/data/delete, and atomic concrete `RESOURCE_SNAPSHOT` v1 restore with frontend ownership, optional host frame-state ABI seam, terminal-lifecycle core and fake-host runtime service, generated read-only C adapter, dynamically linkable observation library, bounded host-frame to EUP-frame service mapping, deterministic atomic capture batches, deterministic protocol fuzz hardening, and bounded process-level frontend crash isolation, and negotiated strict focus/window observation | General resource/widget capability coverage, arbitrary recovery, remote safety, runtime terminal registration | `proto-ui-conformance`, `proto-ui-unit`, `proto-ui-terminal-service`, `proto-ui-fuzz`, `proto-ui-recovery-diff`, `proto-ui-crash-isolation`, `proto-ui-shim-conformance`, `proto-ui-shim-library-conformance`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
 | Emacs observation | Real Emacs process publishes public frame/window geometry, bounded printable-ASCII text, point/cursor, and viewport facts; W12c creates/deletes one real display-backed frame and synchronizes one EUP/SDL3 frame lifecycle; W10e renders that public-facts marker through the bounded glyph-run debug fallback | Redisplay-owned rows/glyphs/faces/fonts, full window tree, `output_proto`-owned frame creation/deletion, runtime visibility/focus events | `proto-ui-module-smoke`, `sdl3-emacs-smoke`, `sdl3-epxl-facts-smoke`, `sdl3-frame-smoke` |
