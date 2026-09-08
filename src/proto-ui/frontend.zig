@@ -4558,6 +4558,7 @@ pub const Scene = struct {
         defer damage.deinit(self.allocator);
         var text: std.ArrayList(TextLine) = .empty;
         defer text.deinit(self.allocator);
+        errdefer for (text.items) |line| self.allocator.free(line.bytes);
         var image_placements: [max_image_placements]ImagePlacement = undefined;
         var image_placement_count: usize = 0;
         var cursor: ?Cursor = null;
@@ -4719,7 +4720,8 @@ pub const Scene = struct {
         const old_rows = self.rows;
         var old_glyph_runs = self.glyph_runs;
         const old_damage = self.damage;
-        const old_text = self.text;
+        for (self.text.items) |line| self.allocator.free(line.bytes);
+        self.text.deinit(self.allocator);
         self.windows = windows;
         self.rows = rows;
         self.glyph_runs = .empty;
@@ -4744,7 +4746,7 @@ pub const Scene = struct {
         for (old_glyph_runs.items) |run| self.allocator.free(run.text);
         old_glyph_runs.deinit(self.allocator);
         damage = old_damage;
-        text = old_text;
+        text = .empty;
         self.frame_header = update.header;
         self.cursor = cursor;
         self.present = present;
