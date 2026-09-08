@@ -73,7 +73,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P6-prep reverse input bridge | Implemented for bounded SDL key/text intents through PureRuntimeHostV1 delivery/result/completion; not keymap/command parity |
 | P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
 | P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
-| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 99 implemented codecs, 3 partial, and 62 planned; prevents an unclassified or overclaimed protocol table |
+| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 101 implemented codecs, 3 partial, and 60 planned; prevents an unclassified or overclaimed protocol table |
 | Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
 | P12-prep EUP session setup | Implemented standard HELLO/HELLO_ACK/SESSION_READY/READY_ACK codecs and bounded state machine; not yet wired to EPXL transport |
 | P12-prep EUP session control | Implemented all eight standard-control codecs, automatic PONG, Scene integration, and EPXL transport for every control, including fatal VERSION_MISMATCH |
@@ -3146,7 +3146,7 @@ P9 geometry preparation adds `refreshFrameGeometry`, authoritative frame
 bounds, and observation validation in `runtime_bridge`; real monitor and scale
 events remain pending.
 P29 protocol coverage remains source-authoritative for every assigned EUP ID;
-current counts are 99 implemented codecs, 3 partial, and 62 planned.
+current counts are 101 implemented codecs, 3 partial, and 60 planned.
 P12 session-setup preparation adds concrete standard EUP HELLO, HELLO_ACK,
 SESSION_READY, and READY_ACK codecs with a bounded frontend state machine.  The
 authenticated EPXL handshake remains the current transport path.
@@ -3322,6 +3322,7 @@ P49 frame-patch preparation adds `FRAME_PATCH` v1 as an exact 40-byte atomic bat
 P50 frame-snapshot preparation adds `FRAME_SNAPSHOT` v1 as an exact 128-byte atomic core presentation snapshot with complete presence validation, strict geometry containment, lifecycle consistency, and Scene restoration.  SDL runtime smoke applies/restores opacity, decoration, renderer scale, fullscreen absence, both-axis maximize, and bounded probe-window geometry; title, icon, monitor, z-order, parent, full frame parameters, and redisplay adaptation remain pending.
 P52 menu-patch preparation adds `MENU_PATCH` v1 with 1..32 ordered upsert/delete operations, strict expected/new generation validation, parent/hierarchy checks, atomic model replacement, popup invalidation, and SDL render evidence.  Dedicated move semantics, conflict policy, and full menu parity remain pending.
 P51 menu-hover preparation adds `MENU_HOVER` v1 as an exact 40-byte enter/move/leave reverse intent with phase-specific item/coordinate validation and a negotiated acknowledged DeliveryJournal queue.  SDL hit testing, submenu policy, visual highlighting, and Emacs dispatch remain pending.
+P53 tool-bar preparation adds `TOOLBAR_MODEL` v1 with 1..16 bounded UTF-8 button/toggle/separator/space items and `TOOLBAR_CLICK` v1 as a negotiated press/release reverse intent carrying toolbar/item/window/frame identity, click count, button, modifiers, and coordinates.  SDL renders a diagnostic row.  Icons, overflow, orientation, hit testing, keymap execution, and PGTK parity remain pending.
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by atlas/page identity, generation, and revision.  Runtime smoke proves one upload plus at least four hits; smoke-level renderer-loss clearing is wired; production-wide integration and replacement/eviction policy remain pending.
 P23 fringe preparation adds a 40-byte `FRINGE_UPDATE` v1 color-band subset with
 left/right placement, strict generation replacement, active-frame/window bounds,

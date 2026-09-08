@@ -559,6 +559,7 @@ pub const TranslatedEvent = union(enum) {
     menu_result: protocol.MenuResult,
     menu_cancel: protocol.MenuCancel,
     menu_hover: protocol.MenuHover,
+    toolbar_click: protocol.ToolbarClick,
 };
 
 pub const TextSupport = enum { ascii, unicode };
@@ -648,6 +649,13 @@ pub const Queue = struct {
         self.length += 1;
     }
 
+    pub fn pushToolbarClick(self: *Queue, event: protocol.ToolbarClick) !void {
+        protocol.validateToolbarClick(event) catch return error.InvalidToolbarClick;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .toolbar_click = event };
+        self.length += 1;
+    }
+
     pub fn pushMenuHover(self: *Queue, event: protocol.MenuHover) !void {
         protocol.validateMenuHover(event) catch return error.InvalidMenuHover;
         if (self.length == queue_capacity) return error.InputQueueFull;
@@ -705,6 +713,7 @@ pub const DeliveryJournal = struct {
     scroll_request_negotiated: bool = false,
     menu_result_negotiated: bool = false,
     menu_hover_negotiated: bool = false,
+    toolbar_click_negotiated: bool = false,
     pointer_v2_buttons: u32 = 0,
     pointer_v2_clicks: u8 = 0,
 
@@ -824,6 +833,12 @@ pub const DeliveryJournal = struct {
         if (!self.menu_result_negotiated) return error.MenuResultCapabilityNotNegotiated;
         if (self.pointer_active) return error.PointerSessionActive;
         try self.queue.pushMenuCancel(event);
+    }
+
+    pub fn pushToolbarClick(self: *DeliveryJournal, event: protocol.ToolbarClick) !void {
+        if (!self.toolbar_click_negotiated) return error.ToolbarClickCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushToolbarClick(event);
     }
 
     pub fn pushMenuHover(self: *DeliveryJournal, event: protocol.MenuHover) !void {
@@ -1382,6 +1397,49 @@ test "menu result and cancel require negotiation and preserve live identity" {
     var invalid_cancel = cancel;
     invalid_cancel.menu_id = 0;
     try std.testing.expectError(error.InvalidMenuCancel, journal.pushMenuCancel(invalid_cancel));
+}
+
+test "toolbar click requires negotiation and preserves click facts" {
+    var journal: DeliveryJournal = .{};
+    const press: protocol.ToolbarClick = .{
+        .phase = .press,
+        .toolbar_id = 9,
+        .toolbar_generation = 2,
+        .item_id = 40,
+        .window_id = 10,
+        .frame_generation = 3,
+        .click_count = 1,
+        .button = 1,
+        .modifiers = 2,
+        .x = 8,
+        .y = 16,
+    };
+    var release = press;
+    release.phase = .release;
+    release.click_count = 2;
+    try std.testing.expectError(error.ToolbarClickCapabilityNotNegotiated, journal.pushToolbarClick(press));
+    journal.toolbar_click_negotiated = true;
+    try journal.pushToolbarClick(press);
+    try journal.pushToolbarClick(release);
+
+    const sent = (try journal.take()).?;
+    try std.testing.expectEqual(press, sent.event.toolbar_click);
+    journal.beginRetry();
+    const retried = (try journal.take()).?;
+    try std.testing.expectEqual(sent.sequence, retried.sequence);
+    try std.testing.expectEqual(press, retried.event.toolbar_click);
+    try std.testing.expect(journal.acknowledge(sent.sequence));
+
+    const next = (try journal.take()).?;
+    try std.testing.expectEqual(release, next.event.toolbar_click);
+    try std.testing.expect(journal.acknowledge(next.sequence));
+
+    var invalid = release;
+    invalid.click_count = 0;
+    try std.testing.expectError(error.InvalidToolbarClick, journal.pushToolbarClick(invalid));
+    invalid.click_count = 1;
+    invalid.button = 6;
+    try std.testing.expectError(error.InvalidToolbarClick, journal.pushToolbarClick(invalid));
 }
 
 test "menu hover requires negotiation and validates phase identity" {

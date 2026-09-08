@@ -2861,6 +2861,7 @@ pub const Scene = struct {
     window_tree: ?protocol.WindowTreeSnapshot = null,
     menu_model: ?protocol.MenuModelSnapshot = null,
     menu_open: ?protocol.MenuOpen = null,
+    toolbar: ?protocol.ToolbarModel = null,
     control: session.Control = .{},
     stats: ApplyStats = .{},
 
@@ -2937,6 +2938,8 @@ pub const Scene = struct {
         self.window_tree = null;
         if (self.menu_model) |*model| protocol.freeMenuModelSnapshot(self.allocator, model);
         self.menu_model = null;
+        if (self.toolbar) |*model| protocol.freeToolbarModel(self.allocator, model);
+        self.toolbar = null;
         self.control = .{};
         self.image_placement_count = 0;
         self.stats = .{};
@@ -3009,6 +3012,7 @@ pub const Scene = struct {
             protocol.Message.window_tree_snapshot => try self.applyWindowTreeSnapshot(payload),
             protocol.Message.menu_model => try self.applyMenuModel(payload),
             protocol.Message.menu_patch => try self.applyMenuPatch(payload),
+            protocol.Message.toolbar_model => try self.applyToolbarModel(payload),
             protocol.Message.menu_open => try self.applyMenuOpen(payload),
             protocol.Message.menu_close => try self.applyMenuClose(payload),
             protocol.Message.glyph_run => try self.applyGlyphRun(payload),
@@ -3133,6 +3137,8 @@ pub const Scene = struct {
         self.window_tree = null;
         if (self.menu_model) |*model| protocol.freeMenuModelSnapshot(self.allocator, model);
         self.menu_model = null;
+        if (self.toolbar) |*model| protocol.freeToolbarModel(self.allocator, model);
+        self.toolbar = null;
     }
 
     fn clearGlyphRuns(self: *Scene) void {
@@ -4115,6 +4121,31 @@ pub const Scene = struct {
         if (self.menu_model) |*old| protocol.freeMenuModelSnapshot(self.allocator, old);
         self.menu_model = .{ .header = next_model.header, .nodes = owned_nodes };
         self.menu_open = null;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyToolbarModel(self: *Scene, payload: protocol.Payload) Error!void {
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        var model = try protocol.decodeToolbarModel(self.allocator, payload.bytes);
+        errdefer protocol.freeToolbarModel(self.allocator, &model);
+        if (payload.envelope.frame_id != frame.frame_id or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation or
+            model.header.frame_id != frame.frame_id or
+            model.header.frame_generation != frame.generation)
+        {
+            return Error.InvalidMessage;
+        }
+        if (self.toolbar) |old| {
+            if (old.header.toolbar_id == model.header.toolbar_id and
+                model.header.toolbar_generation <= old.header.toolbar_generation)
+            {
+                return Error.StaleGeneration;
+            }
+        }
+        if (self.toolbar) |*old| protocol.freeToolbarModel(self.allocator, old);
+        self.toolbar = model;
         self.stats.control_messages += 1;
     }
 
@@ -6136,6 +6167,54 @@ test "menu patch enforces context, ordered hierarchy, and popup cleanup" {
     scene.resetForResync();
     try std.testing.expect(scene.menu_model == null);
     try std.testing.expect(scene.menu_open == null);
+}
+
+test "scene applies bounded toolbar model for active frame" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var fixture_items: [4]protocol.ToolbarItem = undefined;
+    var model = protocol.toolbarModelFixture(&fixture_items);
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeToolbarModel(a, model, &payload);
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.toolbar_model, 3, 7, payload.items);
+        defer a.free(message);
+        try scene.apply(message);
+    }
+    try std.testing.expectEqual(model.header, scene.toolbar.?.header);
+    try std.testing.expectEqual(model.items.len, scene.toolbar.?.items.len);
+
+    {
+        var wrong_model = model;
+        wrong_model.header.frame_generation = 2;
+        payload.clearRetainingCapacity();
+        try protocol.encodeToolbarModel(a, wrong_model, &payload);
+        const wrong = try windowLifecycleMessage(a, protocol.Message.toolbar_model, 4, 7, payload.items);
+        defer a.free(wrong);
+        try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong));
+    }
+
+    model.header.toolbar_generation = 3;
+    payload.clearRetainingCapacity();
+    try protocol.encodeToolbarModel(a, model, &payload);
+    {
+        const replacement = try windowLifecycleMessage(a, protocol.Message.toolbar_model, 4, 7, payload.items);
+        defer a.free(replacement);
+        try scene.apply(replacement);
+    }
+    try std.testing.expectEqual(@as(u32, 3), scene.toolbar.?.header.toolbar_generation);
+
+    scene.resetForResync();
+    try std.testing.expect(scene.toolbar == null);
 }
 
 test "mouse highlight validates state and follows window and face lifecycle" {

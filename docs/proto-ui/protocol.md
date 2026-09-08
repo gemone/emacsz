@@ -1784,6 +1784,79 @@ transport only.  They do not prove SDL hit testing, keyboard navigation, core
 receipt, keymap lookup, command execution, check/radio mutation, native menus, or
 PGTK menu parity.
 
+#### `TOOLBAR_MODEL` / `TOOLBAR_CLICK` v1 (implemented bounded adapter contracts)
+
+`TOOLBAR_MODEL = 0x0910` is an authoritative complete tool-bar snapshot.  Its
+payload is a 40-byte header followed by 1..16 exact 164-byte items.  The header
+carries schema, active frame id/generation, toolbar id/generation, item count,
+and reserved bytes.  Each item carries a nonzero item id, optional icon image
+id/generation, kind, flags, and bounded UTF-8 label/help/key tails.  Kinds are
+separator, button, toggle, and space.  Separators and spaces carry no text or
+icon; buttons require a label or icon and reject selected state; toggles may be
+selected.  Invisible items cannot be enabled, selected, or pressed.
+
+The envelope, frame header, payload frame identity, and active frame must agree.
+The Scene replaces a model when the toolbar id is new or the generation is
+strictly newer, and clears it on destroy, resync, or teardown.  SDL renders a
+diagnostic tool-bar row and ASCII labels.  `TOOLBAR_CLICK = 0x0912` is an exact
+48-byte reverse intent with phase press/release, nonzero toolbar/item/window/
+frame identity, click count, button index, modifiers, and nonnegative
+owner-relative coordinates.
+It is emitted only after `widget.toolbar_click_v1` negotiation and preserves
+ordered acknowledged DeliveryJournal semantics.  This does not implement icons,
+overflow/menus, drag customization, redisplay integration, hit testing, keymap
+execution, native tool bars, or PGTK parity.
+
+`TOOLBAR_MODEL` header layout:
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 2 | schema | `1` |
+| 2 | 1 | flags | zero |
+| 3 | 1 | reserved | zero |
+| 4 | 4 | frame id | nonzero; equals envelope/frame header |
+| 8 | 4 | frame generation | nonzero; equals active frame |
+| 12 | 4 | toolbar id | nonzero |
+| 16 | 4 | toolbar generation | nonzero |
+| 20 | 4 | item count | `1..16` |
+| 24 | 16 | reserved | zero |
+
+Each `TOOLBAR_MODEL` item is exactly 164 bytes:
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 4 | item id | nonzero; unique in model |
+| 4 | 4 | icon image id | paired with generation; forbidden on separator/space |
+| 8 | 4 | icon image generation | paired with id |
+| 12 | 1 | kind | separator/button/toggle/space |
+| 13 | 1 | flags | known flags only; state/kind consistency enforced |
+| 14 | 1 | label length | bounded/UTF-8; separator/space require zero |
+| 15 | 1 | help length | bounded/UTF-8; separator/space require zero |
+| 16 | 1 | key length | bounded/UTF-8; separator/space require zero |
+| 17 | 3 | reserved | zero |
+| 20 | 64 | label | zero tail; no embedded NUL/control bytes |
+| 84 | 64 | help | zero tail; no embedded NUL/control bytes |
+| 148 | 16 | key | zero tail; no embedded NUL/control bytes |
+
+`TOOLBAR_CLICK` layout:
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 2 | schema | `1` |
+| 2 | 1 | phase | press `1` / release `2` |
+| 3 | 1 | reserved | zero |
+| 4 | 4 | toolbar id | nonzero |
+| 8 | 4 | toolbar generation | nonzero |
+| 12 | 4 | item id | nonzero |
+| 16 | 8 | window id | nonzero |
+| 24 | 4 | frame generation | nonzero |
+| 28 | 1 | click count | `1..8` |
+| 29 | 1 | button | `1..5` |
+| 30 | 2 | modifiers | opaque bounded modifier bits |
+| 32 | 4 | x | nonnegative |
+| 36 | 4 | y | nonnegative |
+| 40 | 8 | reserved | zero |
+
 #### `MENU_HOVER` v1 (implemented bounded reverse intent)
 
 `MENU_HOVER = 0x0906` is an exact 40-byte frontend-to-core intent.  Layout:
@@ -1935,9 +2008,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 99 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 101 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 62 | Assigned for the target protocol but not implemented |
+| `planned` | 60 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

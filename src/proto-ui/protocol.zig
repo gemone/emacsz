@@ -30,6 +30,7 @@ pub const Error = error{
     InvalidStyle,
     InvalidBoolean,
     InvalidMenuHover,
+    InvalidToolbarClick,
     InvalidReserved,
     ResourcePayloadBudgetExceeded,
     TrailingBytes,
@@ -144,6 +145,8 @@ pub const Message = struct {
     pub const menu_result: u16 = 0x0904;
     pub const menu_cancel: u16 = 0x0905;
     pub const menu_hover: u16 = 0x0906;
+    pub const toolbar_model: u16 = 0x0910;
+    pub const toolbar_click: u16 = 0x0912;
     pub const key_event: u16 = 0x0600;
     pub const text_input: u16 = 0x0601;
     pub const pointer_event: u16 = 0x0602;
@@ -3419,6 +3422,76 @@ test "menu patch codecs enforce ordered generation and operations" {
     try std.testing.expectError(Error.InvalidReserved, decodeMenuPatch(a, bytes.items));
 }
 
+pub fn toolbarModelFixture(items: []ToolbarItem) ToolbarModel {
+    items[0] = .{ .item_id = 40, .kind = .button, .label_len = 4 };
+    items[1] = .{ .item_id = 41, .kind = .toggle, .flags = ToolbarItemFlags.enabled | ToolbarItemFlags.visible | ToolbarItemFlags.selected, .label_len = 9 };
+    items[2] = .{ .item_id = 42, .kind = .separator, .flags = ToolbarItemFlags.visible };
+    items[3] = .{ .item_id = 43, .kind = .space, .flags = ToolbarItemFlags.visible };
+    @memcpy(items[0].label[0..4], "Save");
+    @memcpy(items[1].label[0..9], "Overwrite");
+    return .{
+        .header = .{ .frame_id = 7, .frame_generation = 1, .toolbar_id = 9, .toolbar_generation = 2 },
+        .items = items[0..4],
+    };
+}
+
+test "toolbar model codec enforces bounded UTF-8 items" {
+    const a = std.testing.allocator;
+    var fixture_items: [4]ToolbarItem = undefined;
+    const model = toolbarModelFixture(&fixture_items);
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    try encodeToolbarModel(a, model, &bytes);
+    try std.testing.expectEqual(toolbar_model_header_size + 4 * toolbar_item_size, bytes.items.len);
+    var decoded = try decodeToolbarModel(a, bytes.items);
+    defer freeToolbarModel(a, &decoded);
+    try std.testing.expectEqual(model.header, decoded.header);
+    try std.testing.expectEqual(model.items.len, decoded.items.len);
+    try std.testing.expectEqualStrings("Save", decoded.items[0].label[0..4]);
+    try std.testing.expectEqualStrings("Overwrite", decoded.items[1].label[0..9]);
+
+    bytes.items[toolbar_model_header_size + toolbar_item_size + 12] = 9;
+    try std.testing.expectError(Error.InvalidMessage, decodeToolbarModel(a, bytes.items));
+    bytes.items[toolbar_model_header_size + toolbar_item_size + 12] = @intFromEnum(ToolbarItemKind.toggle);
+    std.mem.writeInt(u32, bytes.items[toolbar_model_header_size + toolbar_item_size ..][0..4], 40, .little);
+    try std.testing.expectError(Error.InvalidTable, decodeToolbarModel(a, bytes.items));
+    std.mem.writeInt(u32, bytes.items[toolbar_model_header_size + toolbar_item_size ..][0..4], 41, .little);
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeToolbarModel(a, bytes.items));
+    bytes.items[3] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeToolbarModel(a, bytes.items[0 .. bytes.items.len - 1]));
+}
+
+test "toolbar click codec validates phase identity and pointer facts" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    const click: ToolbarClick = .{
+        .phase = .release,
+        .toolbar_id = 9,
+        .toolbar_generation = 2,
+        .item_id = 40,
+        .window_id = 10,
+        .frame_generation = 1,
+        .click_count = 2,
+        .button = 1,
+        .modifiers = 1,
+        .x = 12,
+        .y = 24,
+    };
+    try encodeToolbarClick(a, click, &bytes);
+    try std.testing.expectEqual(toolbar_click_size, bytes.items.len);
+    try std.testing.expectEqual(click, try decodeToolbarClick(bytes.items));
+
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidToolbarClick, decodeToolbarClick(bytes.items));
+    bytes.items[3] = 0;
+    bytes.items[2] = 3;
+    try std.testing.expectError(Error.InvalidMessage, decodeToolbarClick(bytes.items));
+    bytes.items[2] = @intFromEnum(ToolbarClickPhase.release);
+    try std.testing.expectError(Error.InvalidTable, decodeToolbarClick(bytes.items[0 .. bytes.items.len - 1]));
+}
+
 test "menu hover codecs enforce phase-specific bounded identity" {
     const a = std.testing.allocator;
     var bytes: std.ArrayList(u8) = .empty;
@@ -3495,6 +3568,276 @@ test "menu hover codecs enforce phase-specific bounded identity" {
     std.mem.writeInt(i32, bytes.items[28..32], 0, .little);
     bytes.items[32] = 1;
     try std.testing.expectError(Error.InvalidMenuHover, decodeMenuHover(bytes.items));
+}
+
+pub const ToolbarItemKind = enum(u8) {
+    separator = 1,
+    button = 2,
+    toggle = 3,
+    space = 4,
+};
+
+pub const ToolbarItemFlags = struct {
+    pub const enabled: u8 = 1 << 0;
+    pub const visible: u8 = 1 << 1;
+    pub const selected: u8 = 1 << 2;
+    pub const pressed: u8 = 1 << 3;
+    pub const known: u8 = enabled | visible | selected | pressed;
+};
+
+pub const ToolbarModelHeader = struct {
+    frame_id: u32,
+    frame_generation: u32,
+    toolbar_id: u32,
+    toolbar_generation: u32,
+};
+
+pub const ToolbarItem = struct {
+    item_id: u32,
+    icon_image_id: u32 = 0,
+    icon_image_generation: u32 = 0,
+    kind: ToolbarItemKind,
+    flags: u8 = ToolbarItemFlags.enabled | ToolbarItemFlags.visible,
+    label: [64]u8 = @splat(0),
+    label_len: u8 = 0,
+    help: [64]u8 = @splat(0),
+    help_len: u8 = 0,
+    key: [16]u8 = @splat(0),
+    key_len: u8 = 0,
+};
+
+pub const ToolbarModel = struct {
+    header: ToolbarModelHeader,
+    items: []const ToolbarItem,
+};
+
+pub const toolbar_model_header_size: usize = 40;
+pub const toolbar_item_size: usize = 164;
+pub const toolbar_model_schema: u16 = 1;
+pub const max_toolbar_items: usize = 16;
+
+pub const ToolbarClickPhase = enum(u8) {
+    press = 1,
+    release = 2,
+};
+
+pub const ToolbarClick = struct {
+    schema: u16 = 1,
+    phase: ToolbarClickPhase,
+    reserved: u8 = 0,
+    toolbar_id: u32,
+    toolbar_generation: u32,
+    item_id: u32,
+    window_id: u64,
+    frame_generation: u32,
+    click_count: u8,
+    button: u8,
+    modifiers: u16,
+    x: i32,
+    y: i32,
+    reserved_tail: [8]u8 = @splat(0),
+};
+
+pub const toolbar_click_size: usize = 48;
+
+fn validateToolbarText(bytes: []const u8) Error!void {
+    if (bytes.len == 0) return Error.InvalidMessage;
+    if (std.mem.indexOfScalar(u8, bytes, 0) != null) return Error.InvalidMessage;
+    for (bytes) |byte| {
+        if (byte < 0x20 or byte == 0x7f) return Error.InvalidMessage;
+    }
+    if (!std.unicode.utf8ValidateSlice(bytes)) return Error.InvalidUtf8;
+}
+
+fn validateToolbarItem(item: ToolbarItem) Error!void {
+    if (item.item_id == 0) return Error.InvalidMessage;
+    if (item.flags & ~ToolbarItemFlags.known != 0) return Error.InvalidReserved;
+    if (item.label_len > item.label.len or item.help_len > item.help.len or
+        item.key_len > item.key.len) return Error.InvalidMessage;
+    if (!std.mem.allEqual(u8, item.label[item.label_len..], 0) or
+        !std.mem.allEqual(u8, item.help[item.help_len..], 0) or
+        !std.mem.allEqual(u8, item.key[item.key_len..], 0))
+        return Error.InvalidReserved;
+    if (item.label_len != 0) try validateToolbarText(item.label[0..item.label_len]);
+    if (item.help_len != 0) try validateToolbarText(item.help[0..item.help_len]);
+    if (item.key_len != 0) try validateToolbarText(item.key[0..item.key_len]);
+    if ((item.icon_image_id == 0) != (item.icon_image_generation == 0))
+        return Error.InvalidMessage;
+    const visible = item.flags & ToolbarItemFlags.visible != 0;
+    const enabled = item.flags & ToolbarItemFlags.enabled != 0;
+    const selected = item.flags & ToolbarItemFlags.selected != 0;
+    const pressed = item.flags & ToolbarItemFlags.pressed != 0;
+    if (!visible and (enabled or selected or pressed)) return Error.InvalidMessage;
+    if (pressed and !enabled) return Error.InvalidMessage;
+    switch (item.kind) {
+        .separator, .space => {
+            if (item.label_len != 0 or item.help_len != 0 or item.key_len != 0 or
+                item.icon_image_id != 0 or item.icon_image_generation != 0 or
+                enabled or selected or pressed)
+                return Error.InvalidMessage;
+        },
+        .button => {
+            if (item.label_len == 0 and item.icon_image_id == 0) return Error.InvalidMessage;
+            if (selected) return Error.InvalidMessage;
+        },
+        .toggle => {
+            if (item.label_len == 0 and item.icon_image_id == 0) return Error.InvalidMessage;
+        },
+    }
+}
+
+fn validateToolbarModel(model: ToolbarModel) Error!void {
+    const header = model.header;
+    if (header.frame_id == 0 or header.frame_generation == 0 or
+        header.toolbar_id == 0 or header.toolbar_generation == 0)
+        return Error.InvalidMessage;
+    if (model.items.len == 0 or model.items.len > max_toolbar_items)
+        return Error.InvalidMessage;
+    for (model.items, 0..) |item, index| {
+        try validateToolbarItem(item);
+        for (model.items[0..index]) |prior| {
+            if (prior.item_id == item.item_id) return Error.InvalidTable;
+        }
+    }
+}
+
+pub fn encodeToolbarModel(a: std.mem.Allocator, model: ToolbarModel, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    try validateToolbarModel(model);
+    var header: [toolbar_model_header_size]u8 = @splat(0);
+    std.mem.writeInt(u16, header[0..2], toolbar_model_schema, .little);
+    std.mem.writeInt(u32, header[4..8], model.header.frame_id, .little);
+    std.mem.writeInt(u32, header[8..12], model.header.frame_generation, .little);
+    std.mem.writeInt(u32, header[12..16], model.header.toolbar_id, .little);
+    std.mem.writeInt(u32, header[16..20], model.header.toolbar_generation, .little);
+    std.mem.writeInt(u32, header[20..24], @intCast(model.items.len), .little);
+    try out.appendSlice(a, &header);
+    for (model.items) |item| {
+        var bytes: [toolbar_item_size]u8 = @splat(0);
+        std.mem.writeInt(u32, bytes[0..4], item.item_id, .little);
+        std.mem.writeInt(u32, bytes[4..8], item.icon_image_id, .little);
+        std.mem.writeInt(u32, bytes[8..12], item.icon_image_generation, .little);
+        bytes[12] = @intFromEnum(item.kind);
+        bytes[13] = item.flags;
+        bytes[14] = item.label_len;
+        bytes[15] = item.help_len;
+        bytes[16] = item.key_len;
+        @memcpy(bytes[20..84], &item.label);
+        @memcpy(bytes[84..148], &item.help);
+        @memcpy(bytes[148..164], &item.key);
+        try out.appendSlice(a, &bytes);
+    }
+}
+
+pub fn decodeToolbarModel(a: std.mem.Allocator, data: []const u8) (Error || std.mem.Allocator.Error)!ToolbarModel {
+    if (data.len < toolbar_model_header_size) return Error.InvalidTable;
+    var reader = Reader{ .data = data };
+    if (try reader.readU16() != toolbar_model_schema) return Error.InvalidVersion;
+    const flags = try reader.readByte();
+    const reserved = try reader.readByte();
+    const header: ToolbarModelHeader = .{
+        .frame_id = try reader.readU32(),
+        .frame_generation = try reader.readU32(),
+        .toolbar_id = try reader.readU32(),
+        .toolbar_generation = try reader.readU32(),
+    };
+    const item_count = try reader.readU32();
+    try reader.expectZeros(16);
+    if (flags != 0 or reserved != 0) return Error.InvalidReserved;
+    if (item_count == 0 or item_count > max_toolbar_items) return Error.InvalidTable;
+    if (data.len != toolbar_model_header_size + @as(usize, item_count) * toolbar_item_size)
+        return Error.InvalidTable;
+    const items = try a.alloc(ToolbarItem, item_count);
+    errdefer a.free(items);
+    for (items) |*item| {
+        item.* = .{
+            .item_id = try reader.readU32(),
+            .icon_image_id = try reader.readU32(),
+            .icon_image_generation = try reader.readU32(),
+            .kind = switch (try reader.readByte()) {
+                1 => .separator,
+                2 => .button,
+                3 => .toggle,
+                4 => .space,
+                else => return Error.InvalidMessage,
+            },
+            .flags = try reader.readByte(),
+            .label_len = try reader.readByte(),
+            .help_len = try reader.readByte(),
+            .key_len = try reader.readByte(),
+        };
+        try reader.expectZeros(3);
+        item.label = (try reader.bytes(64))[0..64].*;
+        item.help = (try reader.bytes(64))[0..64].*;
+        item.key = (try reader.bytes(16))[0..16].*;
+    }
+    const model: ToolbarModel = .{ .header = header, .items = items };
+    try validateToolbarModel(model);
+    return model;
+}
+
+pub fn freeToolbarModel(a: std.mem.Allocator, model: *ToolbarModel) void {
+    a.free(model.items);
+    model.items = &.{};
+}
+
+pub fn validateToolbarClick(payload: ToolbarClick) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0) or
+        payload.toolbar_id == 0 or payload.toolbar_generation == 0 or
+        payload.item_id == 0 or payload.window_id == 0 or
+        payload.frame_generation == 0)
+        return Error.InvalidToolbarClick;
+    switch (payload.phase) {
+        .press, .release => {},
+    }
+    if (payload.click_count == 0 or payload.click_count > 8 or
+        payload.button == 0 or payload.button > 5 or payload.x < 0 or payload.y < 0)
+        return Error.InvalidMessage;
+}
+
+pub fn encodeToolbarClick(a: std.mem.Allocator, payload: ToolbarClick, out: *std.ArrayList(u8)) !void {
+    try validateToolbarClick(payload);
+    var b: [toolbar_click_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = @intFromEnum(payload.phase);
+    b[3] = payload.reserved;
+    std.mem.writeInt(u32, b[4..8], payload.toolbar_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.toolbar_generation, .little);
+    std.mem.writeInt(u32, b[12..16], payload.item_id, .little);
+    std.mem.writeInt(u64, b[16..24], payload.window_id, .little);
+    std.mem.writeInt(u32, b[24..28], payload.frame_generation, .little);
+    b[28] = payload.click_count;
+    b[29] = payload.button;
+    std.mem.writeInt(u16, b[30..32], payload.modifiers, .little);
+    std.mem.writeInt(i32, b[32..36], payload.x, .little);
+    std.mem.writeInt(i32, b[36..40], payload.y, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeToolbarClick(data: []const u8) Error!ToolbarClick {
+    if (data.len != toolbar_click_size) return Error.InvalidTable;
+    const payload: ToolbarClick = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .phase = switch (data[2]) {
+            1 => .press,
+            2 => .release,
+            else => return Error.InvalidMessage,
+        },
+        .reserved = data[3],
+        .toolbar_id = std.mem.readInt(u32, data[4..8], .little),
+        .toolbar_generation = std.mem.readInt(u32, data[8..12], .little),
+        .item_id = std.mem.readInt(u32, data[12..16], .little),
+        .window_id = std.mem.readInt(u64, data[16..24], .little),
+        .frame_generation = std.mem.readInt(u32, data[24..28], .little),
+        .click_count = data[28],
+        .button = data[29],
+        .modifiers = std.mem.readInt(u16, data[30..32], .little),
+        .x = @bitCast(std.mem.readInt(u32, data[32..36], .little)),
+        .y = @bitCast(std.mem.readInt(u32, data[36..40], .little)),
+        .reserved_tail = data[40..48][0..8].*,
+    };
+    try validateToolbarClick(payload);
+    return payload;
 }
 
 pub const WindowRequestKind = enum(u8) {

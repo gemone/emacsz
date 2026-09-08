@@ -626,6 +626,7 @@ fn writeTranslatedEvent(
         .menu_result => {},
         .menu_cancel => {},
         .menu_hover => {},
+        .toolbar_click => {},
     }
 }
 
@@ -1598,6 +1599,10 @@ fn sendDeliveryEvent(
             try protocol.encodeMenuHover(gpa, hover, &payload);
             break :blk protocol.Message.menu_hover;
         },
+        .toolbar_click => |click| blk: {
+            try protocol.encodeToolbarClick(gpa, click, &payload);
+            break :blk protocol.Message.toolbar_click;
+        },
     };
     var input_message: std.ArrayList(u8) = .empty;
     defer input_message.deinit(gpa);
@@ -1786,6 +1791,7 @@ fn awaitFrameAck(
                 const is_menu_result = payload.envelope.message_type == protocol.Message.menu_result;
                 const is_menu_cancel = payload.envelope.message_type == protocol.Message.menu_cancel;
                 const is_menu_hover = payload.envelope.message_type == protocol.Message.menu_hover;
+                const is_toolbar_click = payload.envelope.message_type == protocol.Message.toolbar_click;
                 var copy_action = false;
                 if (is_key_v2) {
                     full_key = try input_policy.decodeFullKeyEvent(payload.bytes);
@@ -1805,7 +1811,8 @@ fn awaitFrameAck(
                     (is_scroll_request and capabilities.contains(.window_scroll_request_v1)) or
                     (is_menu_result and capabilities.contains(.widget_menu_result_v1)) or
                     (is_menu_cancel and capabilities.contains(.widget_menu_result_v1)) or
-                    (is_menu_hover and capabilities.contains(.widget_menu_hover_v1));
+                    (is_menu_hover and capabilities.contains(.widget_menu_hover_v1)) or
+                    (is_toolbar_click and capabilities.contains(.widget_toolbar_click_v1));
                 if (!input_allowed or
                     payload.envelope.flags & protocol.Flags.requires_ack == 0 or
                     payload.envelope.ack_sequence != 0 or
@@ -1904,6 +1911,27 @@ fn awaitFrameAck(
                     );
                     defer gpa.free(value);
                     try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "menu-cancel", value);
+                } else if (is_toolbar_click) {
+                    const event = try protocol.decodeToolbarClick(payload.bytes);
+                    const value = try std.fmt.allocPrint(
+                        gpa,
+                        "{{\"phase\":\"{s}\",\"toolbar_id\":{d},\"toolbar_generation\":{d},\"item_id\":{d},\"window_id\":{d},\"frame_generation\":{d},\"click_count\":{d},\"button\":{d},\"modifiers\":{d},\"x\":{d},\"y\":{d},\"execution\":\"observed\"}}",
+                        .{
+                            @tagName(event.phase),
+                            event.toolbar_id,
+                            event.toolbar_generation,
+                            event.item_id,
+                            event.window_id,
+                            event.frame_generation,
+                            event.click_count,
+                            event.button,
+                            event.modifiers,
+                            event.x,
+                            event.y,
+                        },
+                    );
+                    defer gpa.free(value);
+                    try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "toolbar-click", value);
                 } else if (is_menu_hover) {
                     const event = try protocol.decodeMenuHover(payload.bytes);
                     const value = try std.fmt.allocPrint(
@@ -4169,6 +4197,47 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     }
     if (!menu_patch_rendered) return error.RuntimeBridgeMenuPatchNotRendered;
 
+    var toolbar_fixture_items: [4]protocol.ToolbarItem = undefined;
+    var toolbar_model = protocol.toolbarModelFixture(&toolbar_fixture_items);
+    toolbar_model.header.frame_id = @intCast(bridge.frame.id);
+    toolbar_model.header.frame_generation = bridge.eup_frame_generation;
+    var toolbar_payload: std.ArrayList(u8) = .empty;
+    defer toolbar_payload.deinit(gpa);
+    try protocol.encodeToolbarModel(gpa, toolbar_model, &toolbar_payload);
+    var toolbar_update: std.ArrayList(u8) = .empty;
+    defer toolbar_update.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.toolbar_model,
+        .sequence = 58,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, toolbar_payload.items, &toolbar_update);
+    try scene.apply(toolbar_update.items);
+    if (scene.toolbar == null or scene.toolbar.?.items.len != 4)
+        return error.RuntimeBridgeToolbarInvalid;
+
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    var toolbar_rendered = false;
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .fill => |fill| {
+                if (fill.rect.x == 4 and fill.rect.y == 26 and
+                    fill.rect.width == 48 and fill.rect.height == 20 and
+                    fill.color.r == 0x27 and fill.color.g == 0x2e and fill.color.b == 0x3b)
+                    toolbar_rendered = true;
+            },
+            .text => |text| {
+                if (text.x == 8 and text.y == 30 and std.mem.eql(u8, text.bytes, "Save"))
+                    toolbar_rendered = toolbar_rendered and true;
+            },
+            else => {},
+        }
+    }
+    if (!toolbar_rendered) return error.RuntimeBridgeToolbarNotRendered;
+
     const explicit_clip = renderer_policy.explicitDamageClip(240, 96, &explicit_damage);
     if (explicit_clip == null) return error.RuntimeBridgeExplicitClipInvalid;
     frame_gate.dirty = true;
@@ -4269,7 +4338,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"tooltip\":true,\"menu_model\":true,\"menu_open\":true,\"frame_patch\":true,\"frame_snapshot\":true,\"menu_patch\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"tooltip\":true,\"menu_model\":true,\"menu_open\":true,\"frame_patch\":true,\"frame_snapshot\":true,\"menu_patch\":true,\"toolbar_model\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,
@@ -4565,6 +4634,7 @@ fn inputEventAllowed(capabilities: capability.Set, event: input_policy.Translate
         .menu_result => capabilities.contains(.widget_menu_result_v1),
         .menu_cancel => capabilities.contains(.widget_menu_result_v1),
         .menu_hover => capabilities.contains(.widget_menu_hover_v1),
+        .toolbar_click => capabilities.contains(.widget_toolbar_click_v1),
     };
 }
 
@@ -4617,6 +4687,7 @@ fn syncDeliveryCapabilities(delivery: *input_policy.DeliveryJournal, capabilitie
     delivery.scroll_request_negotiated = capabilities.contains(.window_scroll_request_v1);
     delivery.menu_result_negotiated = capabilities.contains(.widget_menu_result_v1);
     delivery.menu_hover_negotiated = capabilities.contains(.widget_menu_hover_v1);
+    delivery.toolbar_click_negotiated = capabilities.contains(.widget_toolbar_click_v1);
     delivery.key_v2_negotiated = capabilities.contains(.input_key_full_v2);
     delivery.pointer_v2_negotiated = capabilities.contains(.input_pointer_v2);
     delivery.platform_negotiated = capabilities.contains(.platform_focus_window_events);
@@ -5961,6 +6032,44 @@ fn buildSceneDrawList(
                 try list.drawText(rect.x + 4, row + 3, label, .{ .r = 0xff, .g = 0xd5, .b = 0x4d });
             }
             row += row_height;
+        }
+    }
+
+    if (scene.toolbar) |model| {
+        if (scene.windows.items.len != 0) {
+            const owner = scene.windows.items[0];
+            const row = renderer_policy.LogicalRect{
+                .x = @floatFromInt(owner.x),
+                .y = @floatFromInt(owner.y + 16),
+                .width = @floatFromInt(owner.width),
+                .height = 24,
+            };
+            try list.fillRect(row, .{ .r = 0x1d, .g = 0x22, .b = 0x2c });
+            var offset: f32 = 4;
+            for (model.items) |*item| {
+                if (item.flags & protocol.ToolbarItemFlags.visible == 0) continue;
+                if (item.kind == .separator or item.kind == .space) {
+                    offset += if (item.kind == .separator) 2 else 12;
+                    continue;
+                }
+                const rect = renderer_policy.LogicalRect{
+                    .x = offset,
+                    .y = row.y + 2,
+                    .width = 48,
+                    .height = 20,
+                };
+                const selected = item.flags & protocol.ToolbarItemFlags.selected != 0;
+                const pressed = item.flags & protocol.ToolbarItemFlags.pressed != 0;
+                try list.fillRect(rect, if (pressed or selected)
+                    renderer_policy.Color{ .r = 0x39, .g = 0x45, .b = 0x5c }
+                else
+                    renderer_policy.Color{ .r = 0x27, .g = 0x2e, .b = 0x3b });
+                const text = item.label[0..item.label_len];
+                if (input_policy.isAsciiText(text)) {
+                    try list.drawText(rect.x + 4, rect.y + 4, text, .{ .r = 0xff, .g = 0xd5, .b = 0x4d });
+                }
+                offset += 52;
+            }
         }
     }
 
