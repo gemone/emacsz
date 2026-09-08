@@ -2999,6 +2999,7 @@ pub const Scene = struct {
         switch (payload.envelope.message_type) {
             protocol.Message.frame_create => try self.applyFrameCreate(payload.envelope, payload.bytes),
             protocol.Message.frame_patch => try self.applyFramePatch(payload),
+            protocol.Message.frame_snapshot => try self.applyFrameSnapshot(payload),
             protocol.Message.frame_update => try self.applyFrameUpdate(payload),
             protocol.Message.begin_update => try self.applyBeginUpdate(payload),
             protocol.Message.end_update => try self.applyEndUpdate(payload),
@@ -3323,6 +3324,56 @@ pub const Scene = struct {
                 .frame_generation = frame.generation,
             };
         }
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFrameSnapshot(self: *Scene, payload: protocol.Payload) Error!void {
+        const snapshot = try protocol.decodeFrameSnapshot(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (payload.envelope.frame_id != frame.frame_id or
+            frame.generation != snapshot.frame_generation)
+            return Error.InvalidMessage;
+        const current = self.frames.lookup(frame.frame_id) orelse
+            return Error.FrameNotActive;
+        if (current.status != .active or current.generation != frame.generation)
+            return Error.FrameNotActive;
+        if (snapshot.focused and snapshot.visibility != .visible)
+            return Error.InvalidMessage;
+
+        try self.frames.setVisibility(frame.frame_id, frame.generation, snapshot.visibility);
+        try self.frames.setFocus(frame.frame_id, frame.generation, snapshot.focused);
+        self.alpha = .{
+            .active_opacity = snapshot.active_opacity,
+            .inactive_opacity = snapshot.inactive_opacity,
+            .background_opacity = snapshot.background_opacity,
+            .frame_generation = frame.generation,
+        };
+        self.decorations = .{
+            .decorated = snapshot.decorated,
+            .frame_generation = frame.generation,
+        };
+        self.scale = .{
+            .scale = snapshot.scale,
+            .dpi_x = snapshot.dpi_x,
+            .dpi_y = snapshot.dpi_y,
+            .frame_generation = frame.generation,
+        };
+        self.geometry = .{
+            .frame_generation = frame.generation,
+            .outer = snapshot.outer,
+            .content = snapshot.content,
+            .text = snapshot.text,
+            .window = snapshot.window,
+            .body = snapshot.body,
+        };
+        self.fullscreen = .{
+            .mode = snapshot.fullscreen,
+            .frame_generation = frame.generation,
+        };
+        self.maximize = .{
+            .flags = snapshot.maximize_flags,
+            .frame_generation = frame.generation,
+        };
         self.stats.control_messages += 1;
     }
 
@@ -8080,6 +8131,133 @@ test "scene applies frame patch atomically to bounded frame state" {
     try std.testing.expectEqual(false, scene.frames.frames[0].focused);
 }
 
+test "scene applies complete bounded frame snapshot atomically" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    {
+        const hidden = try frameStateMessage(a, 3, protocol.Message.frame_visibility, 7, 7, 1, 0);
+        defer a.free(hidden);
+        try scene.apply(hidden);
+    }
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeFramePatch(a, .{
+        .presence = protocol.FramePatchFlags.alpha |
+            protocol.FramePatchFlags.decorations | protocol.FramePatchFlags.scale,
+        .frame_generation = 1,
+        .active_opacity = 1000,
+        .inactive_opacity = 2000,
+        .background_opacity = 3000,
+        .decorated = true,
+        .scale = 2,
+        .dpi_x = 144,
+        .dpi_y = 120,
+    }, &payload);
+    {
+        const old_patch = try windowLifecycleMessage(a, protocol.Message.frame_patch, 4, 7, payload.items);
+        defer a.free(old_patch);
+        try scene.apply(old_patch);
+    }
+    payload.clearRetainingCapacity();
+    try protocol.encodeFrameFullscreen(a, .{
+        .mode = .fullboth,
+        .frame_generation = 1,
+    }, &payload);
+    {
+        const fullscreen = try windowLifecycleMessage(a, protocol.Message.frame_fullscreen, 5, 7, payload.items);
+        defer a.free(fullscreen);
+        try scene.apply(fullscreen);
+    }
+    payload.clearRetainingCapacity();
+    try protocol.encodeFrameMaximize(a, .{
+        .flags = protocol.FrameMaximizeFlags.horizontal,
+        .frame_generation = 1,
+    }, &payload);
+    {
+        const maximize = try windowLifecycleMessage(a, protocol.Message.frame_maximize, 6, 7, payload.items);
+        defer a.free(maximize);
+        try scene.apply(maximize);
+    }
+
+    const snapshot: protocol.FrameSnapshot = .{
+        .frame_generation = 1,
+        .visibility = .visible,
+        .focused = true,
+        .fullscreen = .none,
+        .maximize_flags = protocol.FrameMaximizeFlags.both,
+        .decorated = false,
+        .active_opacity = 9000,
+        .inactive_opacity = 7000,
+        .background_opacity = 9500,
+        .outer = .{ .x = 0, .y = 0, .width = 100, .height = 100 },
+        .content = .{ .x = 4, .y = 4, .width = 92, .height = 92 },
+        .text = .{ .x = 4, .y = 4, .width = 92, .height = 92 },
+        .window = .{ .x = 4, .y = 4, .width = 92, .height = 92 },
+        .body = .{ .x = 8, .y = 8, .width = 80, .height = 80 },
+    };
+    payload.clearRetainingCapacity();
+    try protocol.encodeFrameSnapshot(a, snapshot, &payload);
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.frame_snapshot, 7, 7, payload.items);
+        defer a.free(message);
+        try scene.apply(message);
+    }
+
+    try std.testing.expectEqual(lifecycle.FrameVisibility.visible, scene.frames.frames[0].visibility);
+    try std.testing.expectEqual(true, scene.frames.frames[0].focused);
+    try std.testing.expectEqual(@as(u16, 9000), scene.alpha.?.active_opacity);
+    try std.testing.expectEqual(@as(u16, 7000), scene.alpha.?.inactive_opacity);
+    try std.testing.expectEqual(@as(u16, 9500), scene.alpha.?.background_opacity);
+    try std.testing.expectEqual(false, scene.decorations.?.decorated);
+    try std.testing.expectEqual(@as(f32, 1), scene.scale.?.scale);
+    try std.testing.expectEqual(@as(f32, 96), scene.scale.?.dpi_x);
+    try std.testing.expectEqual(@as(f32, 96), scene.scale.?.dpi_y);
+    try std.testing.expectEqual(snapshot.outer, scene.geometry.?.outer);
+    try std.testing.expectEqual(snapshot.content, scene.geometry.?.content);
+    try std.testing.expectEqual(snapshot.text, scene.geometry.?.text);
+    try std.testing.expectEqual(snapshot.window, scene.geometry.?.window);
+    try std.testing.expectEqual(snapshot.body, scene.geometry.?.body);
+    try std.testing.expectEqual(protocol.FrameFullscreenMode.none, scene.fullscreen.?.mode);
+    try std.testing.expectEqual(protocol.FrameMaximizeFlags.both, scene.maximize.?.flags);
+
+    var stale = snapshot;
+    stale.frame_generation = 2;
+    payload.clearRetainingCapacity();
+    try protocol.encodeFrameSnapshot(a, stale, &payload);
+    {
+        const stale_message = try windowLifecycleMessage(a, protocol.Message.frame_snapshot, 8, 7, payload.items);
+        defer a.free(stale_message);
+        try std.testing.expectError(Error.InvalidMessage, scene.apply(stale_message));
+    }
+    try std.testing.expectEqual(lifecycle.FrameVisibility.visible, scene.frames.frames[0].visibility);
+    try std.testing.expectEqual(true, scene.frames.frames[0].focused);
+    try std.testing.expectEqual(@as(u16, 9000), scene.alpha.?.active_opacity);
+    try std.testing.expectEqual(@as(u16, 7000), scene.alpha.?.inactive_opacity);
+    try std.testing.expectEqual(@as(u16, 9500), scene.alpha.?.background_opacity);
+    try std.testing.expectEqual(false, scene.decorations.?.decorated);
+    try std.testing.expectEqual(@as(f32, 1), scene.scale.?.scale);
+    try std.testing.expectEqual(@as(f32, 96), scene.scale.?.dpi_x);
+    try std.testing.expectEqual(@as(f32, 96), scene.scale.?.dpi_y);
+    try std.testing.expectEqual(snapshot.body, scene.geometry.?.body);
+    try std.testing.expectEqual(protocol.FrameFullscreenMode.none, scene.fullscreen.?.mode);
+    try std.testing.expectEqual(protocol.FrameMaximizeFlags.both, scene.maximize.?.flags);
+
+    scene.resetForResync();
+    try std.testing.expectEqual(null, scene.alpha);
+    try std.testing.expectEqual(null, scene.decorations);
+    try std.testing.expectEqual(null, scene.scale);
+    try std.testing.expectEqual(null, scene.geometry);
+    try std.testing.expectEqual(null, scene.fullscreen);
+    try std.testing.expectEqual(null, scene.maximize);
+}
 test "scene applies title only for live active-generation strings" {
     const a = std.testing.allocator;
     var scene = Scene.init(a);

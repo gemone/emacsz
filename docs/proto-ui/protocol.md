@@ -214,7 +214,7 @@ normal positive-path session closes.
 |---|---|---|---|---|
 | `0x0200` | `FRAME_CREATE` | C→F | W3 lifecycle payload (section 28.4) | Create the frontend frame view |
 | `0x0201` | `FRAME_PATCH` | C→F | Parameter patch | Update parameters |
-| `0x0202` | `FRAME_SNAPSHOT` | C→F | Complete frame state | Initialization/resync |
+| `0x0202` | `FRAME_SNAPSHOT` | C→F | Bounded core presentation state | Initialization/resync |
 | `0x0203` | `FRAME_UPDATE` | C→F | Composite display batch | Primary production hot path |
 | `0x0204` | `FRAME_PRESENTED` | F→C | Present timestamp/stats | Presentation feedback |
 | `0x0205` | `FRAME_DROPPED` | F→C | Reason/last presented sequence | Presentation diagnostics |
@@ -267,8 +267,52 @@ The Scene validates the active frame/envelope identity and current lifecycle
 state before applying any selected field.  It updates visibility/focus in the
 frame registry and stores alpha, decoration, and scale values.  This patch is
 bounded batch evidence only: title, geometry, monitor, z-order, parent, size
-hints, fullscreen, maximize, icon, complete frame snapshot, and full PGTK frame
-semantics remain pending.
+hints, icon, and full PGTK frame semantics remain pending.
+
+#### `FRAME_SNAPSHOT` v1 (implemented bounded core snapshot)
+
+`FRAME_SNAPSHOT = 0x0202` is an exact 128-byte atomic core presentation
+snapshot.  It requires the full presence mask and carries schema, reserved
+bytes, active-frame generation, visibility, focused flag, fullscreen mode,
+maximize flags, decorated flag, active/inactive/background opacity, finite scale
+and X/Y DPI, plus outer/content/text/window/body rectangles.  Rectangles use
+signed coordinates, positive dimensions, and overflow-safe bounds with
+containment `outer ⊇ content ⊇ text/window ⊇ body`.
+
+The little-endian layout is:
+
+| Offset | Size | Field |
+|---:|---:|---|
+| `0..2` | 2 | schema, required `1` |
+| `2..4` | 2 | reserved, required zero |
+| `4..8` | 4 | presence, required complete mask |
+| `8..12` | 4 | frame generation, nonzero |
+| `12` | 1 | visibility |
+| `13` | 1 | focused boolean |
+| `14` | 1 | fullscreen mode |
+| `15` | 1 | maximize axis mask |
+| `16` | 1 | decorated boolean |
+| `17` | 1 | reserved, required zero |
+| `18..20` | 2 | active opacity |
+| `20..22` | 2 | inactive opacity |
+| `22..24` | 2 | background opacity |
+| `24..28` | 4 | scale, finite positive IEEE-754 bits |
+| `28..32` | 4 | X DPI, finite positive IEEE-754 bits |
+| `32..36` | 4 | Y DPI, finite positive IEEE-754 bits |
+| `36..52` | 16 | outer rectangle |
+| `52..68` | 16 | content rectangle |
+| `68..84` | 16 | text rectangle |
+| `84..100` | 16 | window rectangle |
+| `100..116` | 16 | body rectangle |
+| `116..128` | 12 | reserved, required zero |
+
+The envelope and Scene frame generation must agree.  The Scene validates
+visibility/focus consistency and all geometry before restoring the registry and
+presentation state atomically.  This restores the documented bounded core
+presentation set only; title, icon, monitor, size hints, z-order, parent,
+resources, redisplay rows, buffer/window tree, and the full Emacs frame-parameter
+space are not included and remain governed by dedicated contracts or pending
+work.
 
 #### Frame presentation feedback
 
@@ -1809,9 +1853,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 96 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 97 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 65 | Assigned for the target protocol but not implemented |
+| `planned` | 64 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

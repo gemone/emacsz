@@ -76,6 +76,7 @@ extern fn SDL_SetWindowIcon(window: *SDL_Window, icon: *SDL_Surface) bool;
 extern fn SDL_CreateSurfaceFrom(width: c_int, height: c_int, format: SDL_PixelFormat, pixels: ?*anyopaque, pitch: c_int) ?*SDL_Surface;
 extern fn SDL_DestroySurface(surface: *SDL_Surface) void;
 extern fn SDL_SetWindowParent(window: *SDL_Window, parent: ?*SDL_Window) bool;
+extern fn SDL_SetWindowSize(window: *SDL_Window, width: c_int, height: c_int) bool;
 extern fn SDL_SetWindowMinimumSize(window: *SDL_Window, min_w: c_int, min_h: c_int) bool;
 extern fn SDL_SetWindowMaximumSize(window: *SDL_Window, max_w: c_int, max_h: c_int) bool;
 extern fn SDL_SetWindowAspectRatio(window: *SDL_Window, min_aspect: f32, max_aspect: f32) bool;
@@ -3959,6 +3960,123 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         !frame_patch_scale_applied)
         return error.RuntimeBridgeFramePatchNotApplied;
 
+    var frame_snapshot_payload: std.ArrayList(u8) = .empty;
+    defer frame_snapshot_payload.deinit(gpa);
+    try protocol.encodeFrameSnapshot(gpa, .{
+        .frame_generation = bridge.eup_frame_generation,
+        .visibility = .visible,
+        .focused = true,
+        .fullscreen = .none,
+        .maximize_flags = protocol.FrameMaximizeFlags.both,
+        .decorated = false,
+        .active_opacity = 9000,
+        .inactive_opacity = 7000,
+        .background_opacity = 9500,
+        .outer = .{ .x = 0, .y = 0, .width = 248, .height = 96 },
+        .content = .{ .x = 4, .y = 4, .width = 240, .height = 88 },
+        .text = .{ .x = 4, .y = 4, .width = 240, .height = 88 },
+        .window = .{ .x = 4, .y = 4, .width = 240, .height = 88 },
+        .body = .{ .x = 8, .y = 8, .width = 232, .height = 80 },
+    }, &frame_snapshot_payload);
+    var frame_snapshot_update: std.ArrayList(u8) = .empty;
+    defer frame_snapshot_update.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_snapshot,
+        .sequence = 56,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, frame_snapshot_payload.items, &frame_snapshot_update);
+    try scene.apply(frame_snapshot_update.items);
+    if (scene.geometry == null or scene.geometry.?.outer.width != 248 or
+        scene.fullscreen == null or scene.fullscreen.?.mode != .none or
+        scene.maximize == null or scene.maximize.?.flags != protocol.FrameMaximizeFlags.both)
+        return error.RuntimeBridgeFrameSnapshotInvalid;
+
+    const snapshot_opacity = @as(f32, @floatFromInt(scene.alpha.?.active_opacity)) / 10000.0;
+    var snapshot_opacity_applied = SDL_SetWindowOpacity(window, snapshot_opacity);
+    if (snapshot_opacity_applied and
+        @abs(SDL_GetWindowOpacity(window) - snapshot_opacity) > 0.001)
+        snapshot_opacity_applied = false;
+    _ = SDL_SetWindowOpacity(window, 1.0);
+
+    var snapshot_decorations_applied = SDL_SetWindowBordered(
+        window,
+        scene.decorations.?.decorated,
+    );
+    if (snapshot_decorations_applied and
+        (SDL_GetWindowFlags(window) & SDL_WINDOW_BORDERLESS) == 0)
+        snapshot_decorations_applied = false;
+    _ = SDL_SetWindowBordered(window, true);
+
+    var snapshot_scale_applied = SDL_SetRenderScale(
+        selected_renderer.handle,
+        scene.scale.?.scale,
+        scene.scale.?.scale,
+    );
+    if (snapshot_scale_applied) {
+        var snapshot_scale_x: f32 = 0;
+        var snapshot_scale_y: f32 = 0;
+        SDL_GetRenderScale(selected_renderer.handle, &snapshot_scale_x, &snapshot_scale_y);
+        snapshot_scale_applied = @abs(snapshot_scale_x - scene.scale.?.scale) <= 0.001 and
+            @abs(snapshot_scale_y - scene.scale.?.scale) <= 0.001;
+    }
+    _ = SDL_SetRenderScale(selected_renderer.handle, 1, 1);
+
+    const snapshot_fullscreen_applied = scene.fullscreen.?.mode == .none and
+        (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) == 0;
+
+    var snapshot_maximize_applied = false;
+    if (SDL_SetWindowResizable(window, true)) {
+        const requested = SDL_MaximizeWindow(window);
+        snapshot_maximize_applied = requested and SDL_SyncWindow(window) and
+            (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0;
+        const restored = SDL_RestoreWindow(window) and SDL_SyncWindow(window) and
+            (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) == 0;
+        if (!restored) return error.RuntimeBridgeFrameSnapshotMaximizeRestoreFailed;
+    }
+    _ = SDL_SetWindowResizable(window, false);
+
+    // Probe geometry on a fresh bounded window so earlier size-hint/maximize
+    // diagnostics do not contaminate restoration.
+    const snapshot_window = SDL_CreateWindow(
+        "Emacs Proto-UI Frame Snapshot",
+        240,
+        96,
+        SDL_WINDOW_RESIZABLE,
+    ) orelse return sdlFail("SDL_CreateWindow");
+    defer SDL_DestroyWindow(snapshot_window);
+    var snapshot_geometry_applied = SDL_SetWindowSize(
+        snapshot_window,
+        @intCast(scene.geometry.?.outer.width),
+        @intCast(scene.geometry.?.outer.height),
+    ) and
+        SDL_SyncWindow(snapshot_window);
+    if (snapshot_geometry_applied) {
+        var width: c_int = 0;
+        var height: c_int = 0;
+        SDL_GetWindowSize(snapshot_window, &width, &height);
+        snapshot_geometry_applied = width == scene.geometry.?.outer.width and
+            height == scene.geometry.?.outer.height;
+    }
+    var snapshot_geometry_restored = SDL_SetWindowSize(snapshot_window, 240, 96) and
+        SDL_SyncWindow(snapshot_window);
+    if (snapshot_geometry_restored) {
+        var width: c_int = 0;
+        var height: c_int = 0;
+        SDL_GetWindowSize(snapshot_window, &width, &height);
+        snapshot_geometry_restored = width == 240 and height == 96;
+    }
+    if (!snapshot_geometry_applied) return error.RuntimeBridgeFrameSnapshotNotApplied;
+    if (!snapshot_geometry_restored) return error.RuntimeBridgeFrameSnapshotGeometryRestoreFailed;
+
+    if (!snapshot_opacity_applied or !snapshot_decorations_applied or
+        !snapshot_scale_applied or !snapshot_fullscreen_applied or
+        !snapshot_maximize_applied or !snapshot_geometry_applied)
+        return error.RuntimeBridgeFrameSnapshotNotApplied;
+
     const explicit_clip = renderer_policy.explicitDamageClip(240, 96, &explicit_damage);
     if (explicit_clip == null) return error.RuntimeBridgeExplicitClipInvalid;
     frame_gate.dirty = true;
@@ -4059,7 +4177,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"tooltip\":true,\"menu_model\":true,\"menu_open\":true,\"frame_patch\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"tooltip\":true,\"menu_model\":true,\"menu_open\":true,\"frame_patch\":true,\"frame_snapshot\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,

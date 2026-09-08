@@ -79,6 +79,7 @@ pub const Message = struct {
     pub const frame_destroy: u16 = 0x0206;
     pub const frame_update: u16 = 0x0203;
     pub const frame_patch: u16 = 0x0201;
+    pub const frame_snapshot: u16 = 0x0202;
     pub const frame_presented: u16 = 0x0204;
     pub const frame_dropped: u16 = 0x0205;
     pub const frame_visibility: u16 = 0x0208;
@@ -1845,6 +1846,190 @@ pub fn decodeFramePatch(data: []const u8) Error!FramePatch {
         .reserved_tail = data[32..40][0..8].*,
     };
     try validateFramePatch(payload);
+    return payload;
+}
+
+pub const FrameSnapshotFlags = struct {
+    pub const visibility: u32 = 1 << 0;
+    pub const focus: u32 = 1 << 1;
+    pub const alpha: u32 = 1 << 2;
+    pub const decorations: u32 = 1 << 3;
+    pub const scale: u32 = 1 << 4;
+    pub const geometry: u32 = 1 << 5;
+    pub const fullscreen: u32 = 1 << 6;
+    pub const maximize: u32 = 1 << 7;
+    pub const all: u32 = visibility | focus | alpha | decorations |
+        scale | geometry | fullscreen | maximize;
+};
+
+pub const FrameSnapshot = struct {
+    schema: u16 = 1,
+    reserved: u16 = 0,
+    presence: u32 = FrameSnapshotFlags.all,
+    frame_generation: u32,
+    visibility: FrameVisibilityState = .visible,
+    focused: bool = false,
+    fullscreen: FrameFullscreenMode = .none,
+    maximize_flags: u8 = FrameMaximizeFlags.both,
+    decorated: bool = true,
+    reserved_after_decorated: u8 = 0,
+    active_opacity: u16 = 10000,
+    inactive_opacity: u16 = 10000,
+    background_opacity: u16 = 10000,
+    scale: f32 = 1,
+    dpi_x: f32 = 96,
+    dpi_y: f32 = 96,
+    outer: GeometryRect,
+    content: GeometryRect,
+    text: GeometryRect,
+    window: GeometryRect,
+    body: GeometryRect,
+    reserved_tail: [12]u8 = @splat(0),
+};
+
+pub const frame_snapshot_size: usize = 128;
+
+fn decodeFrameSnapshotVisibility(value: u8) Error!FrameVisibilityState {
+    return switch (value) {
+        0 => .hidden,
+        1 => .visible,
+        2 => .iconified,
+        else => Error.InvalidTable,
+    };
+}
+
+fn decodeFrameSnapshotFullscreen(value: u8) Error!FrameFullscreenMode {
+    return switch (value) {
+        0 => .none,
+        1 => .fullboth,
+        2 => .fullwidth,
+        3 => .fullheight,
+        4 => .maximized,
+        else => Error.InvalidMessage,
+    };
+}
+
+fn decodeFrameSnapshotBoolean(value: u8) Error!bool {
+    return switch (value) {
+        0 => false,
+        1 => true,
+        else => Error.InvalidBoolean,
+    };
+}
+
+fn validateFrameSnapshot(payload: FrameSnapshot) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or
+        payload.presence != FrameSnapshotFlags.all or
+        payload.frame_generation == 0 or
+        payload.reserved_after_decorated != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0))
+        return Error.InvalidMessage;
+    if (payload.focused and payload.visibility != .visible)
+        return Error.InvalidMessage;
+    if (payload.active_opacity > max_opacity or
+        payload.inactive_opacity > max_opacity or
+        payload.background_opacity > max_opacity)
+        return Error.InvalidMessage;
+    if (!std.math.isFinite(payload.scale) or payload.scale <= 0 or
+        payload.scale > max_frame_scale or
+        !std.math.isFinite(payload.dpi_x) or payload.dpi_x <= 0 or
+        payload.dpi_x > max_frame_dpi or
+        !std.math.isFinite(payload.dpi_y) or payload.dpi_y <= 0 or
+        payload.dpi_y > max_frame_dpi)
+        return Error.InvalidMessage;
+    if (payload.maximize_flags & ~FrameMaximizeFlags.both != 0 or
+        payload.maximize_flags == 0)
+        return Error.InvalidMessage;
+    inline for (.{ payload.outer, payload.content, payload.text, payload.window, payload.body }) |rect| {
+        if (!validGeometryRect(rect)) return Error.InvalidMessage;
+    }
+    if (!containsGeometryRect(payload.outer, payload.content) or
+        !containsGeometryRect(payload.content, payload.text) or
+        !containsGeometryRect(payload.content, payload.window) or
+        !containsGeometryRect(payload.window, payload.body))
+        return Error.InvalidMessage;
+}
+
+pub fn encodeFrameSnapshot(a: std.mem.Allocator, payload: FrameSnapshot, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    try validateFrameSnapshot(payload);
+    var b: [frame_snapshot_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    std.mem.writeInt(u16, b[2..4], payload.reserved, .little);
+    std.mem.writeInt(u32, b[4..8], payload.presence, .little);
+    std.mem.writeInt(u32, b[8..12], payload.frame_generation, .little);
+    b[12] = @intFromEnum(payload.visibility);
+    b[13] = @intFromBool(payload.focused);
+    b[14] = @intFromEnum(payload.fullscreen);
+    b[15] = payload.maximize_flags;
+    b[16] = @intFromBool(payload.decorated);
+    b[17] = payload.reserved_after_decorated;
+    std.mem.writeInt(u16, b[18..20], payload.active_opacity, .little);
+    std.mem.writeInt(u16, b[20..22], payload.inactive_opacity, .little);
+    std.mem.writeInt(u16, b[22..24], payload.background_opacity, .little);
+    std.mem.writeInt(u32, b[24..28], @bitCast(payload.scale), .little);
+    std.mem.writeInt(u32, b[28..32], @bitCast(payload.dpi_x), .little);
+    std.mem.writeInt(u32, b[32..36], @bitCast(payload.dpi_y), .little);
+    inline for (.{ payload.outer, payload.content, payload.text, payload.window, payload.body }, 0..) |rect, index| {
+        const offset = 36 + index * 16;
+        inline for (.{ rect.x, rect.y, rect.width, rect.height }, 0..) |value, part| {
+            std.mem.writeInt(u32, b[offset + part * 4 ..][0..4], @bitCast(value), .little);
+        }
+    }
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeFrameSnapshot(data: []const u8) Error!FrameSnapshot {
+    if (data.len != frame_snapshot_size) return Error.InvalidTable;
+    const payload: FrameSnapshot = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .reserved = std.mem.readInt(u16, data[2..4], .little),
+        .presence = std.mem.readInt(u32, data[4..8], .little),
+        .frame_generation = std.mem.readInt(u32, data[8..12], .little),
+        .visibility = try decodeFrameSnapshotVisibility(data[12]),
+        .focused = try decodeFrameSnapshotBoolean(data[13]),
+        .fullscreen = try decodeFrameSnapshotFullscreen(data[14]),
+        .maximize_flags = data[15],
+        .decorated = try decodeFrameSnapshotBoolean(data[16]),
+        .reserved_after_decorated = data[17],
+        .active_opacity = std.mem.readInt(u16, data[18..20], .little),
+        .inactive_opacity = std.mem.readInt(u16, data[20..22], .little),
+        .background_opacity = std.mem.readInt(u16, data[22..24], .little),
+        .scale = @bitCast(std.mem.readInt(u32, data[24..28], .little)),
+        .dpi_x = @bitCast(std.mem.readInt(u32, data[28..32], .little)),
+        .dpi_y = @bitCast(std.mem.readInt(u32, data[32..36], .little)),
+        .outer = .{
+            .x = @bitCast(std.mem.readInt(u32, data[36..40], .little)),
+            .y = @bitCast(std.mem.readInt(u32, data[40..44], .little)),
+            .width = @bitCast(std.mem.readInt(u32, data[44..48], .little)),
+            .height = @bitCast(std.mem.readInt(u32, data[48..52], .little)),
+        },
+        .content = .{
+            .x = @bitCast(std.mem.readInt(u32, data[52..56], .little)),
+            .y = @bitCast(std.mem.readInt(u32, data[56..60], .little)),
+            .width = @bitCast(std.mem.readInt(u32, data[60..64], .little)),
+            .height = @bitCast(std.mem.readInt(u32, data[64..68], .little)),
+        },
+        .text = .{
+            .x = @bitCast(std.mem.readInt(u32, data[68..72], .little)),
+            .y = @bitCast(std.mem.readInt(u32, data[72..76], .little)),
+            .width = @bitCast(std.mem.readInt(u32, data[76..80], .little)),
+            .height = @bitCast(std.mem.readInt(u32, data[80..84], .little)),
+        },
+        .window = .{
+            .x = @bitCast(std.mem.readInt(u32, data[84..88], .little)),
+            .y = @bitCast(std.mem.readInt(u32, data[88..92], .little)),
+            .width = @bitCast(std.mem.readInt(u32, data[92..96], .little)),
+            .height = @bitCast(std.mem.readInt(u32, data[96..100], .little)),
+        },
+        .body = .{
+            .x = @bitCast(std.mem.readInt(u32, data[100..104], .little)),
+            .y = @bitCast(std.mem.readInt(u32, data[104..108], .little)),
+            .width = @bitCast(std.mem.readInt(u32, data[108..112], .little)),
+            .height = @bitCast(std.mem.readInt(u32, data[112..116], .little)),
+        },
+        .reserved_tail = data[116..128][0..12].*,
+    };
+    try validateFrameSnapshot(payload);
     return payload;
 }
 
@@ -5106,6 +5291,99 @@ test "frame patch payload enforces bounded atomic presence" {
     std.mem.writeInt(u16, bytes.items[2..4], 0, .little);
     try std.testing.expectError(Error.InvalidMessage, decodeFramePatch(bytes.items));
     try std.testing.expectError(Error.InvalidTable, decodeFramePatch(bytes.items[0 .. bytes.items.len - 1]));
+}
+
+fn validFrameSnapshot() FrameSnapshot {
+    return .{
+        .frame_generation = 2,
+        .visibility = .visible,
+        .focused = true,
+        .fullscreen = .none,
+        .maximize_flags = FrameMaximizeFlags.both,
+        .decorated = false,
+        .active_opacity = 9000,
+        .inactive_opacity = 7000,
+        .background_opacity = 9500,
+        .outer = .{ .x = 0, .y = 0, .width = 100, .height = 100 },
+        .content = .{ .x = 4, .y = 4, .width = 92, .height = 92 },
+        .text = .{ .x = 4, .y = 4, .width = 92, .height = 92 },
+        .window = .{ .x = 4, .y = 4, .width = 92, .height = 92 },
+        .body = .{ .x = 8, .y = 8, .width = 80, .height = 80 },
+    };
+}
+
+test "frame snapshot enforces complete bounded core presentation state" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    const snapshot = validFrameSnapshot();
+    try encodeFrameSnapshot(a, snapshot, &bytes);
+    try std.testing.expectEqual(frame_snapshot_size, bytes.items.len);
+    try std.testing.expectEqual(snapshot, try decodeFrameSnapshot(bytes.items));
+
+    var invalid = snapshot;
+    invalid.frame_generation = 0;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSnapshot(a, invalid, &bytes));
+    invalid = snapshot;
+    invalid.active_opacity = max_opacity + 1;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSnapshot(a, invalid, &bytes));
+    invalid = snapshot;
+    invalid.inactive_opacity = max_opacity + 1;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSnapshot(a, invalid, &bytes));
+    invalid = snapshot;
+    invalid.background_opacity = max_opacity + 1;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSnapshot(a, invalid, &bytes));
+    invalid = snapshot;
+    invalid.scale = max_frame_scale + 1;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSnapshot(a, invalid, &bytes));
+    invalid = snapshot;
+    invalid.dpi_x = max_frame_dpi + 1;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSnapshot(a, invalid, &bytes));
+    invalid = snapshot;
+    invalid.dpi_y = max_frame_dpi + 1;
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSnapshot(a, invalid, &bytes));
+    invalid = snapshot;
+    invalid.body = .{ .x = 200, .y = 8, .width = 8, .height = 8 };
+    try std.testing.expectError(Error.InvalidMessage, encodeFrameSnapshot(a, invalid, &bytes));
+
+    bytes.items[6] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameSnapshot(bytes.items));
+    bytes.items[6] = 0;
+    bytes.items[12] = 3;
+    try std.testing.expectError(Error.InvalidTable, decodeFrameSnapshot(bytes.items));
+    bytes.items[12] = @intFromEnum(FrameVisibilityState.visible);
+    bytes.items[13] = 2;
+    try std.testing.expectError(Error.InvalidBoolean, decodeFrameSnapshot(bytes.items));
+    bytes.items[13] = 1;
+    bytes.items[14] = 5;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameSnapshot(bytes.items));
+    bytes.items[14] = 0;
+    bytes.items[15] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameSnapshot(bytes.items));
+    bytes.items[15] = FrameMaximizeFlags.horizontal;
+    try std.testing.expectEqual(FrameMaximizeFlags.horizontal, (try decodeFrameSnapshot(bytes.items)).maximize_flags);
+    bytes.items[15] = FrameMaximizeFlags.vertical;
+    try std.testing.expectEqual(FrameMaximizeFlags.vertical, (try decodeFrameSnapshot(bytes.items)).maximize_flags);
+    bytes.items[15] = FrameMaximizeFlags.both;
+    bytes.items[15] = ~FrameMaximizeFlags.both;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameSnapshot(bytes.items));
+    bytes.items[15] = FrameMaximizeFlags.both;
+    bytes.items[16] = 2;
+    try std.testing.expectError(Error.InvalidBoolean, decodeFrameSnapshot(bytes.items));
+    bytes.items[16] = 0;
+    bytes.items[17] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameSnapshot(bytes.items));
+    bytes.items[17] = 0;
+    bytes.items[127] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameSnapshot(bytes.items));
+    bytes.items[127] = 0;
+    std.mem.writeInt(u32, bytes.items[4..8], FrameSnapshotFlags.all & ~FrameSnapshotFlags.geometry, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameSnapshot(bytes.items));
+    std.mem.writeInt(u32, bytes.items[4..8], FrameSnapshotFlags.all, .little);
+    bytes.items[13] = 1;
+    bytes.items[12] = @intFromEnum(FrameVisibilityState.hidden);
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameSnapshot(bytes.items));
+    try std.testing.expectError(Error.InvalidTable, decodeFrameSnapshot(bytes.items[0 .. bytes.items.len - 1]));
 }
 
 test "frame title payload enforces strict wire form" {

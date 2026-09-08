@@ -369,9 +369,10 @@ keyboard navigation, core command execution, and PGTK parity remain pending.
 
 P49 frame-patch preparation adds `FRAME_PATCH` v1, an exact 40-byte atomic batch
 for selected visibility/focus/opacity/decoration/scale state with active-frame
-lifecycle checks and SDL runtime evidence.  Complete frame snapshot and PGTK
-frame parity remain pending.
+lifecycle checks and SDL runtime evidence.  Complete snapshot and PGTK
+frame parity are covered by the next slice and remain pending.
 
+P50 frame-snapshot preparation adds `FRAME_SNAPSHOT` v1, an exact 128-byte atomic core presentation snapshot with strict geometry containment, Scene restoration, and bounded SDL evidence.  Full Emacs frame parameters and PGTK parity remain pending.
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by
 atlas/page identity, generation, and page revision.  The runtime smoke requires
 one upload followed by at least four cache hits; smoke-level renderer-reset clearing is wired; production-wide renderer-loss

@@ -51,6 +51,7 @@ Unknown optional capabilities are ignored. Unknown required messages trigger con
 | `frame.child` | Required for PGTK parity | negotiated | Tooltip/child unavailable |
 | `frame.tooltip` | Required for PGTK parity | negotiated | Echo-area fallback |
 | `frame.patch_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded atomic visibility/focus/opacity/decoration/scale batch only, with no complete frame-state parity |
+| `frame.snapshot_core_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded atomic core presentation snapshot only, with no complete Emacs frame-parameter parity |
 | `window_tree` | Required | core/backend | Backend cannot operate |
 | `window.tree_snapshot_v1` | Optional/degraded | adapter/frontend | Bounded complete-tree state codec and Scene validation; no rendering/management parity |
 | `window.geometry_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded content/body geometry and diagnostic body-boundary render |
@@ -231,7 +232,8 @@ Priorities:
 | Outer/native/text geometry | P0 | Degraded | Public frame/window geometry facts; no platform-native geometry contract |
 | Size hints | P1 | Degraded | EUP `FRAME_SIZE_HINTS` v1 models min/max, increment, and aspect constraints; SDL applies min/max/aspect and Scene owns increments, while redisplay geometry adaptation remains pending |
 | Alpha/background alpha | P1 | Degraded | EUP `FRAME_ALPHA` v1 carries active/inactive/background opacity; SDL probe applies active window opacity and falls back opaque, while focus transitions and complete PGTK visual parity remain pending |
-| Atomic bounded frame patch | P1 | Degraded | `FRAME_PATCH` v1 atomically updates selected visibility/focus/opacity/decoration/scale state; title, geometry, monitor, z-order, complete snapshot, and redisplay adaptation pending |
+| Atomic bounded frame patch | P1 | Degraded | `FRAME_PATCH` v1 atomically updates selected visibility/focus/opacity/decoration/scale state; title, geometry, monitor, z-order, and redisplay adaptation pending |
+| Core frame snapshot | P1 | Degraded | `FRAME_SNAPSHOT` v1 atomically restores visibility/focus/opacity/decoration/scale/geometry/fullscreen/maximize; title, icon, monitor, z-order, parent, full parameters, and redisplay adaptation pending |
 | Internal border | P0 | Degraded | `BORDER_UPDATE` v1 validates sides/thickness/color and SDL renders window edges; core-owned border semantics pending |
 | Skip taskbar | P2 | Pending | W12/W16 PGTK parity gate not met |
 | Sticky | P2 | Pending | W12/W16 PGTK parity gate not met |
@@ -490,7 +492,7 @@ parity.
 
 | Layer | Working now | Still required for parity | Evidence |
 |---|---|---|---|
-| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 96 implemented codecs, 3 partial, and 65 planned; no unassigned or unclassified ID | Production implementation of the remaining face/text/graphics protocol gaps |
+| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 97 implemented codecs, 3 partial, and 64 planned; no unassigned or unclassified ID | Production implementation of the remaining face/text/graphics protocol gaps |
 | Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry, deterministic ordered/resync/ACK-loss/ERP1 convergence differential with
 `RESOURCE_SNAPSHOT`-aware concrete face/font/string/image fingerprints, bounded EPXL capability negotiation/status manifest, frame visibility/focus state codec, bounded resource payload cache/eviction policy, request/evict codecs, bounded string define/delete, fixed-layout face/font/image define/data/delete, and atomic concrete `RESOURCE_SNAPSHOT` v1 restore with frontend ownership, optional host frame-state ABI seam, terminal-lifecycle core and fake-host runtime service, generated read-only C adapter, dynamically linkable observation library, bounded host-frame to EUP-frame service mapping, deterministic atomic capture batches, deterministic protocol fuzz hardening, and bounded process-level frontend crash isolation, and negotiated strict focus/window observation | General resource/widget capability coverage, arbitrary recovery, remote safety, runtime terminal registration | `proto-ui-conformance`, `proto-ui-unit`, `proto-ui-terminal-service`, `proto-ui-fuzz`, `proto-ui-recovery-diff`, `proto-ui-crash-isolation`, `proto-ui-shim-conformance`, `proto-ui-shim-library-conformance`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
 | Emacs observation | Real Emacs process publishes public frame/window geometry, bounded printable-ASCII text, point/cursor, and viewport facts; W12c creates/deletes one real display-backed frame and synchronizes one EUP/SDL3 frame lifecycle; W10e renders that public-facts marker through the bounded glyph-run debug fallback | Redisplay-owned rows/glyphs/faces/fonts, full window tree, `output_proto`-owned frame creation/deletion, runtime visibility/focus events | `proto-ui-module-smoke`, `sdl3-emacs-smoke`, `sdl3-epxl-facts-smoke`, `sdl3-frame-smoke` |
