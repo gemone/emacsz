@@ -237,6 +237,12 @@ improves explicit protocol damage observability; true redisplay-owned
 incremental damage remains pending.  A second smoke pass now uses the explicit
 rectangle as a retained-target clip and reports clipped-present counters.
 
+P19 clear-area preparation adds `CLEAR_AREA` v1 as a 40-byte face-colored
+rectangle.  `Scene` validates the active frame, live face generation, and
+window-relative bounds before storing one of at most 64 areas; the SDL draw
+list renders the validated face background.  This remains adapter-owned
+render-control evidence, not redisplay-owned capture.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and

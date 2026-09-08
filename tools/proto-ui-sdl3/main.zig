@@ -2550,9 +2550,33 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (scene.cursor == null or scene.cursor.?.x != 16)
         return error.RuntimeBridgeCursorUpdateInvalid;
 
+    var clear_area_payload: std.ArrayList(u8) = .empty;
+    defer clear_area_payload.deinit(gpa);
+    try frontend.encodeClearArea(gpa, .{
+        .window_id = 10,
+        .rect = .{ .x = 40, .y = 24, .width = 32, .height = 16 },
+        .face_id = 7,
+        .face_generation = 1,
+        .frame_generation = bridge.eup_frame_generation,
+    }, &clear_area_payload);
+    var clear_area: std.ArrayList(u8) = .empty;
+    defer clear_area.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.clear_area,
+        .sequence = 24,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, clear_area_payload.items, &clear_area);
+    try scene.apply(clear_area.items);
+    if (scene.clear_areas.items.len != 1 or scene.clear_areas.items[0].rect.width != 32)
+        return error.RuntimeBridgeClearAreaInvalid;
+
     var damage_rects: std.ArrayList(u8) = .empty;
     defer damage_rects.deinit(gpa);
-    try bridge.encodeDamageRects(gpa, 24, capability.session_id, 1, &damage_rects);
+    try bridge.encodeDamageRects(gpa, 25, capability.session_id, 1, &damage_rects);
     try scene.apply(damage_rects.items);
     if (scene.damage.items.len != 1 or scene.damage.items[0].width != 800)
         return error.RuntimeBridgeDamageRectsInvalid;
@@ -2566,14 +2590,14 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     });
     var flush: std.ArrayList(u8) = .empty;
     defer flush.deinit(gpa);
-    try bridge.encodeFlush(gpa, 25, capability.session_id, 1, &flush);
+    try bridge.encodeFlush(gpa, 26, capability.session_id, 1, &flush);
     try scene.apply(flush.items);
     if (scene.flush == null or scene.flush.?.damage_kind != .full)
         return error.RuntimeBridgeFlushInvalid;
 
     var render_hint: std.ArrayList(u8) = .empty;
     defer render_hint.deinit(gpa);
-    try bridge.encodeRenderHint(gpa, 26, capability.session_id, 1, &render_hint);
+    try bridge.encodeRenderHint(gpa, 27, capability.session_id, 1, &render_hint);
     try scene.apply(render_hint.items);
     if (scene.render_hint == null or scene.render_hint.?.preferred_mode != .mailbox)
         return error.RuntimeBridgeRenderHintInvalid;
@@ -2867,7 +2891,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     try protocol.encodeEnvelope(gpa, .{
         .flags = 0,
         .message_type = protocol.Message.damage_rects,
-        .sequence = 27,
+        .sequence = 28,
         .ack_sequence = 0,
         .session_id = capability.session_id,
         .frame_id = @intCast(bridge.frame.id),
@@ -4174,6 +4198,23 @@ fn buildSceneDrawList(
         .{ .x = 0, .y = 0, .width = @floatFromInt(header.logical_width), .height = @floatFromInt(header.logical_height) },
         .{ .r = 0x18, .g = 0x20, .b = 0x2a },
     );
+
+    for (scene.clear_areas.items) |area| {
+        const owner = findSceneWindow(scene, area.window_id) orelse continue;
+        const face = scene.faces.lookup(area.face_id) orelse continue;
+        if (face.generation != area.face_generation or !face.payload.presence.background) continue;
+        try list.fillRect(.{
+            .x = @floatFromInt(owner.x + area.rect.x),
+            .y = @floatFromInt(owner.y + area.rect.y),
+            .width = @floatFromInt(area.rect.width),
+            .height = @floatFromInt(area.rect.height),
+        }, .{
+            .r = face.payload.background[0],
+            .g = face.payload.background[1],
+            .b = face.payload.background[2],
+            .a = face.payload.background[3],
+        });
+    }
 
     for (scene.rows.items) |row| {
         const owner = findSceneWindow(scene, row.window_id) orelse continue;

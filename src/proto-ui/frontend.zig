@@ -429,6 +429,7 @@ pub const max_face_resources: usize = 64;
 pub const max_font_resources: usize = 64;
 pub const max_image_resources: usize = 8;
 pub const max_image_placements: usize = 16;
+pub const max_clear_areas: usize = 64;
 pub const image_placement_record_size: usize = 64;
 pub const image_placement_schema: u16 = 1;
 pub const image_placement_kind: u8 = 3;
@@ -1172,6 +1173,67 @@ pub fn freeDamageRects(a: std.mem.Allocator, damage: DamageRects) void {
     a.free(damage.rects);
 }
 
+pub const ClearArea = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    window_id: u64,
+    rect: Rect,
+    face_id: u32,
+    face_generation: u32,
+    frame_generation: u32,
+};
+
+pub const clear_area_size: usize = 40;
+
+pub fn encodeClearArea(
+    a: std.mem.Allocator,
+    area: ClearArea,
+    out: *std.ArrayList(u8),
+) !void {
+    if (area.schema != 1 or area.flags != 0 or area.reserved != 0 or
+        area.window_id == 0 or !area.rect.valid() or
+        area.rect.width <= 0 or area.rect.height <= 0 or
+        area.face_id == 0 or area.face_generation == 0 or
+        area.frame_generation == 0) return Error.InvalidMessage;
+    var bytes: [clear_area_size]u8 = [_]u8{0} ** clear_area_size;
+    std.mem.writeInt(u16, bytes[0..2], area.schema, .little);
+    std.mem.writeInt(u64, bytes[4..12], area.window_id, .little);
+    std.mem.writeInt(i32, bytes[12..16], area.rect.x, .little);
+    std.mem.writeInt(i32, bytes[16..20], area.rect.y, .little);
+    std.mem.writeInt(i32, bytes[20..24], area.rect.width, .little);
+    std.mem.writeInt(i32, bytes[24..28], area.rect.height, .little);
+    std.mem.writeInt(u32, bytes[28..32], area.face_id, .little);
+    std.mem.writeInt(u32, bytes[32..36], area.face_generation, .little);
+    std.mem.writeInt(u32, bytes[36..40], area.frame_generation, .little);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeClearArea(data: []const u8) Error!ClearArea {
+    if (data.len != clear_area_size) return Error.InvalidTable;
+    const area: ClearArea = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .window_id = std.mem.readInt(u64, data[4..12], .little),
+        .rect = .{
+            .x = @bitCast(std.mem.readInt(u32, data[12..16], .little)),
+            .y = @bitCast(std.mem.readInt(u32, data[16..20], .little)),
+            .width = @bitCast(std.mem.readInt(u32, data[20..24], .little)),
+            .height = @bitCast(std.mem.readInt(u32, data[24..28], .little)),
+        },
+        .face_id = std.mem.readInt(u32, data[28..32], .little),
+        .face_generation = std.mem.readInt(u32, data[32..36], .little),
+        .frame_generation = std.mem.readInt(u32, data[36..40], .little),
+    };
+    if (area.schema != 1 or area.flags != 0 or area.reserved != 0 or
+        area.window_id == 0 or !area.rect.valid() or
+        area.rect.width <= 0 or area.rect.height <= 0 or
+        area.face_id == 0 or area.face_generation == 0 or
+        area.frame_generation == 0) return Error.InvalidMessage;
+    return area;
+}
+
 pub fn encodePresentHint(a: std.mem.Allocator, hint: PresentHint, out: *std.ArrayList(u8)) !void {
     try putU32(out, a, hint.mode);
     try putU32(out, a, hint.flags);
@@ -1361,6 +1423,7 @@ pub const Scene = struct {
     image_placement_count: usize = 0,
     cursor: ?Cursor = null,
     damage: std.ArrayList(Rect) = .empty,
+    clear_areas: std.ArrayList(ClearArea) = .empty,
     text: std.ArrayList(TextLine) = .empty,
     title: ?[:0]u8 = null,
     alpha: ?protocol.FrameAlphaPayload = null,
@@ -1391,6 +1454,7 @@ pub const Scene = struct {
         self.rows.deinit(self.allocator);
         self.clearGlyphRuns();
         self.damage.deinit(self.allocator);
+        self.clear_areas.deinit(self.allocator);
         self.strings.deinit(self.allocator);
         self.faces = .{};
         self.fonts = .{};
@@ -1413,6 +1477,7 @@ pub const Scene = struct {
         self.rows = .empty;
         self.glyph_runs = .empty;
         self.damage = .empty;
+        self.clear_areas = .empty;
         self.strings = .{};
         self.faces = .{};
         self.fonts = .{};
@@ -1512,6 +1577,7 @@ pub const Scene = struct {
             protocol.Message.window_delete => try self.applyWindowDelete(payload),
             protocol.Message.window_patch => try self.applyWindowPatch(payload),
             protocol.Message.cursor_update => try self.applyCursorUpdate(payload),
+            protocol.Message.clear_area => try self.applyClearArea(payload),
             protocol.Message.damage_rects => try self.applyDamageRects(payload),
             protocol.Message.flush => try self.applyFlush(payload),
             protocol.Message.render_hint => try self.applyRenderHint(payload),
@@ -1548,12 +1614,14 @@ pub const Scene = struct {
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
         self.damage.deinit(self.allocator);
+        self.clear_areas.deinit(self.allocator);
         for (self.text.items) |line| self.allocator.free(line.bytes);
         self.text.deinit(self.allocator);
         self.windows = .empty;
         self.rows = .empty;
         self.glyph_runs = .empty;
         self.damage = .empty;
+        self.clear_areas = .empty;
         self.text = .empty;
         self.frame_header = null;
         self.cursor = null;
@@ -2476,6 +2544,7 @@ pub const Scene = struct {
         self.glyph_runs = .empty;
         self.damage = damage;
         self.text = text;
+        self.clear_areas.clearRetainingCapacity();
         self.image_placements = image_placements;
         self.image_placement_count = image_placement_count;
         windows = old_windows;
@@ -2492,6 +2561,30 @@ pub const Scene = struct {
         self.flush = null;
         self.viewport = viewport;
         self.stats.frame_updates += 1;
+    }
+    fn applyClearArea(self: *Scene, payload: protocol.Payload) Error!void {
+        const area = try decodeClearArea(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != area.frame_generation or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation)
+            return Error.InvalidMessage;
+        const owner = findWindow(self.windows.items, area.window_id) orelse
+            return Error.InvalidMessage;
+        if (!inside(area.rect.x, area.rect.width, owner.width) or
+            !inside(area.rect.y, area.rect.height, owner.height))
+            return Error.InvalidMessage;
+        const face = self.faces.lookup(area.face_id) orelse
+            return Error.ResourceNotLive;
+        if (face.generation != area.face_generation or
+            !face.payload.presence.background)
+            return Error.ResourceNotLive;
+        if (self.clear_areas.items.len == max_clear_areas)
+            return Error.Unsupported;
+        try self.clear_areas.append(self.allocator, area);
+        self.stats.control_messages += 1;
     }
 };
 
@@ -2686,6 +2779,77 @@ test "scene atomically replaces damage with bounded active-frame rects" {
     defer a.free(wrong_envelope);
     try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_envelope));
     try std.testing.expectEqualSlices(Rect, &rects, scene.damage.items);
+}
+
+test "clear area has exact wire form and validates active face" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    const face: protocol.FaceDefine = .{
+        .face_id = 9,
+        .generation = 3,
+        .presence = .{ .background = true },
+        .background = .{ 12, 34, 56, 255 },
+    };
+    var face_payload: std.ArrayList(u8) = .empty;
+    defer face_payload.deinit(a);
+    try protocol.encodeFaceDefine(a, face, &face_payload);
+    const face_message = try windowLifecycleMessage(a, protocol.Message.face_define, 3, 7, face_payload.items);
+    defer a.free(face_message);
+    try scene.apply(face_message);
+
+    const area: ClearArea = .{
+        .window_id = 100,
+        .rect = .{ .x = 8, .y = 8, .width = 24, .height = 16 },
+        .face_id = 9,
+        .face_generation = 3,
+        .frame_generation = 1,
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeClearArea(a, area, &payload);
+    try std.testing.expectEqual(clear_area_size, payload.items.len);
+    try std.testing.expectEqual(area, try decodeClearArea(payload.items));
+
+    const message = try windowLifecycleMessage(a, protocol.Message.clear_area, 4, 7, payload.items);
+    defer a.free(message);
+    try scene.apply(message);
+    try std.testing.expectEqual(area, scene.clear_areas.items[0]);
+
+    const outside: ClearArea = .{
+        .window_id = 100,
+        .rect = .{ .x = 72, .y = 8, .width = 16, .height = 16 },
+        .face_id = 9,
+        .face_generation = 3,
+        .frame_generation = 1,
+    };
+    payload.clearRetainingCapacity();
+    try encodeClearArea(a, outside, &payload);
+    const outside_message = try windowLifecycleMessage(a, protocol.Message.clear_area, 5, 7, payload.items);
+    defer a.free(outside_message);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(outside_message));
+    try std.testing.expectEqual(@as(usize, 1), scene.clear_areas.items.len);
+
+    const stale_face: ClearArea = .{
+        .window_id = 100,
+        .rect = area.rect,
+        .face_id = 9,
+        .face_generation = 2,
+        .frame_generation = 1,
+    };
+    payload.clearRetainingCapacity();
+    try encodeClearArea(a, stale_face, &payload);
+    const stale_message = try windowLifecycleMessage(a, protocol.Message.clear_area, 5, 7, payload.items);
+    defer a.free(stale_message);
+    try std.testing.expectError(Error.ResourceNotLive, scene.apply(stale_message));
+    try std.testing.expectEqual(@as(usize, 1), scene.clear_areas.items.len);
 }
 
 test "scene stores flush and render hints only for the active frame" {

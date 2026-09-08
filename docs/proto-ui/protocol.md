@@ -764,7 +764,33 @@ advance the expected sequence.  This message has no redisplay ownership,
 shaping, BiDi, face/font, atlas, image, widget, Emacs capture, or
 `output_proto` semantics.
 
-### 13.3 `DAMAGE_RECTS` v1 (implemented bounded adapter contract)
+### 13.3 `CLEAR_AREA` v1 (implemented bounded adapter contract)
+
+`CLEAR_AREA = 0x040b` is an exact 40-byte little-endian rectangle filled with a
+live face's background color.  v1 intentionally uses a bounded render-control
+subset; it does not capture or replace redisplay clear semantics.
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 2 | `schema` | `u16`, little-endian, must be `1` |
+| 2 | 1 | `flags` | zero |
+| 3 | 1 | reserved | zero |
+| 4 | 8 | `window_id` | nonzero, exists in the active frame |
+| 12 | 4 | `x` | nonnegative window-relative coordinate |
+| 16 | 4 | `y` | nonnegative window-relative coordinate |
+| 20 | 4 | `width` | positive |
+| 24 | 4 | `height` | positive |
+| 28 | 4 | `face_id` | nonzero |
+| 32 | 4 | `face_generation` | nonzero and live |
+| 36 | 4 | `frame_generation` | nonzero, active-frame generation |
+
+The face must exist with the exact generation and must advertise a background
+color.  `Scene` retains at most 64 validated areas and clears them on the next
+authoritative `FRAME_UPDATE`, frame destruction, resync, or teardown.  Unknown
+flags, nonzero reserved bytes, invalid coordinates, stale generations, missing
+faces, and truncation are protocol errors.
+
+### 13.4 `DAMAGE_RECTS` v1 (implemented bounded adapter contract)
 
 `DAMAGE_RECTS = 0x040d` is a bounded variable-length damage array.  It carries
 an explicitly enumerated conservative rectangle set after an accepted
@@ -787,7 +813,7 @@ bytes, stale generations, and out-of-frame rectangles are protocol errors.
 Current bridge/smoke evidence carries the observed array through Scene; true
 partial present and redisplay-owned incremental damage remain pending.
 
-### 13.4 `FLUSH` v1 (implemented bounded adapter contract)
+### 13.5 `FLUSH` v1 (implemented bounded adapter contract)
 
 `FLUSH = 0x040e` is an exact 40-byte little-endian present boundary.  It marks
 the Scene state that a frontend may treat as one render/present epoch; it does
@@ -814,7 +840,7 @@ Unknown flags, unknown damage kinds, truncation, and trailing bytes are protocol
 errors.  Current smoke evidence proves Scene state and SDL acceptance; core
 redisplay emission and adaptive present scheduling remain pending.
 
-### 13.5 `RENDER_HINT` v1 (implemented bounded adapter contract)
+### 13.6 `RENDER_HINT` v1 (implemented bounded adapter contract)
 
 `RENDER_HINT = 0x040f` is an exact 32-byte little-endian, non-authoritative
 renderer preference.  A conformant frontend may honor it only when the selected
@@ -1344,9 +1370,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 61 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 62 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 100 | Assigned for the target protocol but not implemented |
+| `planned` | 99 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every
