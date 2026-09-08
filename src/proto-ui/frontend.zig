@@ -1257,6 +1257,70 @@ pub fn decodeRow(bytes: []const u8) Error!Row {
     return row;
 }
 
+pub const row_snapshot_header_size: usize = 8;
+pub const row_snapshot_size: usize = row_snapshot_header_size + row_record_size;
+pub const row_delete_size: usize = 24;
+pub const row_snapshot_schema: u16 = 1;
+
+fn encodeRowHeader(a: std.mem.Allocator, frame_generation: u32, row: Row, out: *std.ArrayList(u8)) !void {
+    if (frame_generation == 0 or !row.valid()) return Error.InvalidMessage;
+    var header: [row_snapshot_header_size]u8 = [_]u8{0} ** row_snapshot_header_size;
+    std.mem.writeInt(u16, header[0..2], row_snapshot_schema, .little);
+    std.mem.writeInt(u32, header[4..8], frame_generation, .little);
+    try out.appendSlice(a, &header);
+    try encodeRow(a, row, out);
+}
+
+pub fn encodeRowSnapshot(a: std.mem.Allocator, frame_generation: u32, row: Row, out: *std.ArrayList(u8)) !void {
+    try encodeRowHeader(a, frame_generation, row, out);
+}
+
+pub fn encodeRowUpdate(a: std.mem.Allocator, frame_generation: u32, row: Row, out: *std.ArrayList(u8)) !void {
+    try encodeRowHeader(a, frame_generation, row, out);
+}
+
+pub fn decodeRowSnapshot(data: []const u8) Error!struct { frame_generation: u32, row: Row } {
+    if (data.len != row_snapshot_size) return Error.InvalidTable;
+    var reader: Reader = .{ .bytes = data };
+    if (try reader.readU16() != row_snapshot_schema) return Error.InvalidTable;
+    try reader.expectZeros(2);
+    const frame_generation = try reader.readU32();
+    const row = try decodeRow(data[row_snapshot_header_size..]);
+    if (frame_generation == 0 or row.window_id == 0) return Error.InvalidMessage;
+    return .{ .frame_generation = frame_generation, .row = row };
+}
+
+pub const RowDelete = struct {
+    frame_generation: u32,
+    window_id: u64,
+    row_index: u32,
+};
+
+pub fn encodeRowDelete(a: std.mem.Allocator, delete: RowDelete, out: *std.ArrayList(u8)) !void {
+    if (delete.frame_generation == 0 or delete.window_id == 0 or delete.row_index > protocol.max_rows)
+        return Error.InvalidMessage;
+    var bytes: [row_delete_size]u8 = [_]u8{0} ** row_delete_size;
+    std.mem.writeInt(u16, bytes[0..2], row_snapshot_schema, .little);
+    std.mem.writeInt(u32, bytes[4..8], delete.frame_generation, .little);
+    std.mem.writeInt(u64, bytes[8..16], delete.window_id, .little);
+    std.mem.writeInt(u32, bytes[16..20], delete.row_index, .little);
+    try out.appendSlice(a, &bytes);
+}
+
+pub fn decodeRowDelete(data: []const u8) Error!RowDelete {
+    if (data.len != row_delete_size) return Error.InvalidTable;
+    var reader: Reader = .{ .bytes = data };
+    if (try reader.readU16() != row_snapshot_schema) return Error.InvalidTable;
+    try reader.expectZeros(2);
+    const delete: RowDelete = .{
+        .frame_generation = try reader.readU32(),
+        .window_id = try reader.readU64(),
+        .row_index = try reader.readU32(),
+    };
+    if (delete.frame_generation == 0 or delete.window_id == 0) return Error.InvalidMessage;
+    return delete;
+}
+
 pub fn encodeCursor(a: std.mem.Allocator, cursor: Cursor, out: *std.ArrayList(u8)) !void {
     if (!cursor.valid()) return Error.InvalidMessage;
     try putU64(out, a, cursor.window_id);
@@ -1835,6 +1899,9 @@ pub const Scene = struct {
         switch (payload.envelope.message_type) {
             protocol.Message.frame_create => try self.applyFrameCreate(payload.envelope, payload.bytes),
             protocol.Message.frame_update => try self.applyFrameUpdate(payload),
+            protocol.Message.row_snapshot => try self.applyRowSnapshot(payload),
+            protocol.Message.row_update => try self.applyRowUpdate(payload),
+            protocol.Message.row_delete => try self.applyRowDelete(payload),
             protocol.Message.window_tree_snapshot => try self.applyWindowTreeSnapshot(payload),
             protocol.Message.glyph_run => try self.applyGlyphRun(payload),
             protocol.Message.glyph_run_delete => try self.applyGlyphRunDelete(payload),
@@ -2896,6 +2963,68 @@ pub const Scene = struct {
         self.border = border;
         self.stats.control_messages += 1;
     }
+    fn validateRowForOwner(row: Row, owner: Window) Error!void {
+        if (row.window_id != owner.id or row.flags != 0 or
+            !inside(row.x, row.width, owner.width) or
+            !inside(row.y, row.height, owner.height) or
+            row.ascent < 0 or row.descent < 0 or
+            row.baseline < 0 or row.visible_height < 0)
+            return Error.InvalidMessage;
+    }
+
+    fn upsertRow(self: *Scene, row: Row, require_existing: bool) Error!void {
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != header.frame_id or header.frame_generation != frame.generation) return Error.InvalidMessage;
+        const owner = findWindow(self.windows.items, row.window_id) orelse return Error.InvalidMessage;
+        try validateRowForOwner(row, owner);
+        var index: ?usize = null;
+        for (self.rows.items, 0..) |old, i| {
+            if (old.window_id == row.window_id and old.index == row.index) index = i;
+        }
+        if (require_existing and index == null) return Error.InvalidMessage;
+        if (index) |i| self.rows.items[i] = row else try self.rows.append(self.allocator, row);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyRowSnapshot(self: *Scene, payload: protocol.Payload) Error!void {
+        const decoded = try decodeRowSnapshot(payload.bytes);
+        try upsertRow(self, decoded.row, false);
+    }
+
+    fn applyRowUpdate(self: *Scene, payload: protocol.Payload) Error!void {
+        const decoded = try decodeRowSnapshot(payload.bytes);
+        try upsertRow(self, decoded.row, true);
+    }
+
+    fn applyRowDelete(self: *Scene, payload: protocol.Payload) Error!void {
+        const delete = try decodeRowDelete(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or frame.generation != delete.frame_generation)
+            return Error.InvalidMessage;
+        const owner = findWindow(self.windows.items, delete.window_id) orelse return Error.InvalidMessage;
+        var index: ?usize = null;
+        for (self.rows.items, 0..) |row, i| {
+            if (row.window_id == delete.window_id and row.index == delete.row_index) index = i;
+        }
+        const row_index = index orelse return Error.InvalidMessage;
+        for (self.glyph_runs.items) |run| {
+            if (run.window_id == delete.window_id and run.row_index == delete.row_index)
+                return Error.ResourceNotLive;
+        }
+        var text_i: usize = 0;
+        while (text_i < self.text.items.len) {
+            if (self.text.items[text_i].row_index == delete.row_index) {
+                const owned = self.text.items[text_i].bytes;
+                _ = self.text.orderedRemove(text_i);
+                self.allocator.free(owned);
+            } else text_i += 1;
+        }
+        _ = owner;
+        _ = self.rows.orderedRemove(row_index);
+        self.stats.control_messages += 1;
+    }
+
     fn applyClearArea(self: *Scene, payload: protocol.Payload) Error!void {
         const area = try decodeClearArea(payload.bytes);
         const frame = self.frame orelse return Error.FrameNotActive;
@@ -3500,6 +3629,47 @@ test "fringe update validates generation and active frame" {
     defer a.free(newer_message);
     try scene.apply(newer_message);
     try std.testing.expectEqual(newer, scene.fringes.items[0]);
+}
+
+test "row snapshot update and delete maintain bounded row state" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    const row: Row = .{ .window_id = 100, .index = 2, .flags = 0, .x = 0, .y = 40, .width = 80, .height = 10, .ascent = 7, .descent = 2, .baseline = 7, .visible_height = 10 };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeRowSnapshot(a, 1, row, &payload);
+    try std.testing.expectEqual(row_snapshot_size, payload.items.len);
+    const snapshot = try windowLifecycleMessage(a, protocol.Message.row_snapshot, 3, 7, payload.items);
+    defer a.free(snapshot);
+    try scene.apply(snapshot);
+    try std.testing.expectEqual(@as(usize, 2), scene.rows.items.len);
+
+    var replacement = row;
+    replacement.height = 12;
+    replacement.visible_height = 12;
+    payload.clearRetainingCapacity();
+    try encodeRowUpdate(a, 1, replacement, &payload);
+    const update_message = try windowLifecycleMessage(a, protocol.Message.row_update, 4, 7, payload.items);
+    defer a.free(update_message);
+    try scene.apply(update_message);
+    try std.testing.expectEqual(@as(i32, 12), scene.rows.items[1].height);
+
+    const delete: RowDelete = .{ .frame_generation = 1, .window_id = 100, .row_index = 2 };
+    payload.clearRetainingCapacity();
+    try encodeRowDelete(a, delete, &payload);
+    try std.testing.expectEqual(row_delete_size, payload.items.len);
+    const deletion = try windowLifecycleMessage(a, protocol.Message.row_delete, 5, 7, payload.items);
+    defer a.free(deletion);
+    try scene.apply(deletion);
+    try std.testing.expectEqual(@as(usize, 1), scene.rows.items.len);
 }
 
 test "scene stores flush and render hints only for the active frame" {
