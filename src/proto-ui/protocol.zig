@@ -146,6 +146,7 @@ pub const Message = struct {
     pub const menu_cancel: u16 = 0x0905;
     pub const menu_hover: u16 = 0x0906;
     pub const toolbar_model: u16 = 0x0910;
+    pub const toolbar_patch: u16 = 0x0911;
     pub const toolbar_click: u16 = 0x0912;
     pub const key_event: u16 = 0x0600;
     pub const text_input: u16 = 0x0601;
@@ -3492,6 +3493,53 @@ test "toolbar click codec validates phase identity and pointer facts" {
     try std.testing.expectError(Error.InvalidTable, decodeToolbarClick(bytes.items[0 .. bytes.items.len - 1]));
 }
 
+test "toolbar patch codecs enforce ordered generation and operations" {
+    const a = std.testing.allocator;
+    var fixture_items: [4]ToolbarItem = undefined;
+    const base_model = toolbarModelFixture(&fixture_items);
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    const header: ToolbarPatchHeader = .{
+        .frame_id = base_model.header.frame_id,
+        .frame_generation = base_model.header.frame_generation,
+        .toolbar_id = base_model.header.toolbar_id,
+        .expected_generation = base_model.header.toolbar_generation,
+        .new_generation = base_model.header.toolbar_generation + 1,
+    };
+    var item = ToolbarItem{ .item_id = 44, .kind = .button, .flags = ToolbarItemFlags.enabled | ToolbarItemFlags.visible, .label_len = 4 };
+    @memcpy(item.label[0..4], "Undo");
+    const operations = [_]ToolbarPatchOperation{
+        .{ .operation = .upsert, .item = item },
+        .{ .operation = .delete, .item = .{ .item_id = 43, .kind = .button, .flags = 0 } },
+    };
+    try encodeToolbarPatch(a, header, &operations, &bytes);
+    try std.testing.expectEqual(toolbar_patch_header_size + 2 * toolbar_patch_operation_size, bytes.items.len);
+    const decoded = try decodeToolbarPatch(a, bytes.items);
+    defer freeToolbarPatchOperations(a, decoded.operations);
+    try std.testing.expectEqual(header, decoded.header);
+    try std.testing.expectEqual(operations.len, decoded.operations.len);
+    try std.testing.expectEqualStrings("Undo", decoded.operations[0].item.label[0..4]);
+
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeToolbarPatch(a, bytes.items));
+    bytes.items[3] = 0;
+    bytes.items[toolbar_patch_header_size + toolbar_patch_operation_size + 16] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeToolbarPatch(a, bytes.items));
+    bytes.items[toolbar_patch_header_size + toolbar_patch_operation_size + 16] = @intFromEnum(ToolbarPatchOperationKind.delete);
+    bytes.items[toolbar_patch_header_size + toolbar_patch_operation_size + 24] = 'x';
+    try std.testing.expectError(Error.InvalidReserved, decodeToolbarPatch(a, bytes.items));
+    try std.testing.expectError(Error.InvalidTable, decodeToolbarPatch(a, bytes.items[0 .. bytes.items.len - 1]));
+
+    const stale_header: ToolbarPatchHeader = .{
+        .frame_id = header.frame_id,
+        .frame_generation = header.frame_generation,
+        .toolbar_id = header.toolbar_id,
+        .expected_generation = header.new_generation,
+        .new_generation = header.new_generation,
+    };
+    try std.testing.expectError(Error.InvalidMessage, encodeToolbarPatch(a, stale_header, &operations, &bytes));
+}
+
 test "menu hover codecs enforce phase-specific bounded identity" {
     const a = std.testing.allocator;
     var bytes: std.ArrayList(u8) = .empty;
@@ -3686,7 +3734,7 @@ fn validateToolbarItem(item: ToolbarItem) Error!void {
     }
 }
 
-fn validateToolbarModel(model: ToolbarModel) Error!void {
+pub fn validateToolbarModel(model: ToolbarModel) Error!void {
     const header = model.header;
     if (header.frame_id == 0 or header.frame_generation == 0 or
         header.toolbar_id == 0 or header.toolbar_generation == 0)
@@ -3778,6 +3826,150 @@ pub fn decodeToolbarModel(a: std.mem.Allocator, data: []const u8) (Error || std.
 pub fn freeToolbarModel(a: std.mem.Allocator, model: *ToolbarModel) void {
     a.free(model.items);
     model.items = &.{};
+}
+
+pub const ToolbarPatchOperationKind = enum(u8) {
+    upsert = 1,
+    delete = 2,
+};
+
+pub const ToolbarPatchHeader = struct {
+    frame_id: u32,
+    frame_generation: u32,
+    toolbar_id: u32,
+    expected_generation: u32,
+    new_generation: u32,
+};
+
+pub const ToolbarPatchOperation = struct {
+    operation: ToolbarPatchOperationKind,
+    item: ToolbarItem,
+};
+
+pub const toolbar_patch_header_size: usize = 44;
+pub const toolbar_patch_operation_size: usize = 168;
+pub const toolbar_patch_schema: u16 = 1;
+pub const max_toolbar_patch_operations: usize = 16;
+
+fn validateToolbarPatchHeader(header: ToolbarPatchHeader, operation_count: u32) Error!void {
+    if (header.frame_id == 0 or header.frame_generation == 0 or
+        header.toolbar_id == 0 or header.expected_generation == 0 or
+        header.new_generation <= header.expected_generation or
+        operation_count == 0 or operation_count > max_toolbar_patch_operations)
+        return Error.InvalidMessage;
+}
+
+fn validateToolbarPatchOperation(operation: ToolbarPatchOperation) Error!void {
+    if (operation.item.item_id == 0) return Error.InvalidMessage;
+    if (operation.operation == .delete) {
+        if (operation.item.kind != .button or operation.item.flags != 0 or
+            operation.item.label_len != 0 or operation.item.help_len != 0 or
+            operation.item.key_len != 0 or operation.item.icon_image_id != 0 or
+            operation.item.icon_image_generation != 0)
+            return Error.InvalidMessage;
+        if (!std.mem.allEqual(u8, &operation.item.label, 0) or
+            !std.mem.allEqual(u8, &operation.item.help, 0) or
+            !std.mem.allEqual(u8, &operation.item.key, 0))
+            return Error.InvalidReserved;
+        return;
+    }
+    try validateToolbarItem(operation.item);
+}
+
+pub fn encodeToolbarPatch(
+    a: std.mem.Allocator,
+    header: ToolbarPatchHeader,
+    operations: []const ToolbarPatchOperation,
+    out: *std.ArrayList(u8),
+) (Error || std.mem.Allocator.Error)!void {
+    try validateToolbarPatchHeader(header, @intCast(operations.len));
+    var header_bytes: [toolbar_patch_header_size]u8 = @splat(0);
+    std.mem.writeInt(u16, header_bytes[0..2], toolbar_patch_schema, .little);
+    std.mem.writeInt(u32, header_bytes[4..8], header.frame_id, .little);
+    std.mem.writeInt(u32, header_bytes[8..12], header.frame_generation, .little);
+    std.mem.writeInt(u32, header_bytes[12..16], header.toolbar_id, .little);
+    std.mem.writeInt(u32, header_bytes[16..20], header.expected_generation, .little);
+    std.mem.writeInt(u32, header_bytes[20..24], header.new_generation, .little);
+    std.mem.writeInt(u32, header_bytes[24..28], @intCast(operations.len), .little);
+    try out.appendSlice(a, &header_bytes);
+    for (operations) |operation| {
+        try validateToolbarPatchOperation(operation);
+        var bytes: [toolbar_patch_operation_size]u8 = @splat(0);
+        bytes[0] = @intFromEnum(operation.operation);
+        std.mem.writeInt(u32, bytes[4..8], operation.item.item_id, .little);
+        std.mem.writeInt(u32, bytes[8..12], operation.item.icon_image_id, .little);
+        std.mem.writeInt(u32, bytes[12..16], operation.item.icon_image_generation, .little);
+        bytes[16] = @intFromEnum(operation.item.kind);
+        bytes[17] = operation.item.flags;
+        bytes[18] = operation.item.label_len;
+        bytes[19] = operation.item.help_len;
+        bytes[20] = operation.item.key_len;
+        @memcpy(bytes[24..88], &operation.item.label);
+        @memcpy(bytes[88..152], &operation.item.help);
+        @memcpy(bytes[152..168], &operation.item.key);
+        try out.appendSlice(a, &bytes);
+    }
+}
+
+pub fn decodeToolbarPatch(
+    a: std.mem.Allocator,
+    data: []const u8,
+) (Error || std.mem.Allocator.Error)!struct { header: ToolbarPatchHeader, operations: []ToolbarPatchOperation } {
+    if (data.len < toolbar_patch_header_size) return Error.InvalidTable;
+    var reader = Reader{ .data = data };
+    if (try reader.readU16() != toolbar_patch_schema) return Error.InvalidVersion;
+    const flags = try reader.readByte();
+    const reserved = try reader.readByte();
+    const header: ToolbarPatchHeader = .{
+        .frame_id = try reader.readU32(),
+        .frame_generation = try reader.readU32(),
+        .toolbar_id = try reader.readU32(),
+        .expected_generation = try reader.readU32(),
+        .new_generation = try reader.readU32(),
+    };
+    const operation_count = try reader.readU32();
+    try reader.expectZeros(16);
+    if (flags != 0 or reserved != 0) return Error.InvalidReserved;
+    try validateToolbarPatchHeader(header, operation_count);
+    if (data.len != toolbar_patch_header_size + @as(usize, operation_count) * toolbar_patch_operation_size)
+        return Error.InvalidTable;
+    const operations = try a.alloc(ToolbarPatchOperation, operation_count);
+    errdefer a.free(operations);
+    for (operations) |*operation| {
+        const operation_kind: ToolbarPatchOperationKind = switch (try reader.readByte()) {
+            1 => .upsert,
+            2 => .delete,
+            else => return Error.InvalidMessage,
+        };
+        try reader.expectZeros(3);
+        var item: ToolbarItem = .{
+            .item_id = try reader.readU32(),
+            .icon_image_id = try reader.readU32(),
+            .icon_image_generation = try reader.readU32(),
+            .kind = switch (try reader.readByte()) {
+                1 => .separator,
+                2 => .button,
+                3 => .toggle,
+                4 => .space,
+                else => return Error.InvalidMessage,
+            },
+            .flags = try reader.readByte(),
+            .label_len = try reader.readByte(),
+            .help_len = try reader.readByte(),
+            .key_len = try reader.readByte(),
+        };
+        try reader.expectZeros(3);
+        item.label = (try reader.bytes(64))[0..64].*;
+        item.help = (try reader.bytes(64))[0..64].*;
+        item.key = (try reader.bytes(16))[0..16].*;
+        operation.* = .{ .operation = operation_kind, .item = item };
+        try validateToolbarPatchOperation(operation.*);
+    }
+    return .{ .header = header, .operations = operations };
+}
+
+pub fn freeToolbarPatchOperations(a: std.mem.Allocator, operations: []ToolbarPatchOperation) void {
+    a.free(operations);
 }
 
 pub fn validateToolbarClick(payload: ToolbarClick) Error!void {

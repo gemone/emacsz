@@ -4238,6 +4238,50 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     }
     if (!toolbar_rendered) return error.RuntimeBridgeToolbarNotRendered;
 
+    var undo = protocol.ToolbarItem{ .item_id = 40, .kind = .button, .flags = protocol.ToolbarItemFlags.enabled | protocol.ToolbarItemFlags.visible, .label_len = 4 };
+    @memcpy(undo.label[0..4], "Undo");
+    var toolbar_patch_operations = [_]protocol.ToolbarPatchOperation{.{ .operation = .upsert, .item = undo }};
+    var toolbar_patch_payload: std.ArrayList(u8) = .empty;
+    defer toolbar_patch_payload.deinit(gpa);
+    try protocol.encodeToolbarPatch(gpa, .{
+        .frame_id = @intCast(bridge.frame.id),
+        .frame_generation = bridge.eup_frame_generation,
+        .toolbar_id = 9,
+        .expected_generation = toolbar_model.header.toolbar_generation,
+        .new_generation = toolbar_model.header.toolbar_generation + 1,
+    }, &toolbar_patch_operations, &toolbar_patch_payload);
+    var toolbar_patch_update: std.ArrayList(u8) = .empty;
+    defer toolbar_patch_update.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.toolbar_patch,
+        .sequence = 59,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, toolbar_patch_payload.items, &toolbar_patch_update);
+    try scene.apply(toolbar_patch_update.items);
+    if (scene.toolbar.?.header.toolbar_generation != toolbar_model.header.toolbar_generation + 1)
+        return error.RuntimeBridgeToolbarPatchInvalid;
+
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    var toolbar_patch_rendered = false;
+    var toolbar_old_rendered = false;
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .text => |text| {
+                if (text.x == 8 and text.y == 30 and std.mem.eql(u8, text.bytes, "Undo"))
+                    toolbar_patch_rendered = true;
+                if (std.mem.eql(u8, text.bytes, "Save"))
+                    toolbar_old_rendered = true;
+            },
+            else => {},
+        }
+    }
+    if (!toolbar_patch_rendered or toolbar_old_rendered)
+        return error.RuntimeBridgeToolbarPatchNotRendered;
+
     const explicit_clip = renderer_policy.explicitDamageClip(240, 96, &explicit_damage);
     if (explicit_clip == null) return error.RuntimeBridgeExplicitClipInvalid;
     frame_gate.dirty = true;
@@ -4338,7 +4382,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"tooltip\":true,\"menu_model\":true,\"menu_open\":true,\"frame_patch\":true,\"frame_snapshot\":true,\"menu_patch\":true,\"toolbar_model\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"tooltip\":true,\"menu_model\":true,\"menu_open\":true,\"frame_patch\":true,\"frame_snapshot\":true,\"menu_patch\":true,\"toolbar_model\":true,\"toolbar_patch\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,

@@ -3013,6 +3013,7 @@ pub const Scene = struct {
             protocol.Message.menu_model => try self.applyMenuModel(payload),
             protocol.Message.menu_patch => try self.applyMenuPatch(payload),
             protocol.Message.toolbar_model => try self.applyToolbarModel(payload),
+            protocol.Message.toolbar_patch => try self.applyToolbarPatch(payload),
             protocol.Message.menu_open => try self.applyMenuOpen(payload),
             protocol.Message.menu_close => try self.applyMenuClose(payload),
             protocol.Message.glyph_run => try self.applyGlyphRun(payload),
@@ -4146,6 +4147,74 @@ pub const Scene = struct {
         }
         if (self.toolbar) |*old| protocol.freeToolbarModel(self.allocator, old);
         self.toolbar = model;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyToolbarPatch(self: *Scene, payload: protocol.Payload) Error!void {
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        const decoded = try protocol.decodeToolbarPatch(self.allocator, payload.bytes);
+        defer protocol.freeToolbarPatchOperations(self.allocator, decoded.operations);
+        const current_model = self.toolbar orelse return Error.ResourceNotLive;
+        if (payload.envelope.frame_id != frame.frame_id or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation or
+            current_model.header.frame_id != decoded.header.frame_id or
+            current_model.header.frame_generation != decoded.header.frame_generation or
+            current_model.header.toolbar_id != decoded.header.toolbar_id or
+            current_model.header.toolbar_generation != decoded.header.expected_generation)
+        {
+            return Error.InvalidMessage;
+        }
+
+        var items: [protocol.max_toolbar_items]protocol.ToolbarItem = undefined;
+        var count: usize = current_model.items.len;
+        @memcpy(items[0..count], current_model.items);
+
+        for (decoded.operations) |operation| {
+            const item_id = operation.item.item_id;
+            var existing_index: ?usize = null;
+            for (items[0..count], 0..) |item, index| {
+                if (item.item_id == item_id) {
+                    existing_index = index;
+                    break;
+                }
+            }
+
+            switch (operation.operation) {
+                .upsert => {
+                    if (existing_index) |index| {
+                        items[index] = operation.item;
+                    } else {
+                        if (count == protocol.max_toolbar_items) return Error.ResourceTableFull;
+                        items[count] = operation.item;
+                        count += 1;
+                    }
+                },
+                .delete => {
+                    const index = existing_index orelse return Error.ResourceNotLive;
+                    if (index + 1 < count) {
+                        std.mem.copyForwards(protocol.ToolbarItem, items[index .. count - 1], items[index + 1 .. count]);
+                    }
+                    count -= 1;
+                },
+            }
+        }
+
+        const next_model: protocol.ToolbarModel = .{
+            .header = .{
+                .frame_id = current_model.header.frame_id,
+                .frame_generation = current_model.header.frame_generation,
+                .toolbar_id = current_model.header.toolbar_id,
+                .toolbar_generation = decoded.header.new_generation,
+            },
+            .items = items[0..count],
+        };
+        try protocol.validateToolbarModel(next_model);
+        const owned_items = try self.allocator.alloc(protocol.ToolbarItem, count);
+        @memcpy(owned_items, next_model.items);
+        if (self.toolbar) |*old| protocol.freeToolbarModel(self.allocator, old);
+        self.toolbar = .{ .header = next_model.header, .items = owned_items };
         self.stats.control_messages += 1;
     }
 
@@ -6212,6 +6281,97 @@ test "scene applies bounded toolbar model for active frame" {
         try scene.apply(replacement);
     }
     try std.testing.expectEqual(@as(u32, 3), scene.toolbar.?.header.toolbar_generation);
+
+    scene.resetForResync();
+    try std.testing.expect(scene.toolbar == null);
+}
+
+test "scene applies toolbar patch atomically and clears on resync" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var fixture_items: [4]protocol.ToolbarItem = undefined;
+    const model = protocol.toolbarModelFixture(&fixture_items);
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeToolbarModel(a, model, &payload);
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.toolbar_model, 3, 7, payload.items);
+        defer a.free(message);
+        try scene.apply(message);
+    }
+
+    var undo = protocol.ToolbarItem{ .item_id = 44, .kind = .button, .flags = protocol.ToolbarItemFlags.enabled | protocol.ToolbarItemFlags.visible, .label_len = 4 };
+    @memcpy(undo.label[0..4], "Undo");
+    var operations = [_]protocol.ToolbarPatchOperation{
+        .{ .operation = .upsert, .item = undo },
+        .{ .operation = .delete, .item = .{ .item_id = 43, .kind = .button, .flags = 0 } },
+    };
+    payload.clearRetainingCapacity();
+    try protocol.encodeToolbarPatch(a, .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .toolbar_id = 9,
+        .expected_generation = 2,
+        .new_generation = 3,
+    }, &operations, &payload);
+    {
+        const patch = try windowLifecycleMessage(a, protocol.Message.toolbar_patch, 4, 7, payload.items);
+        defer a.free(patch);
+        try scene.apply(patch);
+    }
+    try std.testing.expectEqual(@as(u32, 3), scene.toolbar.?.header.toolbar_generation);
+    try std.testing.expectEqual(@as(usize, 4), scene.toolbar.?.items.len);
+    try std.testing.expectEqualStrings("Undo", scene.toolbar.?.items[3].label[0..4]);
+
+    var redo = undo;
+    redo.item_id = 40;
+    redo.label = @splat(0);
+    redo.label_len = 4;
+    @memcpy(redo.label[0..4], "Redo");
+    var ordered_operations = [_]protocol.ToolbarPatchOperation{
+        .{ .operation = .delete, .item = .{ .item_id = 40, .kind = .button, .flags = 0 } },
+        .{ .operation = .upsert, .item = redo },
+    };
+    payload.clearRetainingCapacity();
+    try protocol.encodeToolbarPatch(a, .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .toolbar_id = 9,
+        .expected_generation = 3,
+        .new_generation = 4,
+    }, &ordered_operations, &payload);
+    {
+        const ordered = try windowLifecycleMessage(a, protocol.Message.toolbar_patch, 5, 7, payload.items);
+        defer a.free(ordered);
+        try scene.apply(ordered);
+    }
+    try std.testing.expectEqual(@as(u32, 4), scene.toolbar.?.header.toolbar_generation);
+    try std.testing.expectEqual(@as(usize, 4), scene.toolbar.?.items.len);
+    try std.testing.expectEqual(@as(u32, 40), scene.toolbar.?.items[3].item_id);
+    try std.testing.expectEqualStrings("Redo", scene.toolbar.?.items[3].label[0..4]);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeToolbarPatch(a, .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .toolbar_id = 9,
+        .expected_generation = 3,
+        .new_generation = 5,
+    }, &operations, &payload);
+    {
+        const stale = try windowLifecycleMessage(a, protocol.Message.toolbar_patch, 6, 7, payload.items);
+        defer a.free(stale);
+        try std.testing.expectError(Error.InvalidMessage, scene.apply(stale));
+    }
+    try std.testing.expectEqual(@as(u32, 4), scene.toolbar.?.header.toolbar_generation);
 
     scene.resetForResync();
     try std.testing.expect(scene.toolbar == null);

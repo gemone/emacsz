@@ -1857,6 +1857,57 @@ Each `TOOLBAR_MODEL` item is exactly 164 bytes:
 | 36 | 4 | y | nonnegative |
 | 40 | 8 | reserved | zero |
 
+#### `TOOLBAR_PATCH` v1 (implemented bounded adapter contract)
+
+`TOOLBAR_PATCH = 0x0911` is an authoritative incremental tool-bar update.  Its
+44-byte header carries schema, active frame id/generation, toolbar id, expected
+and strictly newer toolbar generation, operation count, and reserved bytes.
+Each of 1..16 operations is exactly 168 bytes: an `upsert` or `delete` kind plus
+the same fixed toolbar item body used by `TOOLBAR_MODEL`.  Delete descriptors
+must be canonical (`button` kind, zero flags/metadata/icon references).
+
+Operations apply in wire order against a bounded working set.  An upsert
+replaces an existing item id or appends within the 16-item limit; a delete
+requires the item to exist and removes it.  After all operations the complete
+model is revalidated, copied into Scene ownership, and swapped atomically with a
+strictly newer generation.  This does not provide dedicated move semantics,
+icon rendering, overflow/menus, keyboard access, hit testing, native tool bars,
+or PGTK parity.
+
+`TOOLBAR_PATCH` header layout:
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 2 | schema | `1` |
+| 2 | 1 | flags | zero |
+| 3 | 1 | reserved | zero |
+| 4 | 4 | frame id | nonzero; equals envelope and live model |
+| 8 | 4 | frame generation | nonzero; equals live model |
+| 12 | 4 | toolbar id | nonzero; equals live model |
+| 16 | 4 | expected toolbar generation | nonzero; equals live model |
+| 20 | 4 | new toolbar generation | strictly newer |
+| 24 | 4 | operation count | `1..16` |
+| 28 | 16 | reserved | zero |
+
+Each `TOOLBAR_PATCH` operation is exactly 168 bytes:
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 1 | operation | upsert `1` / delete `2` |
+| 1 | 3 | reserved | zero |
+| 4 | 4 | item id | nonzero |
+| 8 | 4 | icon image id | item rules; zero on delete |
+| 12 | 4 | icon image generation | item rules; zero on delete |
+| 16 | 1 | item kind | item rules; delete requires button |
+| 17 | 1 | item flags | item rules; delete requires zero |
+| 18 | 1 | label length | item rules; delete requires zero |
+| 19 | 1 | help length | item rules; delete requires zero |
+| 20 | 1 | key length | item rules; delete requires zero |
+| 21 | 3 | reserved | zero |
+| 24 | 64 | label | item rules; fully zero on delete |
+| 88 | 64 | help | item rules; fully zero on delete |
+| 152 | 16 | key | item rules; fully zero on delete |
+
 #### `MENU_HOVER` v1 (implemented bounded reverse intent)
 
 `MENU_HOVER = 0x0906` is an exact 40-byte frontend-to-core intent.  Layout:
@@ -2008,9 +2059,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 101 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 102 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 60 | Assigned for the target protocol but not implemented |
+| `planned` | 59 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every
