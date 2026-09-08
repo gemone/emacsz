@@ -431,6 +431,7 @@ pub const max_image_resources: usize = 8;
 pub const max_image_placements: usize = 16;
 pub const max_clear_areas: usize = 64;
 pub const max_scroll_runs: usize = 32;
+pub const max_dividers: usize = 32;
 pub const BorderSides = struct {
     pub const top: u8 = 1 << 0;
     pub const right: u8 = 1 << 1;
@@ -440,6 +441,85 @@ pub const BorderSides = struct {
 };
 
 pub const max_border_thickness: i32 = 64;
+
+pub const DividerOrientation = enum(u8) {
+    vertical = 1,
+    horizontal = 2,
+};
+
+pub const DividerUpdate = struct {
+    schema: u16 = 1,
+    orientation: DividerOrientation,
+    reserved: u8 = 0,
+    divider_id: u32,
+    divider_generation: u32,
+    window_id: u64,
+    position: i32,
+    offset: i32,
+    span: i32,
+    thickness: i32,
+    frame_generation: u32,
+};
+
+pub const divider_update_size: usize = 40;
+
+pub fn dividerRect(area: DividerUpdate) Rect {
+    return if (area.orientation == .vertical)
+        .{ .x = area.position, .y = area.offset, .width = area.thickness, .height = area.span }
+    else
+        .{ .x = area.offset, .y = area.position, .width = area.span, .height = area.thickness };
+}
+
+pub fn encodeDividerUpdate(
+    a: std.mem.Allocator,
+    divider: DividerUpdate,
+    out: *std.ArrayList(u8),
+) !void {
+    if (divider.schema != 1 or divider.reserved != 0 or
+        divider.divider_id == 0 or divider.divider_generation == 0 or
+        divider.window_id == 0 or divider.thickness <= 0 or divider.span <= 0 or
+        divider.position < 0 or divider.offset < 0 or divider.frame_generation == 0)
+        return Error.InvalidMessage;
+    var b: [divider_update_size]u8 = [_]u8{0} ** divider_update_size;
+    std.mem.writeInt(u16, b[0..2], divider.schema, .little);
+    b[2] = @intFromEnum(divider.orientation);
+    std.mem.writeInt(u32, b[4..8], divider.divider_id, .little);
+    std.mem.writeInt(u32, b[8..12], divider.divider_generation, .little);
+    std.mem.writeInt(u64, b[12..20], divider.window_id, .little);
+    std.mem.writeInt(i32, b[20..24], divider.position, .little);
+    std.mem.writeInt(i32, b[24..28], divider.offset, .little);
+    std.mem.writeInt(i32, b[28..32], divider.span, .little);
+    std.mem.writeInt(i32, b[32..36], divider.thickness, .little);
+    std.mem.writeInt(u32, b[36..40], divider.frame_generation, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeDividerUpdate(data: []const u8) Error!DividerUpdate {
+    if (data.len != divider_update_size) return Error.InvalidTable;
+    const divider: DividerUpdate = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .orientation = switch (data[2]) {
+            1 => .vertical,
+            2 => .horizontal,
+            else => return Error.InvalidMessage,
+        },
+        .reserved = data[3],
+        .divider_id = std.mem.readInt(u32, data[4..8], .little),
+        .divider_generation = std.mem.readInt(u32, data[8..12], .little),
+        .window_id = std.mem.readInt(u64, data[12..20], .little),
+        .position = @bitCast(std.mem.readInt(u32, data[20..24], .little)),
+        .offset = @bitCast(std.mem.readInt(u32, data[24..28], .little)),
+        .span = @bitCast(std.mem.readInt(u32, data[28..32], .little)),
+        .thickness = @bitCast(std.mem.readInt(u32, data[32..36], .little)),
+        .frame_generation = std.mem.readInt(u32, data[36..40], .little),
+    };
+    if (divider.schema != 1 or divider.reserved != 0 or
+        divider.divider_id == 0 or divider.divider_generation == 0 or
+        divider.window_id == 0 or divider.thickness <= 0 or divider.span <= 0 or
+        divider.position < 0 or divider.offset < 0 or divider.frame_generation == 0)
+        return Error.InvalidMessage;
+    return divider;
+}
 
 pub const BorderUpdate = struct {
     schema: u16 = 1,
@@ -1541,6 +1621,7 @@ pub const Scene = struct {
     damage: std.ArrayList(Rect) = .empty,
     clear_areas: std.ArrayList(ClearArea) = .empty,
     scroll_runs: std.ArrayList(ScrollRun) = .empty,
+    dividers: std.ArrayList(DividerUpdate) = .empty,
     border: ?BorderUpdate = null,
     text: std.ArrayList(TextLine) = .empty,
     title: ?[:0]u8 = null,
@@ -1574,6 +1655,7 @@ pub const Scene = struct {
         self.damage.deinit(self.allocator);
         self.clear_areas.deinit(self.allocator);
         self.scroll_runs.deinit(self.allocator);
+        self.dividers.deinit(self.allocator);
         self.strings.deinit(self.allocator);
         self.faces = .{};
         self.fonts = .{};
@@ -1598,6 +1680,7 @@ pub const Scene = struct {
         self.damage = .empty;
         self.clear_areas = .empty;
         self.scroll_runs = .empty;
+        self.dividers = .empty;
         self.strings = .{};
         self.faces = .{};
         self.fonts = .{};
@@ -1700,6 +1783,7 @@ pub const Scene = struct {
             protocol.Message.cursor_update => try self.applyCursorUpdate(payload),
             protocol.Message.clear_area => try self.applyClearArea(payload),
             protocol.Message.scroll_run => try self.applyScrollRun(payload),
+            protocol.Message.divider_update => try self.applyDividerUpdate(payload),
             protocol.Message.damage_rects => try self.applyDamageRects(payload),
             protocol.Message.flush => try self.applyFlush(payload),
             protocol.Message.render_hint => try self.applyRenderHint(payload),
@@ -1739,6 +1823,7 @@ pub const Scene = struct {
         self.damage.deinit(self.allocator);
         self.clear_areas.deinit(self.allocator);
         self.scroll_runs.deinit(self.allocator);
+        self.dividers.deinit(self.allocator);
         for (self.text.items) |line| self.allocator.free(line.bytes);
         self.text.deinit(self.allocator);
         self.windows = .empty;
@@ -1747,6 +1832,7 @@ pub const Scene = struct {
         self.damage = .empty;
         self.clear_areas = .empty;
         self.scroll_runs = .empty;
+        self.dividers = .empty;
         self.text = .empty;
         self.frame_header = null;
         self.cursor = null;
@@ -2671,6 +2757,7 @@ pub const Scene = struct {
         self.text = text;
         self.clear_areas.clearRetainingCapacity();
         self.scroll_runs.clearRetainingCapacity();
+        self.dividers.clearRetainingCapacity();
         self.image_placements = image_placements;
         self.image_placement_count = image_placement_count;
         windows = old_windows;
@@ -2746,6 +2833,35 @@ pub const Scene = struct {
         if (self.scroll_runs.items.len == max_scroll_runs)
             return Error.Unsupported;
         try self.scroll_runs.append(self.allocator, run);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyDividerUpdate(self: *Scene, payload: protocol.Payload) Error!void {
+        const divider = try decodeDividerUpdate(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != divider.frame_generation or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation)
+            return Error.InvalidMessage;
+        const owner = findWindow(self.windows.items, divider.window_id) orelse
+            return Error.InvalidMessage;
+        const rect = dividerRect(divider);
+        if (!inside(rect.x, rect.width, owner.width) or
+            !inside(rect.y, rect.height, owner.height))
+            return Error.InvalidMessage;
+        for (self.dividers.items) |*old| {
+            if (old.divider_id == divider.divider_id) {
+                if (divider.divider_generation <= old.divider_generation)
+                    return Error.StaleGeneration;
+                old.* = divider;
+                self.stats.control_messages += 1;
+                return;
+            }
+        }
+        if (self.dividers.items.len == max_dividers) return Error.Unsupported;
+        try self.dividers.append(self.allocator, divider);
         self.stats.control_messages += 1;
     }
 };
@@ -3096,6 +3212,56 @@ test "scroll run has exact wire form and validates vertical copy bounds" {
     defer a.free(invalid);
     try std.testing.expectError(Error.InvalidMessage, scene.apply(invalid));
     try std.testing.expectEqual(@as(usize, 1), scene.scroll_runs.items.len);
+}
+
+test "divider update validates generation and owner bounds" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    const divider: DividerUpdate = .{
+        .orientation = .vertical,
+        .divider_id = 5,
+        .divider_generation = 1,
+        .window_id = 100,
+        .position = 40,
+        .offset = 4,
+        .span = 52,
+        .thickness = 3,
+        .frame_generation = 1,
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeDividerUpdate(a, divider, &payload);
+    try std.testing.expectEqual(divider_update_size, payload.items.len);
+    try std.testing.expectEqual(divider, try decodeDividerUpdate(payload.items));
+    const message = try windowLifecycleMessage(a, protocol.Message.divider_update, 3, 7, payload.items);
+    defer a.free(message);
+    try scene.apply(message);
+    try std.testing.expectEqual(divider, scene.dividers.items[0]);
+
+    const stale = divider;
+    payload.clearRetainingCapacity();
+    try encodeDividerUpdate(a, stale, &payload);
+    const stale_message = try windowLifecycleMessage(a, protocol.Message.divider_update, 4, 7, payload.items);
+    defer a.free(stale_message);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(stale_message));
+
+    var newer = divider;
+    newer.divider_generation = 2;
+    newer.position = 44;
+    payload.clearRetainingCapacity();
+    try encodeDividerUpdate(a, newer, &payload);
+    const newer_message = try windowLifecycleMessage(a, protocol.Message.divider_update, 4, 7, payload.items);
+    defer a.free(newer_message);
+    try scene.apply(newer_message);
+    try std.testing.expectEqual(newer, scene.dividers.items[0]);
 }
 
 test "scene stores flush and render hints only for the active frame" {

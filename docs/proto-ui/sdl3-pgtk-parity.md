@@ -187,6 +187,7 @@ capabilities must keep the relevant capability pending and block W16.
 | P19-prep. Clear-area render control | A bounded face-colored rectangle is validated against the active frame/window and rendered by SDL | Redisplay-owned clear semantics still require R8 |
 | P20-prep. Scroll-copy execution | A bounded full-window-width vertical `SCROLL_RUN` is validated, planned with overlap/upload metrics, and copied through a scratch SDL target | Redisplay-owned scroll semantics and general GPU batching still require R8 |
 | P21-prep. Border style | `BORDER_UPDATE` validates side mask, bounded thickness, RGBA color, and active generation; SDL renders selected edges | Core-owned border geometry and window-manager parity still require R8 |
+| P22-prep. Divider update | `DIVIDER_UPDATE` validates orientation, generation, window bounds, and renders a fixed-color divider | Draggable/resize semantics and redisplay ownership still require R8 |
 | P4. Terminal registration | `output_proto` can exist as a real terminal without PGTK initialization | Fake-host plus live terminal lifecycle tests after explicit R7 approval |
 | P4. First pure frame | Emacs creates `window-system = proto`; SDL creates the visible surface | One local command creates, focuses, resizes, deletes the frame |
 | P5. Redisplay-owned display | Rows/runs/cursor/damage come from Emacs redisplay | ASCII/CJK/BiDi/face fixtures compare against PGTK baselines |

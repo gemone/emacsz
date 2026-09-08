@@ -256,6 +256,11 @@ the active frame and the SDL draw list renders selected window edges with the
 requested color/thickness.  This improves bounded border styling; full
 window-manager border semantics and core-owned geometry remain pending.
 
+P22 divider preparation adds `DIVIDER_UPDATE` v1 for bounded vertical or
+horizontal dividers.  `Scene` validates active frame/window bounds and replaces
+a divider only with a strictly newer generation; SDL renders its fixed-color
+geometry.  Draggable divider semantics remain pending.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and

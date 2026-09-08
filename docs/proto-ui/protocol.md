@@ -786,6 +786,31 @@ list renders only selected edges with the requested color and thickness.  Core
 border geometry, resizable frame semantics, and complete WM policy remain
 pending.
 
+### 13.4 `DIVIDER_UPDATE` v1 (implemented bounded adapter contract)
+
+`DIVIDER_UPDATE = 0x0409` is an exact 40-byte little-endian divider geometry
+record.  v1 supports vertical and horizontal fixed-color dividers; draggable
+hit-testing, resize layout, and redisplay-owned divider creation remain pending.
+
+| Offset | Size | Field | Rule |
+|---:|---:|---|---|
+| 0 | 2 | `schema` | `u16`, little-endian, must be `1` |
+| 2 | 1 | `orientation` | 1 vertical, 2 horizontal |
+| 3 | 1 | reserved | zero |
+| 4 | 4 | `divider_id` | nonzero |
+| 8 | 4 | `divider_generation` | nonzero; replacement must be strictly newer |
+| 12 | 8 | `window_id` | nonzero, exists in active frame |
+| 20 | 4 | `position` | cross-axis window-relative coordinate |
+| 24 | 4 | `offset` | start along divider |
+| 28 | 4 | `span` | positive along divider |
+| 32 | 4 | `thickness` | positive cross-section |
+| 36 | 4 | `frame_generation` | nonzero, active-frame generation |
+
+Scene owns at most 32 dividers, replaces same IDs only for strictly newer
+generations, clears them on authoritative updates/teardown, and renders the
+validated fixed-color geometry.  Invalid orientation, truncation, out-of-bounds
+geometry, or stale generation is rejected before mutation.
+
 ### 13.4 `CLEAR_AREA` v1 (implemented bounded adapter contract)
 
 `CLEAR_AREA = 0x040b` is an exact 40-byte little-endian rectangle filled with a
@@ -1416,9 +1441,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 64 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 65 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 97 | Assigned for the target protocol but not implemented |
+| `planned` | 96 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every
