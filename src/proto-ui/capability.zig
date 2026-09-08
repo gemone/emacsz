@@ -78,6 +78,7 @@ pub const Feature = enum {
     window_scroll_request_v1,
     window_mouse_highlight_v1,
     font_descriptor_patch_v1,
+    fringe_bitmap_resource_v1,
     frame_output_proto,
     frame_lifecycle,
     frame_visibility_focus_contract,
@@ -179,6 +180,7 @@ pub const Feature = enum {
             .window_scroll_request_v1 => "window.scroll_request_v1",
             .window_mouse_highlight_v1 => "window.mouse_highlight_v1",
             .font_descriptor_patch_v1 => "font.descriptor_patch_v1",
+            .fringe_bitmap_resource_v1 => "fringe.bitmap_resource_v1",
             .frame_output_proto => "frame.output_proto",
             .frame_lifecycle => "frame.lifecycle",
             .frame_visibility_focus_contract => "frame.visibility_focus_contract",
@@ -338,6 +340,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .window_scroll_request_v1, .status = .degraded, .evidence = "proto-ui-unit bounded absolute/relative intent codec and queue; EPXL transport pending" },
     .{ .feature = .window_mouse_highlight_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded visible mouse-face rect; Emacs mouse-face semantics pending" },
     .{ .feature = .font_descriptor_patch_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded scalar font descriptor patch; real fonts, string/metric patching, and frame font parity pending" },
+    .{ .feature = .fringe_bitmap_resource_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded monochrome bitmap define/delete/render; color bitmaps, bitmap authoring, and full fringe parity pending" },
     .{ .feature = .frame_output_proto, .status = .pending, .evidence = "W12/W16 real proto frame acceptance pending" },
     .{ .feature = .frame_lifecycle, .status = .degraded, .evidence = "proto-ui-unit frame lifecycle contract and sdl3-frame-smoke" },
     .{ .feature = .frame_visibility_focus_contract, .status = .degraded, .evidence = "proto-ui-unit" },
@@ -606,7 +609,7 @@ test "status manifest is complete and generated JSON is bounded" {
     defer json.deinit(gpa);
     try writeStatusManifest(gpa, &json);
     try std.testing.expect(json.items.len > 100);
-    try std.testing.expect(json.items.len < 16 * 1024);
+    try std.testing.expect(json.items.len < 24 * 1024);
     try std.testing.expect(std.mem.indexOf(u8, json.items, "\"name\":\"resource.v1\"") != null);
 }
 

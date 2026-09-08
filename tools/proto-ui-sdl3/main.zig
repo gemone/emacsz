@@ -3235,6 +3235,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     var window_geometry_rendered = false;
     var window_zones_rendered = false;
     var mouse_highlight_rendered = false;
+    var fringe_bitmap_rendered = false;
     var cursor_update_rendered = false;
     for (draw_list.commands.items) |command| {
         switch (command) {
@@ -3508,6 +3509,46 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (patched_font.generation != 2 or patched_font.payload.weight != 700)
         return error.RuntimeBridgeFontPatchInvalid;
 
+    var fringe_bitmap_payload: std.ArrayList(u8) = .empty;
+    defer fringe_bitmap_payload.deinit(gpa);
+    var fringe_bitmap: protocol.FringeBitmapDefine = .{
+        .bitmap_id = 9,
+        .generation = 1,
+        .width = 2,
+        .height = 2,
+    };
+    fringe_bitmap.bits[0] = 0x80;
+    fringe_bitmap.bits[(protocol.max_fringe_bitmap_dimension + 7) / 8] = 0x40;
+    try protocol.encodeFringeBitmapDefine(gpa, fringe_bitmap, &fringe_bitmap_payload);
+    var fringe_bitmap_update: std.ArrayList(u8) = .empty;
+    defer fringe_bitmap_update.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.fringe_bitmap_define,
+        .sequence = 48,
+        .ack_sequence = 0,
+        .session_id = capability.session_id,
+        .frame_id = @intCast(bridge.frame.id),
+        .timestamp_ns = 1,
+    }, fringe_bitmap_payload.items, &fringe_bitmap_update);
+    try scene.apply(fringe_bitmap_update.items);
+    if (scene.fringe_bitmaps.lookup(9) == null)
+        return error.RuntimeBridgeFringeBitmapInvalid;
+
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .fill => |fill| {
+                if (fill.rect.x == 8 and fill.rect.y == 16 and
+                    fill.rect.width == 4 and fill.rect.height == 12 and
+                    fill.color.r == 0x22 and fill.color.g == 0x66 and fill.color.b == 0xaa)
+                    fringe_bitmap_rendered = true;
+            },
+            else => {},
+        }
+    }
+    if (!fringe_bitmap_rendered) return error.RuntimeBridgeFringeBitmapNotRendered;
+
     const explicit_clip = renderer_policy.explicitDamageClip(240, 96, &explicit_damage);
     if (explicit_clip == null) return error.RuntimeBridgeExplicitClipInvalid;
     frame_gate.dirty = true;
@@ -3608,7 +3649,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
         return error.RuntimeBridgeNotRendered;
     std.debug.print(
-        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
+        "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
             borders_supported,
             icon_applied,
@@ -4950,12 +4991,32 @@ fn buildSceneDrawList(
     for (scene.fringes.items) |fringe| {
         const owner = findSceneWindow(scene, fringe.window_id) orelse continue;
         const rect = frontend.fringeRect(fringe, owner.width);
-        try list.fillRect(.{
-            .x = @floatFromInt(owner.x + rect.x),
-            .y = @floatFromInt(owner.y + rect.y),
-            .width = @floatFromInt(rect.width),
-            .height = @floatFromInt(rect.height),
-        }, .{ .r = fringe.color[0], .g = fringe.color[1], .b = fringe.color[2], .a = fringe.color[3] });
+        const color = renderer_policy.Color{ .r = fringe.color[0], .g = fringe.color[1], .b = fringe.color[2], .a = fringe.color[3] };
+        if (scene.fringe_bitmaps.lookup(fringe.fringe_id)) |resource| {
+            if (resource.generation != fringe.fringe_generation) continue;
+            const cell_width: f32 = @as(f32, @floatFromInt(rect.width)) / @as(f32, @floatFromInt(resource.payload.width));
+            const cell_height: f32 = @as(f32, @floatFromInt(rect.height)) / @as(f32, @floatFromInt(resource.payload.height));
+            var y: usize = 0;
+            while (y < resource.payload.height) : (y += 1) {
+                var x: usize = 0;
+                while (x < resource.payload.width) : (x += 1) {
+                    if (!frontend.fringeBitmapBit(resource.payload, x, y)) continue;
+                    try list.fillRect(.{
+                        .x = @as(f32, @floatFromInt(owner.x + rect.x)) + @as(f32, @floatFromInt(x)) * cell_width,
+                        .y = @as(f32, @floatFromInt(owner.y + rect.y)) + @as(f32, @floatFromInt(y)) * cell_height,
+                        .width = cell_width,
+                        .height = cell_height,
+                    }, color);
+                }
+            }
+        } else {
+            try list.fillRect(.{
+                .x = @floatFromInt(owner.x + rect.x),
+                .y = @floatFromInt(owner.y + rect.y),
+                .width = @floatFromInt(rect.width),
+                .height = @floatFromInt(rect.height),
+            }, color);
+        }
     }
 
     for (scene.scroll_states.items) |state| {

@@ -342,6 +342,12 @@ evolution with strict generation replacement and stale shaped-run invalidation.
 Runtime smoke proves weight/generation evolution; real font objects, metadata and
 metric patching, frame font changes, and PGTK parity remain pending.
 
+P44 fringe-bitmap preparation adds bounded monochrome `FRINGE_BITMAP_DEFINE`/
+`DELETE` v1 resources.  The Scene enforces generation lifecycle, snapshot
+restore, and stale placement cleanup; SDL expands validated bits into a live
+fringe placement.  Color bitmaps, authoring semantics, and PGTK parity remain
+pending.
+
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by
 atlas/page identity, generation, and page revision.  The runtime smoke requires
 one upload followed by at least four cache hits; smoke-level renderer-reset clearing is wired; production-wide renderer-loss

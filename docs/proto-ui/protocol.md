@@ -1283,6 +1283,26 @@ semantics.  This is bounded adapter evidence only: no real font object, no
 string/style metadata patch, no metric patch, no rasterization/shaping change,
 and no Emacs frame-font or PGTK font parity claim is made.
 
+#### `FRINGE_BITMAP_DEFINE` / `FRINGE_BITMAP_DELETE` v1 (implemented bounded monochrome contract)
+
+`FRINGE_BITMAP_DEFINE = 0x050a` is an exact 144-byte little-endian monochrome
+bitmap declaration.  Layout: schema (`u16=1`), zero flags/reserved, nonzero
+bitmap id and generation, width and height (`1..32`), followed by 128 packed-bit
+bytes.  Rows always use the 32-pixel fixed stride.  Bits are MSB-first; every
+bit beyond the declared width, every row beyond the declared height, and every
+reserved byte must be zero.  `FRINGE_BITMAP_DELETE = 0x050b` is exactly the
+nonzero bitmap id and exact live generation.
+
+The Scene owns a bounded table of 64 protocol-global bitmaps.  Define accepts a
+new id or strictly newer generation; delete requires the exact live generation
+and marks the shared registry record deleted.  Replacement or delete removes
+existing fringe placements referencing that id so a stale bitmap cannot remain
+visible.  `RESOURCE_SNAPSHOT` can restore a live monochrome bitmap and retain a
+deleted tombstone.  The SDL renderer expands the validated bits into live fringe
+placement cells; if no matching bitmap is defined, the existing color-band
+fallback remains diagnostic-only.  This does not provide Emacs bitmap authoring,
+color/alpha bitmaps, scaling policy, complete fringe semantics, or PGTK parity.
+
 ### Image resource v1 (implemented bounded adapter contract)
 
 `IMAGE_DEFINE` is a fixed, little-endian 72-byte record.  It declares an
@@ -1669,9 +1689,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 85 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 87 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 76 | Assigned for the target protocol but not implemented |
+| `planned` | 74 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

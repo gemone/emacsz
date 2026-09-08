@@ -503,6 +503,7 @@ pub const max_clear_areas: usize = 64;
 pub const max_scroll_runs: usize = 32;
 pub const max_dividers: usize = 32;
 pub const max_fringes: usize = 32;
+pub const max_fringe_bitmaps: usize = 64;
 
 pub const FringeSide = enum(u8) {
     left = 1,
@@ -1240,6 +1241,106 @@ pub const FaceResources = struct {
         self.counters.deletes += 1;
     }
 };
+
+pub const FringeBitmapResource = struct {
+    bitmap_id: u32,
+    generation: u32,
+    payload: protocol.FringeBitmapDefine,
+};
+
+pub const FringeBitmapResourceCounters = struct {
+    defines: u64 = 0,
+    replacements: u64 = 0,
+    deletes: u64 = 0,
+    rejections: u64 = 0,
+};
+
+pub const FringeBitmapResources = struct {
+    bitmaps: [max_fringe_bitmaps]FringeBitmapResource = undefined,
+    len: usize = 0,
+    counters: FringeBitmapResourceCounters = .{},
+
+    fn find(self: FringeBitmapResources, bitmap_id: u32) ?usize {
+        for (self.bitmaps[0..self.len], 0..) |resource, index| {
+            if (resource.bitmap_id == bitmap_id) return index;
+        }
+        return null;
+    }
+
+    pub fn lookup(self: FringeBitmapResources, bitmap_id: u32) ?FringeBitmapResource {
+        const index = self.find(bitmap_id) orelse return null;
+        return self.bitmaps[index];
+    }
+
+    fn define(
+        self: *FringeBitmapResources,
+        resources: *lifecycle.ResourceRegistry,
+        payload: protocol.FringeBitmapDefine,
+    ) Error!void {
+        const existing_index = self.find(payload.bitmap_id);
+        if (existing_index) |index| {
+            if (payload.generation <= self.bitmaps[index].generation) {
+                self.counters.rejections += 1;
+                return Error.StaleGeneration;
+            }
+        } else if (self.len == max_fringe_bitmaps or resources.len == lifecycle.max_resources) {
+            self.counters.rejections += 1;
+            return Error.ResourceTableFull;
+        }
+
+        try resources.declareAll(&[_]lifecycle.Resource{.{
+            .kind = .fringe_bitmap,
+            .id = payload.bitmap_id,
+            .generation = payload.generation,
+            .status = .live,
+        }});
+
+        if (existing_index) |index| {
+            self.bitmaps[index] = .{
+                .bitmap_id = payload.bitmap_id,
+                .generation = payload.generation,
+                .payload = payload,
+            };
+            self.counters.replacements += 1;
+        } else {
+            self.bitmaps[self.len] = .{
+                .bitmap_id = payload.bitmap_id,
+                .generation = payload.generation,
+                .payload = payload,
+            };
+            self.len += 1;
+            self.counters.defines += 1;
+        }
+    }
+
+    fn delete(
+        self: *FringeBitmapResources,
+        resources: *lifecycle.ResourceRegistry,
+        payload: protocol.FringeBitmapDelete,
+    ) Error!void {
+        const index = self.find(payload.bitmap_id) orelse {
+            self.counters.rejections += 1;
+            return Error.ResourceNotLive;
+        };
+        if (self.bitmaps[index].generation != payload.generation) {
+            self.counters.rejections += 1;
+            return Error.StaleGeneration;
+        }
+        try resources.delete(.fringe_bitmap, payload.bitmap_id, payload.generation);
+        if (index + 1 < self.len) {
+            std.mem.copyForwards(FringeBitmapResource, self.bitmaps[index .. self.len - 1], self.bitmaps[index + 1 .. self.len]);
+        }
+        self.len -= 1;
+        self.counters.deletes += 1;
+    }
+};
+
+pub fn fringeBitmapBit(payload: protocol.FringeBitmapDefine, x: usize, y: usize) bool {
+    if (x >= payload.width or y >= payload.height) return false;
+    const stride = (protocol.max_fringe_bitmap_dimension + 7) / 8;
+    const byte = payload.bits[y * stride + x / 8];
+    return byte & (@as(u8, 1) << @intCast(7 - x % 8)) != 0;
+}
 
 pub const StringResource = struct {
     resource_id: u32,
@@ -2541,6 +2642,7 @@ pub const Scene = struct {
     faces: FaceResources = .{},
     fonts: FontResources = .{},
     images: ImageResources = .{},
+    fringe_bitmaps: FringeBitmapResources = .{},
     image_placements: [max_image_placements]ImagePlacement = undefined,
     image_placement_count: usize = 0,
     cursor: ?Cursor = null,
@@ -2603,6 +2705,7 @@ pub const Scene = struct {
         self.faces = .{};
         self.fonts = .{};
         self.images.clear(self.allocator);
+        self.fringe_bitmaps = .{};
         for (self.text.items) |line| self.allocator.free(line.bytes);
         self.text.deinit(self.allocator);
         self.clearTitle();
@@ -2746,6 +2849,8 @@ pub const Scene = struct {
             protocol.Message.scroll_run => try self.applyScrollRun(payload),
             protocol.Message.divider_update => try self.applyDividerUpdate(payload),
             protocol.Message.fringe_update => try self.applyFringeUpdate(payload),
+            protocol.Message.fringe_bitmap_define => try self.applyFringeBitmapDefine(payload),
+            protocol.Message.fringe_bitmap_delete => try self.applyFringeBitmapDelete(payload),
             protocol.Message.window_scroll_state => try self.applyWindowScrollState(payload),
             protocol.Message.window_face => try self.applyWindowFace(payload),
             protocol.Message.damage_rects => try self.applyDamageRects(payload),
@@ -3509,6 +3614,15 @@ pub const Scene = struct {
         }
     }
 
+    fn removeFringesForBitmap(self: *Scene, bitmap_id: u32) void {
+        var index: usize = 0;
+        while (index < self.fringes.items.len) {
+            if (self.fringes.items[index].fringe_id == bitmap_id) {
+                _ = self.fringes.orderedRemove(index);
+            } else index += 1;
+        }
+    }
+
     fn applyWindowTreeSnapshot(self: *Scene, payload: protocol.Payload) Error!void {
         const frame = self.frame orelse return Error.FrameNotActive;
         var tree = try protocol.decodeWindowTreeSnapshot(self.allocator, payload.bytes);
@@ -3638,6 +3752,22 @@ pub const Scene = struct {
         self.stats.control_messages += 1;
     }
 
+    fn applyFringeBitmapDefine(self: *Scene, payload: protocol.Payload) Error!void {
+        const bitmap = try protocol.decodeFringeBitmapDefine(payload.bytes);
+        const current = self.fringe_bitmaps.lookup(bitmap.bitmap_id);
+        const old_generation: ?u32 = if (current) |resource| resource.generation else null;
+        try self.fringe_bitmaps.define(&self.resources, bitmap);
+        if (old_generation != null) self.removeFringesForBitmap(bitmap.bitmap_id);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyFringeBitmapDelete(self: *Scene, payload: protocol.Payload) Error!void {
+        const bitmap = try protocol.decodeFringeBitmapDelete(payload.bytes);
+        try self.fringe_bitmaps.delete(&self.resources, bitmap);
+        self.removeFringesForBitmap(bitmap.bitmap_id);
+        self.stats.control_messages += 1;
+    }
+
     fn applyImageDefine(self: *Scene, payload: protocol.Payload) Error!void {
         const image = try protocol.decodeImageDefine(payload.bytes);
         try self.images.define(self.allocator, &self.resources, image);
@@ -3716,6 +3846,7 @@ pub const Scene = struct {
         var faces = FaceResources{};
         var fonts = FontResources{};
         var images = ImageResources{};
+        var fringe_bitmaps = FringeBitmapResources{};
         var resources = lifecycle.ResourceRegistry{};
         errdefer {
             strings.deinit(self.allocator);
@@ -3734,7 +3865,8 @@ pub const Scene = struct {
                         .bytes = entry.payload,
                     }),
                     .image => try restoreImageEntry(&images, &resources, self.allocator, entry),
-                    .fringe_bitmap, .icon => return Error.Unsupported,
+                    .fringe_bitmap => try fringe_bitmaps.define(&resources, try protocol.decodeFringeBitmapDefine(entry.payload)),
+                    .icon => return Error.Unsupported,
                 },
             }
         }
@@ -3745,6 +3877,7 @@ pub const Scene = struct {
         self.faces = faces;
         self.fonts = fonts;
         self.images = images;
+        self.fringe_bitmaps = fringe_bitmaps;
         self.resources = resources;
         old_strings.deinit(self.allocator);
         old_images.clear(self.allocator);
@@ -5480,6 +5613,86 @@ test "fringe update validates generation and active frame" {
     defer a.free(newer_message);
     try scene.apply(newer_message);
     try std.testing.expectEqual(newer, scene.fringes.items[0]);
+}
+
+test "fringe bitmap resources validate lifecycle and placement references" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var bitmap: protocol.FringeBitmapDefine = .{
+        .bitmap_id = 9,
+        .generation = 1,
+        .width = 2,
+        .height = 2,
+    };
+    bitmap.bits[0] = 0x80;
+    bitmap.bits[(protocol.max_fringe_bitmap_dimension + 7) / 8] = 0x40;
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeFringeBitmapDefine(a, bitmap, &payload);
+    const defined = try faceMessage(a, protocol.Message.fringe_bitmap_define, 3, payload.items);
+    defer a.free(defined);
+    try scene.apply(defined);
+    try std.testing.expectEqual(bitmap, scene.fringe_bitmaps.lookup(9).?.payload);
+    try std.testing.expect(fringeBitmapBit(bitmap, 0, 0));
+    try std.testing.expect(fringeBitmapBit(bitmap, 1, 1));
+    try std.testing.expect(!fringeBitmapBit(bitmap, 1, 0));
+
+    const fringe: FringeUpdate = .{
+        .side = .left,
+        .fringe_id = 9,
+        .fringe_generation = 1,
+        .window_id = 100,
+        .y = 4,
+        .height = 4,
+        .width = 4,
+        .color = .{ 1, 2, 3, 255 },
+        .frame_generation = 1,
+    };
+    payload.clearRetainingCapacity();
+    try encodeFringeUpdate(a, fringe, &payload);
+    const placement = try windowLifecycleMessage(a, protocol.Message.fringe_update, 4, 7, payload.items);
+    defer a.free(placement);
+    try scene.apply(placement);
+    try std.testing.expectEqual(@as(usize, 1), scene.fringes.items.len);
+
+    bitmap.generation = 2;
+    payload.clearRetainingCapacity();
+    try protocol.encodeFringeBitmapDefine(a, bitmap, &payload);
+    const replacement = try faceMessage(a, protocol.Message.fringe_bitmap_define, 5, payload.items);
+    defer a.free(replacement);
+    try scene.apply(replacement);
+    try std.testing.expectEqual(@as(u32, 2), scene.fringe_bitmaps.lookup(9).?.generation);
+    try std.testing.expectEqual(@as(usize, 0), scene.fringes.items.len);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeFringeBitmapDelete(a, .{ .bitmap_id = 9, .generation = 2 }, &payload);
+    const deletion = try faceMessage(a, protocol.Message.fringe_bitmap_delete, 6, payload.items);
+    defer a.free(deletion);
+    try scene.apply(deletion);
+    try std.testing.expect(scene.fringe_bitmaps.lookup(9) == null);
+    try std.testing.expectEqual(lifecycle.ResourceStatus.deleted, scene.resources.lookup(.fringe_bitmap, 9).?.status);
+    try std.testing.expectEqual(@as(usize, 0), scene.fringes.items.len);
+
+    bitmap.generation = 2;
+    var snapshot_payload: std.ArrayList(u8) = .empty;
+    defer snapshot_payload.deinit(a);
+    try protocol.encodeFringeBitmapDefine(a, bitmap, &snapshot_payload);
+    const snapshot_entries = [_]protocol.ResourceSnapshotEntry{
+        .{ .kind = .fringe_bitmap, .status = .live, .resource_id = 9, .generation = 2, .payload = snapshot_payload.items },
+    };
+    const snapshot = try snapshotMessage(a, 7, &snapshot_entries);
+    defer a.free(snapshot);
+    try scene.apply(snapshot);
+    try std.testing.expectEqual(@as(u32, 2), scene.fringe_bitmaps.lookup(9).?.generation);
+    try std.testing.expectEqual(@as(usize, 0), scene.fringes.items.len);
 }
 
 test "row snapshot update and delete maintain bounded row state" {

@@ -120,6 +120,8 @@ pub const Message = struct {
     pub const font_patch: u16 = 0x0504;
     pub const font_metrics: u16 = 0x0505;
     pub const font_delete: u16 = 0x0506;
+    pub const fringe_bitmap_define: u16 = 0x050a;
+    pub const fringe_bitmap_delete: u16 = 0x050b;
     pub const image_define: u16 = 0x0507;
     pub const image_data: u16 = 0x0508;
     pub const image_delete: u16 = 0x0509;
@@ -525,6 +527,30 @@ pub const FontDelete = struct {
     generation: u32,
 };
 
+pub const max_fringe_bitmap_dimension: usize = 32;
+pub const fringe_bitmap_data_size: usize =
+    ((max_fringe_bitmap_dimension + 7) / 8) * max_fringe_bitmap_dimension;
+
+pub const FringeBitmapDefine = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    bitmap_id: u32,
+    generation: u32,
+    width: u16,
+    height: u16,
+    bits: [fringe_bitmap_data_size]u8 = @splat(0),
+};
+
+pub const fringe_bitmap_define_size: usize = 144;
+
+pub const FringeBitmapDelete = struct {
+    bitmap_id: u32,
+    generation: u32,
+};
+
+pub const fringe_bitmap_delete_size: usize = 8;
+
 pub const ImagePixelFormat = enum(u16) {
     rgba8_premultiplied = 1,
 };
@@ -650,7 +676,12 @@ fn validateSnapshotEntryPayload(entry: ResourceSnapshotEntry) Error!void {
         .string => try validateStringBytes(entry.payload),
         // Snapshot tombstones may name reserved families, but live state is
         // limited to the concrete encodings implemented by EUP v1.
-        .fringe_bitmap, .icon => return Error.Unsupported,
+        .fringe_bitmap => {
+            const payload = try decodeFringeBitmapDefine(entry.payload);
+            if (payload.bitmap_id != entry.resource_id or payload.generation != entry.generation)
+                return Error.InvalidResource;
+        },
+        .icon => return Error.Unsupported,
     }
 }
 
@@ -1310,6 +1341,81 @@ pub fn decodeFontDelete(data: []const u8) Error!FontDelete {
         .generation = std.mem.readInt(u32, data[4..8], .little),
     };
     if (payload.font_id == 0 or payload.generation == 0) return Error.InvalidMessage;
+    return payload;
+}
+
+fn validateFringeBitmapDefine(payload: FringeBitmapDefine) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or payload.reserved != 0 or
+        payload.bitmap_id == 0 or payload.generation == 0 or
+        payload.width == 0 or payload.height == 0 or
+        payload.width > max_fringe_bitmap_dimension or
+        payload.height > max_fringe_bitmap_dimension)
+        return Error.InvalidMessage;
+
+    const stride: usize = (max_fringe_bitmap_dimension + 7) / 8;
+    const used_bytes: usize = (payload.width + 7) / 8;
+    var y: usize = 0;
+    while (y < payload.height) : (y += 1) {
+        const row = payload.bits[y * stride ..][0..stride];
+        for (row[used_bytes..]) |byte| {
+            if (byte != 0) return Error.InvalidMessage;
+        }
+        const used_bits: u8 = @intCast(payload.width - (used_bytes -| 1) * 8);
+        if (used_bits < 8 and blk: {
+            break :blk (row[used_bytes - 1] & (@as(u8, 0xff) >> @intCast(used_bits))) != 0;
+        })
+            return Error.InvalidMessage;
+    }
+    for (payload.bits[payload.height * stride ..]) |byte| {
+        if (byte != 0) return Error.InvalidMessage;
+    }
+}
+
+pub fn encodeFringeBitmapDefine(a: std.mem.Allocator, payload: FringeBitmapDefine, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    try validateFringeBitmapDefine(payload);
+    var b: [fringe_bitmap_define_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = payload.flags;
+    b[3] = payload.reserved;
+    std.mem.writeInt(u32, b[4..8], payload.bitmap_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.generation, .little);
+    std.mem.writeInt(u16, b[12..14], payload.width, .little);
+    std.mem.writeInt(u16, b[14..16], payload.height, .little);
+    @memcpy(b[16..fringe_bitmap_define_size], &payload.bits);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeFringeBitmapDefine(data: []const u8) Error!FringeBitmapDefine {
+    if (data.len != fringe_bitmap_define_size) return Error.InvalidTable;
+    const payload: FringeBitmapDefine = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .bitmap_id = std.mem.readInt(u32, data[4..8], .little),
+        .generation = std.mem.readInt(u32, data[8..12], .little),
+        .width = std.mem.readInt(u16, data[12..14], .little),
+        .height = std.mem.readInt(u16, data[14..16], .little),
+        .bits = data[16..fringe_bitmap_define_size][0..fringe_bitmap_data_size].*,
+    };
+    try validateFringeBitmapDefine(payload);
+    return payload;
+}
+
+pub fn encodeFringeBitmapDelete(a: std.mem.Allocator, payload: FringeBitmapDelete, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    if (payload.bitmap_id == 0 or payload.generation == 0) return Error.InvalidMessage;
+    var b: [fringe_bitmap_delete_size]u8 = undefined;
+    std.mem.writeInt(u32, b[0..4], payload.bitmap_id, .little);
+    std.mem.writeInt(u32, b[4..8], payload.generation, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeFringeBitmapDelete(data: []const u8) Error!FringeBitmapDelete {
+    if (data.len != fringe_bitmap_delete_size) return Error.InvalidTable;
+    const payload: FringeBitmapDelete = .{
+        .bitmap_id = std.mem.readInt(u32, data[0..4], .little),
+        .generation = std.mem.readInt(u32, data[4..8], .little),
+    };
+    if (payload.bitmap_id == 0 or payload.generation == 0) return Error.InvalidMessage;
     return payload;
 }
 
@@ -5307,6 +5413,55 @@ test "font patch codec enforces scalar identity and generation rules" {
     std.mem.writeInt(u32, bytes.items[32..36], 0, .little);
     try std.testing.expectError(Error.InvalidMessage, decodeFontPatch(bytes.items));
     try std.testing.expectError(Error.InvalidTable, decodeFontPatch(bytes.items[0 .. bytes.items.len - 1]));
+}
+
+test "fringe bitmap codec enforces bounded packed rows" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    var payload: FringeBitmapDefine = .{
+        .bitmap_id = 9,
+        .generation = 2,
+        .width = 12,
+        .height = 3,
+    };
+    payload.bits[0] = 0x80;
+    payload.bits[1] = 0x80;
+    payload.bits[(max_fringe_bitmap_dimension + 7) / 8 + 1] = 0x40;
+    try encodeFringeBitmapDefine(a, payload, &bytes);
+    try std.testing.expectEqual(fringe_bitmap_define_size, bytes.items.len);
+    try std.testing.expectEqual(payload, try decodeFringeBitmapDefine(bytes.items));
+
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFringeBitmapDefine(bytes.items));
+    bytes.items[3] = 0;
+    bytes.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeFringeBitmapDefine(bytes.items));
+    bytes.items[2] = 0;
+
+    payload.width = 8;
+    payload.bits[1] = 0x80;
+    try std.testing.expectError(Error.InvalidMessage, encodeFringeBitmapDefine(a, payload, &bytes));
+    payload.bits[1] = 0;
+    payload.height = 3;
+    payload.bits[4 * (max_fringe_bitmap_dimension + 7) / 8] = 1;
+    try std.testing.expectError(Error.InvalidMessage, encodeFringeBitmapDefine(a, payload, &bytes));
+    payload.bits[4 * (max_fringe_bitmap_dimension + 7) / 8] = 0;
+    payload.width = 12;
+
+    std.mem.writeInt(u16, bytes.items[12..14], 33, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFringeBitmapDefine(bytes.items));
+    std.mem.writeInt(u16, bytes.items[12..14], payload.width, .little);
+    try std.testing.expectError(Error.InvalidTable, decodeFringeBitmapDefine(bytes.items[0 .. bytes.items.len - 1]));
+
+    var delete_bytes: std.ArrayList(u8) = .empty;
+    defer delete_bytes.deinit(a);
+    try encodeFringeBitmapDelete(a, .{ .bitmap_id = 9, .generation = 2 }, &delete_bytes);
+    try std.testing.expectEqual(fringe_bitmap_delete_size, delete_bytes.items.len);
+    try std.testing.expectEqual(FringeBitmapDelete{ .bitmap_id = 9, .generation = 2 }, try decodeFringeBitmapDelete(delete_bytes.items));
+    delete_bytes.items[0] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeFringeBitmapDelete(delete_bytes.items));
 }
 
 test "font resource codecs reject invalid enums booleans ranges and extensions" {
