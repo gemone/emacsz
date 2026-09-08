@@ -121,6 +121,10 @@ pub const Message = struct {
     pub const image_define: u16 = 0x0507;
     pub const image_data: u16 = 0x0508;
     pub const image_delete: u16 = 0x0509;
+    pub const atlas_define: u16 = 0x0513;
+    pub const atlas_page_update: u16 = 0x0514;
+    pub const atlas_glyph_add: u16 = 0x0515;
+    pub const atlas_invalidate: u16 = 0x0516;
     pub const string_define: u16 = 0x050e;
     pub const string_delete: u16 = 0x050f;
     pub const key_event: u16 = 0x0600;
@@ -248,6 +252,79 @@ pub const max_image_dimension: u32 = 8192;
 pub const max_image_bytes: usize = 4 * 1024 * 1024;
 pub const max_image_fragments: u16 = 256;
 pub const max_image_fragment_bytes: usize = 65536;
+
+pub const AtlasDefine = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    atlas_id: u32,
+    generation: u32,
+    width: u32,
+    height: u32,
+    page_count: u16,
+};
+
+pub const atlas_define_size: usize = 32;
+pub const max_atlas_dimension: u32 = 4096;
+pub const max_atlas_pages: u16 = 16;
+
+pub const AtlasPageUpdate = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    atlas_id: u32,
+    generation: u32,
+    page_index: u16,
+    page_count: u16,
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    bytes: []const u8,
+};
+
+pub const atlas_page_update_header_size: usize = 28;
+pub const max_atlas_page_bytes: usize = 1024 * 1024;
+
+pub const AtlasGlyphAdd = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    atlas_id: u32,
+    generation: u32,
+    glyph_id: u32,
+    font_id: u32,
+    size_px: u16,
+    variation_hash: u64,
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    baseline: u16,
+    advance_x: u16,
+    reserved_tail: [4]u8 = @splat(0),
+};
+
+pub const atlas_glyph_add_size: usize = 48;
+pub const max_atlas_glyphs: usize = 256;
+
+pub const AtlasInvalidateFlags = struct {
+    pub const all: u8 = 1 << 0;
+    pub const page: u8 = 1 << 1;
+    pub const glyph: u8 = 1 << 2;
+    pub const known: u8 = all | page | glyph;
+};
+
+pub const AtlasInvalidate = struct {
+    schema: u16 = 1,
+    flags: u8,
+    reserved: u8 = 0,
+    atlas_id: u32,
+    generation: u32,
+    target: u32 = 0,
+};
+
+pub const atlas_invalidate_size: usize = 16;
 
 pub const FaceStyle = enum(u8) {
     unspecified = 0,
@@ -918,6 +995,194 @@ pub fn decodeImageDelete(data: []const u8) Error!ImageDelete {
         .generation = std.mem.readInt(u32, data[4..8], .little),
     };
     if (payload.image_id == 0 or payload.generation == 0) return Error.InvalidMessage;
+    return payload;
+}
+
+fn validateAtlasDefine(payload: AtlasDefine) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or payload.reserved != 0 or
+        payload.atlas_id == 0 or payload.generation == 0 or
+        payload.width == 0 or payload.width > max_atlas_dimension or
+        payload.height == 0 or payload.height > max_atlas_dimension or
+        payload.page_count == 0 or payload.page_count > max_atlas_pages)
+        return Error.InvalidMessage;
+}
+
+pub fn encodeAtlasDefine(a: std.mem.Allocator, payload: AtlasDefine, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    try validateAtlasDefine(payload);
+    var b: [atlas_define_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    std.mem.writeInt(u32, b[4..8], payload.atlas_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.generation, .little);
+    std.mem.writeInt(u32, b[12..16], payload.width, .little);
+    std.mem.writeInt(u32, b[16..20], payload.height, .little);
+    std.mem.writeInt(u16, b[20..22], payload.page_count, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeAtlasDefine(data: []const u8) Error!AtlasDefine {
+    if (data.len != atlas_define_size) return Error.InvalidTable;
+    const payload = AtlasDefine{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .atlas_id = std.mem.readInt(u32, data[4..8], .little),
+        .generation = std.mem.readInt(u32, data[8..12], .little),
+        .width = std.mem.readInt(u32, data[12..16], .little),
+        .height = std.mem.readInt(u32, data[16..20], .little),
+        .page_count = std.mem.readInt(u16, data[20..22], .little),
+    };
+    try validateAtlasDefine(payload);
+    return payload;
+}
+
+pub fn validateAtlasPageUpdate(payload: AtlasPageUpdate) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or payload.reserved != 0 or
+        payload.atlas_id == 0 or payload.generation == 0 or
+        payload.page_count == 0 or payload.page_count > max_atlas_pages or
+        payload.page_index >= payload.page_count or
+        payload.width == 0 or payload.height == 0) return Error.InvalidMessage;
+    const required = @as(u64, payload.width) * @as(u64, payload.height) * 4;
+    if (required > max_atlas_page_bytes or payload.bytes.len != required)
+        return Error.InvalidMessage;
+}
+
+pub fn encodeAtlasPageUpdate(a: std.mem.Allocator, payload: AtlasPageUpdate, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    try validateAtlasPageUpdate(payload);
+    var b: [atlas_page_update_header_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    std.mem.writeInt(u32, b[4..8], payload.atlas_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.generation, .little);
+    std.mem.writeInt(u16, b[12..14], payload.page_index, .little);
+    std.mem.writeInt(u16, b[14..16], payload.page_count, .little);
+    std.mem.writeInt(u16, b[16..18], payload.x, .little);
+    std.mem.writeInt(u16, b[18..20], payload.y, .little);
+    std.mem.writeInt(u16, b[20..22], payload.width, .little);
+    std.mem.writeInt(u16, b[22..24], payload.height, .little);
+    std.mem.writeInt(u32, b[24..28], @intCast(payload.bytes.len), .little);
+    try out.appendSlice(a, &b);
+    try out.appendSlice(a, payload.bytes);
+}
+
+pub fn decodeAtlasPageUpdate(a: std.mem.Allocator, data: []const u8) (Error || std.mem.Allocator.Error)!AtlasPageUpdate {
+    if (data.len < atlas_page_update_header_size) return Error.InvalidTable;
+    const byte_length = std.mem.readInt(u32, data[24..28], .little);
+    if (byte_length == 0 or byte_length > max_atlas_page_bytes or
+        data.len != atlas_page_update_header_size + byte_length) return Error.InvalidTable;
+    var payload = AtlasPageUpdate{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .atlas_id = std.mem.readInt(u32, data[4..8], .little),
+        .generation = std.mem.readInt(u32, data[8..12], .little),
+        .page_index = std.mem.readInt(u16, data[12..14], .little),
+        .page_count = std.mem.readInt(u16, data[14..16], .little),
+        .x = std.mem.readInt(u16, data[16..18], .little),
+        .y = std.mem.readInt(u16, data[18..20], .little),
+        .width = std.mem.readInt(u16, data[20..22], .little),
+        .height = std.mem.readInt(u16, data[22..24], .little),
+        .bytes = data[atlas_page_update_header_size..],
+    };
+    try validateAtlasPageUpdate(payload);
+    const owned = try a.dupe(u8, payload.bytes);
+    errdefer a.free(owned);
+    payload.bytes = owned;
+    return payload;
+}
+
+pub fn freeAtlasPageUpdate(a: std.mem.Allocator, payload: *AtlasPageUpdate) void {
+    if (payload.bytes.len != 0) a.free(payload.bytes);
+    payload.bytes = &.{};
+}
+
+pub fn validateAtlasGlyphAdd(payload: AtlasGlyphAdd) Error!void {
+    if (payload.schema != 1 or payload.flags != 0 or payload.reserved != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0) or
+        payload.atlas_id == 0 or payload.generation == 0 or
+        payload.glyph_id == 0 or payload.font_id == 0 or
+        payload.size_px == 0 or payload.width == 0 or payload.height == 0 or
+        payload.baseline > payload.height) return Error.InvalidMessage;
+}
+
+pub fn encodeAtlasGlyphAdd(a: std.mem.Allocator, payload: AtlasGlyphAdd, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    try validateAtlasGlyphAdd(payload);
+    var b: [atlas_glyph_add_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    std.mem.writeInt(u32, b[4..8], payload.atlas_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.generation, .little);
+    std.mem.writeInt(u32, b[12..16], payload.glyph_id, .little);
+    std.mem.writeInt(u32, b[16..20], payload.font_id, .little);
+    std.mem.writeInt(u16, b[20..22], payload.size_px, .little);
+    std.mem.writeInt(u64, b[24..32], payload.variation_hash, .little);
+    std.mem.writeInt(u16, b[32..34], payload.x, .little);
+    std.mem.writeInt(u16, b[34..36], payload.y, .little);
+    std.mem.writeInt(u16, b[36..38], payload.width, .little);
+    std.mem.writeInt(u16, b[38..40], payload.height, .little);
+    std.mem.writeInt(u16, b[40..42], payload.baseline, .little);
+    std.mem.writeInt(u16, b[42..44], payload.advance_x, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeAtlasGlyphAdd(data: []const u8) Error!AtlasGlyphAdd {
+    if (data.len != atlas_glyph_add_size) return Error.InvalidTable;
+    const payload = AtlasGlyphAdd{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .atlas_id = std.mem.readInt(u32, data[4..8], .little),
+        .generation = std.mem.readInt(u32, data[8..12], .little),
+        .glyph_id = std.mem.readInt(u32, data[12..16], .little),
+        .font_id = std.mem.readInt(u32, data[16..20], .little),
+        .size_px = std.mem.readInt(u16, data[20..22], .little),
+        .variation_hash = std.mem.readInt(u64, data[24..32], .little),
+        .x = std.mem.readInt(u16, data[32..34], .little),
+        .y = std.mem.readInt(u16, data[34..36], .little),
+        .width = std.mem.readInt(u16, data[36..38], .little),
+        .height = std.mem.readInt(u16, data[38..40], .little),
+        .baseline = std.mem.readInt(u16, data[40..42], .little),
+        .advance_x = std.mem.readInt(u16, data[42..44], .little),
+        .reserved_tail = data[44..48][0..4].*,
+    };
+    try validateAtlasGlyphAdd(payload);
+    return payload;
+}
+
+pub fn validateAtlasInvalidate(payload: AtlasInvalidate) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or
+        payload.flags == 0 or payload.flags & ~AtlasInvalidateFlags.known != 0 or
+        @popCount(payload.flags) != 1 or
+        payload.atlas_id == 0 or payload.generation == 0)
+        return Error.InvalidMessage;
+    if (payload.flags == AtlasInvalidateFlags.all) {
+        if (payload.target != 0) return Error.InvalidMessage;
+    } else {
+        if (payload.flags & AtlasInvalidateFlags.all != 0 or
+            payload.target == 0) return Error.InvalidMessage;
+    }
+}
+
+pub fn encodeAtlasInvalidate(a: std.mem.Allocator, payload: AtlasInvalidate, out: *std.ArrayList(u8)) (Error || std.mem.Allocator.Error)!void {
+    try validateAtlasInvalidate(payload);
+    var b: [atlas_invalidate_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = payload.flags;
+    b[3] = payload.reserved;
+    std.mem.writeInt(u32, b[4..8], payload.atlas_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.generation, .little);
+    std.mem.writeInt(u32, b[12..16], payload.target, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeAtlasInvalidate(data: []const u8) Error!AtlasInvalidate {
+    if (data.len != atlas_invalidate_size) return Error.InvalidTable;
+    const payload = AtlasInvalidate{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .atlas_id = std.mem.readInt(u32, data[4..8], .little),
+        .generation = std.mem.readInt(u32, data[8..12], .little),
+        .target = std.mem.readInt(u32, data[12..16], .little),
+    };
+    try validateAtlasInvalidate(payload);
     return payload;
 }
 

@@ -117,7 +117,7 @@ const ranges = [_]Range{
     .{ .low = 0x050a, .high = 0x050d, .status = .planned, .domain = .resource, .family = "fringe-icon", .note = "fringe and icon resource codecs pending" },
     .{ .low = 0x050e, .high = 0x050f, .status = .implemented_codec, .domain = .resource, .family = "string-lifecycle", .note = "bounded UTF-8 string define/delete" },
     .{ .low = 0x0510, .high = 0x0512, .status = .implemented_codec, .domain = .resource, .family = "resource-policy-snapshot", .note = "request, eviction, and atomic concrete snapshot codecs" },
-    .{ .low = 0x0513, .high = 0x0516, .status = .planned, .domain = .resource, .family = "atlas", .note = "glyph atlas publication and recovery pending" },
+    .{ .low = 0x0513, .high = 0x0516, .status = .implemented_codec, .domain = .resource, .family = "atlas-lifecycle", .note = "bounded atlas define/page update/glyph add/invalidate codecs and Scene state" },
     .{ .low = 0x0600, .high = 0x0603, .status = .implemented_codec, .domain = .input, .family = "key-text-pointer-wheel", .note = "bounded codecs plus SDL/EPXL delivery paths" },
     .{ .low = 0x0604, .high = 0x0605, .status = .planned, .domain = .input, .family = "touch-gesture", .note = "touch and gesture codecs pending" },
     .{ .low = 0x0606, .high = 0x0607, .status = .implemented_codec, .domain = .input, .family = "platform-focus-window", .note = "strict focus/window intent codecs and smoke" },

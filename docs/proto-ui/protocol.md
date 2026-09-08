@@ -1287,6 +1287,36 @@ Images are protocol-global: frame destroy retains them, while resync and scene
 teardown clear them.  At most 8 images are active, and the sum of their
 declared pixel-byte totals is at most 4 MiB.
 
+### Glyph atlas v1 (implemented bounded codec/Scene contract)
+
+The atlas family is a bounded RGBA8 texture-publishing contract. It does not
+rasterize glyphs, upload textures, shape text, or claim renderer parity.
+
+`ATLAS_DEFINE = 0x0513` is an exact 32-byte record. It contains `schema=1`,
+zero flags/reserved, nonzero `atlas_id/generation`, dimensions `1..4096`, and
+`page_count` in `1..16`. The Scene keeps at most four live atlases.
+
+`ATLAS_PAGE_UPDATE = 0x0514` has a 28-byte little-endian header followed by
+exact RGBA8 bytes: `schema=1`, zero flags/reserved, live atlas identity,
+`page_index/page_count`, destination `x/y`, `width/height`, and byte length.
+A page region must fit the atlas; the declared length must equal
+`width * height * 4` and is at most 1 MiB. A page replacement releases the old
+owned bytes only after validation.
+
+`ATLAS_GLYPH_ADD = 0x0515` is an exact 48-byte record with nonzero atlas, glyph,
+and font identities, a matching atlas generation, positive glyph size and rect,
+and a glyph rectangle contained by the atlas. Glyph IDs are unique per font.
+The active table is bounded to 256 glyphs.
+
+`ATLAS_INVALIDATE = 0x0516` is an exact 16-byte record with exactly one flag:
+`all=1`, `page=2`, or `glyph=4`. `all` requires target zero and clears page
+pixels and glyph entries; `page` and `glyph` require a nonzero target. A glyph
+target is a glyph ID and invalidates matching entries for every font in the
+atlas. Stale generation, wrong page ranges, unknown atlases, malformed flags,
+and truncation are rejected. Authenticated resync and scene teardown release
+atlas state. This is protocol/state groundwork, not production shaped-text
+rendering.
+
 ### Resource snapshot v1 (implemented bounded adapter contract)
 
 `RESOURCE_SNAPSHOT` begins with two little-endian `u32` values:
@@ -1588,9 +1618,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 79 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 83 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 82 | Assigned for the target protocol but not implemented |
+| `planned` | 78 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

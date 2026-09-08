@@ -12,7 +12,10 @@ const lifecycle = @import("lifecycle.zig");
 pub const Error = protocol.Error || session.Error || lifecycle.Error || error{
     OutOfMemory,
     SessionSuspended,
+    DuplicateResource,
 };
+
+pub const max_atlas_resources: usize = 4;
 
 pub const Window = struct {
     id: u64,
@@ -1486,6 +1489,174 @@ pub const ImageResources = struct {
     }
 };
 
+pub const AtlasPage = struct {
+    page_index: u16 = 0,
+    x: u16 = 0,
+    y: u16 = 0,
+    width: u16 = 0,
+    height: u16 = 0,
+    bytes: []u8 = &.{},
+};
+
+pub const AtlasGlyph = struct {
+    glyph_id: u32,
+    font_id: u32,
+    size_px: u16,
+    variation_hash: u64,
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    baseline: u16,
+    advance_x: u16,
+};
+
+pub const AtlasState = struct {
+    atlas_id: u32,
+    generation: u32,
+    width: u32,
+    height: u32,
+    page_count: u16,
+    pages: []AtlasPage = &.{},
+    glyphs: std.ArrayList(AtlasGlyph) = .empty,
+
+    fn deinit(self: *AtlasState, allocator: std.mem.Allocator) void {
+        for (self.pages) |page| allocator.free(page.bytes);
+        if (self.pages.len != 0) allocator.free(self.pages);
+        self.glyphs.deinit(allocator);
+        self.* = .{
+            .atlas_id = self.atlas_id,
+            .generation = self.generation,
+            .width = self.width,
+            .height = self.height,
+            .page_count = self.page_count,
+        };
+    }
+};
+
+pub const AtlasResources = struct {
+    allocator: std.mem.Allocator,
+    atlases: std.ArrayList(AtlasState) = .empty,
+
+    pub fn init(allocator: std.mem.Allocator) AtlasResources {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *AtlasResources) void {
+        for (self.atlases.items) |*atlas| atlas.deinit(self.allocator);
+        self.atlases.deinit(self.allocator);
+        self.* = AtlasResources.init(self.allocator);
+    }
+
+    fn find(self: *AtlasResources, atlas_id: u32) ?*AtlasState {
+        for (self.atlases.items) |*atlas| {
+            if (atlas.atlas_id == atlas_id) return atlas;
+        }
+        return null;
+    }
+
+    pub fn lookup(self: *const AtlasResources, atlas_id: u32) ?*const AtlasState {
+        for (self.atlases.items) |*atlas| {
+            if (atlas.atlas_id == atlas_id) return atlas;
+        }
+        return null;
+    }
+
+    pub fn applyDefine(self: *AtlasResources, payload: protocol.AtlasDefine) Error!void {
+        if (self.atlases.items.len == max_atlas_resources) return Error.ResourceTableFull;
+        for (self.atlases.items) |atlas| {
+            if (atlas.atlas_id == payload.atlas_id) return Error.DuplicateResource;
+        }
+        const pages = try self.allocator.alloc(AtlasPage, payload.page_count);
+        errdefer self.allocator.free(pages);
+        for (pages, 0..) |*page, index| page.* = .{ .page_index = @intCast(index) };
+
+        try self.atlases.append(self.allocator, .{
+            .atlas_id = payload.atlas_id,
+            .generation = payload.generation,
+            .width = payload.width,
+            .height = payload.height,
+            .page_count = payload.page_count,
+            .pages = pages,
+        });
+    }
+
+    pub fn applyPageUpdate(self: *AtlasResources, payload: protocol.AtlasPageUpdate) Error!void {
+        const atlas = self.find(payload.atlas_id) orelse return Error.ResourceNotLive;
+        if (atlas.generation != payload.generation or
+            atlas.page_count != payload.page_count or
+            @as(u32, payload.x) + payload.width > atlas.width or
+            @as(u32, payload.y) + payload.height > atlas.height) return Error.InvalidMessage;
+        const bytes = try self.allocator.dupe(u8, payload.bytes);
+        errdefer self.allocator.free(bytes);
+        const page = &atlas.pages[payload.page_index];
+        if (page.bytes.len != 0) self.allocator.free(page.bytes);
+        page.* = .{
+            .page_index = payload.page_index,
+            .x = payload.x,
+            .y = payload.y,
+            .width = payload.width,
+            .height = payload.height,
+            .bytes = bytes,
+        };
+    }
+
+    pub fn applyGlyphAdd(self: *AtlasResources, payload: protocol.AtlasGlyphAdd) Error!void {
+        const atlas = self.find(payload.atlas_id) orelse return Error.ResourceNotLive;
+        if (atlas.generation != payload.generation or
+            @as(u32, payload.x) + payload.width > atlas.width or
+            @as(u32, payload.y) + payload.height > atlas.height) return Error.InvalidMessage;
+        for (atlas.glyphs.items) |glyph| {
+            if (glyph.glyph_id == payload.glyph_id and glyph.font_id == payload.font_id)
+                return Error.DuplicateResource;
+        }
+        if (atlas.glyphs.items.len == protocol.max_atlas_glyphs) return Error.ResourceTableFull;
+        try atlas.glyphs.append(self.allocator, .{
+            .glyph_id = payload.glyph_id,
+            .font_id = payload.font_id,
+            .size_px = payload.size_px,
+            .variation_hash = payload.variation_hash,
+            .x = payload.x,
+            .y = payload.y,
+            .width = payload.width,
+            .height = payload.height,
+            .baseline = payload.baseline,
+            .advance_x = payload.advance_x,
+        });
+    }
+
+    pub fn applyInvalidate(self: *AtlasResources, payload: protocol.AtlasInvalidate) Error!void {
+        const atlas = self.find(payload.atlas_id) orelse return Error.ResourceNotLive;
+        if (atlas.generation != payload.generation) return Error.StaleGeneration;
+        if (payload.flags & protocol.AtlasInvalidateFlags.all != 0) {
+            for (atlas.pages) |*page| {
+                if (page.bytes.len != 0) self.allocator.free(page.bytes);
+                page.* = .{ .page_index = page.page_index };
+            }
+            atlas.glyphs.clearRetainingCapacity();
+            return;
+        }
+        if (payload.flags & protocol.AtlasInvalidateFlags.page != 0) {
+            if (payload.target >= atlas.page_count) return Error.InvalidMessage;
+            const page = &atlas.pages[payload.target];
+            if (page.bytes.len != 0) self.allocator.free(page.bytes);
+            page.* = .{ .page_index = page.page_index };
+            return;
+        }
+        var index: usize = 0;
+        while (index < atlas.glyphs.items.len) {
+            if (atlas.glyphs.items[index].glyph_id == payload.target) {
+                _ = atlas.glyphs.orderedRemove(index);
+            } else index += 1;
+        }
+    }
+
+    fn clear(self: *AtlasResources) void {
+        for (self.atlases.items) |*atlas| atlas.deinit(self.allocator);
+        self.atlases.clearRetainingCapacity();
+    }
+};
+
 fn putU16(out: *std.ArrayList(u8), a: std.mem.Allocator, value: u16) !void {
     var bytes: [2]u8 = undefined;
     std.mem.writeInt(u16, &bytes, value, .little);
@@ -2177,6 +2348,7 @@ pub const Scene = struct {
     window_geometries: std.ArrayList(WindowGeometryState) = .empty,
     window_zones: std.ArrayList(WindowZonesState) = .empty,
     window_positions: std.ArrayList(WindowPositionState) = .empty,
+    atlases: AtlasResources = undefined,
     border: ?BorderUpdate = null,
     text: std.ArrayList(TextLine) = .empty,
     title: ?[:0]u8 = null,
@@ -2201,10 +2373,11 @@ pub const Scene = struct {
     stats: ApplyStats = .{},
 
     pub fn init(allocator: std.mem.Allocator) Scene {
-        return .{ .allocator = allocator };
+        return .{ .allocator = allocator, .atlases = AtlasResources.init(allocator) };
     }
 
     pub fn deinit(self: *Scene) void {
+        self.atlases.deinit();
         self.windows.deinit(self.allocator);
         self.rows.deinit(self.allocator);
         self.clearGlyphRuns();
@@ -2379,6 +2552,14 @@ pub const Scene = struct {
             protocol.Message.image_data => try self.applyImageData(payload),
             protocol.Message.image_delete => try self.applyImageDelete(payload),
             protocol.Message.resource_snapshot => try self.applyResourceSnapshot(payload),
+            protocol.Message.atlas_define => try self.atlases.applyDefine(try protocol.decodeAtlasDefine(payload.bytes)),
+            protocol.Message.atlas_page_update => {
+                var page = try protocol.decodeAtlasPageUpdate(self.allocator, payload.bytes);
+                defer protocol.freeAtlasPageUpdate(self.allocator, &page);
+                try self.atlases.applyPageUpdate(page);
+            },
+            protocol.Message.atlas_glyph_add => try self.atlases.applyGlyphAdd(try protocol.decodeAtlasGlyphAdd(payload.bytes)),
+            protocol.Message.atlas_invalidate => try self.atlases.applyInvalidate(try protocol.decodeAtlasInvalidate(payload.bytes)),
             else => self.stats.control_messages += 1,
         }
         self.next_sequence = next_sequence;
@@ -8439,4 +8620,93 @@ test "snapshot resources clear on resync and scene deinit" {
     try std.testing.expectEqual(@as(usize, 0), scene.strings.len);
     try std.testing.expectEqual(@as(usize, 0), scene.resources.len);
     scene.deinit();
+}
+
+test "atlas resources validate define page glyph and invalidation" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeAtlasDefine(a, .{
+        .atlas_id = 7,
+        .generation = 1,
+        .width = 64,
+        .height = 64,
+        .page_count = 1,
+    }, &payload);
+    const define = try faceMessage(a, protocol.Message.atlas_define, 1, payload.items);
+    defer a.free(define);
+    try scene.apply(define);
+    try std.testing.expect(scene.atlases.lookup(7) != null);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeAtlasPageUpdate(a, .{
+        .atlas_id = 7,
+        .generation = 1,
+        .page_index = 0,
+        .page_count = 1,
+        .x = 8,
+        .y = 8,
+        .width = 1,
+        .height = 1,
+        .bytes = &.{ 1, 2, 3, 4 },
+    }, &payload);
+    const page = try faceMessage(a, protocol.Message.atlas_page_update, 2, payload.items);
+    defer a.free(page);
+    try scene.apply(page);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeAtlasGlyphAdd(a, .{
+        .atlas_id = 7,
+        .generation = 1,
+        .glyph_id = 9,
+        .font_id = 8,
+        .size_px = 16,
+        .variation_hash = 42,
+        .x = 8,
+        .y = 8,
+        .width = 1,
+        .height = 1,
+        .baseline = 1,
+        .advance_x = 1,
+    }, &payload);
+    const glyph = try faceMessage(a, protocol.Message.atlas_glyph_add, 3, payload.items);
+    defer a.free(glyph);
+    try scene.apply(glyph);
+    try std.testing.expectEqual(@as(usize, 1), scene.atlases.lookup(7).?.glyphs.items.len);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeAtlasInvalidate(a, .{
+        .flags = protocol.AtlasInvalidateFlags.glyph,
+        .atlas_id = 7,
+        .generation = 1,
+        .target = 9,
+    }, &payload);
+    const invalidate = try faceMessage(a, protocol.Message.atlas_invalidate, 4, payload.items);
+    defer a.free(invalidate);
+    try scene.apply(invalidate);
+    try std.testing.expectEqual(@as(usize, 0), scene.atlases.lookup(7).?.glyphs.items.len);
+
+    payload.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidMessage, protocol.encodeAtlasInvalidate(a, .{
+        .flags = protocol.AtlasInvalidateFlags.page |
+            protocol.AtlasInvalidateFlags.glyph,
+        .atlas_id = 7,
+        .generation = 1,
+        .target = 1,
+    }, &payload));
+    payload.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidMessage, protocol.encodeAtlasPageUpdate(a, .{
+        .atlas_id = 7,
+        .generation = 1,
+        .page_index = 0,
+        .page_count = 1,
+        .x = 65535,
+        .y = 65535,
+        .width = 65535,
+        .height = 65535,
+        .bytes = &.{ 1, 2, 3, 4 },
+    }, &payload));
 }

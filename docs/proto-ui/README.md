@@ -308,6 +308,10 @@ observations, ordered validation, and `IMAGE_DEFINE`/`IMAGE_DATA` emission.
 The first seam accepts at most four 1 KiB fragments per image; full-size image
 capture remains pending.
 
+P37 glyph-atlas preparation implements `ATLAS_DEFINE`, `ATLAS_PAGE_UPDATE`,
+`ATLAS_GLYPH_ADD`, and `ATLAS_INVALIDATE` with bounded RGBA8 Scene ownership.
+GPU texture upload, shaped-glyph rendering, and eviction policy remain pending.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and
