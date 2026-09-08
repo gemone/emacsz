@@ -378,6 +378,7 @@ P51 menu-hover preparation adds `MENU_HOVER` v1, an exact 40-byte enter/move/lea
 P53 tool-bar preparation adds `TOOLBAR_MODEL` and `TOOLBAR_CLICK` v1 with bounded UTF-8 items and negotiated press/release intents.  SDL renders a diagnostic row; icons, overflow, hit testing, command dispatch, and PGTK parity remain pending.
 P54 tool-bar patch preparation adds `TOOLBAR_PATCH` v1 with ordered upsert/delete operations, strict toolbar generations, atomic Scene evolution, and SDL render evidence.  Moves, icons, overflow, and full toolbar policy remain pending.
 P55 bounded-dialog preparation adds `DIALOG_OPEN`/`UPDATE`/`CLOSE`/`RESULT` v1 with message/prompt/confirm models, owner and generation validation, negotiated result delivery, lifecycle cleanup, and SDL diagnostic render.  Native/file/color/font dialogs, input fields, callback dispatch, and PGTK parity remain pending.
+P56 dedicated-scrollbar preparation wires `SCROLLBAR_STATE`/`EVENT` v1 to the existing bounded state/request codecs, adds negotiated DeliveryJournal/EPXL event admission and Scene alias dispatch, and keeps horizontal state, complete interaction policy, and Emacs dispatch pending.
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by
 atlas/page identity, generation, and page revision.  The runtime smoke requires
 one upload followed by at least four cache hits; smoke-level renderer-reset clearing is wired; production-wide renderer-loss

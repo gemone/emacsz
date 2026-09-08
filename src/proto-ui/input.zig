@@ -556,6 +556,7 @@ pub const TranslatedEvent = union(enum) {
     focus: protocol.FocusEvent,
     window: protocol.WindowRequest,
     scroll: protocol.ScrollRequest,
+    scrollbar_event: protocol.ScrollRequest,
     menu_result: protocol.MenuResult,
     menu_cancel: protocol.MenuCancel,
     menu_hover: protocol.MenuHover,
@@ -633,6 +634,13 @@ pub const Queue = struct {
         protocol.validateScrollRequest(event) catch return error.InvalidScrollRequest;
         if (self.length == queue_capacity) return error.InputQueueFull;
         self.items[self.length] = .{ .scroll = event };
+        self.length += 1;
+    }
+
+    pub fn pushScrollbarEvent(self: *Queue, event: protocol.ScrollRequest) !void {
+        protocol.validateScrollRequest(event) catch return error.InvalidScrollRequest;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .scrollbar_event = event };
         self.length += 1;
     }
 
@@ -719,6 +727,7 @@ pub const DeliveryJournal = struct {
     pointer_v2_negotiated: bool = false,
     platform_negotiated: bool = false,
     scroll_request_negotiated: bool = false,
+    scrollbar_event_negotiated: bool = false,
     menu_result_negotiated: bool = false,
     menu_hover_negotiated: bool = false,
     toolbar_click_negotiated: bool = false,
@@ -830,6 +839,12 @@ pub const DeliveryJournal = struct {
         if (!self.scroll_request_negotiated) return error.ScrollRequestCapabilityNotNegotiated;
         if (self.pointer_active) return error.PointerSessionActive;
         try self.queue.pushScrollRequest(event);
+    }
+
+    pub fn pushScrollbarEvent(self: *DeliveryJournal, event: protocol.ScrollRequest) !void {
+        if (!self.scrollbar_event_negotiated) return error.ScrollbarEventCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushScrollbarEvent(event);
     }
 
     pub fn pushMenuResult(self: *DeliveryJournal, event: protocol.MenuResult) !void {
@@ -1356,6 +1371,9 @@ test "scroll requests negotiate and preserve bounded intent order" {
     try std.testing.expectError(error.ScrollRequestCapabilityNotNegotiated, journal.pushScrollRequest(absolute));
     journal.scroll_request_negotiated = true;
     try journal.pushScrollRequest(absolute);
+    try std.testing.expectError(error.ScrollbarEventCapabilityNotNegotiated, journal.pushScrollbarEvent(absolute));
+    journal.scrollbar_event_negotiated = true;
+    try journal.pushScrollbarEvent(absolute);
 
     const invalid: protocol.ScrollRequest = .{
         .kind = .relative,
@@ -1370,6 +1388,9 @@ test "scroll requests negotiate and preserve bounded intent order" {
     const sent = try journal.take();
     try std.testing.expectEqual(absolute, sent.?.event.scroll);
     if (!journal.acknowledge(sent.?.sequence)) return error.AckMismatch;
+    const alias_sent = try journal.take();
+    try std.testing.expectEqual(absolute, alias_sent.?.event.scrollbar_event);
+    if (!journal.acknowledge(alias_sent.?.sequence)) return error.AckMismatch;
     try std.testing.expect((journal.take() catch unreachable) == null);
 }
 

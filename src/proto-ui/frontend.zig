@@ -3057,6 +3057,7 @@ pub const Scene = struct {
             protocol.Message.fringe_bitmap_define => try self.applyFringeBitmapDefine(payload),
             protocol.Message.fringe_bitmap_delete => try self.applyFringeBitmapDelete(payload),
             protocol.Message.window_scroll_state => try self.applyWindowScrollState(payload),
+            protocol.Message.scrollbar_state => try self.applyWindowScrollState(payload),
             protocol.Message.window_face => try self.applyWindowFace(payload),
             protocol.Message.damage_rects => try self.applyDamageRects(payload),
             protocol.Message.flush => try self.applyFlush(payload),
@@ -3643,6 +3644,7 @@ pub const Scene = struct {
         self.removeWindowGeometriesForWindow(window_id);
         self.removeWindowZonesForWindow(window_id);
         self.removeWindowPositionsForWindow(window_id);
+        self.removeScrollStatesForWindow(window_id);
         self.removeMouseHighlightsForWindow(window_id);
         if (self.tooltip) |tip| {
             if (tip.window_id == window_id) self.tooltip = null;
@@ -3902,6 +3904,15 @@ pub const Scene = struct {
         while (index < self.window_positions.items.len) {
             if (self.window_positions.items[index].window_id == window_id) {
                 _ = self.window_positions.orderedRemove(index);
+            } else index += 1;
+        }
+    }
+
+    fn removeScrollStatesForWindow(self: *Scene, window_id: u64) void {
+        var index: usize = 0;
+        while (index < self.scroll_states.items.len) {
+            if (self.scroll_states.items[index].window_id == window_id) {
+                _ = self.scroll_states.orderedRemove(index);
             } else index += 1;
         }
     }
@@ -5633,16 +5644,53 @@ test "window scroll state validates geometry and upserts per window" {
     updated.position = 800;
     payload.clearRetainingCapacity();
     try encodeWindowScrollState(a, updated, &payload);
-    const updated_message = try windowLifecycleMessage(a, protocol.Message.window_scroll_state, 4, 7, payload.items);
+    const updated_message = try windowLifecycleMessage(a, protocol.Message.scrollbar_state, 4, 7, payload.items);
     defer a.free(updated_message);
     try scene.apply(updated_message);
     try std.testing.expectEqual(@as(u32, 800), scene.scroll_states.items[0].position);
+
+    const second_window = try windowCreateMessage(a, 5, 7, .{
+        .window_id = 101,
+        .parent_window_id = 0,
+        .x = 0,
+        .y = 0,
+        .width = 40,
+        .height = 40,
+        .flags = 2,
+        .default_face_id = 0,
+        .depth = 0,
+    });
+    defer a.free(second_window);
+    try scene.apply(second_window);
+    const deleted_state: WindowScrollState = .{
+        .flags = WindowScrollFlags.vertical_visible,
+        .window_id = 101,
+        .frame_generation = 1,
+        .content_size = 400,
+        .viewport_size = 100,
+        .position = 0,
+        .track_width = 8,
+    };
+    payload.clearRetainingCapacity();
+    try encodeWindowScrollState(a, deleted_state, &payload);
+    const deleted_state_message = try windowLifecycleMessage(a, protocol.Message.scrollbar_state, 6, 7, payload.items);
+    defer a.free(deleted_state_message);
+    try scene.apply(deleted_state_message);
+    try std.testing.expectEqual(@as(usize, 2), scene.scroll_states.items.len);
+
+    const delete = try windowDeleteMessage(a, 7, 7, 101);
+    defer a.free(delete);
+    try scene.apply(delete);
+    try std.testing.expectEqual(@as(usize, 1), scene.scroll_states.items.len);
+    try std.testing.expectEqual(@as(u64, 100), scene.scroll_states.items[0].window_id);
 
     var invalid = state;
     invalid.position = 1601;
     payload.clearRetainingCapacity();
     try std.testing.expectError(Error.InvalidMessage, encodeWindowScrollState(a, invalid, &payload));
     try std.testing.expectEqual(@as(u32, 800), scene.scroll_states.items[0].position);
+    scene.resetForResync();
+    try std.testing.expect(scene.scroll_states.items.len == 0);
 }
 
 test "tooltip lifecycle validates frame owner and bounded text" {

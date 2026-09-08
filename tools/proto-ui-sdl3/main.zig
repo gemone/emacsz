@@ -622,6 +622,7 @@ fn writeTranslatedEvent(
         .window => {},
         // Reverse scroll intents are EPXL-only and require negotiated capability.
         .scroll => {},
+        .scrollbar_event => {},
         // Menu intents are EPXL-only and require negotiated capability.
         .menu_result => {},
         .menu_cancel => {},
@@ -1232,6 +1233,26 @@ fn runPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void {
         try acks.markSent(envelope.sequence);
         try live.writeFrame(&writer.interface, message);
         try writer.interface.flush();
+        if (envelope.message_type == protocol.Message.frame_update) {
+            // The live fixture now provides deterministic reverse-direction
+            // wire evidence: the frontend emits a dedicated scrollbar event
+            // before acknowledging the frame that triggered delivery.
+            const reverse_message = (try live.readFrame(&reader.interface, gpa)) orelse
+                return error.ExpectedScrollbarEvent;
+            defer gpa.free(reverse_message);
+            const reverse = try protocol.decodeEnvelope(reverse_message);
+            if (reverse.envelope.message_type != protocol.Message.scrollbar_event or
+                reverse.envelope.flags & protocol.Flags.requires_ack == 0 or
+                reverse.envelope.ack_sequence != 0 or
+                reverse.envelope.session_id != capability.session_id)
+                return error.ExpectedScrollbarEvent;
+            const request = try protocol.decodeScrollRequest(reverse.bytes);
+            if (request.kind != .absolute or request.axis != .vertical or
+                request.window_id != 10 or request.position != 40)
+                return error.InvalidScrollbarEvent;
+            try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = reverse.envelope.sequence });
+            try writer.interface.flush();
+        }
         var control_bytes: [live.control_size]u8 = undefined;
         try reader.interface.readSliceAll(&control_bytes);
         const control = try live.decodeControl(&control_bytes);
@@ -1589,6 +1610,10 @@ fn sendDeliveryEvent(
             try protocol.encodeScrollRequest(gpa, request, &payload);
             break :blk protocol.Message.scroll_request;
         },
+        .scrollbar_event => |request| blk: {
+            try protocol.encodeScrollRequest(gpa, request, &payload);
+            break :blk protocol.Message.scrollbar_event;
+        },
         .menu_result => |result| blk: {
             try protocol.encodeMenuResult(gpa, result, &payload);
             break :blk protocol.Message.menu_result;
@@ -1794,6 +1819,7 @@ fn awaitFrameAck(
                 const is_focus = payload.envelope.message_type == protocol.Message.focus_event;
                 const is_window = payload.envelope.message_type == protocol.Message.window_request;
                 const is_scroll_request = payload.envelope.message_type == protocol.Message.scroll_request;
+                const is_scrollbar_event = payload.envelope.message_type == protocol.Message.scrollbar_event;
                 const is_menu_result = payload.envelope.message_type == protocol.Message.menu_result;
                 const is_menu_cancel = payload.envelope.message_type == protocol.Message.menu_cancel;
                 const is_menu_hover = payload.envelope.message_type == protocol.Message.menu_hover;
@@ -1816,6 +1842,7 @@ fn awaitFrameAck(
                     (is_focus and capabilities.contains(.platform_focus_window_events)) or
                     (is_window and capabilities.contains(.platform_focus_window_events)) or
                     (is_scroll_request and capabilities.contains(.window_scroll_request_v1)) or
+                    (is_scrollbar_event and capabilities.contains(.window_scrollbar_event_v1)) or
                     (is_menu_result and capabilities.contains(.widget_menu_result_v1)) or
                     (is_menu_cancel and capabilities.contains(.widget_menu_result_v1)) or
                     (is_menu_hover and capabilities.contains(.widget_menu_hover_v1)) or
@@ -1873,7 +1900,7 @@ fn awaitFrameAck(
                     );
                     defer gpa.free(value);
                     try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "platform-focus", value);
-                } else if (is_scroll_request) {
+                } else if (is_scroll_request or is_scrollbar_event) {
                     const event = try protocol.decodeScrollRequest(payload.bytes);
                     const value = try std.fmt.allocPrint(
                         gpa,
@@ -1888,7 +1915,8 @@ fn awaitFrameAck(
                         },
                     );
                     defer gpa.free(value);
-                    try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "scroll-request", value);
+                    const artifact_kind: []const u8 = if (is_scrollbar_event) "scrollbar-event" else "scroll-request";
+                    try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, artifact_kind, value);
                 } else if (is_menu_result) {
                     const event = try protocol.decodeMenuResult(payload.bytes);
                     const value = try std.fmt.allocPrint(
@@ -3029,7 +3057,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     defer scrollbar_update.deinit(gpa);
     try protocol.encodeEnvelope(gpa, .{
         .flags = 0,
-        .message_type = protocol.Message.window_scroll_state,
+        .message_type = protocol.Message.scrollbar_state,
         .sequence = 32,
         .ack_sequence = 0,
         .session_id = capability.session_id,
@@ -4617,6 +4645,19 @@ fn runLiveFrontend(
     syncDeliveryCapabilities(delivery, negotiated.effective);
     if (negotiated.effective.contains(.platform_focus_window_events) != delivery.platform_negotiated)
         return error.CapabilityJournalMismatch;
+    var scrollbar_event_delivered = false;
+    if (config.mode == .live) {
+        if (!negotiated.effective.contains(.window_scrollbar_event_v1))
+            return error.ScrollbarEventCapabilityNotNegotiated;
+        try delivery.pushScrollbarEvent(.{
+            .kind = .absolute,
+            .axis = .vertical,
+            .window_id = 10,
+            .position = 40,
+            .delta = 0,
+            .frame_generation = 1,
+        });
+    }
 
     if (config.mode == .emacs_epxl_unicode_input) {
         if (!negotiated.effective.contains(.input_text_ascii) or
@@ -4667,6 +4708,12 @@ fn runLiveFrontend(
                 try deliveryAllowed(delivery, negotiated.effective);
                 const outcome = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
                 if (outcome == .ack_lost) input_ack_lost = true;
+                if (outcome == .delivered) {
+                    switch (outcome.delivered.event) {
+                        .scrollbar_event => scrollbar_event_delivered = true,
+                        else => {},
+                    }
+                }
             }
             try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
             try writer.interface.flush();
@@ -4688,7 +4735,13 @@ fn runLiveFrontend(
         try scene.apply(message);
         if (envelope.message_type == protocol.Message.frame_update) {
             try deliveryAllowed(delivery, negotiated.effective);
-            _ = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
+            const outcome = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
+            if (outcome == .delivered) {
+                switch (outcome.delivered.event) {
+                    .scrollbar_event => scrollbar_event_delivered = true,
+                    else => {},
+                }
+            }
         }
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
@@ -4730,6 +4783,13 @@ fn runLiveFrontend(
     }
     if (use_resync and !resync_complete) return error.IncompleteResync;
     if (scene.stats.frame_updates == 0) return error.NoFrameUpdate;
+    if (config.mode == .live and !scrollbar_event_delivered)
+        return error.ScrollbarEventNotDelivered;
+    if (config.mode == .live)
+        std.debug.print(
+            "sdl3-live-smoke: dedicated scrollbar-event 0x0941 encoded, transported, and acknowledged over EPXL\n",
+            .{},
+        );
     return scene;
 }
 
@@ -4813,6 +4873,7 @@ fn inputEventAllowed(capabilities: capability.Set, event: input_policy.Translate
         .focus => capabilities.contains(.platform_focus_window_events),
         .window => capabilities.contains(.platform_focus_window_events),
         .scroll => capabilities.contains(.window_scroll_request_v1),
+        .scrollbar_event => capabilities.contains(.window_scrollbar_event_v1),
         .menu_result => capabilities.contains(.widget_menu_result_v1),
         .menu_cancel => capabilities.contains(.widget_menu_result_v1),
         .menu_hover => capabilities.contains(.widget_menu_hover_v1),
@@ -4868,6 +4929,7 @@ fn clipboardSupportFor(capabilities: capability.Set) ?input_policy.TextSupport {
 
 fn syncDeliveryCapabilities(delivery: *input_policy.DeliveryJournal, capabilities: capability.Set) void {
     delivery.scroll_request_negotiated = capabilities.contains(.window_scroll_request_v1);
+    delivery.scrollbar_event_negotiated = capabilities.contains(.window_scrollbar_event_v1);
     delivery.menu_result_negotiated = capabilities.contains(.widget_menu_result_v1);
     delivery.menu_hover_negotiated = capabilities.contains(.widget_menu_hover_v1);
     delivery.toolbar_click_negotiated = capabilities.contains(.widget_toolbar_click_v1);
@@ -5371,6 +5433,7 @@ fn runEpxlInteractiveFrontend(
 
     var scene = frontend.Scene.init(gpa);
     errdefer scene.deinit();
+    var scrollbar_event_delivered = false;
     try live.writeControl(&writer.interface, .{ .kind = .resync_request, .sequence = 1 });
     try writer.interface.flush();
     const begin = try readControlExact(&reader);
@@ -5384,7 +5447,13 @@ fn runEpxlInteractiveFrontend(
         try scene.apply(message);
         if (envelope.message_type == protocol.Message.frame_update) {
             try deliveryAllowed(delivery, negotiated.effective);
-            _ = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
+            const outcome = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
+            if (outcome == .delivered) {
+                switch (outcome.delivered.event) {
+                    .scrollbar_event => scrollbar_event_delivered = true,
+                    else => {},
+                }
+            }
         }
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
@@ -5488,6 +5557,7 @@ fn runEpxlInteractiveFrontend(
                             middle_release_sequence = outcome.delivered.sequence;
                     },
                     .wheel => |wheel| wheel_ticks_delivered += @abs(wheel.y),
+                    .scrollbar_event => scrollbar_event_delivered = true,
                     else => {},
                 }
             }

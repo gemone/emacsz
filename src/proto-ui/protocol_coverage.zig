@@ -138,7 +138,9 @@ const ranges = [_]Range{
     .{ .low = 0x0920, .high = 0x0923, .status = .implemented_codec, .domain = .widget, .family = "dialog", .note = "bounded message/prompt/confirm open/update/close/result codecs with owner/generation validation, negotiated result queue, and SDL diagnostic render; native dialogs, file/color/font dialogs, and Emacs callback dispatch pending" },
     .{ .low = 0x0924, .high = 0x092f, .status = .planned, .domain = .widget, .family = "dialog-extension", .note = "progress, file, color, font, error, and advanced dialog policies pending" },
     .{ .low = 0x0930, .high = 0x0932, .status = .implemented_codec, .domain = .widget, .family = "tooltip", .note = "bounded show/move/hide codec, active frame/window validation, exact-generation lifecycle, authoritative clear, and SDL box/text render; Unicode text state validates but debug glyphs are ASCII-only" },
-    .{ .low = 0x0933, .high = 0x0941, .status = .planned, .domain = .widget, .family = "tooltip-scrollbar", .note = "remaining tooltip policies and scrollbar model messages pending" },
+    .{ .low = 0x0933, .high = 0x093f, .status = .planned, .domain = .widget, .family = "tooltip-extension", .note = "remaining tooltip positioning, dismissal, input, and accessibility policies pending" },
+    .{ .low = 0x0940, .high = 0x0940, .status = .implemented_codec, .domain = .widget, .family = "scrollbar-state", .note = "dedicated authoritative vertical scrollbar state alias over the bounded 48-byte codec with Scene owner/upsert and SDL thumb render; horizontal state pending" },
+    .{ .low = 0x0941, .high = 0x0941, .status = .implemented_codec, .domain = .widget, .family = "scrollbar-event", .note = "dedicated bounded absolute/relative event alias over the 40-byte scroll-request codec with negotiated DeliveryJournal and EPXL admission; core dispatch pending" },
     .{ .low = 0x0a00, .high = 0x0a09, .status = .planned, .domain = .diagnostic, .family = "diagnostics", .note = "performance/trace/replay diagnostic payloads pending" },
 };
 

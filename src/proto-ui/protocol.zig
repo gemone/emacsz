@@ -160,6 +160,8 @@ pub const Message = struct {
     pub const focus_event: u16 = 0x0606;
     pub const window_request: u16 = 0x0607;
     pub const scroll_request: u16 = 0x0309;
+    pub const scrollbar_state: u16 = 0x0940;
+    pub const scrollbar_event: u16 = 0x0941;
     pub const extension: u16 = 0xf000;
     pub const invalid: u16 = 0xffff;
 };

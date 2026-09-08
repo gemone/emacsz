@@ -72,6 +72,9 @@ Unknown optional capabilities are ignored. Unknown required messages trigger con
 | `widget.toolbar_patch_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded ordered upsert/delete evolution only, with no move policy, icon rendering, or full toolbar parity |
 | `widget.dialog_model_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded message/prompt/confirm state and diagnostic box render only, with no native/file/color/font dialog or full callback parity |
 | `widget.dialog_result_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; bounded acknowledged button/text queue only, with no SDL hit testing, input field, or callback dispatch |
+| `window.scrollbar_state_v1` | Optional/degraded | adapter/frontend | Ignore unsupported message; dedicated bounded vertical state with thumb render only, with no horizontal state or full scrollbar policy |
+| `window.scroll_request_v1` | Optional/degraded | adapter/frontend | Bounded absolute/relative intents with negotiated EPXL delivery for the existing 0x0309 contract; no full hit testing or core dispatch |
+| `window.scrollbar_event_v1` | Optional/degraded | adapter/frontend | Separate negotiation required for dedicated 0x0941 absolute/relative intents; no drag/page/step policy or core dispatch |
 | `glyph_rows` | Required | core/backend | Backend cannot operate |
 | `shaped_glyphs` | Required | core/font stack + frontend | Incomplete text fallback |
 | `bidi` | Required | core/redisplay | RTL text nonconformant |
@@ -361,6 +364,8 @@ Priorities:
 | Bounded tool bar click intent | P1 | Degraded | `TOOLBAR_CLICK` v1 preserves press/release, toolbar/item/window/frame identity, click count, button, modifiers, and coordinates in a negotiated queue; hit testing and command execution pending |
 | Bounded dialog model | P1 | Degraded | `DIALOG_OPEN`/`UPDATE`/`CLOSE` v1 validate kind, button policy, owner containment, exact generations, UTF-8 title/text, and lifecycle cleanup; SDL renders a diagnostic box |
 | Bounded dialog result intent | P1 | Degraded | `DIALOG_RESULT` v1 validates button/text tails, nonzero dialog/window/frame identity, and negotiated acknowledged delivery; hit testing, input fields, and Emacs callback dispatch pending |
+| Dedicated scrollbar state | P1 | Degraded | `SCROLLBAR_STATE` v1 reuses the bounded authoritative state codec with Scene upsert and SDL vertical thumb evidence; horizontal state and policy pending |
+| Dedicated scrollbar event | P1 | Degraded | `SCROLLBAR_EVENT` v1 has separate capability negotiation and accepts only the bounded absolute/relative request payload through EPXL; core dispatch and drag/page/step policy pending |
 | Popup menu model | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Native menu | Optional | Pending | No platform menu bridge |
 | Tool bar model | P1 | Pending | W12/W16 PGTK parity gate not met |
@@ -370,7 +375,7 @@ Priorities:
 | Font dialog | P2 | Pending | W12/W16 PGTK parity gate not met |
 | Tooltip model | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Bounded tooltip surface | P1 | Degraded | `TOOLTIP_SHOW`/`MOVE`/`HIDE` v1 validate frame/window identity and exact generations, and SDL renders a bounded box; delay/dismiss policy, Unicode glyphs, hit testing, accessibility, and PGTK parity pending |
-| Scrollbar model | P1 | Pending | Wheel intent exists, but no scrollbar model/render/interaction |
+| Full scrollbar model | P1 | Pending | Dedicated vertical state and event transport exist; horizontal state, complete hit-testing policy, and Emacs dispatch remain pending |
 
 ## 7. GPU acceleration tiers
 
@@ -505,7 +510,7 @@ parity.
 
 | Layer | Working now | Still required for parity | Evidence |
 |---|---|---|---|
-| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 106 implemented codecs, 3 partial, and 55 planned; no unassigned or unclassified ID | Production implementation of the remaining face/text/graphics protocol gaps |
+| Protocol coverage | All 164 assigned EUP IDs are classified in a deterministic manifest: 108 implemented codecs, 3 partial, and 53 planned; no unassigned or unclassified ID | Production implementation of the remaining face/text/graphics protocol gaps |
 | Protocol/transport | EUP envelope, bounded `FRAME_UPDATE`, replay, EPXL framing, resync, ACK/retry, deterministic ordered/resync/ACK-loss/ERP1 convergence differential with
 `RESOURCE_SNAPSHOT`-aware concrete face/font/string/image fingerprints, bounded EPXL capability negotiation/status manifest, frame visibility/focus state codec, bounded resource payload cache/eviction policy, request/evict codecs, bounded string define/delete, fixed-layout face/font/image define/data/delete, and atomic concrete `RESOURCE_SNAPSHOT` v1 restore with frontend ownership, optional host frame-state ABI seam, terminal-lifecycle core and fake-host runtime service, generated read-only C adapter, dynamically linkable observation library, bounded host-frame to EUP-frame service mapping, deterministic atomic capture batches, deterministic protocol fuzz hardening, and bounded process-level frontend crash isolation, and negotiated strict focus/window observation | General resource/widget capability coverage, arbitrary recovery, remote safety, runtime terminal registration | `proto-ui-conformance`, `proto-ui-unit`, `proto-ui-terminal-service`, `proto-ui-fuzz`, `proto-ui-recovery-diff`, `proto-ui-crash-isolation`, `proto-ui-shim-conformance`, `proto-ui-shim-library-conformance`, `sdl3-live-smoke`, `sdl3-epxl-resync-smoke`, `sdl3-epxl-recovery-smoke` |
 | Emacs observation | Real Emacs process publishes public frame/window geometry, bounded printable-ASCII text, point/cursor, and viewport facts; W12c creates/deletes one real display-backed frame and synchronizes one EUP/SDL3 frame lifecycle; W10e renders that public-facts marker through the bounded glyph-run debug fallback | Redisplay-owned rows/glyphs/faces/fonts, full window tree, `output_proto`-owned frame creation/deletion, runtime visibility/focus events | `proto-ui-module-smoke`, `sdl3-emacs-smoke`, `sdl3-epxl-facts-smoke`, `sdl3-frame-smoke` |

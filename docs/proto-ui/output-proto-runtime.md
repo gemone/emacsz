@@ -167,6 +167,10 @@ adapter can validate and transport a bounded button/text result only when the
 capability is negotiated; host callbacks remain the sole authority for actual
 dialog completion.
 
+Dedicated scrollbar events follow the same bounded path: the frontend may send
+only the negotiated absolute/relative payload and never applies scrolling
+directly to Emacs state.
+
 ## 8. Session, recovery, and failure containment
 
 * Frontend disconnect marks the session disconnected but must not terminate
@@ -191,7 +195,7 @@ Current and target options:
 | `proto-ui-host-contract` step | Generate and audit the source-authoritative registration decision | Implemented; decision is pending and runtime unavailable |
 | `proto-ui-r7-proposal` step | Generate and audit the pure-SDL3 R7 registration proposal | Implemented; proposal is ready for review, decision remains pending, and runtime is unavailable |
 | `proto-ui-pgtk-parity-plan` step | Generate and audit the planned PGTK-to-Proto differential matrix | Implemented as planning policy; all 48 cases remain planned and parity is not implemented |
-| `proto-ui-protocol-coverage` step | Audit every assigned EUP message ID against its implementation status | Implemented; 106 codecs implemented, 3 partial, and 55 planned |
+| `proto-ui-protocol-coverage` step | Audit every assigned EUP message ID against its implementation status | Implemented; 108 codecs implemented, 3 partial, and 53 planned |
 | `session` module | Standard EUP setup/control codecs, setup state machine, Scene control integration, automatic frontend PONG, and EPXL transport for every standard control | Implemented as bounded adapter-first protocol coverage; full Emacs runtime ownership remains pending |
 | `proto-ui-runtime-host` step | Validate the five-group versioned `PureRuntimeHostV1` ABI with a fake host | ABI conformance implemented; registration is absent and runtime remains fail closed |
 | `proto-ui-runtime-host-abi` step | Generate, compile, and conformance-test the C projection of `PureRuntimeHostV1` | Implemented; generated header is installed under `zig-out/include/proto-ui` and remains unlinked from Emacs |

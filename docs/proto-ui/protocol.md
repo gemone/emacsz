@@ -1664,9 +1664,25 @@ Menu item fields include ID, parent, label, help, key binding, icon, enabled, se
 | `0x0931` | `TOOLTIP_MOVE` | C→F | New placement |
 | `0x0932` | `TOOLTIP_HIDE` | C→F | Tooltip ID |
 | `0x0940` | `SCROLLBAR_STATE` | C→F | Authoritative values |
-| `0x0941` | `SCROLLBAR_EVENT` | F→C | Drag/page/step intent |
+| `0x0941` | `SCROLLBAR_EVENT` | F→C | Absolute/relative intent |
 
 The bounded v1 slice implements message, prompt, and confirm.  Progress, file, color, font, and advanced custom dialogs remain planned extension IDs.
+
+#### `SCROLLBAR_STATE` / `SCROLLBAR_EVENT` v1 (implemented bounded adapter contracts)
+
+`SCROLLBAR_STATE = 0x0940` is an adapter alias for the existing exact 48-byte
+authoritative vertical scrollbar state payload.  The Scene applies the same
+nonzero owner, active-frame generation, content/viewport/position invariants,
+track bounds, and per-window upsert policy as `WINDOW_SCROLL_STATE`, and SDL
+renders the validated vertical track/thumb.  `SCROLLBAR_EVENT = 0x0941` is the
+dedicated reverse-intent alias for the exact 40-byte absolute/relative scroll
+request payload.  It requires separate `window.scrollbar_event_v1`
+negotiation, ordered DeliveryJournal ownership, and EPXL admission/ACK
+handling.  Drag, page, and step policies remain outside the bounded payload.
+
+This bounded slice does not add horizontal scrollbar state, native widget
+behavior, complete drag/page/step policy, keyboard accessibility, Emacs command
+dispatch, or PGTK scrollbar parity.
 
 #### `MENU_MODEL` v1 (implemented bounded adapter contract)
 
@@ -2078,9 +2094,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 106 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 108 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 55 | Assigned for the target protocol but not implemented |
+| `planned` | 53 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

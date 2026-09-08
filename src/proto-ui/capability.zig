@@ -76,6 +76,7 @@ pub const Feature = enum {
     window_divider_style_v1,
     window_scrollbar_state_v1,
     window_scroll_request_v1,
+    window_scrollbar_event_v1,
     window_mouse_highlight_v1,
     font_descriptor_patch_v1,
     fringe_bitmap_resource_v1,
@@ -191,6 +192,7 @@ pub const Feature = enum {
             .window_divider_style_v1 => "window.divider_style_v1",
             .window_scrollbar_state_v1 => "window.scrollbar_state_v1",
             .window_scroll_request_v1 => "window.scroll_request_v1",
+            .window_scrollbar_event_v1 => "window.scrollbar_event_v1",
             .window_mouse_highlight_v1 => "window.mouse_highlight_v1",
             .font_descriptor_patch_v1 => "font.descriptor_patch_v1",
             .fringe_bitmap_resource_v1 => "fringe.bitmap_resource_v1",
@@ -362,8 +364,9 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .frame_border_style_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke; window-manager border semantics pending" },
     .{ .feature = .window_fringe_style_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke; bitmap glyphs and draggable fringe semantics pending" },
     .{ .feature = .window_divider_style_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke; draggable divider semantics pending" },
-    .{ .feature = .window_scrollbar_state_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke vertical state/thumb rendering; drag and horizontal scrollbars pending" },
-    .{ .feature = .window_scroll_request_v1, .status = .degraded, .evidence = "proto-ui-unit bounded absolute/relative intent codec and queue; EPXL transport pending" },
+    .{ .feature = .window_scrollbar_state_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke dedicated 0x0940 state, Scene upsert, and vertical thumb render; horizontal state and full scrollbar policy pending" },
+    .{ .feature = .window_scroll_request_v1, .status = .degraded, .evidence = "proto-ui-unit and EPXL negotiated absolute/relative intents for the existing 0x0309 contract only; SDL hit testing and core dispatch pending" },
+    .{ .feature = .window_scrollbar_event_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-live-smoke dedicated 0x0941 negotiated DeliveryJournal/EPXL transport; complete interaction and core dispatch pending" },
     .{ .feature = .window_mouse_highlight_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded visible mouse-face rect; Emacs mouse-face semantics pending" },
     .{ .feature = .font_descriptor_patch_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded scalar font descriptor patch; real fonts, string/metric patching, and frame font parity pending" },
     .{ .feature = .fringe_bitmap_resource_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded monochrome bitmap define/delete/render; color bitmaps, bitmap authoring, and full fringe parity pending" },
@@ -779,4 +782,13 @@ test "middle paste remains optional and selection-gated" {
     middle_only.bits[@intFromEnum(Feature.input_pointer_selection_left)] = false;
     const selection_missing = try negotiate(all, middle_only);
     try std.testing.expect(!selection_missing.effective.contains(.input_pointer_middle_paste));
+}
+
+test "dedicated scrollbar event does not inherit legacy request negotiation" {
+    const all = backendSupported();
+    var legacy_only = all;
+    legacy_only.bits[@intFromEnum(Feature.window_scrollbar_event_v1)] = false;
+    const effective = try negotiate(all, legacy_only);
+    try std.testing.expect(effective.effective.contains(.window_scroll_request_v1));
+    try std.testing.expect(!effective.effective.contains(.window_scrollbar_event_v1));
 }
