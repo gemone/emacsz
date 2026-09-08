@@ -284,6 +284,11 @@ upserts one bounded geometry per window, clears it on authoritative updates,
 and invalidates it on shrink/delete.  SDL draws the validated body boundary as
 evidence; redisplay-owned layout and complete zone/PGTK parity remain pending.
 
+P32 window-zone preparation adds `WINDOW_ZONES` v1 with nine bounded region
+slots, strict disjoint/owner containment checks, body-conflict validation, one
+upsert per window, and SDL top-boundary evidence.  Redisplay-owned layout,
+complete widget geometry, and PGTK parity remain pending.
+
 W6-a adds the bounded EUP `STRING_DEFINE`/`STRING_DELETE` v1 contract and its
 frontend-owned active table.  Strings are strict UTF-8, at most 4096 bytes, and
 the scene retains at most 64 with strict generation replacement/deletion and

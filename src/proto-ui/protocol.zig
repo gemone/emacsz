@@ -70,6 +70,7 @@ pub const Message = struct {
     pub const window_create: u16 = 0x0301;
     pub const window_delete: u16 = 0x0303;
     pub const window_geometry: u16 = 0x0304;
+    pub const window_zones: u16 = 0x0305;
     pub const window_face: u16 = 0x0306;
     pub const window_scroll_state: u16 = 0x0308;
     pub const window_patch: u16 = 0x0302;

@@ -148,6 +148,7 @@ frame state
 window region
 zone geometry
 window content/body geometry
+window zones
 window default-face state
 row
 render item
@@ -173,7 +174,7 @@ The scene is rebuilt incrementally where possible. A full rebuild occurs after s
 4. Replace or update rows.
 5. Replace or update render items.
 6. Clear window content/body geometry, then update cursor, window default face,
-   fringe, divider, border, and scrollbar state.
+   window zones, fringe, divider, border, and scrollbar state.
 7. Merge damage rectangles.
 8. Record present hint and deadline.
 
@@ -187,6 +188,7 @@ begin frame
   draw frame background
   draw window backgrounds (default face when live and validated)
   draw validated body geometry boundary
+  draw present zone top boundaries
   draw margins
   draw glyph runs
   draw images

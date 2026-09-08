@@ -450,6 +450,27 @@ invalidates it when a window patch shrinks the owner. SDL draws the validated
 body boundary as diagnostic evidence. This is not yet redisplay-owned layout,
 zone geometry, DPI-aware layout, or complete PGTK window parity.
 
+#### `WINDOW_ZONES` v1 (implemented bounded adapter contract)
+
+`WINDOW_ZONES = 0x0305` is an exact 164-byte little-endian record. The 20-byte
+header contains `schema=1`, zero flags/reserved, a nonzero window ID, the active
+frame generation, and a `u32` presence mask. It is followed by nine fixed
+16-byte rectangles. Slots 0 through 8 map, in bit order, to mode line, header
+line, tab line, left margin, right margin, left fringe, right fringe,
+horizontal scrollbar, and vertical scrollbar.
+
+Every present rectangle must be owner-relative, positive, and fit the live
+owner; every absent rectangle must be all zero; and all present rectangles must
+be mutually disjoint. Unknown bits, empty masks, stale generations, missing
+owners, and out-of-owner rectangles are rejected. When matching geometry exists,
+present zones may not overlap its body; when zones already exist, a conflicting
+geometry body is rejected. `Scene` performs one bounded upsert per window, caps
+the table at 32, clears it on authoritative updates/resync/teardown, removes it
+on window deletion, and invalidates it when a patch shrinks the owner. The SDL
+diagnostic renderer draws the top edge of each present zone as evidence. This is
+not redisplay-owned layout, complete zone semantics, edge/baseline rendering, or
+PGTK parity.
+
 #### Window patch v1 (implemented bounded adapter contract)
 
 `WINDOW_PATCH` (`0x0302`) is a fixed 56-byte little-endian record. It starts
@@ -460,8 +481,9 @@ nonzero frame ID/generation and the target `u64 window_id`. Presence bits are
 Present geometry values must be nonnegative with positive width/height. A
 present parent must be another live window and must not create a cycle; depth
 must equal parent depth plus one and stay at most eight. The Scene applies the
-patch in place. Zones, scroll state, and mouse-highlight records remain separate pending
-messages; window default-face state is defined by `WINDOW_FACE` v1.
+patch in place. Zone rectangles are defined by `WINDOW_ZONES` v1; scroll state
+and mouse-highlight records remain separate pending messages, while window
+default-face state is defined by `WINDOW_FACE` v1.
 
 #### Window create/delete lifecycle v1 (implemented bounded adapter contract)
 
@@ -476,9 +498,9 @@ generation. Duplicate IDs are rejected.
 flags/reserved, nonzero frame ID/generation, nonzero window ID). Deletion is
 rejected while the window still owns rows, glyph runs, cursor state, or image
 placements. Successful create/delete messages update `Scene.windows`
-atomically and preserve ordering. A successful delete removes dependent
-window default-face state. Patch, zones, scroll state, and mouse-highlight
-records remain separate.
+atomically and preserve ordering. A successful delete removes dependent window
+default-face and zone state. Patch, scroll state, and mouse-highlight records
+remain separate.
 
 #### `WINDOW_FACE` v1 (implemented bounded adapter contract)
 
@@ -1549,9 +1571,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 77 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 78 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 84 | Assigned for the target protocol but not implemented |
+| `planned` | 83 | Assigned for the target protocol but not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every

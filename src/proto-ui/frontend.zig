@@ -528,6 +528,7 @@ pub const window_scroll_state_size: usize = 48;
 pub const max_scrollbar_states: usize = 32;
 pub const max_window_faces: usize = 32;
 pub const max_window_geometries: usize = 32;
+pub const max_window_zones: usize = 32;
 
 pub const WindowGeometryState = struct {
     schema: u16 = 1,
@@ -548,6 +549,118 @@ fn encodeGeometryRectFixed(a: std.mem.Allocator, rect: protocol.GeometryRect, ou
         std.mem.writeInt(u32, &word, @bitCast(value), .little);
         try out.appendSlice(a, &word);
     }
+}
+
+pub const WindowZoneBits = struct {
+    pub const mode_line: u32 = 1 << 0;
+    pub const header_line: u32 = 1 << 1;
+    pub const tab_line: u32 = 1 << 2;
+    pub const left_margin: u32 = 1 << 3;
+    pub const right_margin: u32 = 1 << 4;
+    pub const left_fringe: u32 = 1 << 5;
+    pub const right_fringe: u32 = 1 << 6;
+    pub const horizontal_scrollbar: u32 = 1 << 7;
+    pub const vertical_scrollbar: u32 = 1 << 8;
+    pub const known: u32 = mode_line | header_line | tab_line |
+        left_margin | right_margin | left_fringe | right_fringe |
+        horizontal_scrollbar | vertical_scrollbar;
+};
+
+pub const window_zone_count: usize = 9;
+
+pub const WindowZonesState = struct {
+    schema: u16 = 1,
+    flags: u8 = 0,
+    reserved: u8 = 0,
+    window_id: u64,
+    frame_generation: u32,
+    presence: u32,
+    zones: [window_zone_count]protocol.GeometryRect = [_]protocol.GeometryRect{.{ .x = 0, .y = 0, .width = 0, .height = 0 }} ** window_zone_count,
+};
+
+pub const window_zones_state_size: usize = 20 + window_zone_count * 16;
+
+fn geometryRectsOverlap(a: protocol.GeometryRect, b: protocol.GeometryRect) bool {
+    const a_right = @as(i64, a.x) + a.width;
+    const a_bottom = @as(i64, a.y) + a.height;
+    const b_right = @as(i64, b.x) + b.width;
+    const b_bottom = @as(i64, b.y) + b.height;
+    return a.x < b_right and b.x < a_right and
+        a.y < b_bottom and b.y < a_bottom;
+}
+
+pub fn zoneRect(state: WindowZonesState, bit: u32) ?protocol.GeometryRect {
+    if (state.presence & bit == 0) return null;
+    return state.zones[@ctz(bit)];
+}
+
+fn validateWindowZonesState(state: WindowZonesState) Error!void {
+    if (state.schema != 1 or state.flags != 0 or state.reserved != 0 or
+        state.window_id == 0 or state.frame_generation == 0 or
+        state.presence == 0 or state.presence & ~WindowZoneBits.known != 0)
+        return Error.InvalidMessage;
+
+    var index: usize = 0;
+    while (index < window_zone_count) : (index += 1) {
+        const bit = @as(u32, 1) << @intCast(index);
+        const rect = state.zones[index];
+        if (state.presence & bit != 0) {
+            if (rect.x < 0 or rect.y < 0 or !protocol.validGeometryRect(rect))
+                return Error.InvalidMessage;
+        } else if (rect.x != 0 or rect.y != 0 or rect.width != 0 or rect.height != 0) {
+            return Error.InvalidMessage;
+        }
+    }
+
+    var outer: usize = 0;
+    while (outer < window_zone_count) : (outer += 1) {
+        if (state.presence & (@as(u32, 1) << @intCast(outer)) == 0) continue;
+        var inner: usize = outer + 1;
+        while (inner < window_zone_count) : (inner += 1) {
+            if (state.presence & (@as(u32, 1) << @intCast(inner)) == 0) continue;
+            if (geometryRectsOverlap(state.zones[outer], state.zones[inner]))
+                return Error.InvalidMessage;
+        }
+    }
+}
+
+pub fn encodeWindowZonesState(
+    a: std.mem.Allocator,
+    state: WindowZonesState,
+    out: *std.ArrayList(u8),
+) !void {
+    try validateWindowZonesState(state);
+    var b: [window_zones_state_size]u8 = [_]u8{0} ** window_zones_state_size;
+    std.mem.writeInt(u16, b[0..2], state.schema, .little);
+    std.mem.writeInt(u64, b[4..12], state.window_id, .little);
+    std.mem.writeInt(u32, b[12..16], state.frame_generation, .little);
+    std.mem.writeInt(u32, b[16..20], state.presence, .little);
+    try out.appendSlice(a, b[0..20]);
+    for (state.zones) |rect| try encodeGeometryRectFixed(a, rect, out);
+}
+
+pub fn decodeWindowZonesState(data: []const u8) Error!WindowZonesState {
+    if (data.len != window_zones_state_size) return Error.InvalidTable;
+    var state: WindowZonesState = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .flags = data[2],
+        .reserved = data[3],
+        .window_id = std.mem.readInt(u64, data[4..12], .little),
+        .frame_generation = std.mem.readInt(u32, data[12..16], .little),
+        .presence = std.mem.readInt(u32, data[16..20], .little),
+    };
+    var offset: usize = 20;
+    for (&state.zones) |*rect| {
+        rect.* = .{
+            .x = @bitCast(std.mem.readInt(u32, data[offset..][0..4], .little)),
+            .y = @bitCast(std.mem.readInt(u32, data[offset + 4 ..][0..4], .little)),
+            .width = @bitCast(std.mem.readInt(u32, data[offset + 8 ..][0..4], .little)),
+            .height = @bitCast(std.mem.readInt(u32, data[offset + 12 ..][0..4], .little)),
+        };
+        offset += 16;
+    }
+    try validateWindowZonesState(state);
+    return state;
 }
 
 pub const WindowFaceState = struct {
@@ -1995,6 +2108,7 @@ pub const Scene = struct {
     scroll_states: std.ArrayList(WindowScrollState) = .empty,
     window_faces: std.ArrayList(WindowFaceState) = .empty,
     window_geometries: std.ArrayList(WindowGeometryState) = .empty,
+    window_zones: std.ArrayList(WindowZonesState) = .empty,
     border: ?BorderUpdate = null,
     text: std.ArrayList(TextLine) = .empty,
     title: ?[:0]u8 = null,
@@ -2034,6 +2148,7 @@ pub const Scene = struct {
         self.scroll_states.deinit(self.allocator);
         self.window_faces.deinit(self.allocator);
         self.window_geometries.deinit(self.allocator);
+        self.window_zones.deinit(self.allocator);
         self.strings.deinit(self.allocator);
         self.faces = .{};
         self.fonts = .{};
@@ -2063,6 +2178,7 @@ pub const Scene = struct {
         self.scroll_states = .empty;
         self.window_faces = .empty;
         self.window_geometries = .empty;
+        self.window_zones = .empty;
         self.strings = .{};
         self.faces = .{};
         self.fonts = .{};
@@ -2169,6 +2285,7 @@ pub const Scene = struct {
             protocol.Message.window_delete => try self.applyWindowDelete(payload),
             protocol.Message.window_patch => try self.applyWindowPatch(payload),
             protocol.Message.window_geometry => try self.applyWindowGeometry(payload),
+            protocol.Message.window_zones => try self.applyWindowZones(payload),
             protocol.Message.cursor_update => try self.applyCursorUpdate(payload),
             protocol.Message.clear_area => try self.applyClearArea(payload),
             protocol.Message.scroll_run => try self.applyScrollRun(payload),
@@ -2222,6 +2339,7 @@ pub const Scene = struct {
         self.scroll_states.deinit(self.allocator);
         self.window_faces.deinit(self.allocator);
         self.window_geometries.deinit(self.allocator);
+        self.window_zones.deinit(self.allocator);
         for (self.text.items) |line| self.allocator.free(line.bytes);
         self.text.deinit(self.allocator);
         self.windows = .empty;
@@ -2235,6 +2353,7 @@ pub const Scene = struct {
         self.scroll_states = .empty;
         self.window_faces = .empty;
         self.window_geometries = .empty;
+        self.window_zones = .empty;
         self.text = .empty;
         self.frame_header = null;
         self.cursor = null;
@@ -2615,6 +2734,7 @@ pub const Scene = struct {
 
         self.removeWindowFacesForWindow(window_id);
         self.removeWindowGeometriesForWindow(window_id);
+        self.removeWindowZonesForWindow(window_id);
         self.stats.control_messages += 1;
     }
 
@@ -2704,6 +2824,12 @@ pub const Scene = struct {
         for (self.window_geometries.items) |*geometry| {
             if (geometry.window_id == updated.id and !windowGeometryFits(updated, geometry.*)) {
                 self.removeWindowGeometriesForWindow(updated.id);
+                break;
+            }
+        }
+        for (self.window_zones.items) |*zones| {
+            if (zones.window_id == updated.id and !windowZonesFit(updated, zones.*)) {
+                self.removeWindowZonesForWindow(updated.id);
                 break;
             }
         }
@@ -2840,6 +2966,15 @@ pub const Scene = struct {
         while (index < self.window_geometries.items.len) {
             if (self.window_geometries.items[index].window_id == window_id) {
                 _ = self.window_geometries.orderedRemove(index);
+            } else index += 1;
+        }
+    }
+
+    fn removeWindowZonesForWindow(self: *Scene, window_id: u64) void {
+        var index: usize = 0;
+        while (index < self.window_zones.items.len) {
+            if (self.window_zones.items[index].window_id == window_id) {
+                _ = self.window_zones.orderedRemove(index);
             } else index += 1;
         }
     }
@@ -3249,6 +3384,7 @@ pub const Scene = struct {
         self.scroll_states.clearRetainingCapacity();
         self.window_faces.clearRetainingCapacity();
         self.window_geometries.clearRetainingCapacity();
+        self.window_zones.clearRetainingCapacity();
         self.image_placements = image_placements;
         self.image_placement_count = image_placement_count;
         windows = old_windows;
@@ -3458,6 +3594,16 @@ pub const Scene = struct {
         const owner = findWindow(self.windows.items, state.window_id) orelse
             return Error.InvalidMessage;
         if (!windowGeometryFits(owner, state)) return Error.InvalidMessage;
+        for (self.window_zones.items) |zones| {
+            if (zones.window_id != owner.id) continue;
+            var index: usize = 0;
+            while (index < window_zone_count) : (index += 1) {
+                const bit = @as(u32, 1) << @intCast(index);
+                if (zoneRect(zones, bit)) |rect| {
+                    if (geometryRectsOverlap(state.body, rect)) return Error.InvalidMessage;
+                }
+            }
+        }
         for (self.window_geometries.items, 0..) |*old, index| {
             if (old.window_id == state.window_id) {
                 self.window_geometries.items[index] = state;
@@ -3467,6 +3613,40 @@ pub const Scene = struct {
         }
         if (self.window_geometries.items.len == max_window_geometries) return Error.Unsupported;
         try self.window_geometries.append(self.allocator, state);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyWindowZones(self: *Scene, payload: protocol.Payload) Error!void {
+        const state = try decodeWindowZonesState(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        const header = self.frame_header orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id or
+            frame.generation != state.frame_generation or
+            header.frame_id != frame.frame_id or
+            header.frame_generation != frame.generation)
+            return Error.InvalidMessage;
+        const owner = findWindow(self.windows.items, state.window_id) orelse
+            return Error.InvalidMessage;
+        if (!windowZonesFit(owner, state)) return Error.InvalidMessage;
+        for (self.window_geometries.items) |geometry| {
+            if (geometry.window_id != owner.id) continue;
+            var index: usize = 0;
+            while (index < window_zone_count) : (index += 1) {
+                const bit = @as(u32, 1) << @intCast(index);
+                if (zoneRect(state, bit)) |rect| {
+                    if (geometryRectsOverlap(geometry.body, rect)) return Error.InvalidMessage;
+                }
+            }
+        }
+        for (self.window_zones.items, 0..) |*old, index| {
+            if (old.window_id == state.window_id) {
+                self.window_zones.items[index] = state;
+                self.stats.control_messages += 1;
+                return;
+            }
+        }
+        if (self.window_zones.items.len == max_window_zones) return Error.Unsupported;
+        try self.window_zones.append(self.allocator, state);
         self.stats.control_messages += 1;
     }
 
@@ -3561,6 +3741,17 @@ fn windowGeometryFits(owner: Window, state: WindowGeometryState) bool {
         inside(@intCast(state.content.y), @intCast(state.content.height), owner.height) and
         inside(@intCast(state.body.x), @intCast(state.body.width), @intCast(state.content.width)) and
         inside(@intCast(state.body.y), @intCast(state.body.height), @intCast(state.content.height));
+}
+
+fn windowZonesFit(owner: Window, state: WindowZonesState) bool {
+    var index: usize = 0;
+    while (index < window_zone_count) : (index += 1) {
+        const bit = @as(u32, 1) << @intCast(index);
+        const rect = zoneRect(state, bit) orelse continue;
+        if (!inside(rect.x, rect.width, owner.width) or
+            !inside(rect.y, rect.height, owner.height)) return false;
+    }
+    return true;
 }
 
 fn findWindow(windows: []const Window, id: u64) ?Window {
@@ -4277,6 +4468,82 @@ test "window geometry validates owner content and follows window patch" {
     defer a.free(shrink);
     try scene.apply(shrink);
     try std.testing.expectEqual(@as(usize, 0), scene.window_geometries.items.len);
+}
+
+test "window zones validate disjoint owner regions and lifecycle" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var state: WindowZonesState = .{
+        .window_id = 100,
+        .frame_generation = 1,
+        .presence = WindowZoneBits.left_fringe | WindowZoneBits.vertical_scrollbar,
+    };
+    state.zones[@ctz(WindowZoneBits.left_fringe)] = .{ .x = 0, .y = 0, .width = 4, .height = 60 };
+    state.zones[@ctz(WindowZoneBits.vertical_scrollbar)] = .{ .x = 70, .y = 0, .width = 10, .height = 60 };
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeWindowZonesState(a, state, &payload);
+    try std.testing.expectEqual(window_zones_state_size, payload.items.len);
+    try std.testing.expectEqual(@as(u16, 1), std.mem.readInt(u16, payload.items[0..2], .little));
+    try std.testing.expectEqual(state, try decodeWindowZonesState(payload.items));
+
+    const message = try windowLifecycleMessage(a, protocol.Message.window_zones, 3, 7, payload.items);
+    defer a.free(message);
+    try scene.apply(message);
+    try std.testing.expectEqual(state, scene.window_zones.items[0]);
+
+    var replacement = state;
+    replacement.presence = WindowZoneBits.left_fringe;
+    replacement.zones[@ctz(WindowZoneBits.vertical_scrollbar)] = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+    payload.clearRetainingCapacity();
+    try encodeWindowZonesState(a, replacement, &payload);
+    const replacement_message = try windowLifecycleMessage(a, protocol.Message.window_zones, 4, 7, payload.items);
+    defer a.free(replacement_message);
+    try scene.apply(replacement_message);
+    try std.testing.expectEqual(@as(usize, 1), scene.window_zones.items.len);
+    try std.testing.expectEqual(replacement, scene.window_zones.items[0]);
+
+    var overlapping = replacement;
+    overlapping.presence = WindowZoneBits.left_fringe | WindowZoneBits.right_fringe;
+    overlapping.zones[@ctz(WindowZoneBits.right_fringe)] = .{ .x = 0, .y = 0, .width = 4, .height = 60 };
+    payload.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidMessage, encodeWindowZonesState(a, overlapping, &payload));
+
+    var outside_owner = replacement;
+    outside_owner.zones[@ctz(WindowZoneBits.left_fringe)] = .{ .x = 0, .y = 0, .width = 100, .height = 60 };
+    payload.clearRetainingCapacity();
+    try encodeWindowZonesState(a, outside_owner, &payload);
+    const outside_message = try windowLifecycleMessage(a, protocol.Message.window_zones, 5, 7, payload.items);
+    defer a.free(outside_message);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(outside_message));
+
+    payload.clearRetainingCapacity();
+    try encodeWindowZonesState(a, state, &payload);
+    const reapply = try windowLifecycleMessage(a, protocol.Message.window_zones, 5, 7, payload.items);
+    defer a.free(reapply);
+    try scene.apply(reapply);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeWindowPatch(a, .{
+        .flags = protocol.WindowPatchFlags.width,
+        .frame_id = 7,
+        .frame_generation = 1,
+        .window_id = 100,
+        .width = 20,
+    }, &payload);
+    const shrink = try windowLifecycleMessage(a, protocol.Message.window_patch, 6, 7, payload.items);
+    defer a.free(shrink);
+    try scene.apply(shrink);
+    try std.testing.expectEqual(@as(usize, 0), scene.window_zones.items.len);
 }
 
 test "divider update validates generation and owner bounds" {
