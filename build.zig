@@ -400,6 +400,10 @@ pub fn build(b: *std.Build) void {
     if (enable_proto_ui_runtime and !enable_proto_ui) {
         @panic("host_registration_contract_missing: -Dproto-ui-runtime=true requires -Dproto-ui=true; runtime remains unavailable");
     }
+    // The normal R8 readiness gate accepts a blocked entry.  This opt-in flag
+    // flips the same gate into negative mode: it fails until reviewed R7 and
+    // every R8 readiness condition are complete.
+    const enable_r8_entry_gate = b.option(bool, "r8-entry-gate", "Require R8 entry readiness; fails closed while R7 is pending") orelse false;
     var proto_compat_dep: ?*std.Build.Step = null;
 
     // Target-derived flags.  `target` is resolved at line 64, so target.result
@@ -922,6 +926,52 @@ pub fn build(b: *std.Build) void {
 
         boundary_step.dependOn(&install_runtime_activation.step);
         boundary_step.dependOn(&run_runtime_activation_gate.step);
+
+        // R8: keep the launch decision machine-checkable.  The artifact is
+        // blocked by policy; the opt-in negative mode is the reviewable gate
+        // that cannot pass until the readiness source itself becomes ready.
+        const r8_readiness_gen_tool = b.addExecutable(.{
+            .name = "proto-ui-r8-readiness-gen",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/r8_readiness_gen.zig"),
+            }),
+        });
+        r8_readiness_gen_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_r8_readiness_gen = b.addRunArtifact(r8_readiness_gen_tool);
+        const r8_readiness_artifact = run_r8_readiness_gen.addOutputFileArg(
+            "r8_readiness.json",
+        );
+        const install_r8_readiness = b.addInstallFile(
+            r8_readiness_artifact,
+            "proto-ui/r8_readiness.json",
+        );
+
+        const r8_readiness_gate_tool = b.addExecutable(.{
+            .name = "proto-ui-r8-readiness-gate",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/r8_readiness_gate.zig"),
+            }),
+        });
+        r8_readiness_gate_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_r8_readiness_gate = b.addRunArtifact(r8_readiness_gate_tool);
+        run_r8_readiness_gate.addFileArg(r8_readiness_artifact);
+        run_r8_readiness_gate.addArg(if (enable_r8_entry_gate) "--expect=ready" else "--expect=blocked");
+        run_r8_readiness_gate.step.dependOn(&run_r8_readiness_gen.step);
+
+        const r8_readiness_step = b.step(
+            "proto-ui-r8-readiness",
+            "Audit R8 entry readiness; add -Dr8-entry-gate=true for the negative launch gate",
+        );
+        r8_readiness_step.dependOn(&run_r8_readiness_gen.step);
+        r8_readiness_step.dependOn(&install_r8_readiness.step);
+        r8_readiness_step.dependOn(&run_r8_readiness_gate.step);
+
+        boundary_step.dependOn(&install_r8_readiness.step);
+        boundary_step.dependOn(&run_r8_readiness_gate.step);
 
         // P2: the R7 proposal is review input only.  Its gate proves that the
         // pure-SDL3 registration request is coherent while registration and

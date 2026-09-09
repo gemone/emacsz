@@ -89,6 +89,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P15-prep terminal runtime service | Implemented `proto-ui-terminal-service` for fake-host create/activate/drain/delete orchestration with no-reuse registry IDs, drain retry, rollback-pending cleanup, and strict identity validation; no R7 approval or Emacs terminal |
 | P16-prep host adapter selection | Implemented the versioned pure-SDL3 `output_proto` candidate as unselected until an approved, metadata-complete R7 decision; machine-readable gate records no activation, registration, or runtime |
 | P17-prep runtime activation contract | Implemented a selection-gated controller plus explicit activation/rollback sequences; current gate remains blocked by pending R7 with no registration or runtime |
+| P21-prep R8 entry readiness | Implemented a machine-readable blocked-entry manifest with seven readiness requirements, inherited-source audit, rollback-order audit, and opt-in negative launch gate |
 | P18-prep explicit damage array | Implemented bounded `DAMAGE_RECTS` codec, atomic Scene replacement, bridge emission, union clipping, clipped retained-target present, and command-culling counters with smoke evidence; redisplay-owned incremental damage pending |
 | P19-prep clear-area render control | Implemented a 40-byte face-colored `CLEAR_AREA` v1 codec with bounded Scene table, active-frame/window bounds, live-face validation, and SDL render evidence; not redisplay capture |
 | P20-prep scroll-copy execution | Implemented bounded full-width vertical `SCROLL_RUN` v1, Scene band validation, overlap planning, estimated RGBA upload metrics, and scratch-target SDL retained-frame copy execution; redisplay ownership and GPU batching pending |
@@ -167,6 +168,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W12j R5 frame service mapping | Approved |
 | W12k R6 atomic capture batches | Approved |
 | W12l R7 host-registration decision contract | Approved |
+| W12m R8 entry-readiness manifest and negative gate | Approved; R8 entry remains blocked |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
@@ -2922,6 +2924,17 @@ guarantees, default-build isolation, and the rule that the frontend never
 evaluates Elisp or owns layout.  The source decision remains `pending` with
 `host_registration_contract_missing`; the runtime manifest references this
 decision and remains fail closed.
+
+##### R8 entry-readiness evidence
+
+R8 readiness is machine-readable in `src/proto-ui/r8_readiness.zig` and
+`zig-out/proto-ui/r8_readiness.json`.  The source records seven required
+conditions, tracks the pending R7 decision, asserts an empty inherited-source
+edit set, keeps activation/runtime/default enablement false, and validates the
+rollback order.  `proto-ui-r8-readiness` accepts the blocked state as a valid
+audit result.  The opt-in `-Dr8-entry-gate=true proto-ui-r8-readiness` form is
+the negative launch gate: it fails with `r8_entry_readiness_missing` until the
+source itself becomes ready.
 
 1. Implement child and tooltip frame protocol.
 2. Implement multi-frame focus isolation.

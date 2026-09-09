@@ -317,6 +317,13 @@ pending R7 decision is explicitly approved with this metadata and the runtime
 manifest changes from `host_registration_contract_missing` to a reviewed,
 versioned registration contract.
 
+`proto-ui-r8-readiness` makes this gate executable.  Its normal pass result
+means the audit successfully proved that R8 is still blocked and no inherited
+source edits are declared.  `-Dr8-entry-gate=true proto-ui-r8-readiness` is the
+negative launch check: it returns `r8_entry_readiness_missing` until the
+source-authoritative readiness record, approved R7 decision, and selected host
+adapter agree.
+
 ### 11.1 First-frame execution slices
 
 When the entry gate is satisfied, implement R8 in these verifiable slices:

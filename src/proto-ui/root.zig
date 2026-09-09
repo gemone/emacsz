@@ -22,6 +22,7 @@ pub const pgtk_parity = @import("pgtk_parity.zig");
 pub const runtime_host = @import("runtime_host.zig");
 pub const runtime_bridge = @import("runtime_bridge.zig");
 pub const runtime_activation = @import("runtime_activation.zig");
+pub const r8_readiness = @import("r8_readiness.zig");
 pub const fuzz = @import("fuzz.zig");
 pub const recovery_diff = @import("recovery_diff.zig");
 pub const crash_isolation = @import("crash_isolation.zig");
@@ -52,6 +53,7 @@ test {
     _ = runtime_host;
     _ = runtime_bridge;
     _ = runtime_activation;
+    _ = r8_readiness;
     _ = fuzz;
     _ = recovery_diff;
     _ = crash_isolation;
