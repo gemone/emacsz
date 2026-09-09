@@ -3526,12 +3526,24 @@ pub const ImeContext = struct {
     surrounding_cursor_offset: u32 = 0,
     surrounding_selected_length: u32 = 0,
     has_surrounding: bool = false,
+    preedit_bytes: [max_text_columns]u8 = undefined,
+    preedit_len: u16 = 0,
+    preedit_cursor_offset: u32 = 0,
+    preedit_selected_length: u32 = 0,
+    has_preedit: bool = false,
 
     pub fn clearSurrounding(self: *ImeContext) void {
         self.surrounding_len = 0;
         self.surrounding_cursor_offset = 0;
         self.surrounding_selected_length = 0;
         self.has_surrounding = false;
+    }
+
+    pub fn clearPreedit(self: *ImeContext) void {
+        self.preedit_len = 0;
+        self.preedit_cursor_offset = 0;
+        self.preedit_selected_length = 0;
+        self.has_preedit = false;
     }
 };
 
@@ -3900,6 +3912,9 @@ pub const Scene = struct {
             protocol.Message.ime_allowed_input => try self.applyImeAllowedInput(payload),
             protocol.Message.ime_surrounding_text => try self.applyImeSurroundingText(payload),
             protocol.Message.ime_reset => try self.applyImeReset(payload),
+            protocol.Message.ime_preedit_start => try self.applyImePreeditStart(payload),
+            protocol.Message.ime_preedit_update => try self.applyImePreeditUpdate(payload),
+            protocol.Message.ime_preedit_end => try self.applyImePreeditEnd(payload),
             else => self.stats.control_messages += 1,
         }
         self.next_sequence = next_sequence;
@@ -5443,11 +5458,51 @@ pub const Scene = struct {
         if (context.window_id != request.window_id) return Error.InvalidMessage;
         context.allowed_input = 0;
         context.clearSurrounding();
+        context.clearPreedit();
         context.focused = false;
         context.cursor_x = 0;
         context.cursor_y = 0;
         context.cursor_width = 0;
         context.cursor_height = 0;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyImePreeditStart(self: *Scene, payload: protocol.Payload) Error!void {
+        const context_id = try decodeImePreeditStart(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id) return Error.InvalidMessage;
+        const context = self.findImeContext(context_id) orelse return Error.InvalidMessage;
+        if (context.frame_id != frame.frame_id) return Error.InvalidMessage;
+        _ = findWindow(self.windows.items, context.window_id) orelse return Error.InvalidMessage;
+        context.clearPreedit();
+        context.has_preedit = true;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyImePreeditUpdate(self: *Scene, payload: protocol.Payload) Error!void {
+        const update = try decodeImePreeditUpdate(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id) return Error.InvalidMessage;
+        const context = self.findImeContext(update.context_id) orelse return Error.InvalidMessage;
+        if (context.frame_id != frame.frame_id) return Error.InvalidMessage;
+        _ = findWindow(self.windows.items, context.window_id) orelse return Error.InvalidMessage;
+        if (!context.has_preedit) return Error.InvalidMessage;
+        @memcpy(context.preedit_bytes[0..update.bytes.len], update.bytes);
+        context.preedit_len = @intCast(update.bytes.len);
+        context.preedit_cursor_offset = update.cursor_offset;
+        context.preedit_selected_length = update.selected_length;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyImePreeditEnd(self: *Scene, payload: protocol.Payload) Error!void {
+        const context_id = try decodeImePreeditEnd(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id) return Error.InvalidMessage;
+        const context = self.findImeContext(context_id) orelse return Error.InvalidMessage;
+        if (context.frame_id != frame.frame_id) return Error.InvalidMessage;
+        _ = findWindow(self.windows.items, context.window_id) orelse return Error.InvalidMessage;
+        if (!context.has_preedit) return Error.InvalidMessage;
+        context.clearPreedit();
         self.stats.control_messages += 1;
     }
 
@@ -7032,6 +7087,100 @@ test "ime context lifecycle validates owner and exact state" {
     defer a.free(detach);
     try scene.apply(detach);
     try std.testing.expectEqual(@as(usize, 0), scene.ime_context_count);
+}
+
+test "ime preedit lifecycle stores bounded atomic state" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeImeAttach(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    const attach = try windowLifecycleMessage(a, protocol.Message.ime_attach, 3, 7, payload.items);
+    defer a.free(attach);
+    try scene.apply(attach);
+
+    payload.clearRetainingCapacity();
+    try encodeImePreeditUpdate(a, .{ .context_id = 11, .cursor_offset = 0, .selected_length = 0, .bytes = "" }, &payload);
+    const update_without_start = try windowLifecycleMessage(a, protocol.Message.ime_preedit_update, 4, 7, payload.items);
+    defer a.free(update_without_start);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(update_without_start));
+
+    payload.clearRetainingCapacity();
+    try encodeImePreeditStart(a, 11, &payload);
+    const start = try windowLifecycleMessage(a, protocol.Message.ime_preedit_start, 4, 7, payload.items);
+    defer a.free(start);
+    try scene.apply(start);
+    try std.testing.expect(scene.ime_contexts[0].has_preedit);
+    try std.testing.expectEqual(@as(u16, 0), scene.ime_contexts[0].preedit_len);
+
+    payload.clearRetainingCapacity();
+    try encodeImePreeditStart(a, 11, &payload);
+    const restart = try windowLifecycleMessage(a, protocol.Message.ime_preedit_start, 5, 7, payload.items);
+    defer a.free(restart);
+    try scene.apply(restart);
+
+    payload.clearRetainingCapacity();
+    try encodeImePreeditUpdate(a, .{ .context_id = 11, .cursor_offset = 3, .selected_length = 1, .bytes = "ab@" }, &payload);
+    const preedit = try windowLifecycleMessage(a, protocol.Message.ime_preedit_update, 6, 7, payload.items);
+    defer a.free(preedit);
+    try scene.apply(preedit);
+    try std.testing.expectEqualStrings("ab@", scene.ime_contexts[0].preedit_bytes[0..3]);
+    try std.testing.expectEqual(@as(u16, 3), scene.ime_contexts[0].preedit_len);
+    try std.testing.expectEqual(@as(u32, 3), scene.ime_contexts[0].preedit_cursor_offset);
+    try std.testing.expectEqual(@as(u32, 1), scene.ime_contexts[0].preedit_selected_length);
+
+    // Exercise the context-creating-frame guard independently of the active
+    // envelope-frame guard.
+    scene.ime_contexts[0].frame_id = 8;
+    payload.clearRetainingCapacity();
+    try encodeImePreeditUpdate(a, .{ .context_id = 11, .cursor_offset = 3, .selected_length = 1, .bytes = "ab@" }, &payload);
+    const stale_context = try windowLifecycleMessage(a, protocol.Message.ime_preedit_update, 7, 7, payload.items);
+    defer a.free(stale_context);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(stale_context));
+    scene.ime_contexts[0].frame_id = 7;
+
+    payload.clearRetainingCapacity();
+    try encodeImePreeditEnd(a, 11, &payload);
+    const end = try windowLifecycleMessage(a, protocol.Message.ime_preedit_end, 7, 7, payload.items);
+    defer a.free(end);
+    try scene.apply(end);
+    try std.testing.expect(!scene.ime_contexts[0].has_preedit);
+    try std.testing.expectEqual(@as(u16, 0), scene.ime_contexts[0].preedit_len);
+
+    payload.clearRetainingCapacity();
+    try encodeImePreeditUpdate(a, .{ .context_id = 11, .cursor_offset = 0, .selected_length = 0, .bytes = "" }, &payload);
+    const update_after_end = try windowLifecycleMessage(a, protocol.Message.ime_preedit_update, 8, 7, payload.items);
+    defer a.free(update_after_end);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(update_after_end));
+
+    payload.clearRetainingCapacity();
+    try encodeImePreeditStart(a, 11, &payload);
+    const restart_before_detach = try windowLifecycleMessage(a, protocol.Message.ime_preedit_start, 8, 7, payload.items);
+    defer a.free(restart_before_detach);
+    try scene.apply(restart_before_detach);
+    try std.testing.expect(scene.ime_contexts[0].has_preedit);
+
+    payload.clearRetainingCapacity();
+    try encodeImeDetach(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    const detach = try windowLifecycleMessage(a, protocol.Message.ime_detach, 9, 7, payload.items);
+    defer a.free(detach);
+    try scene.apply(detach);
+    try std.testing.expectEqual(@as(usize, 0), scene.ime_context_count);
+
+    // The active-frame guard runs before composition state can change.
+    payload.clearRetainingCapacity();
+    try encodeImePreeditStart(a, 11, &payload);
+    const wrong_frame = try windowLifecycleMessage(a, protocol.Message.ime_preedit_start, 10, 8, payload.items);
+    defer a.free(wrong_frame);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_frame));
 }
 
 test "ime context codecs reject malformed values" {

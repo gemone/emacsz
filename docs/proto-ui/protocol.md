@@ -2491,6 +2491,13 @@ nonzero `u64 context_id` then nonzero `u64 window_id`.  Exact forms are:
   cursor is the end of the selected range, so `selected_length <= cursor_offset
   <= byte_length`; `byte_length` is bounded to 0..120 and rejects C0/C1 controls and DEL.
 * `RESET` (20 bytes): `u8 reason = 0` at offset 16 and three zero bytes.
+* `IME_PREEDIT_START` / `IME_PREEDIT_END` (`0x0712` / `0x0714`, 8 bytes):
+  identity is only nonzero `u64 context_id`; these messages do not carry a
+  window ID because the live context owns it.
+* `IME_PREEDIT_UPDATE` (`0x0713`, variable): `u32 cursor_offset`,
+  `u32 selected_length`, and `u32 byte_length` at offsets 8, 12, and 16,
+  followed by UTF-8 bytes.  `selected_length <= cursor_offset <= byte_length`
+  and `byte_length` is bounded to 0..120; C0/C1 controls and DEL are invalid.
 
 Scene accepts a context only for a live window in the active frame, rejects
 duplicate contexts or a second context on a window, keeps at most four
@@ -2503,9 +2510,15 @@ that policy bit and atomically replaces retained text, cursor, and selection.
 `RESET` clears policy, surrounding state, focus, and cursor geometry while
 retaining the attachment.  Deleting the owner removes its
 context.  This is control-plane
-preparation only: there is no platform IME backend, composition state, commit
-application, candidate UI, surrounding-text query, or full multibyte-input
-claim.
+preparation.  In addition, bounded `Scene` state is implemented for
+`IME_PREEDIT_START`, `IME_PREEDIT_UPDATE`, and `IME_PREEDIT_END`: start creates
+an empty composition, update atomically replaces at most 120 UTF-8 bytes plus
+its cursor/selection offsets, and end/reset/detach clear it.  There is no
+platform IME backend, preedit rendering, commit application, candidate UI,
+surrounding-text query, or full multibyte-input claim.
+Every preedit message must use the active frame and the context's creating
+frame; update also requires an active composition.  All integer fields are
+little-endian.
 
 #### Standalone icon resource v1
 
