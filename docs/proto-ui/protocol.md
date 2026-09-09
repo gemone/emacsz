@@ -2498,6 +2498,15 @@ nonzero `u64 context_id` then nonzero `u64 window_id`.  Exact forms are:
   `u32 selected_length`, and `u32 byte_length` at offsets 8, 12, and 16,
   followed by UTF-8 bytes.  `selected_length <= cursor_offset <= byte_length`
   and `byte_length` is bounded to 0..120; C0/C1 controls and DEL are invalid.
+* `IME_CANDIDATE_UPDATE` (`0x0718`, variable): nonzero context ID, four `u32`
+  metadata fields at offsets 8/12/16/20 (selected index, candidate count, page
+  index, page count), four window-relative `i32` placement fields at offsets
+  24/28/32/36 (x, y, width, height), a `u32 selected-label byte length` at
+  offset 40, then bounded UTF-8 label bytes.  Counts/pages and the selected
+  index must agree; zero candidates require zero selection and no label, while
+  placement width/height must be positive.  At most 64 candidates and 16 pages
+  are accepted.
+* `IME_CANCEL` (`0x0719`, 8 bytes): nonzero context ID only.
 
 Scene accepts a context only for a live window in the active frame, rejects
 duplicate contexts or a second context on a window, keeps at most four
@@ -2516,11 +2525,20 @@ an empty composition, update atomically replaces at most 120 UTF-8 bytes plus
 its cursor/selection offsets, and end/reset/detach clear it.  The SDL
 diagnostic bridge has a bounded ASCII overlay only; this is not protocol-owned
 or production preedit rendering.  Unicode preedit remains retained state.
-There is no platform IME backend, commit application, candidate UI,
+There is no platform IME backend, commit application,
 surrounding-text query, or full multibyte-input claim.
 Every preedit message must use the active frame and the context's creating
 frame; update also requires an active composition.  All integer fields are
 little-endian.
+
+`IME_CANDIDATE_UPDATE` also uses the active and creating frame, requires a
+focused context, validates the placement against its live owner, and atomically
+stores selected index/count/page metadata plus at most 120 UTF-8 label bytes.
+A zero-count update clears candidates.  The SDL diagnostic bridge can draw one
+bounded ASCII selected-label metadata overlay; Unicode labels remain retained
+state.  `IME_CANCEL` clears candidates and preedit.  There is no platform IME
+backend, commit application, full candidate-list UI, or complete
+multibyte-input claim.
 
 #### Standalone icon resource v1
 

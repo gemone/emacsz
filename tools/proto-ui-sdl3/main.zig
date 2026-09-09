@@ -4806,6 +4806,111 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
             else => {},
         }
     }
+    ime_payload.clearRetainingCapacity();
+    try frontend.encodeImeCandidateUpdate(gpa, .{
+        .context_id = 11,
+        .selected_index = 1,
+        .candidate_count = 3,
+        .page_index = 0,
+        .page_count = 2,
+        .cursor_x = 16,
+        .cursor_y = 16,
+        .cursor_width = 60,
+        .cursor_height = 16,
+        .selected_label = "abc",
+    }, &ime_payload);
+    try applyRuntimeSceneMessage(gpa, &scene, protocol.Message.ime_candidate_update, ime_sequence + 8, capability.session_id, ime_frame, ime_payload.items);
+
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    var candidate_box = false;
+    var candidate_top = false;
+    var candidate_bottom = false;
+    var candidate_metadata = false;
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .fill => |fill| {
+                if (fill.rect.x == 24 and fill.rect.y == 24 and
+                    fill.rect.width == 120 and fill.rect.height == 16 and
+                    fill.color.r == 0x20 and fill.color.g == 0x24 and
+                    fill.color.b == 0x2c and fill.color.a == 255)
+                    candidate_box = true;
+                if (fill.rect.x == 24 and fill.rect.y == 24 and
+                    fill.rect.width == 120 and fill.rect.height == 1 and
+                    fill.color.r == 0x71 and fill.color.g == 0xa6 and
+                    fill.color.b == 0xf2 and fill.color.a == 255)
+                    candidate_top = true;
+                if (fill.rect.x == 24 and fill.rect.y == 39 and
+                    fill.rect.width == 120 and fill.rect.height == 1 and
+                    fill.color.r == 0x71 and fill.color.g == 0xa6 and
+                    fill.color.b == 0xf2 and fill.color.a == 255)
+                    candidate_bottom = true;
+            },
+            .text => |candidate_text| {
+                if (candidate_text.x == 28 and candidate_text.y == 27 and
+                    candidate_text.color != null and
+                    candidate_text.color.?.r == 0xff and candidate_text.color.?.g == 0xd5 and
+                    candidate_text.color.?.b == 0x4d and candidate_text.color.?.a == 255 and
+                    std.mem.eql(u8, candidate_text.bytes, "C 2/3 P 1/2 abc"))
+                    candidate_metadata = true;
+            },
+            else => {},
+        }
+    }
+    if (!candidate_box or !candidate_top or !candidate_bottom or !candidate_metadata)
+        return error.ImeCandidateNotRendered;
+
+    ime_payload.clearRetainingCapacity();
+    try frontend.encodeImeCandidateUpdate(gpa, .{
+        .context_id = 11,
+        .selected_index = 1,
+        .candidate_count = 3,
+        .page_index = 0,
+        .page_count = 2,
+        .cursor_x = 16,
+        .cursor_y = 16,
+        .cursor_width = 60,
+        .cursor_height = 16,
+        .selected_label = "乙",
+    }, &ime_payload);
+    try applyRuntimeSceneMessage(gpa, &scene, protocol.Message.ime_candidate_update, ime_sequence + 9, capability.session_id, ime_frame, ime_payload.items);
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    var unicode_candidate_metadata = false;
+    var unicode_candidate_label = false;
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .text => |candidate_text| {
+                if (candidate_text.x != 28 or candidate_text.y != 27) continue;
+                if (std.mem.eql(u8, candidate_text.bytes, "C 2/3 P 1/2"))
+                    unicode_candidate_metadata = true;
+                if (std.mem.eql(u8, candidate_text.bytes, "乙"))
+                    unicode_candidate_label = true;
+            },
+            else => {},
+        }
+    }
+    if (!unicode_candidate_metadata or unicode_candidate_label)
+        return error.ImeCandidateUnicodeTextRendered;
+
+    ime_payload.clearRetainingCapacity();
+    try frontend.encodeImeCancel(gpa, 11, &ime_payload);
+    try applyRuntimeSceneMessage(gpa, &scene, protocol.Message.ime_cancel, ime_sequence + 10, capability.session_id, ime_frame, ime_payload.items);
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    var stale_candidate_overlay = false;
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .fill => |fill| {
+                if (fill.rect.x == 28 and fill.rect.y == 24 and
+                    fill.rect.width == 120 and
+                    ((fill.rect.height == 16 and fill.color.r == 0x20 and
+                        fill.color.g == 0x24 and fill.color.b == 0x2c and fill.color.a == 255) or
+                        (fill.rect.height == 1 and fill.color.r == 0x71 and
+                            fill.color.g == 0xa6 and fill.color.b == 0xf2 and fill.color.a == 255)))
+                    stale_candidate_overlay = true;
+            },
+            else => {},
+        }
+    }
+    if (stale_candidate_overlay) return error.ImeCandidateClearFailed;
     std.debug.print(
         "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"tooltip\":true,\"menu_model\":true,\"menu_open\":true,\"frame_patch\":true,\"frame_snapshot\":true,\"menu_patch\":true,\"toolbar_model\":true,\"toolbar_patch\":true,\"dialog\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
@@ -6894,6 +6999,64 @@ fn buildSceneDrawList(
                 .{ .r = 0xff, .g = 0xd5, .b = 0x4d, .a = 255 },
             );
         }
+    }
+
+    var candidate_context: ?*const frontend.ImeContext = null;
+    for (scene.ime_contexts[0..scene.ime_context_count]) |*context| {
+        const active_frame = scene.frame orelse return error.NoFrameUpdate;
+        if (context.frame_id == active_frame.frame_id and context.focused and
+            context.has_candidates and context.candidate_width > 0 and context.candidate_height > 0)
+        {
+            candidate_context = context;
+            break;
+        }
+    }
+    if (candidate_context) |context| {
+        const owner = findSceneWindow(scene, context.window_id) orelse
+            return error.ImeCandidateWithoutWindow;
+        const label = context.candidate_label[0..context.candidate_label_len];
+        const selected_label = if (input_policy.isAsciiText(label)) label else "";
+        const metadata_text = if (selected_label.len > 0)
+            std.fmt.bufPrint(&list.candidate_metadata, "C {d}/{d} P {d}/{d} {s}", .{
+                context.candidate_selected_index + 1,
+                context.candidate_count,
+                context.candidate_page_index + 1,
+                context.candidate_page_count,
+                selected_label,
+            }) catch return error.ImeCandidateMetadataTooLarge
+        else
+            std.fmt.bufPrint(&list.candidate_metadata, "C {d}/{d} P {d}/{d}", .{
+                context.candidate_selected_index + 1,
+                context.candidate_count,
+                context.candidate_page_index + 1,
+                context.candidate_page_count,
+            }) catch return error.ImeCandidateMetadataTooLarge;
+        list.candidate_metadata_len = metadata_text.len;
+        const rect = renderer_policy.LogicalRect{
+            .x = @floatFromInt(owner.x + context.candidate_x),
+            .y = @floatFromInt(owner.y + context.candidate_y),
+            .width = @floatFromInt(@max(120, context.candidate_width)),
+            .height = @floatFromInt(@max(16, context.candidate_height)),
+        };
+        try list.fillRect(rect, .{ .r = 0x20, .g = 0x24, .b = 0x2c, .a = 255 });
+        try list.fillRect(.{
+            .x = rect.x,
+            .y = rect.y,
+            .width = rect.width,
+            .height = 1,
+        }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2, .a = 255 });
+        try list.fillRect(.{
+            .x = rect.x,
+            .y = rect.y + rect.height - 1,
+            .width = rect.width,
+            .height = 1,
+        }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2, .a = 255 });
+        try list.drawText(
+            rect.x + 4,
+            rect.y + 3,
+            metadata_text,
+            .{ .r = 0xff, .g = 0xd5, .b = 0x4d, .a = 255 },
+        );
     }
 }
 

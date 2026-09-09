@@ -3531,6 +3531,17 @@ pub const ImeContext = struct {
     preedit_cursor_offset: u32 = 0,
     preedit_selected_length: u32 = 0,
     has_preedit: bool = false,
+    candidate_selected_index: u32 = 0,
+    candidate_count: u32 = 0,
+    candidate_page_index: u32 = 0,
+    candidate_page_count: u32 = 0,
+    candidate_x: i32 = 0,
+    candidate_y: i32 = 0,
+    candidate_width: i32 = 0,
+    candidate_height: i32 = 0,
+    candidate_label: [max_text_columns]u8 = undefined,
+    candidate_label_len: u16 = 0,
+    has_candidates: bool = false,
 
     pub fn clearSurrounding(self: *ImeContext) void {
         self.surrounding_len = 0;
@@ -3544,6 +3555,19 @@ pub const ImeContext = struct {
         self.preedit_cursor_offset = 0;
         self.preedit_selected_length = 0;
         self.has_preedit = false;
+    }
+
+    pub fn clearCandidates(self: *ImeContext) void {
+        self.candidate_selected_index = 0;
+        self.candidate_count = 0;
+        self.candidate_page_index = 0;
+        self.candidate_page_count = 0;
+        self.candidate_x = 0;
+        self.candidate_y = 0;
+        self.candidate_width = 0;
+        self.candidate_height = 0;
+        self.candidate_label_len = 0;
+        self.has_candidates = false;
     }
 };
 
@@ -3915,6 +3939,8 @@ pub const Scene = struct {
             protocol.Message.ime_preedit_start => try self.applyImePreeditStart(payload),
             protocol.Message.ime_preedit_update => try self.applyImePreeditUpdate(payload),
             protocol.Message.ime_preedit_end => try self.applyImePreeditEnd(payload),
+            protocol.Message.ime_candidate_update => try self.applyImeCandidateUpdate(payload),
+            protocol.Message.ime_cancel => try self.applyImeCancel(payload),
             else => self.stats.control_messages += 1,
         }
         self.next_sequence = next_sequence;
@@ -5459,6 +5485,7 @@ pub const Scene = struct {
         context.allowed_input = 0;
         context.clearSurrounding();
         context.clearPreedit();
+        context.clearCandidates();
         context.focused = false;
         context.cursor_x = 0;
         context.cursor_y = 0;
@@ -5506,6 +5533,48 @@ pub const Scene = struct {
         self.stats.control_messages += 1;
     }
 
+    fn applyImeCandidateUpdate(self: *Scene, payload: protocol.Payload) Error!void {
+        const update = try decodeImeCandidateUpdate(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id) return Error.InvalidMessage;
+        const context = self.findImeContext(update.context_id) orelse return Error.InvalidMessage;
+        if (context.frame_id != frame.frame_id) return Error.InvalidMessage;
+        const owner = findWindow(self.windows.items, context.window_id) orelse
+            return Error.InvalidMessage;
+        if (!context.focused or
+            !inside(update.cursor_x, update.cursor_width, owner.width) or
+            !inside(update.cursor_y, update.cursor_height, owner.height))
+            return Error.InvalidMessage;
+
+        context.clearCandidates();
+        if (update.candidate_count > 0) {
+            context.candidate_selected_index = update.selected_index;
+            context.candidate_count = update.candidate_count;
+            context.candidate_page_index = update.page_index;
+            context.candidate_page_count = update.page_count;
+            context.candidate_x = update.cursor_x;
+            context.candidate_y = update.cursor_y;
+            context.candidate_width = update.cursor_width;
+            context.candidate_height = update.cursor_height;
+            @memcpy(context.candidate_label[0..update.selected_label.len], update.selected_label);
+            context.candidate_label_len = @intCast(update.selected_label.len);
+            context.has_candidates = true;
+        }
+        self.stats.control_messages += 1;
+    }
+
+    fn applyImeCancel(self: *Scene, payload: protocol.Payload) Error!void {
+        const context_id = try decodeImeCancel(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id) return Error.InvalidMessage;
+        const context = self.findImeContext(context_id) orelse return Error.InvalidMessage;
+        if (context.frame_id != frame.frame_id) return Error.InvalidMessage;
+        _ = findWindow(self.windows.items, context.window_id) orelse return Error.InvalidMessage;
+        context.clearCandidates();
+        context.clearPreedit();
+        self.stats.control_messages += 1;
+    }
+
     fn reconcileImeContexts(self: *Scene, windows: []const Window) void {
         var index: usize = 0;
         while (index < self.ime_context_count) {
@@ -5523,6 +5592,13 @@ pub const Scene = struct {
                 context.cursor_y = 0;
                 context.cursor_width = 0;
                 context.cursor_height = 0;
+            }
+            if (context.has_candidates and
+                (context.candidate_width == 0 or context.candidate_height == 0 or
+                    !inside(context.candidate_x, context.candidate_width, owner.width) or
+                    !inside(context.candidate_y, context.candidate_height, owner.height)))
+            {
+                context.clearCandidates();
             }
             index += 1;
         }
@@ -7181,6 +7257,165 @@ test "ime preedit lifecycle stores bounded atomic state" {
     const wrong_frame = try windowLifecycleMessage(a, protocol.Message.ime_preedit_start, 10, 8, payload.items);
     defer a.free(wrong_frame);
     try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_frame));
+}
+
+test "ime candidate state stores selected metadata and clears atomically" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeImeAttach(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    const attach = try windowLifecycleMessage(a, protocol.Message.ime_attach, 3, 7, payload.items);
+    defer a.free(attach);
+    try scene.apply(attach);
+    payload.clearRetainingCapacity();
+    try encodeImeFocus(a, .{ .context_id = 11, .window_id = 100, .focused = true }, &payload);
+    const focus = try windowLifecycleMessage(a, protocol.Message.ime_focus, 4, 7, payload.items);
+    defer a.free(focus);
+    try scene.apply(focus);
+
+    payload.clearRetainingCapacity();
+    try encodeImeCandidateUpdate(a, .{
+        .context_id = 11,
+        .selected_index = 1,
+        .candidate_count = 3,
+        .page_index = 0,
+        .page_count = 2,
+        .cursor_x = 4,
+        .cursor_y = 4,
+        .cursor_width = 32,
+        .cursor_height = 12,
+        .selected_label = "abc",
+    }, &payload);
+    const candidate = try windowLifecycleMessage(a, protocol.Message.ime_candidate_update, 5, 7, payload.items);
+    defer a.free(candidate);
+    try scene.apply(candidate);
+    try std.testing.expect(scene.ime_contexts[0].has_candidates);
+    try std.testing.expectEqual(@as(u32, 1), scene.ime_contexts[0].candidate_selected_index);
+    try std.testing.expectEqual(@as(u32, 3), scene.ime_contexts[0].candidate_count);
+    try std.testing.expectEqual(@as(u32, 0), scene.ime_contexts[0].candidate_page_index);
+    try std.testing.expectEqual(@as(u32, 2), scene.ime_contexts[0].candidate_page_count);
+    try std.testing.expectEqualStrings("abc", scene.ime_contexts[0].candidate_label[0..3]);
+    try std.testing.expectEqual(@as(u16, 3), scene.ime_contexts[0].candidate_label_len);
+
+    payload.clearRetainingCapacity();
+    try encodeImeCandidateUpdate(a, .{
+        .context_id = 11,
+        .selected_index = 0,
+        .candidate_count = 0,
+        .page_index = 0,
+        .page_count = 1,
+        .cursor_x = 4,
+        .cursor_y = 4,
+        .cursor_width = 32,
+        .cursor_height = 12,
+        .selected_label = "",
+    }, &payload);
+    const empty_candidates = try windowLifecycleMessage(a, protocol.Message.ime_candidate_update, 6, 7, payload.items);
+    defer a.free(empty_candidates);
+    try scene.apply(empty_candidates);
+    try std.testing.expect(!scene.ime_contexts[0].has_candidates);
+    try std.testing.expectEqual(@as(u16, 0), scene.ime_contexts[0].candidate_label_len);
+
+    payload.clearRetainingCapacity();
+    try encodeImeCancel(a, 11, &payload);
+    const cancel = try windowLifecycleMessage(a, protocol.Message.ime_cancel, 7, 7, payload.items);
+    defer a.free(cancel);
+    try scene.apply(cancel);
+    try std.testing.expect(!scene.ime_contexts[0].has_candidates);
+    try std.testing.expectEqual(@as(u16, 0), scene.ime_contexts[0].candidate_label_len);
+    try std.testing.expect(!scene.ime_contexts[0].has_preedit);
+}
+
+test "frame update reconciles invalid candidate placement" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeImeAttach(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    const attach = try windowLifecycleMessage(a, protocol.Message.ime_attach, 3, 7, payload.items);
+    defer a.free(attach);
+    try scene.apply(attach);
+    payload.clearRetainingCapacity();
+    try encodeImeFocus(a, .{ .context_id = 11, .window_id = 100, .focused = true }, &payload);
+    const focus = try windowLifecycleMessage(a, protocol.Message.ime_focus, 4, 7, payload.items);
+    defer a.free(focus);
+    try scene.apply(focus);
+    payload.clearRetainingCapacity();
+    try encodeImeCandidateUpdate(a, .{
+        .context_id = 11,
+        .selected_index = 0,
+        .candidate_count = 1,
+        .page_index = 0,
+        .page_count = 1,
+        .cursor_x = 4,
+        .cursor_y = 4,
+        .cursor_width = 10,
+        .cursor_height = 10,
+        .selected_label = "abc",
+    }, &payload);
+    const candidate = try windowLifecycleMessage(a, protocol.Message.ime_candidate_update, 5, 7, payload.items);
+    defer a.free(candidate);
+    try scene.apply(candidate);
+    try std.testing.expect(scene.ime_contexts[0].has_candidates);
+
+    // Build an authoritative replacement whose owner is too small for the
+    // retained candidate placement.
+    const header: protocol.FrameUpdateHeader = .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .sequence = 6,
+        .redisplay_generation = 2,
+        .logical_x = 0,
+        .logical_y = 0,
+        .logical_width = 80,
+        .logical_height = 60,
+        .physical_x = 0,
+        .physical_y = 0,
+        .physical_width = 80,
+        .physical_height = 60,
+        .scale = 1,
+        .dpi_x = 96,
+        .dpi_y = 96,
+        .damage_mode = 2,
+        .update_cause = 1,
+        .coalesced_count = 0,
+        .timestamp_ns = 6,
+    };
+    var windows: std.ArrayList(u8) = .empty;
+    defer windows.deinit(a);
+    try encodeWindow(a, .{ .id = 100, .frame_id = 7, .x = 0, .y = 0, .width = 8, .height = 8 }, &windows);
+    var damage: std.ArrayList(u8) = .empty;
+    defer damage.deinit(a);
+    try encodeRect(a, .{ .x = 0, .y = 0, .width = 80, .height = 60 }, &damage);
+    const sections = [_]protocol.Section{
+        .{ .kind = protocol.SectionKind.windows, .records = windows.items },
+        .{ .kind = protocol.SectionKind.damage, .records = damage.items },
+    };
+    var update_payload: std.ArrayList(u8) = .empty;
+    defer update_payload.deinit(a);
+    try protocol.encodeFrameUpdate(a, .{ .header = header, .sections = &sections }, &update_payload);
+    const small_update = try windowLifecycleMessage(a, protocol.Message.frame_update, 6, 7, update_payload.items);
+    defer a.free(small_update);
+    try scene.apply(small_update);
+    try std.testing.expect(!scene.ime_contexts[0].has_candidates);
+    try std.testing.expectEqual(@as(u16, 0), scene.ime_contexts[0].candidate_label_len);
 }
 
 test "ime context codecs reject malformed values" {

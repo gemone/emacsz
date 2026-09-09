@@ -856,6 +856,8 @@ pub fn drawCommandIntersectsClip(command: DrawCommand, clip: LogicalRect) bool {
 pub const DrawList = struct {
     allocator: std.mem.Allocator,
     commands: std.ArrayList(DrawCommand) = .empty,
+    candidate_metadata: [160]u8 = undefined,
+    candidate_metadata_len: usize = 0,
     logical_width: f32 = 0,
     logical_height: f32 = 0,
     stats: DrawStats = .{},
@@ -866,7 +868,18 @@ pub const DrawList = struct {
 
     pub fn reset(self: *DrawList) void {
         self.commands.clearRetainingCapacity();
+        self.candidate_metadata_len = 0;
         self.stats = .{};
+    }
+
+    /// Stores generated candidate metadata so the borrowed text command
+    /// remains valid through execution.  The bounded buffer avoids a stack
+    /// lifetime bug without adding per-command text copies.
+    pub fn setCandidateMetadata(self: *DrawList, bytes: []const u8) ![]const u8 {
+        if (bytes.len > self.candidate_metadata.len) return error.InvalidDrawText;
+        @memcpy(self.candidate_metadata[0..bytes.len], bytes);
+        self.candidate_metadata_len = bytes.len;
+        return self.candidate_metadata[0..bytes.len];
     }
 
     pub fn setLogicalSize(self: *DrawList, width: f32, height: f32) void {
