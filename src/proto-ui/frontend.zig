@@ -3263,6 +3263,106 @@ pub fn decodeImeCancel(bytes: []const u8) Error!u64 {
     return context_id;
 }
 
+pub const IconDefineFlags = struct {
+    pub const present: u16 = 1;
+    pub const known: u16 = present;
+};
+
+pub const IconDefine = struct {
+    icon_id: u32,
+    generation: u32,
+    width: u32,
+    height: u32,
+    hotspot_x: u32,
+    hotspot_y: u32,
+    bytes: []const u8,
+
+    pub fn imageDefine(self: IconDefine) protocol.ImageDefine {
+        return .{
+            .image_id = self.icon_id,
+            .generation = self.generation,
+            .width = self.width,
+            .height = self.height,
+            .total_byte_count = @intCast(self.bytes.len),
+        };
+    }
+};
+
+pub const IconDelete = struct {
+    icon_id: u32,
+    generation: u32,
+};
+
+pub const max_icon_dimension: u32 = 256;
+pub const max_icon_bytes: usize = 256 * 256 * 4;
+
+fn decodeIconDefine(bytes: []const u8) Error!IconDefine {
+    if (bytes.len < 28) return Error.InvalidTable;
+    const schema = std.mem.readInt(u16, bytes[0..2], .little);
+    const flags = std.mem.readInt(u16, bytes[2..4], .little);
+    const icon_id = std.mem.readInt(u32, bytes[4..8], .little);
+    const generation = std.mem.readInt(u32, bytes[8..12], .little);
+    const width = std.mem.readInt(u32, bytes[12..16], .little);
+    const height = std.mem.readInt(u32, bytes[16..20], .little);
+    const hotspot_x = std.mem.readInt(u32, bytes[20..24], .little);
+    const hotspot_y = std.mem.readInt(u32, bytes[24..28], .little);
+    if (schema != 1 or flags != IconDefineFlags.present or icon_id == 0 or generation == 0)
+        return Error.InvalidTable;
+    if (width == 0 or width > max_icon_dimension or height == 0 or height > max_icon_dimension)
+        return Error.InvalidTable;
+    if (hotspot_x >= width or hotspot_y >= height) return Error.InvalidTable;
+    if (bytes.len < 32) return Error.InvalidTable;
+    const length = std.mem.readInt(u32, bytes[28..32], .little);
+    if (bytes.len != 32 + length) return Error.InvalidTable;
+    const expected: u64 = @as(u64, width) * height * 4;
+    if (length == 0 or length > max_icon_bytes or length != expected)
+        return Error.InvalidTable;
+    return .{
+        .icon_id = icon_id,
+        .generation = generation,
+        .width = width,
+        .height = height,
+        .hotspot_x = hotspot_x,
+        .hotspot_y = hotspot_y,
+        .bytes = bytes[32..],
+    };
+}
+
+fn encodeIconDefine(a: std.mem.Allocator, icon: IconDefine, out: *std.ArrayList(u8)) !void {
+    if (icon.icon_id == 0 or icon.generation == 0 or
+        icon.width == 0 or icon.width > max_icon_dimension or
+        icon.height == 0 or icon.height > max_icon_dimension or
+        icon.hotspot_x >= icon.width or icon.hotspot_y >= icon.height or
+        icon.bytes.len != @as(usize, icon.width) * icon.height * 4)
+        return Error.InvalidTable;
+    var header: [32]u8 = undefined;
+    std.mem.writeInt(u16, header[0..2], 1, .little);
+    std.mem.writeInt(u16, header[2..4], IconDefineFlags.present, .little);
+    std.mem.writeInt(u32, header[4..8], icon.icon_id, .little);
+    std.mem.writeInt(u32, header[8..12], icon.generation, .little);
+    std.mem.writeInt(u32, header[12..16], icon.width, .little);
+    std.mem.writeInt(u32, header[16..20], icon.height, .little);
+    std.mem.writeInt(u32, header[20..24], icon.hotspot_x, .little);
+    std.mem.writeInt(u32, header[24..28], icon.hotspot_y, .little);
+    std.mem.writeInt(u32, header[28..32], @intCast(icon.bytes.len), .little);
+    try out.appendSlice(a, &header);
+    try out.appendSlice(a, icon.bytes);
+}
+
+fn decodeIconDelete(bytes: []const u8) Error!IconDelete {
+    if (bytes.len != 8) return Error.InvalidTable;
+    const icon_id = std.mem.readInt(u32, bytes[0..4], .little);
+    const generation = std.mem.readInt(u32, bytes[4..8], .little);
+    if (icon_id == 0 or generation == 0) return Error.InvalidTable;
+    return .{ .icon_id = icon_id, .generation = generation };
+}
+
+fn encodeIconDelete(a: std.mem.Allocator, icon: IconDelete, out: *std.ArrayList(u8)) !void {
+    if (icon.icon_id == 0 or icon.generation == 0) return Error.InvalidTable;
+    try putU32(out, a, icon.icon_id);
+    try putU32(out, a, icon.generation);
+}
+
 pub fn encodeTextInput(a: std.mem.Allocator, input: TextInput, out: *std.ArrayList(u8)) !void {
     if (!validBoundedUtf8Text(input.text, max_text_columns)) return Error.InvalidTable;
     try putU32(out, a, @intCast(input.text.len));
@@ -3722,6 +3822,8 @@ pub const Scene = struct {
             },
             protocol.Message.atlas_glyph_add => try self.atlases.applyGlyphAdd(try protocol.decodeAtlasGlyphAdd(payload.bytes)),
             protocol.Message.atlas_invalidate => try self.atlases.applyInvalidate(try protocol.decodeAtlasInvalidate(payload.bytes)),
+            protocol.Message.icon_define => try self.applyIconDefine(payload),
+            protocol.Message.icon_delete => try self.applyIconDelete(payload),
             protocol.Message.ime_attach => try self.applyImeAttach(payload),
             protocol.Message.ime_detach => try self.applyImeDetach(payload),
             protocol.Message.ime_focus => try self.applyImeFocus(payload),
@@ -5124,9 +5226,30 @@ pub const Scene = struct {
         self.stats.control_messages += 1;
     }
 
+    fn invalidateIconForImage(self: *Scene, image_id: u32) void {
+        if (self.icon) |icon| {
+            if (icon.flags & protocol.FrameIconFlags.present != 0 and
+                icon.image_id == image_id) self.icon = null;
+        }
+    }
+
+    fn invalidateIconForImageGeneration(self: *Scene, image_id: u32, generation: u32) void {
+        if (self.icon) |icon| {
+            if (icon.flags & protocol.FrameIconFlags.present != 0 and
+                icon.image_id == image_id and icon.image_generation == generation)
+                self.icon = null;
+        }
+    }
+
     fn applyImageDefine(self: *Scene, payload: protocol.Payload) Error!void {
         const image = try protocol.decodeImageDefine(payload.bytes);
+        const had_previous = self.images.lookup(image.image_id) != null;
+        const previous_generation: u32 = if (had_previous)
+            self.images.lookup(image.image_id).?.generation
+        else
+            0;
         try self.images.define(self.allocator, &self.resources, image);
+        if (had_previous) self.invalidateIconForImageGeneration(image.image_id, previous_generation);
         self.stats.control_messages += 1;
     }
 
@@ -5139,6 +5262,7 @@ pub const Scene = struct {
     fn applyImageDelete(self: *Scene, payload: protocol.Payload) Error!void {
         const image = try protocol.decodeImageDelete(payload.bytes);
         try self.images.delete(self.allocator, &self.resources, image);
+        self.invalidateIconForImageGeneration(image.image_id, image.generation);
         self.stats.control_messages += 1;
     }
 
@@ -5280,6 +5404,37 @@ pub const Scene = struct {
         }
     }
 
+    fn applyIconDefine(self: *Scene, payload: protocol.Payload) Error!void {
+        const icon = try decodeIconDefine(payload.bytes);
+        const metadata = icon.imageDefine();
+        try self.images.define(self.allocator, &self.resources, metadata);
+        self.invalidateIconForImage(icon.icon_id);
+        self.images.data(self.allocator, .{
+            .image_id = icon.icon_id,
+            .generation = icon.generation,
+            .fragment_index = 0,
+            .fragment_count = 1,
+            .bytes = icon.bytes,
+        }) catch |err| {
+            self.images.delete(self.allocator, &self.resources, .{
+                .image_id = icon.icon_id,
+                .generation = icon.generation,
+            }) catch {};
+            return err;
+        };
+        self.stats.control_messages += 1;
+    }
+
+    fn applyIconDelete(self: *Scene, payload: protocol.Payload) Error!void {
+        const icon = try decodeIconDelete(payload.bytes);
+        try self.images.delete(self.allocator, &self.resources, .{
+            .image_id = icon.icon_id,
+            .generation = icon.generation,
+        });
+        self.invalidateIconForImage(icon.icon_id);
+        self.stats.control_messages += 1;
+    }
+
     fn applyFrameCreate(self: *Scene, envelope: protocol.Envelope, bytes: []const u8) Error!void {
         if (bytes.len != 8) return Error.InvalidMessage;
         const frame_id = std.mem.readInt(u32, bytes[0..4], .little);
@@ -5373,6 +5528,7 @@ pub const Scene = struct {
         self.images = images;
         self.fringe_bitmaps = fringe_bitmaps;
         self.resources = resources;
+        self.icon = null;
         old_strings.deinit(self.allocator);
         old_images.clear(self.allocator);
         self.stats.control_messages += 1;
@@ -7325,6 +7481,266 @@ test "ime reverse codecs round trip and reject invalid bounded state" {
     try encodeImePreeditStart(a, 11, &payload);
     payload.append(a, 0) catch unreachable;
     try std.testing.expectError(Error.InvalidTable, decodeImePreeditStart(payload.items));
+}
+
+test "icon define creates a complete resource usable by frame icon" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    const icon: IconDefine = .{
+        .icon_id = 70,
+        .generation = 3,
+        .width = 2,
+        .height = 1,
+        .hotspot_x = 1,
+        .hotspot_y = 0,
+        .bytes = &.{ 1, 2, 3, 4, 5, 6, 7, 8 },
+    };
+    try encodeIconDefine(a, icon, &payload);
+    try std.testing.expectEqual(@as(usize, 40), payload.items.len);
+    const decoded = try decodeIconDefine(payload.items);
+    try std.testing.expectEqual(icon.icon_id, decoded.icon_id);
+    try std.testing.expectEqualSlices(u8, icon.bytes, decoded.bytes);
+    const icon_define = try windowLifecycleMessage(a, protocol.Message.icon_define, 3, 7, payload.items);
+    defer a.free(icon_define);
+    const before_icon_controls = scene.stats.control_messages;
+    try scene.apply(icon_define);
+    try std.testing.expectEqual(before_icon_controls + 1, scene.stats.control_messages);
+    try std.testing.expectEqual(icon.imageDefine(), scene.images.lookup(70).?.metadata);
+    try std.testing.expect(scene.images.lookup(70).?.complete);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeFrameIcon(a, .{
+        .flags = protocol.FrameIconFlags.present,
+        .image_id = 70,
+        .image_generation = 3,
+        .hotspot_x = 1,
+        .hotspot_y = 0,
+        .frame_generation = 1,
+    }, &payload);
+    const frame_icon = try windowLifecycleMessage(a, protocol.Message.frame_icon, 4, 7, payload.items);
+    defer a.free(frame_icon);
+    try scene.apply(frame_icon);
+    try std.testing.expectEqual(@as(u32, 70), scene.icon.?.image_id);
+
+    // Redefinition to a new generation invalidates the old frame-icon state.
+    payload.clearRetainingCapacity();
+    var redefined = icon;
+    redefined.generation = 4;
+    redefined.hotspot_x = 0;
+    try encodeIconDefine(a, redefined, &payload);
+    const icon_redefine = try windowLifecycleMessage(a, protocol.Message.icon_define, 5, 7, payload.items);
+    defer a.free(icon_redefine);
+    try scene.apply(icon_redefine);
+    try std.testing.expect(scene.icon == null);
+
+    // Deleting the image resource also invalidates any frame-icon state.
+    payload.clearRetainingCapacity();
+    try protocol.encodeFrameIcon(a, .{
+        .flags = protocol.FrameIconFlags.present,
+        .image_id = 70,
+        .image_generation = 4,
+        .hotspot_x = 0,
+        .hotspot_y = 0,
+        .frame_generation = 1,
+    }, &payload);
+    const refreshed_frame_icon = try windowLifecycleMessage(a, protocol.Message.frame_icon, 6, 7, payload.items);
+    defer a.free(refreshed_frame_icon);
+    try scene.apply(refreshed_frame_icon);
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageDelete(a, .{ .image_id = 70, .generation = 4 }, &payload);
+    const image_delete = try windowLifecycleMessage(a, protocol.Message.image_delete, 7, 7, payload.items);
+    defer a.free(image_delete);
+    try scene.apply(image_delete);
+    try std.testing.expect(scene.icon == null);
+    try std.testing.expect(scene.images.lookup(70) == null);
+
+    payload.clearRetainingCapacity();
+    try encodeIconDefine(a, .{ .icon_id = 70, .generation = 5, .width = 1, .height = 1, .hotspot_x = 0, .hotspot_y = 0, .bytes = &.{ 1, 2, 3, 4 } }, &payload);
+    const redefine_after_delete = try windowLifecycleMessage(a, protocol.Message.icon_define, 8, 7, payload.items);
+    defer a.free(redefine_after_delete);
+    try scene.apply(redefine_after_delete);
+    payload.clearRetainingCapacity();
+    try protocol.encodeFrameIcon(a, .{
+        .flags = protocol.FrameIconFlags.present,
+        .image_id = 70,
+        .image_generation = 5,
+        .hotspot_x = 0,
+        .hotspot_y = 0,
+        .frame_generation = 1,
+    }, &payload);
+    const final_frame_icon = try windowLifecycleMessage(a, protocol.Message.frame_icon, 9, 7, payload.items);
+    defer a.free(final_frame_icon);
+    try scene.apply(final_frame_icon);
+    try std.testing.expectEqual(@as(u32, 70), scene.icon.?.image_id);
+    try std.testing.expectEqual(@as(u32, 5), scene.icon.?.image_generation);
+
+    payload.clearRetainingCapacity();
+    try encodeIconDelete(a, .{ .icon_id = 70, .generation = 5 }, &payload);
+    try std.testing.expectEqual(@as(usize, 8), payload.items.len);
+    const icon_delete = try windowLifecycleMessage(a, protocol.Message.icon_delete, 10, 7, payload.items);
+    defer a.free(icon_delete);
+    try scene.apply(icon_delete);
+    try std.testing.expect(scene.images.lookup(70) == null);
+    try std.testing.expect(scene.icon == null);
+
+    // Stale delete, invalid hotspot, and malformed RGBA payload are rejected.
+    payload.clearRetainingCapacity();
+    try encodeIconDelete(a, .{ .icon_id = 70, .generation = 3 }, &payload);
+    const stale_delete = try windowLifecycleMessage(a, protocol.Message.icon_delete, 11, 7, payload.items);
+    defer a.free(stale_delete);
+    try std.testing.expectError(Error.ResourceNotLive, scene.apply(stale_delete));
+
+    var bad = icon;
+    bad.hotspot_x = 2;
+    payload.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidTable, encodeIconDefine(a, bad, &payload));
+    bad.hotspot_x = 0;
+    bad.bytes = &.{ 1, 2, 3, 4, 5, 6, 7 };
+    try std.testing.expectError(Error.InvalidTable, encodeIconDefine(a, bad, &payload));
+}
+
+test "icon define codec rejects strict schema, bounds, and payload errors" {
+    const a = std.testing.allocator;
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    const base: IconDefine = .{ .icon_id = 80, .generation = 1, .width = 1, .height = 1, .hotspot_x = 0, .hotspot_y = 0, .bytes = &.{ 1, 2, 3, 4 } };
+    try encodeIconDefine(a, base, &payload);
+    try std.testing.expectEqual(@as(usize, 36), payload.items.len);
+    try std.testing.expectError(Error.InvalidTable, decodeIconDefine(payload.items[0..34]));
+    payload.append(a, 0) catch unreachable;
+    try std.testing.expectError(Error.InvalidTable, decodeIconDefine(payload.items));
+    payload.items.len -= 1;
+
+    const decoded_base = try decodeIconDefine(payload.items);
+    try std.testing.expectEqual(base.icon_id, decoded_base.icon_id);
+    try std.testing.expectEqualSlices(u8, base.bytes, decoded_base.bytes);
+    payload.items[0] = 2;
+    try std.testing.expectError(Error.InvalidTable, decodeIconDefine(payload.items));
+    payload.items[0] = 1;
+    payload.items[2] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeIconDefine(payload.items));
+    payload.items[2] = 1;
+    payload.items[4] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeIconDefine(payload.items));
+    payload.items[4] = 80;
+    payload.items[8] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeIconDefine(payload.items));
+
+    payload.items[12] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeIconDefine(payload.items));
+    std.mem.writeInt(u32, payload.items[12..16], 257, .little);
+    std.mem.writeInt(u32, payload.items[28..32], 257 * 4, .little);
+    try std.testing.expectError(Error.InvalidTable, decodeIconDefine(payload.items));
+    std.mem.writeInt(u32, payload.items[12..16], 1, .little);
+    std.mem.writeInt(u32, payload.items[28..32], 4, .little);
+    payload.items[20] = 1;
+    try std.testing.expectError(Error.InvalidTable, decodeIconDefine(payload.items));
+    payload.items[20] = 0;
+    payload.items[16] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeIconDefine(payload.items));
+    std.mem.writeInt(u32, payload.items[16..20], 257, .little);
+    std.mem.writeInt(u32, payload.items[28..32], 257 * 4, .little);
+    try std.testing.expectError(Error.InvalidTable, decodeIconDefine(payload.items));
+    std.mem.writeInt(u32, payload.items[16..20], 1, .little);
+    std.mem.writeInt(u32, payload.items[28..32], 4, .little);
+    payload.items[24] = 1;
+    try std.testing.expectError(Error.InvalidTable, decodeIconDefine(payload.items));
+    payload.items[24] = 0;
+    payload.items[2] = 2;
+    try std.testing.expectError(Error.InvalidTable, decodeIconDefine(payload.items));
+    payload.items[2] = 1;
+    payload.items[28] = 3;
+    try std.testing.expectError(Error.InvalidTable, decodeIconDefine(payload.items));
+    payload.items[28] = 4;
+
+    // 1x1 and 256x256 are the minimum and maximum supported square forms.
+    payload.clearRetainingCapacity();
+    const max_bytes = try a.alloc(u8, 256 * 256 * 4);
+    defer a.free(max_bytes);
+    @memset(max_bytes, 'i');
+    const max_icon: IconDefine = .{ .icon_id = 81, .generation = 1, .width = 256, .height = 256, .hotspot_x = 255, .hotspot_y = 255, .bytes = max_bytes };
+    try encodeIconDefine(a, max_icon, &payload);
+    try std.testing.expectEqual(@as(usize, 32 + max_bytes.len), payload.items.len);
+    try std.testing.expectEqual(max_icon.icon_id, (try decodeIconDefine(payload.items)).icon_id);
+
+    var underlength = max_icon;
+    underlength.bytes = max_bytes[0 .. max_bytes.len - 1];
+    try std.testing.expectError(Error.InvalidTable, encodeIconDefine(a, underlength, &payload));
+}
+
+test "image replacement and snapshots invalidate frame icons" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    const icon: IconDefine = .{ .icon_id = 70, .generation = 3, .width = 1, .height = 1, .hotspot_x = 0, .hotspot_y = 0, .bytes = &.{ 1, 2, 3, 4 } };
+    try encodeIconDefine(a, icon, &payload);
+    const icon_define = try windowLifecycleMessage(a, protocol.Message.icon_define, 3, 7, payload.items);
+    defer a.free(icon_define);
+    try scene.apply(icon_define);
+    payload.clearRetainingCapacity();
+    try protocol.encodeFrameIcon(a, .{ .flags = protocol.FrameIconFlags.present, .image_id = 70, .image_generation = 3, .frame_generation = 1 }, &payload);
+    const frame_icon = try windowLifecycleMessage(a, protocol.Message.frame_icon, 4, 7, payload.items);
+    defer a.free(frame_icon);
+    try scene.apply(frame_icon);
+    try std.testing.expect(scene.icon != null);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageDefine(a, .{ .image_id = 70, .generation = 4, .width = 2, .height = 2, .total_byte_count = 16 }, &payload);
+    const image_replacement = try imageMessage(a, protocol.Message.image_define, 5, payload.items);
+    defer a.free(image_replacement);
+    const before_image_controls = scene.stats.control_messages;
+    try scene.apply(image_replacement);
+    try std.testing.expectEqual(before_image_controls + 1, scene.stats.control_messages);
+    try std.testing.expect(scene.icon == null);
+    try std.testing.expectEqual(@as(u32, 4), scene.images.lookup(70).?.generation);
+
+    // Seed a fresh icon, then prove an authoritative snapshot clears it while
+    // restoring another valid image resource.
+    payload.clearRetainingCapacity();
+    try encodeIconDefine(a, .{ .icon_id = 71, .generation = 1, .width = 1, .height = 1, .hotspot_x = 0, .hotspot_y = 0, .bytes = &.{ 5, 6, 7, 8 } }, &payload);
+    const icon_define_second = try windowLifecycleMessage(a, protocol.Message.icon_define, 6, 7, payload.items);
+    defer a.free(icon_define_second);
+    try scene.apply(icon_define_second);
+    payload.clearRetainingCapacity();
+    try protocol.encodeFrameIcon(a, .{ .flags = protocol.FrameIconFlags.present, .image_id = 71, .image_generation = 1, .frame_generation = 1 }, &payload);
+    const second_frame_icon = try windowLifecycleMessage(a, protocol.Message.frame_icon, 7, 7, payload.items);
+    defer a.free(second_frame_icon);
+    try scene.apply(second_frame_icon);
+    try std.testing.expect(scene.icon != null);
+
+    const image_metadata = try protocol.encodeImageDefineBytes(frontendImageFixture(90, 1));
+    var image_wire: [protocol.image_record_size + 16]u8 = undefined;
+    @memcpy(image_wire[0..protocol.image_record_size], &image_metadata);
+    @memcpy(image_wire[protocol.image_record_size..], "sixteen_pixels!!");
+    const entries = [_]protocol.ResourceSnapshotEntry{
+        .{ .kind = .image, .status = .live, .resource_id = 90, .generation = 1, .payload = &image_wire },
+    };
+    const snapshot = try snapshotMessage(a, 8, &entries);
+    defer a.free(snapshot);
+    try scene.apply(snapshot);
+    try std.testing.expect(scene.icon == null);
+    try std.testing.expect(scene.images.lookup(70) == null);
+    try std.testing.expect(scene.images.lookup(71) == null);
+    try std.testing.expect(scene.images.lookup(90).?.complete);
 }
 
 test "damage rects have a bounded variable wire form" {

@@ -116,7 +116,7 @@ const ranges = [_]Range{
     .{ .low = 0x0506, .high = 0x0506, .status = .implemented_codec, .domain = .resource, .family = "font-delete", .note = "generation-qualified bounded delete" },
     .{ .low = 0x0507, .high = 0x0509, .status = .implemented_codec, .domain = .resource, .family = "image-lifecycle", .note = "bounded static RGBA define/data/delete codecs" },
     .{ .low = 0x050a, .high = 0x050b, .status = .implemented_codec, .domain = .resource, .family = "fringe-bitmap", .note = "bounded monochrome bitmap define/delete, exact-generation registry lifecycle, stale placement removal, snapshot restore, and SDL pixel rendering; color/alpha bitmap and full fringe semantics pending" },
-    .{ .low = 0x050c, .high = 0x050d, .status = .planned, .domain = .resource, .family = "icon-resource", .note = "standalone icon resource codecs pending" },
+    .{ .low = 0x050c, .high = 0x050d, .status = .implemented_codec, .domain = .resource, .family = "icon-resource", .note = "complete bounded RGBA8 icon define/delete codecs with Scene image-resource ownership and frame-icon compatibility" },
     .{ .low = 0x050e, .high = 0x050f, .status = .implemented_codec, .domain = .resource, .family = "string-lifecycle", .note = "bounded UTF-8 string define/delete" },
     .{ .low = 0x0510, .high = 0x0512, .status = .implemented_codec, .domain = .resource, .family = "resource-policy-snapshot", .note = "request, eviction, and atomic concrete snapshot codecs" },
     .{ .low = 0x0513, .high = 0x0516, .status = .implemented_codec, .domain = .resource, .family = "atlas-lifecycle", .note = "bounded atlas define/page update/glyph add/invalidate codecs and Scene state" },

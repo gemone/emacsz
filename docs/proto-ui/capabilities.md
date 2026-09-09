@@ -238,7 +238,7 @@ Priorities:
 | Child frame | P2 | Pending | EUP relation policy exists, but linked SDL child ownership, visibility propagation, tooltip behavior, and Emacs child-frame parity remain pending |
 | Tooltip frame | P2 | Pending | W12/W16 PGTK parity gate not met |
 | Title/name | P0 | Degraded | EUP `FRAME_TITLE` v1 resolves a generation-qualified string and sets the diagnostic SDL window title; Emacs title publication and frame-parameter parity remain pending |
-| Icon | P1 | Degraded | `FRAME_ICON` v1 references a complete RGBA image and SDL applies an icon surface; multi-resolution, animated, and taskbar parity remain pending |
+| Icon | P1 | Degraded | `ICON_DEFINE`/`DELETE` v1 own complete RGBA8 icons and `FRAME_ICON` v1 references them through SDL; multi-resolution, animated, and taskbar parity remain pending |
 | Outer/native/text geometry | P0 | Degraded | Public frame/window geometry facts; no platform-native geometry contract |
 | Size hints | P1 | Degraded | EUP `FRAME_SIZE_HINTS` v1 models min/max, increment, and aspect constraints; SDL applies min/max/aspect and Scene owns increments, while redisplay geometry adaptation remains pending |
 | Alpha/background alpha | P1 | Degraded | EUP `FRAME_ALPHA` v1 carries active/inactive/background opacity; SDL probe applies active window opacity and falls back opaque, while focus transitions and complete PGTK visual parity remain pending |

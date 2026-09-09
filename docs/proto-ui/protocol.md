@@ -1203,7 +1203,7 @@ renderer-mode switching.
 | `0x0509` | `IMAGE_DELETE` | C→F | ID/generation | Invalidate bounded v1 image |
 | `0x050a` | `FRINGE_BITMAP_DEFINE` | C→F | Bits/geometry | Define fringe |
 | `0x050b` | `FRINGE_BITMAP_DELETE` | C→F | ID/generation | Invalidate fringe |
-| `0x050c` | `ICON_DEFINE` | C→F | Metadata/payload | Define icon |
+| `0x050c` | `ICON_DEFINE` | C→F | Complete RGBA8 metadata/payload (bounded v1) | Define icon |
 | `0x050d` | `ICON_DELETE` | C→F | ID/generation | Invalidate icon |
 | `0x050e` | `STRING_DEFINE` | C→F | UTF-8 text | Define repeated string |
 | `0x050f` | `STRING_DELETE` | C→F | ID/generation | Invalidate string |
@@ -2803,6 +2803,19 @@ context.  This is control-plane
 preparation only: there is no platform IME backend, composition state, commit
 application, candidate UI, surrounding-text query, or full multibyte-input
 claim.
+
+#### Standalone icon resource v1
+
+`ICON_DEFINE` is a variable payload with a 32-byte little-endian header:
+`u16 schema=1`, `u16 flags=1 (present)`, `u32 icon_id` (nonzero), `u32
+generation` (nonzero), `u32 width` and `u32 height` (1..256), `u32 hotspot_x`
+and `u32 hotspot_y` (inside the icon), and `u32 byte_length`.  The remaining
+bytes are complete premultiplied RGBA8 pixels; `byte_length` must equal
+`width * height * 4` and is at most 256 KiB.  `ICON_DELETE` is `u32 icon_id`
+and `u32 generation`.  Scene stores standalone icons in its image-resource
+namespace, so generation-aware `FRAME_ICON` references and resource deletion
+behave consistently.  Multi-resolution bundles, animations, masks, and OS
+taskbar guarantees remain pending.
 
 The facts profile defines a deliberately bounded `WHEEL_EVENT` subset for
 `0x0603`: `u8 unit` (`1=line`), `u8 source` (`1=wheel`), `u8 modifiers`
