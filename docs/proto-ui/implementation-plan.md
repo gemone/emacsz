@@ -149,6 +149,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8e-b ordered left drag/release | Approved |
 | W8f-a bounded wheel scroll intent | Approved |
 | W8g2 publisher Elisp resource and atomic facts | Approved |
+| W8g3 manual authenticated EPXL session | Implemented; bounded bridge, not `output_proto` |
 | W9g2 bounded viewport facts | Approved |
 | W10b-b2a bounded glyph-atlas policy | Approved |
 | W10c-a damage classification baseline | Approved |
@@ -1367,6 +1368,38 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
 ```
 
 Status: approved.  The dedicated review completed correctness, lifecycle, allocator, pointer semantics, viewport behavior, and failure-path cleanup passes.  Focused local checks included unit/boundary gates and authenticated, local, Unicode, selection, middle-paste, wheel, frame, and failure-cleanup smokes.
+
+#### W8g3 — Manual authenticated EPXL session (implemented)
+
+Goal: expose the authenticated EPXL bridge as a manually closable session
+without changing the fail-closed `output_proto` runtime boundary.
+
+1. Define `--auto-quit-ms=0` as “no smoke deadline” for the authenticated
+   interactive publisher and frontend; positive smoke deadlines remain fixed.
+2. Add `sdl3-emacs-interactive` as a manually closable authenticated EPXL
+   SDL3 session backed by the adapter-owned publisher resource.
+3. On SDL close, close transport, wait for publisher and Emacs child exit, and
+   remove private session artifacts.
+4. Keep the target explicitly bounded: public facts, negotiated text/key/wheel/
+   pointer intents, no redisplay streaming, no frontend Elisp evaluation, no
+   `output_proto` registration, and no PGTK parity claim.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
+  sdl3-emacs-interactive-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
+  sdl3-emacs-interactive-local-smoke --summary all
+zig build help 2>&1 | grep -F 'sdl3-emacs-interactive'
+```
+
+Manual evidence requires a graphical session:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
+  sdl3-emacs-interactive
+```
 
 #### W9g2 — Bounded viewport facts (approved)
 

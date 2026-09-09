@@ -89,6 +89,25 @@ gate checks scene bytes only; the current bitmap renderer has no CJK shaping or
 font fallback.  They do not provide a full Emacs keyboard/keymap/IME input
 stack.
 
+### 6.1 Manual authenticated session
+
+Use this target when you want the bounded bridge to stay open instead of
+running a timed smoke:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
+  sdl3-emacs-interactive
+```
+
+This starts a real Emacs publisher, one authenticated EPXL session, and an
+SDL3 window.  `--auto-quit-ms=0` means “no smoke deadline”: closing the SDL
+window closes the transport, lets the publisher terminate its Emacs child, and
+then removes private artifacts.  The session remains a bounded public-facts
+bridge, not an `output_proto` terminal or complete Emacs UI.
+
+The target intentionally returns after closing that EPXL window; it does not
+open the separate replay-only diagnostic window used by timed smokes.
+
 ## 7. Interpreting failures
 
 | Symptom | First response |

@@ -402,6 +402,7 @@ const Config = struct {
     drop_first_input_ack: bool = false,
     gap_fault: bool = false,
     interactive_publisher: bool = false,
+    manual_emacs_session: bool = false,
     interactive_synthetic: bool = false,
     force_frontend_failure: bool = false,
     synthetic_pointer: bool = false,
@@ -1419,6 +1420,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     defer if (published != null) published.?.deinit(gpa);
     var input_sequence: u64 = 5;
     var gap_fault_pending = config.gap_fault;
+    const publish_forever = config.auto_quit_ms == 0 and config.interactive_publisher;
     const publish_duration = if (config.interactive_publisher)
         config.auto_quit_ms
     else
@@ -1478,7 +1480,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
         var waited_ms: u32 = 0;
         var heartbeat_ms: u32 = 0;
         var heartbeat_due = false;
-        while (waited_ms < publish_duration) {
+        while (publish_forever or waited_ms < publish_duration) {
             const facts_bytes = std.Io.Dir.cwd().readFileAlloc(io, config.facts_path, gpa, .limited(64 * 1024)) catch |err| switch (err) {
                 error.FileNotFound => {
                     try io.sleep(.fromMilliseconds(20), .awake);
@@ -5770,9 +5772,10 @@ fn runEpxlInteractiveFrontend(
 
     var quit = false;
     const started_ticks = SDL_GetTicks();
-    while (!quit and SDL_GetTicks() - started_ticks < config.auto_quit_ms) {
+    const timed_frontend = config.auto_quit_ms != 0;
+    while (!quit and (!timed_frontend or SDL_GetTicks() - started_ticks < config.auto_quit_ms)) {
         const message = (live.readFrame(&reader.interface, gpa) catch |err| {
-            if (SDL_GetTicks() - started_ticks >= config.auto_quit_ms) break;
+            if (timed_frontend and SDL_GetTicks() - started_ticks >= config.auto_quit_ms) break;
             return err;
         }) orelse break;
         defer gpa.free(message);
@@ -7156,7 +7159,10 @@ fn runEmacsEpxlSession(
     const auto_quit_arg = try std.fmt.allocPrint(
         gpa,
         "--auto-quit-ms={d}",
-        .{if (config.interactive_publisher) config.auto_quit_ms + 1000 else 500},
+        .{if (config.interactive_publisher)
+            if (config.auto_quit_ms == 0) 0 else config.auto_quit_ms + 1000
+        else
+            500},
     );
     defer gpa.free(auto_quit_arg);
     config.facts_path = try std.fmt.allocPrint(gpa, "{s}/.zig-cache/proto-ui-epxl-{s}/facts.json", .{ current_dir, suffix });
@@ -7330,6 +7336,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             // default. The local action file is an explicit fallback path.
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
+            config.manual_emacs_session = true;
         } else if (std.mem.eql(u8, arg, "--emacs-interactive-smoke")) {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
@@ -7628,6 +7635,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             "sdl3-epxl-failure-cleanup-smoke: publisher and Emacs child exited before cleanup; dirs_before={d} dirs_after={d}; lifecycle OK\n",
             .{ before, after },
         );
+        return;
+    }
+
+    if (config.mode == .emacs_epxl_interactive and config.manual_emacs_session) {
+        var session = try runEmacsEpxlSession(gpa, io, &config, 1);
+        session.deinit();
         return;
     }
 

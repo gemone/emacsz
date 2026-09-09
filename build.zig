@@ -1633,6 +1633,29 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_epxl_interactive_step.dependOn(&run_sdl3_epxl_interactive.step);
 
+        const run_sdl3_manual_emacs_interactive = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-interactive",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=0",
+        });
+        run_sdl3_manual_emacs_interactive.setCwd(b.path("."));
+        run_sdl3_manual_emacs_interactive.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_manual_emacs_interactive.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_manual_emacs_interactive.step.dependOn(step);
+        const sdl3_manual_emacs_interactive_step = b.step(
+            "sdl3-emacs-interactive",
+            "Open a bounded authenticated EPXL Emacs session in SDL3 until closed",
+        );
+        sdl3_manual_emacs_interactive_step.dependOn(&run_sdl3_manual_emacs_interactive.step);
+
         const run_sdl3_frame = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/proto-ui-sdl3",
             "--emacs-frame-smoke",
@@ -6419,6 +6442,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke - verify module seam in batch Emacs
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-frame-fact-smoke - public frame facts on a display
         \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-smoke - continuous public Emacs facts
+        \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interactive - bounded interactive Emacs facts in SDL3
         \\
         \\SDL3 frontend path (opt-in: -Dsdl3-frontend=true):
         \\  zig build -Dsdl3-frontend=true sdl3-ui-smoke - real Emacs facts/EUP replay renderer
