@@ -89,6 +89,7 @@ extern fn SDL_SetWindowFullscreen(window: *SDL_Window, fullscreen: bool) bool;
 extern fn SDL_SyncWindow(window: *SDL_Window) bool;
 extern fn SDL_GetDisplayForWindow(window: *SDL_Window) SDL_DisplayID;
 extern fn SDL_GetDisplayBounds(display: SDL_DisplayID, rect: *SDL_Rect) bool;
+extern fn SDL_GetPrimaryDisplay() SDL_DisplayID;
 extern fn SDL_SetWindowResizable(window: *SDL_Window, resizable: bool) bool;
 extern fn SDL_MaximizeWindow(window: *SDL_Window) bool;
 extern fn SDL_RestoreWindow(window: *SDL_Window) bool;
@@ -407,6 +408,7 @@ const Config = struct {
     manual_emacs_session: bool = false,
     interactive_synthetic: bool = false,
     title_smoke: bool = false,
+    synthetic_monitor_change: bool = false,
     force_frontend_failure: bool = false,
     synthetic_pointer: bool = false,
     synthetic_pointer_v2: bool = false,
@@ -5437,6 +5439,7 @@ fn pollEpxlInteractiveInput(
     gate: *renderer_policy.FrameGate,
     capabilities: capability.Set,
     dirty: *bool,
+    monitor_refresh_needed: *bool,
 ) !void {
     var event: SDL_Event = undefined;
     while (SDL_PollEvent(&event)) {
@@ -5633,6 +5636,12 @@ fn pollEpxlInteractiveInput(
                     };
                     dirty.* = true;
                 }
+            },
+            input_policy.SDL_EVENT_WINDOW_DISPLAY_CHANGED,
+            input_policy.SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED,
+            => {
+                if (scene.frame_header != null)
+                    monitor_refresh_needed.* = true;
             },
             SDL_EVENT_RENDER_TARGETS_RESET, SDL_EVENT_RENDER_DEVICE_RESET, SDL_EVENT_RENDER_DEVICE_LOST => {
                 destroyRetainedFrame(retained);
@@ -5907,6 +5916,25 @@ fn writeStructureU64s(hasher: *std.crypto.hash.sha2.Sha256, values: []const u64)
     }
 }
 
+fn refreshSceneMonitorFromSDL(window: *SDL_Window, scene: *frontend.Scene) !bool {
+    if (scene.frame == null or scene.session_id == null or scene.next_sequence == null)
+        return false;
+    const display = SDL_GetDisplayForWindow(window);
+    if (display == 0) return false;
+    var bounds: SDL_Rect = undefined;
+    if (!SDL_GetDisplayBounds(display, &bounds)) return false;
+    scene.monitor = .{
+        .monitor_id = display,
+        .x = bounds.x,
+        .y = bounds.y,
+        .width = bounds.w,
+        .height = bounds.h,
+        .flags = if (display == SDL_GetPrimaryDisplay()) protocol.FrameMonitorFlags.primary else 0,
+        .frame_generation = scene.frame.?.generation,
+    };
+    return true;
+}
+
 fn runEpxlInteractiveFrontend(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -6067,6 +6095,22 @@ fn runEpxlInteractiveFrontend(
         var synthetic = textEvent("XY");
         if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
     }
+
+    var expected_monitor_id: SDL_DisplayID = 0;
+    var expected_bounds: SDL_Rect = undefined;
+    if (config.synthetic_monitor_change) {
+        expected_monitor_id = SDL_GetDisplayForWindow(window);
+        if (expected_monitor_id == 0 or
+            !SDL_GetDisplayBounds(expected_monitor_id, &expected_bounds))
+            return error.MonitorBoundsUnavailable;
+        var display_changed = windowEvent(
+            input_policy.SDL_EVENT_WINDOW_DISPLAY_CHANGED,
+            SDL_GetWindowID(window),
+            @intCast(expected_monitor_id),
+            0,
+        );
+        if (!SDL_PushEvent(&display_changed)) return sdlFail("SDL_PushEvent");
+    }
     if (config.synthetic_copy) {
         var synthetic = keyboardEvent(input_policy.SDL_SCANCODE_C, true, input_policy.sdl_ctrl_modifiers);
         if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
@@ -6115,7 +6159,8 @@ fn runEpxlInteractiveFrontend(
         if (!SDL_PushEvent(&release)) return sdlFail("SDL_PushEvent");
     }
     var scrollbar_drag: input_policy.ScrollbarDragTracker = .{};
-    try pollEpxlInteractiveInput(delivery, &scrollbar_drag, config, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty);
+    var monitor_refresh_needed = false;
+    try pollEpxlInteractiveInput(delivery, &scrollbar_drag, config, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty, &monitor_refresh_needed);
     try deliveryAllowed(delivery, negotiated.effective);
 
     var quit = false;
@@ -6139,6 +6184,8 @@ fn runEpxlInteractiveFrontend(
                 );
             }
         }
+        if (monitor_refresh_needed and try refreshSceneMonitorFromSDL(window, &scene))
+            monitor_refresh_needed = false;
         const is_frame_update = envelope.message_type == protocol.Message.frame_update;
         var damage: ?renderer_policy.DamageDecision = null;
         if (is_frame_update) damage = observeSceneDamage(&scene, &frame_gate, &frame_counters);
@@ -6169,7 +6216,7 @@ fn runEpxlInteractiveFrontend(
         }
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
-        pollEpxlInteractiveInput(delivery, &scrollbar_drag, config, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty) catch |err| switch (err) {
+        pollEpxlInteractiveInput(delivery, &scrollbar_drag, config, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty, &monitor_refresh_needed) catch |err| switch (err) {
             error.InteractiveQuit => quit = true,
             else => return err,
         };
@@ -6257,6 +6304,24 @@ fn runEpxlInteractiveFrontend(
             .{},
         );
     }
+    if (config.synthetic_monitor_change) {
+        expected_monitor_id = SDL_GetDisplayForWindow(window);
+        if (expected_monitor_id == 0 or
+            !SDL_GetDisplayBounds(expected_monitor_id, &expected_bounds))
+            return error.MonitorBoundsUnavailable;
+    }
+    if (config.synthetic_monitor_change) {
+        const monitor = scene.monitor orelse return error.MonitorChangeNotObserved;
+        if (monitor.monitor_id != expected_monitor_id or
+            monitor.x != expected_bounds.x or monitor.y != expected_bounds.y or
+            monitor.width != expected_bounds.w or monitor.height != expected_bounds.h)
+            return error.MonitorChangeNotObserved;
+        std.debug.print(
+            "sdl3-monitor-change-smoke: {{\"kind\":\"sdl3-monitor-change-smoke\",\"monitor_id\":{d},\"width\":{d},\"height\":{d},\"result\":\"pass\"}}\n",
+            .{ monitor.monitor_id, monitor.width, monitor.height },
+        );
+    }
+
     if (config.interactive_synthetic and !sceneHasText(&scene, "XYEmacs Proto-UI"))
         return error.InteractiveInputNotApplied;
     if (config.synthetic_wheel and !config.synthetic_viewport and wheel_ticks_delivered < 2)
@@ -6264,7 +6329,7 @@ fn runEpxlInteractiveFrontend(
     if (config.synthetic_wheel and !config.synthetic_viewport and
         horizontal_wheel_ticks_delivered < 2)
         return error.HorizontalWheelScrollNotApplied;
-    if (config.interactive_synthetic) {
+    if (config.title_smoke) {
         const expected_title = "Emacs Proto-UI Title";
         if (!title_applied or scene.title == null or
             !std.mem.eql(u8, scene.title.?, expected_title))
@@ -7904,6 +7969,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_epxl_key_v2;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-key-modifier-smoke")) {
             config.mode = .emacs_epxl_key_modifier;
+        } else if (std.mem.eql(u8, arg, "--emacs-monitor-change-smoke")) {
+            config.mode = .emacs_epxl_interactive;
+            config.interactive_publisher = true;
+            config.interactive_synthetic = true;
+            config.synthetic_monitor_change = true;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-edit-smoke")) {
             config.mode = .emacs_epxl_edit;
             config.auto_key = .backspace;

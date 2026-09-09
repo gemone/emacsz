@@ -18,6 +18,8 @@ pub const SDL_EVENT_WINDOW_RESIZED: c_uint = 0x206;
 pub const SDL_EVENT_WINDOW_MINIMIZED: c_uint = 0x209;
 pub const SDL_EVENT_WINDOW_MAXIMIZED: c_uint = 0x20a;
 pub const SDL_EVENT_WINDOW_RESTORED: c_uint = 0x20b;
+pub const SDL_EVENT_WINDOW_DISPLAY_CHANGED: c_uint = 0x215;
+pub const SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: c_uint = 0x216;
 
 pub const SDL_SCANCODE_COPY: i32 = 6;
 pub const SDL_SCANCODE_BACKSPACE: i32 = 42;

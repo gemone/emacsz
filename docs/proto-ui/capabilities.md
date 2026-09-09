@@ -219,7 +219,7 @@ Priorities:
 | Monitor attributes | GDK monitor | SDL monitor events | P1 | Degraded | EUP `FRAME_MONITOR` v1 owns generation-qualified identity, primary flag, and bounds; SDL queries display ID/bounds, while change events and migration remain pending |
 | Scale factor | GDK scale | SDL display scale | P1 | Degraded | `FRAME_SCALE` v1 owns generation-qualified scale state and SDL reports per-window scale; redisplay still consumes fixed `FRAME_UPDATE` values |
 | DPI | GTK/GDK | SDL display data | P1 | Degraded | `FRAME_SCALE` v1 owns generation-qualified X/Y DPI state and SDL reports per-window scale; redisplay still consumes fixed `FRAME_UPDATE` values |
-| Monitor change | GDK signal | Frontend event/redisplay | P1 | Pending | No monitor event or live redisplay bridge |
+| Monitor change | GDK signal | Frontend event/redisplay | P1 | Degraded | SDL display/scale change refreshes frontend-local monitor facts and is smoke-verified; EUP event streaming, redisplay adaptation, and Emacs migration remain pending |
 
 ### 6.2 Frame lifecycle
 
