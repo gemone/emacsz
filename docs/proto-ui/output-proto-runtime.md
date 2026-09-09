@@ -290,7 +290,46 @@ The activation contract records the approved-path order and reverse rollback
 order.  Its current gate remains blocked by pending R7 and performs no host
 callback.
 
-## 11. Acceptance for the first real SDL3 frame
+## 11. R8 entry readiness gate
+
+R8 may begin only after a host-extension decision records how the approved
+adapter is linked without touching tracked inherited C/Lisp source.  The
+decision must be separate from the adapter code and must make the activation
+path, ownership boundary, and disable path reproducible.
+
+An R8-ready decision record contains:
+
+1. the exact adapter-owned extension artifact and its ABI/table hash;
+2. the build-graph injection point that links it without changing default
+   behavior;
+3. proof that no tracked inherited C/Lisp path is edited, replaced, patched, or
+   symbol-interposed;
+4. the reviewed terminal/frame/redisplay/input/lifecycle callback table;
+5. a feature flag and activation manifest that remain off by default;
+6. a reverse rollback order that restores terminal, frame, transport, and
+   frontend state after any failure;
+7. named review evidence for static isolation, fake-host conformance, process
+   crash containment, and the fail-closed runtime manifest.
+
+A fake-host smoke, public-fact stream, replay renderer, or PGTK diagnostic is
+never sufficient to mark R8 ready.  The transition is allowed only when the
+pending R7 decision is explicitly approved with this metadata and the runtime
+manifest changes from `host_registration_contract_missing` to a reviewed,
+versioned registration contract.
+
+### 11.1 First-frame execution slices
+
+When the entry gate is satisfied, implement R8 in these verifiable slices:
+
+| Slice | Minimum evidence |
+|---|---|
+| R8a terminal registration | A reviewed terminal callback creates and deletes one `output_proto` terminal with no frame; cleanup is idempotent |
+| R8b frame handoff | Emacs creates one real frame whose `window-system` reports `proto`; SDL3 owns the visible surface |
+| R8c display capture | One authoritative buffer/window/frame update reaches EUP and renders; no frontend state authority |
+| R8d input loop | Keyboard, pointer, wheel, focus, and resize round trips return completion through the host input callbacks |
+| R8e lifecycle containment | Disconnect, malformed EUP, GPU loss, frontend exit, and explicit shutdown leave Emacs operable |
+
+## 12. Acceptance for the first real SDL3 frame
 
 The milestone is complete only when all of the following are true from one
 local command sequence:
@@ -313,7 +352,7 @@ local command sequence:
 Until R8, all status documents must continue to describe this work as adapter
 groundwork rather than a real `output_proto` runtime.
 
-## 12. Non-goals
+## 13. Non-goals
 
 This design does not:
 
