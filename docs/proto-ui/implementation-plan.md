@@ -73,7 +73,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P6-prep reverse input bridge | Implemented for bounded SDL key/text intents through PureRuntimeHostV1 delivery/result/completion; not keymap/command parity |
 | P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
 | P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
-| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 137 implemented codecs, 3 partial, and 24 planned; prevents an unclassified or overclaimed protocol table |
+| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 144 implemented codecs, 3 partial, and 17 planned; prevents an unclassified or overclaimed protocol table |
 | Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
 | P12-prep EUP session setup | Implemented standard HELLO/HELLO_ACK/SESSION_READY/READY_ACK codecs and bounded state machine; not yet wired to EPXL transport |
 | P12-prep EUP session control | Implemented all eight standard-control codecs, automatic PONG, Scene integration, and EPXL transport for every control, including fatal VERSION_MISMATCH |
@@ -3215,7 +3215,7 @@ P9 geometry preparation adds `refreshFrameGeometry`, authoritative frame
 bounds, and observation validation in `runtime_bridge`; real monitor and scale
 events remain pending.
 P29 protocol coverage remains source-authoritative for every assigned EUP ID;
-current counts are 137 implemented codecs, 3 partial, and 24 planned.
+current counts are 144 implemented codecs, 3 partial, and 17 planned.
 P12 session-setup preparation adds concrete standard EUP HELLO, HELLO_ACK,
 SESSION_READY, and READY_ACK codecs with a bounded frontend state machine.  The
 authenticated EPXL handshake remains the current transport path.
@@ -3397,6 +3397,7 @@ P55 bounded-dialog preparation adds the four dialog v1 codecs as an adapter-owne
 P56 dedicated-scrollbar preparation adds `SCROLLBAR_STATE`/`SCROLLBAR_EVENT` v1 as bounded aliases over proven state/request payloads with Scene dispatch, separate capability negotiation, DeliveryJournal ordering, and live EPXL wire ACK evidence.  Full scrollbar semantics and Emacs dispatch remain pending.
 P58 multi-window content preparation publishes bounded `WINDOW_STATE` observations for every live window through the snapshot JSON and projects them as window-owned `TEXT_LINE_V2` rows.  A state carries `id`, `lines`, `window_start_line`, `window_visible_lines`, an optional bounded public cursor with `cursor_active`, optional bounded public mode line with height, and optional bounded public header/tab lines with heights; publisher text and these lines are UTF-8 byte-bounded to 120 bytes and visible text is capped to eight lines.  There is one state per live window in `window-list` order, and EUP carries up to one bounded cursor per live window with exactly one active selected-window cursor.  Full per-window scroll, redisplay cursor semantics, hierarchy, faces, and command semantics remain pending.
 P59 standalone icon-resource preparation adds `ICON_DEFINE`/`ICON_DELETE` v1 with complete bounded RGBA8 payloads, hotspot and dimension validation, Scene image-resource ownership, frame-icon compatibility, generation-aware deletion, and stale-resource rejection.  Multi-resolution bundles, animation, masks, and taskbar parity remain pending.
+P60 drag-and-drop preparation adds bounded DND enter/position/leave/drop/cancel/reply/data wire codecs with action masks, nonzero drag identities, bounded offers and payloads, and strict boundary validation.  SDL event mapping, Scene/core dispatch, platform ownership, and rich MIME conversion remain pending.
 P57 real-window snapshot preparation projects bounded public `proto-ui-window-facts` into the `FRAME_UPDATE` window section.  Observed windows become Scene windows with authoritative frame-relative geometry and may carry bounded public point cursors; the selected window is the active EUP cursor.  IDs are adapter-owned process-lifetime identities, not cross-restart identities; redisplay-owned cursors, buffers, rows, faces, hierarchy, and command dispatch remain pending.
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by atlas/page identity, generation, and revision.  Runtime smoke proves one upload plus at least four hits; smoke-level renderer-loss clearing is wired; production-wide integration and replacement/eviction policy remain pending.
 P23 fringe preparation adds a 40-byte `FRINGE_UPDATE` v1 color-band subset with

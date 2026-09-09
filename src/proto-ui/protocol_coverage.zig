@@ -128,7 +128,7 @@ const ranges = [_]Range{
     .{ .low = 0x0710, .high = 0x0719, .status = .implemented_codec, .domain = .ime, .family = "ime-reverse-reports", .note = "bounded attached/detached/preedit/commit/surrounding-request/delete/candidate/cancel wire codecs; platform backend and core application pending" },
     .{ .low = 0x0800, .high = 0x0805, .status = .implemented_codec, .domain = .selection, .family = "selection-transfer", .note = "bounded owner, request, data, loss, and error codecs with printable non-space ASCII targets; Scene/platform dispatch pending" },
     .{ .low = 0x0810, .high = 0x0813, .status = .implemented_codec, .domain = .selection, .family = "clipboard-transfer", .note = "bounded clipboard set/get/data/clear payload wrappers that require clipboard kind; platform ownership and core dispatch pending" },
-    .{ .low = 0x0820, .high = 0x0826, .status = .planned, .domain = .selection, .family = "drag-and-drop", .note = "DND position, action, reply, and MIME payload codecs pending" },
+    .{ .low = 0x0820, .high = 0x0826, .status = .implemented_codec, .domain = .selection, .family = "drag-and-drop", .note = "bounded enter/position/leave/drop/cancel/reply/data codecs; SDL event mapping and core drop dispatch pending" },
     .{ .low = 0x0900, .high = 0x0900, .status = .implemented_codec, .domain = .widget, .family = "menu-model", .note = "bounded complete UTF-8 menu-tree codec, active-frame validation, generation replacement, Scene ownership, and SDL menu-bar render; menu open/navigation/result and tool bar pending" },
     .{ .low = 0x0901, .high = 0x0901, .status = .implemented_codec, .domain = .widget, .family = "menu-patch", .note = "exact 184-byte ordered upsert/delete operations with strict expected/new generation validation, Scene hierarchy revalidation, and SDL render evidence; move operations and full patch policy pending" },
     .{ .low = 0x0902, .high = 0x0903, .status = .implemented_codec, .domain = .widget, .family = "menu-open-close", .note = "bounded live-model open/close codecs, exact generation validation, owner bounds, one active popup, authoritative cleanup, and SDL child render evidence; keyboard navigation and result dispatch pending" },
@@ -309,11 +309,11 @@ test "implemented and planned protocol coverage remain honest" {
     const clipboard_data = entryFor(0x0812) catch unreachable;
     try std.testing.expectEqual(Status.implemented_codec, clipboard_data.status);
     const dnd_enter = entryFor(0x0820) catch unreachable;
-    try std.testing.expectEqual(Status.planned, dnd_enter.status);
+    try std.testing.expectEqual(Status.implemented_codec, dnd_enter.status);
     const counts = counters();
-    try std.testing.expectEqual(@as(usize, 137), counts.implemented_codec);
+    try std.testing.expectEqual(@as(usize, 144), counts.implemented_codec);
     try std.testing.expectEqual(@as(usize, 3), counts.partial);
-    try std.testing.expectEqual(@as(usize, 24), counts.planned);
+    try std.testing.expectEqual(@as(usize, 17), counts.planned);
     try std.testing.expectError(error.UnknownMessageId, entryFor(0xffff));
 }
 

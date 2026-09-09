@@ -1683,7 +1683,31 @@ reason, followed by `u16 message_length` and 0..120 UTF-8 bytes; reasons are
 unsupported target, conversion failure, timeout, and cancellation.
 
 These are bounded wire codecs only.  Scene admission, platform ownership, core
-dispatch, rich MIME conversion, incremental transfer, and DND remain pending.
+dispatch, rich MIME conversion, and incremental transfer remain pending.
+
+#### Bounded drag-and-drop v1
+
+All integers are little-endian.  Every drag uses one nonzero `u32 drag_id`.
+DND reuses the bounded selection offer encoding: `u8 target_length`, `u16
+priority`, then 1..64 printable non-space ASCII target bytes.  A payload may
+carry 1..8 unique offers.  DND actions are `none=0`, `copy=1`, `move=2`, and
+`ask=3`; allowed masks may contain copy `1`, move `2`, and ask `4`.  Every
+current or selected action must be permitted by the mask.  Reserved fields
+must be zero.
+
+| Payload | Exact little-endian layout |
+|---|---|
+| `DND_ENTER` | `u16 schema=1`, `u8 allowed_mask`, `u8 current_action`, `u32 drag_id`, `i32 x >= 0`, `i32 y >= 0`, `u16 offer_count=1..8`, `u16 reserved=0`; then the offers |
+| `DND_POSITION` | `u16 schema=1`, `u8 allowed_mask`, `u8 current_action`, `u32 drag_id`, `i32 x >= 0`, `i32 y >= 0` (16 bytes) |
+| `DND_LEAVE` | `u16 schema=1`, `u16 reserved=0`, `u32 nonzero drag_id` (8 bytes) |
+| `DND_DROP` | `u16 schema=1`, `u8 action != none`, `u8 reserved=0`, `u32 drag_id`, `i32 x >= 0`, `i32 y >= 0` (16 bytes) |
+| `DND_CANCEL` | `DND_LEAVE` exact 8-byte ID form |
+| `DND_REPLY` | `u16 schema=1`, `u8 result` (accepted=1 / rejected=2), `u8 action`, `u32 drag_id` (8 bytes); accepted requires an action, rejected requires none |
+| `DND_DATA` | `u16 schema=1`, `u16 reserved=0`, `u32 drag_id`, `u16 target_length=1..64`, `u32 data_length=1..4096`; then target bytes and data bytes (14-byte header) |
+
+These are transport codecs only.  SDL event mapping, Scene/core dispatch,
+platform ownership, rich MIME conversion, incremental transfer, and PGTK parity
+remain pending.
 
 ## 18. Widget messages
 

@@ -191,6 +191,13 @@ pub const Message = struct {
     pub const clipboard_get: u16 = 0x0811;
     pub const clipboard_data: u16 = 0x0812;
     pub const clipboard_clear: u16 = 0x0813;
+    pub const dnd_enter: u16 = 0x0820;
+    pub const dnd_position: u16 = 0x0821;
+    pub const dnd_leave: u16 = 0x0822;
+    pub const dnd_drop: u16 = 0x0823;
+    pub const dnd_cancel: u16 = 0x0824;
+    pub const dnd_reply: u16 = 0x0825;
+    pub const dnd_data: u16 = 0x0826;
     pub const extension: u16 = 0xf000;
     pub const invalid: u16 = 0xffff;
 };
@@ -9256,4 +9263,568 @@ test "selection transfer codecs enforce bounded trust boundaries" {
     const oversized_message = [_]u8{'a'} ** (max_selection_error_len + 1);
     try std.testing.expectError(Error.InvalidMessage, encodeSelectionError(a, .{ .request_id = 1, .generation = 1, .kind = .clipboard, .reason = .timeout, .message = &oversized_message }, &bytes));
     try std.testing.expectError(Error.InvalidUtf8, encodeSelectionError(a, .{ .request_id = 1, .generation = 1, .kind = .clipboard, .reason = .timeout, .message = &[_]u8{0xff} }, &bytes));
+}
+
+pub const DndAction = enum(u8) {
+    none = 0,
+    copy = 1,
+    move = 2,
+    ask = 3,
+};
+
+pub const DndActionMask = struct {
+    pub const copy: u8 = 1;
+    pub const move: u8 = 2;
+    pub const ask: u8 = 4;
+    pub const valid_mask: u8 = copy | move | ask;
+};
+
+pub const max_dnd_offers: usize = max_selection_offers;
+
+pub const DndEnter = struct {
+    schema: u16 = 1,
+    allowed_actions: u8,
+    current_action: DndAction = .none,
+    drag_id: u32,
+    x: i32,
+    y: i32,
+    offers: []const SelectionOffer,
+};
+
+pub const dnd_enter_header_size: usize = 20;
+
+fn validateDndActionMask(mask: u8) Error!void {
+    if (mask == 0 or mask & ~DndActionMask.valid_mask != 0) return Error.InvalidMessage;
+}
+
+fn validateDndOffers(offers: []const SelectionOffer) Error!void {
+    if (offers.len == 0 or offers.len > max_dnd_offers) return Error.InvalidMessage;
+    try validateSelectionOffers(offers);
+}
+
+fn dndActionFromByte(value: u8) Error!DndAction {
+    return switch (value) {
+        0 => .none,
+        1 => .copy,
+        2 => .move,
+        3 => .ask,
+        else => Error.InvalidMessage,
+    };
+}
+
+pub fn validateDndEnter(payload: DndEnter) Error!void {
+    if (payload.schema != 1 or payload.drag_id == 0 or payload.x < 0 or payload.y < 0)
+        return Error.InvalidMessage;
+    try validateDndActionMask(payload.allowed_actions);
+    try validateDndOffers(payload.offers);
+    if (payload.current_action != .none and
+        payload.allowed_actions & actionMask(payload.current_action) == 0)
+        return Error.InvalidMessage;
+}
+
+fn actionMask(action: DndAction) u8 {
+    return switch (action) {
+        .none => 0,
+        .copy => DndActionMask.copy,
+        .move => DndActionMask.move,
+        .ask => DndActionMask.ask,
+    };
+}
+
+pub fn encodeDndEnter(a: std.mem.Allocator, payload: DndEnter, out: *std.ArrayList(u8)) !void {
+    try validateDndEnter(payload);
+    var header: [dnd_enter_header_size]u8 = @splat(0);
+    std.mem.writeInt(u16, header[0..2], payload.schema, .little);
+    header[2] = payload.allowed_actions;
+    header[3] = @intFromEnum(payload.current_action);
+    std.mem.writeInt(u32, header[4..8], payload.drag_id, .little);
+    std.mem.writeInt(i32, header[8..12], payload.x, .little);
+    std.mem.writeInt(i32, header[12..16], payload.y, .little);
+    std.mem.writeInt(u16, header[16..18], @intCast(payload.offers.len), .little);
+    try out.appendSlice(a, &header);
+    for (payload.offers) |offer| {
+        try out.append(a, @intCast(offer.target.len));
+        try putU16(out, a, offer.priority);
+        try out.appendSlice(a, offer.target);
+    }
+}
+
+pub fn decodeDndEnter(a: std.mem.Allocator, data: []const u8) (Error || std.mem.Allocator.Error)!DndEnter {
+    if (data.len < dnd_enter_header_size) return Error.InvalidTable;
+    const offer_count = std.mem.readInt(u16, data[16..18], .little);
+    if (offer_count == 0 or offer_count > max_dnd_offers) return Error.InvalidMessage;
+    if (data[18] != 0 or data[19] != 0) return Error.InvalidMessage;
+    var reader = Reader{ .data = data };
+    reader.offset = dnd_enter_header_size;
+    var offers: std.ArrayList(SelectionOffer) = .empty;
+    errdefer offers.deinit(a);
+    while (reader.offset < data.len) {
+        if (offers.items.len >= max_dnd_offers) return Error.InvalidMessage;
+        const target_len = reader.readByte() catch return Error.InvalidTable;
+        if (target_len == 0 or target_len > max_selection_target_len) return Error.InvalidMessage;
+        const priority = reader.readU16() catch return Error.InvalidTable;
+        const target = reader.bytes(target_len) catch return Error.InvalidTable;
+        if (!validSelectionTarget(target)) return Error.InvalidMessage;
+        try offers.append(a, .{ .target = target, .priority = priority });
+    }
+    if (offers.items.len != offer_count) return Error.InvalidMessage;
+    var payload: DndEnter = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .allowed_actions = data[2],
+        .current_action = try dndActionFromByte(data[3]),
+        .drag_id = std.mem.readInt(u32, data[4..8], .little),
+        .x = @bitCast(std.mem.readInt(u32, data[8..12], .little)),
+        .y = @bitCast(std.mem.readInt(u32, data[12..16], .little)),
+        .offers = try offers.toOwnedSlice(a),
+    };
+    errdefer freeDndEnter(a, &payload);
+    try validateDndEnter(payload);
+    return payload;
+}
+
+pub fn freeDndEnter(a: std.mem.Allocator, payload: *DndEnter) void {
+    a.free(payload.offers);
+    payload.offers = &.{};
+}
+
+pub const DndPosition = struct {
+    schema: u16 = 1,
+    allowed_actions: u8,
+    current_action: DndAction,
+    drag_id: u32,
+    x: i32,
+    y: i32,
+};
+
+pub const dnd_position_size: usize = 16;
+
+pub fn encodeDndPosition(a: std.mem.Allocator, payload: DndPosition, out: *std.ArrayList(u8)) !void {
+    try validateDndPosition(payload);
+    var b: [dnd_position_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = payload.allowed_actions;
+    b[3] = @intFromEnum(payload.current_action);
+    std.mem.writeInt(u32, b[4..8], payload.drag_id, .little);
+    std.mem.writeInt(i32, b[8..12], payload.x, .little);
+    std.mem.writeInt(i32, b[12..16], payload.y, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeDndPosition(data: []const u8) Error!DndPosition {
+    if (data.len != dnd_position_size) return Error.InvalidTable;
+    const payload: DndPosition = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .allowed_actions = data[2],
+        .current_action = try dndActionFromByte(data[3]),
+        .drag_id = std.mem.readInt(u32, data[4..8], .little),
+        .x = @bitCast(std.mem.readInt(u32, data[8..12], .little)),
+        .y = @bitCast(std.mem.readInt(u32, data[12..16], .little)),
+    };
+    try validateDndPosition(payload);
+    return payload;
+}
+
+fn validateDndPosition(payload: DndPosition) Error!void {
+    if (payload.schema != 1 or payload.drag_id == 0 or payload.x < 0 or payload.y < 0)
+        return Error.InvalidMessage;
+    try validateDndActionMask(payload.allowed_actions);
+    if (payload.current_action != .none and
+        payload.allowed_actions & actionMask(payload.current_action) == 0)
+        return Error.InvalidMessage;
+}
+
+pub const DndDrop = struct {
+    schema: u16 = 1,
+    action: DndAction,
+    reserved: u8 = 0,
+    drag_id: u32,
+    x: i32,
+    y: i32,
+};
+
+pub const dnd_drop_size: usize = 16;
+
+pub fn encodeDndDrop(a: std.mem.Allocator, payload: DndDrop, out: *std.ArrayList(u8)) !void {
+    try validateDndDrop(payload);
+    var b: [dnd_drop_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = @intFromEnum(payload.action);
+    b[3] = payload.reserved;
+    std.mem.writeInt(u32, b[4..8], payload.drag_id, .little);
+    std.mem.writeInt(i32, b[8..12], payload.x, .little);
+    std.mem.writeInt(i32, b[12..16], payload.y, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeDndDrop(data: []const u8) Error!DndDrop {
+    if (data.len != dnd_drop_size) return Error.InvalidTable;
+    const payload: DndDrop = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .action = try dndActionFromByte(data[2]),
+        .reserved = data[3],
+        .drag_id = std.mem.readInt(u32, data[4..8], .little),
+        .x = @bitCast(std.mem.readInt(u32, data[8..12], .little)),
+        .y = @bitCast(std.mem.readInt(u32, data[12..16], .little)),
+    };
+    try validateDndDrop(payload);
+    return payload;
+}
+
+fn validateDndDrop(payload: DndDrop) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or payload.drag_id == 0 or
+        payload.action == .none or payload.x < 0 or payload.y < 0) return Error.InvalidMessage;
+}
+
+fn encodeDndId(a: std.mem.Allocator, schema: u16, drag_id: u32, out: *std.ArrayList(u8)) !void {
+    if (schema != 1 or drag_id == 0) return Error.InvalidMessage;
+    var b: [dnd_id_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], schema, .little);
+    std.mem.writeInt(u32, b[4..8], drag_id, .little);
+    try out.appendSlice(a, &b);
+}
+
+fn decodeDndId(data: []const u8) Error!u32 {
+    if (data.len != dnd_id_size) return Error.InvalidTable;
+    const schema = std.mem.readInt(u16, data[0..2], .little);
+    if (schema != 1 or data[2] != 0 or data[3] != 0) return Error.InvalidMessage;
+    const drag_id = std.mem.readInt(u32, data[4..8], .little);
+    if (drag_id == 0) return Error.InvalidMessage;
+    return drag_id;
+}
+
+pub const dnd_id_size: usize = 8;
+
+pub const DndReplyResult = enum(u8) {
+    accepted = 1,
+    rejected = 2,
+};
+
+pub const DndReply = struct {
+    schema: u16 = 1,
+    result: DndReplyResult,
+    action: DndAction,
+    drag_id: u32,
+};
+
+pub const dnd_reply_size: usize = 8;
+
+pub fn encodeDndReply(a: std.mem.Allocator, payload: DndReply, out: *std.ArrayList(u8)) !void {
+    try validateDndReply(payload);
+    var b: [dnd_reply_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = @intFromEnum(payload.result);
+    b[3] = @intFromEnum(payload.action);
+    std.mem.writeInt(u32, b[4..8], payload.drag_id, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeDndReply(data: []const u8) Error!DndReply {
+    if (data.len != dnd_reply_size) return Error.InvalidTable;
+    const payload: DndReply = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .result = switch (data[2]) {
+            1 => .accepted,
+            2 => .rejected,
+            else => return Error.InvalidMessage,
+        },
+        .action = try dndActionFromByte(data[3]),
+        .drag_id = std.mem.readInt(u32, data[4..8], .little),
+    };
+    try validateDndReply(payload);
+    return payload;
+}
+
+fn validateDndReply(payload: DndReply) Error!void {
+    if (payload.schema != 1 or payload.drag_id == 0) return Error.InvalidMessage;
+    if (payload.result == .rejected and payload.action != .none) return Error.InvalidMessage;
+    if (payload.result == .accepted and payload.action == .none) return Error.InvalidMessage;
+}
+
+pub const DndData = struct {
+    schema: u16 = 1,
+    drag_id: u32,
+    target: []const u8,
+    bytes: []const u8,
+};
+
+pub const dnd_data_header_size: usize = 14;
+
+pub fn encodeDndData(a: std.mem.Allocator, payload: DndData, out: *std.ArrayList(u8)) !void {
+    try validateDndData(payload);
+    var header: [dnd_data_header_size]u8 = @splat(0);
+    std.mem.writeInt(u16, header[0..2], payload.schema, .little);
+    std.mem.writeInt(u32, header[4..8], payload.drag_id, .little);
+    std.mem.writeInt(u16, header[8..10], @intCast(payload.target.len), .little);
+    std.mem.writeInt(u32, header[10..14], @intCast(payload.bytes.len), .little);
+    try out.appendSlice(a, &header);
+    try out.appendSlice(a, payload.target);
+    try out.appendSlice(a, payload.bytes);
+}
+
+pub fn decodeDndData(data: []const u8) Error!DndData {
+    if (data.len < dnd_data_header_size) return Error.InvalidTable;
+    if (data[2] != 0 or data[3] != 0) return Error.InvalidMessage;
+    const target_len = std.mem.readInt(u16, data[8..10], .little);
+    const byte_len = std.mem.readInt(u32, data[10..14], .little);
+    if (target_len == 0 or target_len > max_selection_target_len or
+        byte_len == 0 or byte_len > max_selection_data_len or
+        data.len != dnd_data_header_size + @as(usize, target_len) + @as(usize, byte_len))
+        return Error.InvalidTable;
+    const payload: DndData = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .drag_id = std.mem.readInt(u32, data[4..8], .little),
+        .target = data[14..][0..target_len],
+        .bytes = data[14 + target_len ..][0..byte_len],
+    };
+    try validateDndData(payload);
+    return payload;
+}
+
+fn validateDndData(payload: DndData) Error!void {
+    if (payload.schema != 1 or payload.drag_id == 0 or
+        !validSelectionTarget(payload.target) or payload.bytes.len == 0 or
+        payload.bytes.len > max_selection_data_len) return Error.InvalidMessage;
+}
+
+test "dnd lifecycle codecs round trip and reject invalid actions" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    const offers = [_]SelectionOffer{
+        .{ .target = "text/uri-list", .priority = 1 },
+        .{ .target = "image/png", .priority = 2 },
+    };
+    const enter: DndEnter = .{
+        .allowed_actions = DndActionMask.copy | DndActionMask.move,
+        .current_action = .copy,
+        .drag_id = 31,
+        .x = 8,
+        .y = 12,
+        .offers = &offers,
+    };
+    try encodeDndEnter(a, enter, &bytes);
+    var decoded_enter = try decodeDndEnter(a, bytes.items);
+    try std.testing.expectEqual(enter.drag_id, decoded_enter.drag_id);
+    try std.testing.expectEqual(enter.current_action, decoded_enter.current_action);
+    try std.testing.expectEqual(enter.offers.len, decoded_enter.offers.len);
+    freeDndEnter(a, &decoded_enter);
+    bytes.clearRetainingCapacity();
+
+    const position: DndPosition = .{
+        .allowed_actions = DndActionMask.copy,
+        .current_action = .copy,
+        .drag_id = 31,
+        .x = 8,
+        .y = 12,
+    };
+    try encodeDndPosition(a, position, &bytes);
+    try std.testing.expectEqual(position, try decodeDndPosition(bytes.items));
+    bytes.items[2] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeDndPosition(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const drop: DndDrop = .{ .action = .move, .drag_id = 31, .x = 8, .y = 12 };
+    try encodeDndDrop(a, drop, &bytes);
+    try std.testing.expectEqual(drop, try decodeDndDrop(bytes.items));
+    bytes.items[2] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeDndDrop(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    try encodeDndId(a, 1, 31, &bytes);
+    try std.testing.expectEqual(@as(u32, 31), try decodeDndId(bytes.items));
+    bytes.items[4] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeDndId(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const reply: DndReply = .{ .result = .accepted, .action = .copy, .drag_id = 31 };
+    try encodeDndReply(a, reply, &bytes);
+    try std.testing.expectEqual(reply, try decodeDndReply(bytes.items));
+    bytes.items[2] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeDndReply(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const data: DndData = .{ .drag_id = 31, .target = "image/png", .bytes = "pixel" };
+    try encodeDndData(a, data, &bytes);
+    const decoded_data = try decodeDndData(bytes.items);
+    try std.testing.expectEqual(data.drag_id, decoded_data.drag_id);
+    try std.testing.expectEqualStrings(data.target, decoded_data.target);
+    try std.testing.expectEqualStrings(data.bytes, decoded_data.bytes);
+    try std.testing.expectError(Error.InvalidTable, decodeDndData(bytes.items[0 .. bytes.items.len - 1]));
+}
+
+test "dnd codecs enforce transfer and action boundaries" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    const offers = [_]SelectionOffer{.{ .target = "text/plain", .priority = 1 }};
+
+    try std.testing.expectError(Error.InvalidMessage, encodeDndEnter(a, .{
+        .allowed_actions = DndActionMask.copy,
+        .current_action = .ask,
+        .drag_id = 1,
+        .x = 0,
+        .y = 0,
+        .offers = offers[0..1],
+    }, &bytes));
+
+    var long_target: [65]u8 = undefined;
+    @memset(&long_target, 'a');
+    try std.testing.expectError(Error.InvalidMessage, encodeDndEnter(a, .{
+        .allowed_actions = DndActionMask.copy,
+        .drag_id = 1,
+        .x = 0,
+        .y = 0,
+        .offers = &[_]SelectionOffer{.{ .target = &long_target, .priority = 1 }},
+    }, &bytes));
+
+    try encodeDndEnter(a, .{
+        .allowed_actions = DndActionMask.copy,
+        .current_action = .copy,
+        .drag_id = 2,
+        .x = 0,
+        .y = 0,
+        .offers = offers[0..1],
+    }, &bytes);
+    try std.testing.expectError(Error.InvalidTable, decodeDndEnter(a, bytes.items[0 .. bytes.items.len - 1]));
+    bytes.clearRetainingCapacity();
+
+    try std.testing.expectError(Error.InvalidMessage, encodeDndPosition(a, .{
+        .allowed_actions = DndActionMask.copy,
+        .current_action = .move,
+        .drag_id = 1,
+        .x = 0,
+        .y = 0,
+    }, &bytes));
+    try std.testing.expectError(Error.InvalidMessage, encodeDndPosition(a, .{
+        .allowed_actions = DndActionMask.copy,
+        .current_action = .copy,
+        .drag_id = 1,
+        .x = -1,
+        .y = 0,
+    }, &bytes));
+
+    try std.testing.expectError(Error.InvalidMessage, encodeDndDrop(a, .{
+        .action = .copy,
+        .drag_id = 0,
+        .x = 0,
+        .y = 0,
+    }, &bytes));
+    try std.testing.expectError(Error.InvalidMessage, encodeDndDrop(a, .{
+        .action = .none,
+        .drag_id = 1,
+        .x = 0,
+        .y = 0,
+    }, &bytes));
+    try std.testing.expectError(Error.InvalidMessage, encodeDndReply(a, .{
+        .result = .accepted,
+        .action = .none,
+        .drag_id = 1,
+    }, &bytes));
+    try std.testing.expectError(Error.InvalidMessage, encodeDndReply(a, .{
+        .result = .rejected,
+        .action = .copy,
+        .drag_id = 1,
+    }, &bytes));
+
+    const max_data = try a.alloc(u8, max_selection_data_len);
+    defer a.free(max_data);
+    @memset(max_data, 'd');
+    try encodeDndData(a, .{ .drag_id = 3, .target = "text/plain", .bytes = max_data }, &bytes);
+    try std.testing.expectError(Error.InvalidTable, decodeDndData(bytes.items[0 .. bytes.items.len - 1]));
+    bytes.clearRetainingCapacity();
+    const oversized_data = try a.alloc(u8, max_selection_data_len + 1);
+    defer a.free(oversized_data);
+    @memset(oversized_data, 'd');
+    try std.testing.expectError(Error.InvalidMessage, encodeDndData(a, .{ .drag_id = 3, .target = "text/plain", .bytes = oversized_data }, &bytes));
+}
+
+test "dnd decoders enforce reserved fields and trust boundaries" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    const offers = [_]SelectionOffer{.{ .target = "text/plain", .priority = 1 }};
+    const enter: DndEnter = .{
+        .allowed_actions = DndActionMask.copy,
+        .current_action = .copy,
+        .drag_id = 44,
+        .x = 1,
+        .y = 2,
+        .offers = offers[0..1],
+    };
+    try encodeDndEnter(a, enter, &bytes);
+
+    // Both reserved bytes are rejected, and a semantic failure after offer
+    // allocation must not leak the allocated offer slice.
+    bytes.items[18] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeDndEnter(a, bytes.items));
+    bytes.items[18] = 0;
+    bytes.items[19] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeDndEnter(a, bytes.items));
+    bytes.items[19] = 0;
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeDndEnter(a, bytes.items));
+    bytes.items[0] = 1;
+    std.mem.writeInt(u32, bytes.items[4..8], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeDndEnter(a, bytes.items));
+    std.mem.writeInt(u32, bytes.items[4..8], 44, .little);
+    try std.testing.expectError(Error.InvalidTable, decodeDndEnter(a, bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidMessage, decodeDndEnter(a, bytes.items));
+    _ = bytes.pop();
+    bytes.clearRetainingCapacity();
+
+    const invalid_enters = [_]DndEnter{
+        .{ .allowed_actions = 0, .current_action = .none, .drag_id = 1, .x = 0, .y = 0, .offers = offers[0..1] },
+        .{ .allowed_actions = 0xf8, .current_action = .none, .drag_id = 1, .x = 0, .y = 0, .offers = offers[0..1] },
+        .{ .allowed_actions = DndActionMask.copy, .current_action = .ask, .drag_id = 1, .x = 0, .y = 0, .offers = offers[0..1] },
+        .{ .allowed_actions = DndActionMask.copy, .drag_id = 1, .x = -1, .y = 0, .offers = offers[0..1] },
+        .{ .allowed_actions = DndActionMask.copy, .drag_id = 1, .x = 0, .y = -1, .offers = offers[0..1] },
+    };
+    for (invalid_enters) |payload| {
+        try std.testing.expectError(Error.InvalidMessage, encodeDndEnter(a, payload, &bytes));
+        bytes.clearRetainingCapacity();
+    }
+
+    const position: DndPosition = .{ .allowed_actions = DndActionMask.copy, .current_action = .copy, .drag_id = 44, .x = 1, .y = 2 };
+    try encodeDndPosition(a, position, &bytes);
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeDndPosition(bytes.items));
+    bytes.items[0] = 1;
+    bytes.items[2] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeDndPosition(bytes.items));
+    bytes.items[2] = DndActionMask.copy;
+    bytes.items[3] = 9;
+    try std.testing.expectError(Error.InvalidMessage, decodeDndPosition(bytes.items));
+    bytes.items[3] = @intFromEnum(DndAction.copy);
+    std.mem.writeInt(i32, bytes.items[8..12], -1, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeDndPosition(bytes.items));
+    std.mem.writeInt(i32, bytes.items[8..12], 1, .little);
+    std.mem.writeInt(u32, bytes.items[4..8], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeDndPosition(bytes.items));
+    try std.testing.expectError(Error.InvalidTable, decodeDndPosition(bytes.items[0 .. bytes.items.len - 1]));
+    bytes.clearRetainingCapacity();
+
+    try encodeDndId(a, 1, 44, &bytes);
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeDndId(bytes.items));
+    bytes.items[0] = 1;
+    bytes.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeDndId(bytes.items));
+    bytes.items[2] = 0;
+    std.mem.writeInt(u32, bytes.items[4..8], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeDndId(bytes.items));
+    try std.testing.expectError(Error.InvalidTable, decodeDndId(bytes.items[0 .. bytes.items.len - 1]));
+    bytes.clearRetainingCapacity();
+
+    const data: DndData = .{ .drag_id = 44, .target = "text/plain", .bytes = "payload" };
+    try encodeDndData(a, data, &bytes);
+    bytes.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeDndData(bytes.items));
+    bytes.items[2] = 0;
+    bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeDndData(bytes.items));
+    bytes.items[3] = 0;
+    std.mem.writeInt(u32, bytes.items[4..8], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeDndData(bytes.items));
+    try std.testing.expectError(Error.InvalidTable, decodeDndData(bytes.items[0 .. bytes.items.len - 1]));
 }
