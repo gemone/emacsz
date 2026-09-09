@@ -10861,7 +10861,7 @@ pub fn decodeMonitorEvent(data: []const u8) Error!MonitorEvent {
     return payload;
 }
 
-fn validateMonitorEvent(payload: MonitorEvent) Error!void {
+pub fn validateMonitorEvent(payload: MonitorEvent) Error!void {
     if (payload.schema != 1 or payload.monitor_id == 0 or
         payload.width <= 0 or payload.height <= 0 or payload.scale_milli_percent == 0)
         return Error.InvalidMessage;
@@ -10905,7 +10905,7 @@ pub fn decodeDpiEvent(data: []const u8) Error!DpiEvent {
     return payload;
 }
 
-fn validateDpiEvent(payload: DpiEvent) Error!void {
+pub fn validateDpiEvent(payload: DpiEvent) Error!void {
     if (payload.schema != 1 or payload.frame_id == 0 or payload.sdl_window_id == 0 or
         payload.scale_milli_percent == 0 or payload.dpi_x_milli == 0 or payload.dpi_y_milli == 0)
         return Error.InvalidMessage;

@@ -1680,14 +1680,20 @@ Exact 36 bytes:
 * 3 reserved bytes at 33
 
 Kinds are added=1, removed=2, geometry_changed=3, primary_changed=4,
-current_changed=5.
+current_changed=5.  In the authenticated EPXL diagnostic profile, SDL
+current-display changes are forwarded only after `platform.monitor_events`
+is negotiated; the publisher records the bounded observation and no monitor
+migration or redisplay adaptation is claimed.
 
 ##### `DPI_EVENT = 0x0609`
 
 Exact 28 bytes: `u16 schema`, `u16 reserved=0` at 2, `u32 nonzero frame_id @4`,
 `u32 nonzero sdl_window_id @8`, `u32 nonzero scale_milli_percent @12`,
 `u32 nonzero dpi_x_milli @16`, `u32 nonzero dpi_y_milli @20`, and 4 reserved
-bytes at 24.
+bytes at 24.  In the authenticated EPXL diagnostic profile, SDL display-scale
+changes are forwarded only after `platform.dpi_events` is negotiated; the
+publisher records the bounded observation and no redisplay scaling adaptation
+is claimed.
 
 ##### `THEME_EVENT = 0x060a`
 

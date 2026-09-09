@@ -66,6 +66,7 @@ const SDL_SYSTEM_THEME_UNKNOWN: SDL_SystemTheme = 0;
 const SDL_SYSTEM_THEME_LIGHT: SDL_SystemTheme = 1;
 const SDL_SYSTEM_THEME_DARK: SDL_SystemTheme = 2;
 extern fn SDL_GetSystemTheme() SDL_SystemTheme;
+extern fn SDL_GetDisplayContentScale(SDL_DisplayID) f32;
 
 extern fn SDL_Init(flags: SDLInitFlags) bool;
 extern fn SDL_Quit() void;
@@ -634,6 +635,8 @@ fn writeTranslatedEvent(
         // Platform observation is EPXL-only by design; there is no inherited
         // Emacs core fallback and no local mutation.
         .focus => {},
+        .monitor => {},
+        .dpi => {},
         .theme => {},
         .window => {},
         // Reverse scroll intents are EPXL-only and require negotiated capability.
@@ -1663,6 +1666,14 @@ fn sendDeliveryEvent(
             try protocol.encodeThemeEvent(gpa, theme, &payload);
             break :blk protocol.Message.theme_event;
         },
+        .monitor => |monitor| blk: {
+            try protocol.encodeMonitorEvent(gpa, monitor, &payload);
+            break :blk protocol.Message.monitor_event;
+        },
+        .dpi => |dpi| blk: {
+            try protocol.encodeDpiEvent(gpa, dpi, &payload);
+            break :blk protocol.Message.dpi_event;
+        },
         .window => |request| blk: {
             try protocol.encodeWindowRequest(gpa, request, &payload);
             break :blk protocol.Message.window_request;
@@ -1879,6 +1890,8 @@ fn awaitFrameAck(
                 const is_pointer_v2 = is_pointer and input_policy.isPointerEventV2(payload.bytes);
                 const is_wheel = payload.envelope.message_type == protocol.Message.wheel_event;
                 const is_focus = payload.envelope.message_type == protocol.Message.focus_event;
+                const is_monitor = payload.envelope.message_type == protocol.Message.monitor_event;
+                const is_dpi = payload.envelope.message_type == protocol.Message.dpi_event;
                 const is_theme = payload.envelope.message_type == protocol.Message.theme_event;
                 const is_window = payload.envelope.message_type == protocol.Message.window_request;
                 const is_scroll_request = payload.envelope.message_type == protocol.Message.scroll_request;
@@ -1903,6 +1916,8 @@ fn awaitFrameAck(
                         (is_pointer and !is_pointer_v2 and capabilities.contains(.input_pointer_bounded))) or
                     (is_wheel and capabilities.contains(.input_wheel_line)) or
                     (is_focus and capabilities.contains(.platform_focus_window_events)) or
+                    (is_monitor and capabilities.contains(.platform_monitor_events)) or
+                    (is_dpi and capabilities.contains(.platform_dpi_events)) or
                     (is_theme and capabilities.contains(.platform_theme_events)) or
                     (is_window and capabilities.contains(.platform_focus_window_events)) or
                     (is_scroll_request and capabilities.contains(.window_scroll_request_v1)) or
@@ -2078,6 +2093,41 @@ fn awaitFrameAck(
                     );
                     defer gpa.free(value);
                     try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "theme", value);
+                } else if (is_monitor) {
+                    const event = try protocol.decodeMonitorEvent(payload.bytes);
+                    const value = try std.fmt.allocPrint(
+                        gpa,
+                        "{{\"kind\":\"{s}\",\"monitor_id\":{d},\"x\":{d},\"y\":{d},\"width\":{d},\"height\":{d},\"scale\":{d},\"refresh\":{d},\"primary\":{},\"current\":{},\"execution\":\"observed\"}}",
+                        .{
+                            @tagName(event.kind),
+                            event.monitor_id,
+                            event.x,
+                            event.y,
+                            event.width,
+                            event.height,
+                            event.scale_milli_percent,
+                            event.refresh_milli_hz,
+                            event.primary,
+                            event.current,
+                        },
+                    );
+                    defer gpa.free(value);
+                    try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "monitor", value);
+                } else if (is_dpi) {
+                    const event = try protocol.decodeDpiEvent(payload.bytes);
+                    const value = try std.fmt.allocPrint(
+                        gpa,
+                        "{{\"frame_id\":{d},\"sdl_window_id\":{d},\"scale\":{d},\"dpi_x\":{d},\"dpi_y\":{d},\"execution\":\"observed\"}}",
+                        .{
+                            event.frame_id,
+                            event.sdl_window_id,
+                            event.scale_milli_percent,
+                            event.dpi_x_milli,
+                            event.dpi_y_milli,
+                        },
+                    );
+                    defer gpa.free(value);
+                    try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "dpi", value);
                 } else if (is_window) {
                     const event = try protocol.decodeWindowRequest(payload.bytes);
                     const value = try std.fmt.allocPrint(
@@ -5381,6 +5431,8 @@ fn inputEventAllowed(capabilities: capability.Set, event: input_policy.Translate
         .pointer_v2 => capabilities.contains(.input_pointer_v2),
         .wheel => capabilities.contains(.input_wheel_line),
         .focus => capabilities.contains(.platform_focus_window_events),
+        .monitor => capabilities.contains(.platform_monitor_events),
+        .dpi => capabilities.contains(.platform_dpi_events),
         .theme => capabilities.contains(.platform_theme_events),
         .window => capabilities.contains(.platform_focus_window_events),
         .scroll => capabilities.contains(.window_scroll_request_v1),
@@ -5448,6 +5500,8 @@ fn syncDeliveryCapabilities(delivery: *input_policy.DeliveryJournal, capabilitie
     delivery.key_v2_negotiated = capabilities.contains(.input_key_full_v2);
     delivery.pointer_v2_negotiated = capabilities.contains(.input_pointer_v2);
     delivery.platform_negotiated = capabilities.contains(.platform_focus_window_events);
+    delivery.monitor_negotiated = capabilities.contains(.platform_monitor_events);
+    delivery.dpi_negotiated = capabilities.contains(.platform_dpi_events);
     delivery.theme_negotiated = capabilities.contains(.platform_theme_events);
 }
 
@@ -5459,6 +5513,7 @@ fn pollEpxlInteractiveInput(
     delivery: *input_policy.DeliveryJournal,
     scrollbar_drag: *input_policy.ScrollbarDragTracker,
     config: *const Config,
+    window: *SDL_Window,
     retained: *RetainedFrame,
     scene: *frontend.Scene,
     gate: *renderer_policy.FrameGate,
@@ -5665,8 +5720,41 @@ fn pollEpxlInteractiveInput(
             input_policy.SDL_EVENT_WINDOW_DISPLAY_CHANGED,
             input_policy.SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED,
             => {
-                if (scene.frame_header != null)
-                    monitor_refresh_needed.* = true;
+                if (scene.frame_header == null) return;
+                monitor_refresh_needed.* = true;
+                const display = SDL_GetDisplayForWindow(window);
+                if (display == 0) return error.MonitorBoundsUnavailable;
+                var bounds: SDL_Rect = undefined;
+                if (!SDL_GetDisplayBounds(display, &bounds)) return error.MonitorBoundsUnavailable;
+                const monitor_scale_milli = try validatedScaleMilli(SDL_GetDisplayContentScale(display));
+                _ = try delivery.pushMonitorIfNegotiated(
+                    capabilities.contains(.platform_monitor_events),
+                    .{
+                        .kind = .current_changed,
+                        .monitor_id = display,
+                        .x = bounds.x,
+                        .y = bounds.y,
+                        .width = bounds.w,
+                        .height = bounds.h,
+                        .scale_milli_percent = monitor_scale_milli,
+                        .primary = display == SDL_GetPrimaryDisplay(),
+                        .current = true,
+                    },
+                );
+                if (event.type == input_policy.SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
+                    const window_scale_milli = try validatedScaleMilli(SDL_GetWindowDisplayScale(window));
+                    const dpi_milli = window_scale_milli * 96;
+                    _ = try delivery.pushDpiIfNegotiated(
+                        capabilities.contains(.platform_dpi_events),
+                        .{
+                            .frame_id = scene.frame_header.?.frame_id,
+                            .sdl_window_id = event.window.window_id,
+                            .scale_milli_percent = window_scale_milli,
+                            .dpi_x_milli = dpi_milli,
+                            .dpi_y_milli = dpi_milli,
+                        },
+                    );
+                }
             },
             SDL_EVENT_SYSTEM_THEME_CHANGED => {
                 const raw_theme = SDL_GetSystemTheme();
@@ -5972,6 +6060,12 @@ fn refreshSceneMonitorFromSDL(window: *SDL_Window, scene: *frontend.Scene) !bool
     return true;
 }
 
+fn validatedScaleMilli(value: f32) !u32 {
+    if (!std.math.isFinite(value) or value <= 0 or value > 64.0)
+        return error.InvalidDisplayScale;
+    return @intFromFloat(@round(value * 1000.0));
+}
+
 fn runEpxlInteractiveFrontend(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -6069,6 +6163,8 @@ fn runEpxlInteractiveFrontend(
     var scrollbar_event_delivered = false;
     var title_applied = false;
     var theme_event_delivered = false;
+    var delivered_monitor: ?protocol.MonitorEvent = null;
+    var delivered_dpi: ?protocol.DpiEvent = null;
     try live.writeControl(&writer.interface, .{ .kind = .resync_request, .sequence = 1 });
     try writer.interface.flush();
     const begin = try readControlExact(&reader);
@@ -6146,13 +6242,13 @@ fn runEpxlInteractiveFrontend(
         if (expected_monitor_id == 0 or
             !SDL_GetDisplayBounds(expected_monitor_id, &expected_bounds))
             return error.MonitorBoundsUnavailable;
-        var display_changed = windowEvent(
-            input_policy.SDL_EVENT_WINDOW_DISPLAY_CHANGED,
+        var scale_changed = windowEvent(
+            input_policy.SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED,
             SDL_GetWindowID(window),
             @intCast(expected_monitor_id),
             0,
         );
-        if (!SDL_PushEvent(&display_changed)) return sdlFail("SDL_PushEvent");
+        if (!SDL_PushEvent(&scale_changed)) return sdlFail("SDL_PushEvent");
     }
     if (config.synthetic_copy) {
         var synthetic = keyboardEvent(input_policy.SDL_SCANCODE_C, true, input_policy.sdl_ctrl_modifiers);
@@ -6203,7 +6299,7 @@ fn runEpxlInteractiveFrontend(
     }
     var scrollbar_drag: input_policy.ScrollbarDragTracker = .{};
     var monitor_refresh_needed = false;
-    try pollEpxlInteractiveInput(delivery, &scrollbar_drag, config, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty, &monitor_refresh_needed);
+    try pollEpxlInteractiveInput(delivery, &scrollbar_drag, config, window, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty, &monitor_refresh_needed);
     try deliveryAllowed(delivery, negotiated.effective);
 
     var quit = false;
@@ -6253,6 +6349,8 @@ fn runEpxlInteractiveFrontend(
                         horizontal_wheel_ticks_delivered += @abs(wheel.x);
                     },
                     .scrollbar_event => scrollbar_event_delivered = true,
+                    .monitor => |monitor| delivered_monitor = monitor,
+                    .dpi => |dpi| delivered_dpi = dpi,
                     .theme => theme_event_delivered = true,
                     else => {},
                 }
@@ -6260,7 +6358,7 @@ fn runEpxlInteractiveFrontend(
         }
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
-        pollEpxlInteractiveInput(delivery, &scrollbar_drag, config, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty, &monitor_refresh_needed) catch |err| switch (err) {
+        pollEpxlInteractiveInput(delivery, &scrollbar_drag, config, window, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty, &monitor_refresh_needed) catch |err| switch (err) {
             error.InteractiveQuit => quit = true,
             else => return err,
         };
@@ -6353,6 +6451,31 @@ fn runEpxlInteractiveFrontend(
         if (expected_monitor_id == 0 or
             !SDL_GetDisplayBounds(expected_monitor_id, &expected_bounds))
             return error.MonitorBoundsUnavailable;
+        const monitor_scale_milli = try validatedScaleMilli(SDL_GetDisplayContentScale(expected_monitor_id));
+        const window_scale_milli = try validatedScaleMilli(SDL_GetWindowDisplayScale(window));
+        const dpi_milli = window_scale_milli * 96;
+        const expected_monitor: protocol.MonitorEvent = .{
+            .kind = .current_changed,
+            .monitor_id = expected_monitor_id,
+            .x = expected_bounds.x,
+            .y = expected_bounds.y,
+            .width = expected_bounds.w,
+            .height = expected_bounds.h,
+            .scale_milli_percent = monitor_scale_milli,
+            .primary = expected_monitor_id == SDL_GetPrimaryDisplay(),
+            .current = true,
+        };
+        const expected_dpi: protocol.DpiEvent = .{
+            .frame_id = scene.frame_header.?.frame_id,
+            .sdl_window_id = SDL_GetWindowID(window),
+            .scale_milli_percent = window_scale_milli,
+            .dpi_x_milli = dpi_milli,
+            .dpi_y_milli = dpi_milli,
+        };
+        if (delivered_monitor == null or delivered_dpi == null or
+            !std.meta.eql(delivered_monitor.?, expected_monitor) or
+            !std.meta.eql(delivered_dpi.?, expected_dpi))
+            return error.MonitorEventPayloadMismatch;
     }
     if (config.synthetic_monitor_change) {
         const monitor = scene.monitor orelse return error.MonitorChangeNotObserved;
@@ -6361,7 +6484,7 @@ fn runEpxlInteractiveFrontend(
             monitor.width != expected_bounds.w or monitor.height != expected_bounds.h)
             return error.MonitorChangeNotObserved;
         std.debug.print(
-            "sdl3-monitor-change-smoke: {{\"kind\":\"sdl3-monitor-change-smoke\",\"monitor_id\":{d},\"width\":{d},\"height\":{d},\"result\":\"pass\"}}\n",
+            "sdl3-monitor-change-smoke: {{\"kind\":\"sdl3-monitor-change-smoke\",\"monitor_id\":{d},\"width\":{d},\"height\":{d},\"monitor_transport\":\"verified\",\"dpi_transport\":\"verified\",\"publisher\":\"observation-only\",\"result\":\"pass\"}}\n",
             .{ monitor.monitor_id, monitor.width, monitor.height },
         );
     }

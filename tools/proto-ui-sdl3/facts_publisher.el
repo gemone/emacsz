@@ -30,6 +30,8 @@
 
 (defvar proto-ui--bounded-selection nil)
 (defvar proto-ui--theme-observed nil)
+(defvar proto-ui--monitor-observed nil)
+(defvar proto-ui--dpi-observed nil)
 
 (defconst proto-ui--module-path (getenv "PROTO_UI_MODULE_PATH"))
 (defconst proto-ui--local-compat
@@ -340,6 +342,21 @@
     (when (member appearance '("dark" "light"))
       (setq proto-ui--theme-observed appearance))))
 
+(defun proto-ui--monitor-action (value)
+  (let ((event (condition-case nil
+                  (json-parse-string value :object-type 'plist)
+                (error nil))))
+    (when (and (plist-get event :current) (numberp (plist-get event :monitor_id)))
+      (setq proto-ui--monitor-observed event))))
+
+(defun proto-ui--dpi-action (value)
+  (let ((event (condition-case nil
+                  (json-parse-string value :object-type 'plist)
+                (error nil))))
+    (when (and (numberp (plist-get event :frame_id))
+               (> (plist-get event :scale) 0))
+      (setq proto-ui--dpi-observed event))))
+
 (defun proto-ui--wheel-action (value)
   (let ((wheel (split-string value " " t)))
     (when (= (length wheel) 2)
@@ -380,6 +397,10 @@
         (proto-ui--insert-action value))
        ((and (= (length action) 3) (string= kind "theme"))
         (proto-ui--theme-action value))
+       ((and (= (length action) 3) (string= kind "monitor"))
+        (proto-ui--monitor-action value))
+       ((and (= (length action) 3) (string= kind "dpi"))
+        (proto-ui--dpi-action value))
        ((and (= (length action) 3) (string= kind "wheel"))
         (proto-ui--wheel-action value))
        ((and (= (length action) 3) (string= kind "pointer-v2"))

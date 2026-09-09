@@ -216,10 +216,10 @@ Priorities:
 | Graphic frame predicate | `output_pgtk` frame | `output_proto` frame | P0 | Pending | No `output_proto`; W12/W16 P0 gap |
 | Focus frame | GDK focus | Frontend focus + core state | P0 | Degraded | W12d strict EUP focus state contract; no frame-focus event round trip |
 | Multi-frame | GTK windows | Multiple SDL windows | P1 | Pending | Single SDL facts window and one EUP frame profile |
-| Monitor attributes | GDK monitor | SDL monitor events | P1 | Degraded | EUP `FRAME_MONITOR` v1 owns generation-qualified identity, primary flag, and bounds; SDL queries display ID/bounds, while change events and migration remain pending |
-| Scale factor | GDK scale | SDL display scale | P1 | Degraded | `FRAME_SCALE` v1 owns generation-qualified scale state and SDL reports per-window scale; redisplay still consumes fixed `FRAME_UPDATE` values |
-| DPI | GTK/GDK | SDL display data | P1 | Degraded | `FRAME_SCALE` v1 owns generation-qualified X/Y DPI state and SDL reports per-window scale; redisplay still consumes fixed `FRAME_UPDATE` values |
-| Monitor change | GDK signal | Frontend event/redisplay | P1 | Degraded | SDL display/scale change refreshes frontend-local monitor facts and is smoke-verified; EUP event streaming, redisplay adaptation, and Emacs migration remain pending |
+| Monitor attributes | GDK monitor | SDL monitor events | P1 | Degraded | EUP `FRAME_MONITOR` v1 owns generation-qualified identity, primary flag, and bounds; negotiated `MONITOR_EVENT` EPXL transport records current SDL bounds, while migration and redisplay adaptation remain pending |
+| Scale factor | GDK scale | SDL display scale | P1 | Degraded | `FRAME_SCALE` v1 owns generation-qualified scale state, SDL reports per-window scale, and negotiated `DPI_EVENT` records scale observations; redisplay still consumes fixed `FRAME_UPDATE` values |
+| DPI | GTK/GDK | SDL display data | P1 | Degraded | `FRAME_SCALE` v1 owns generation-qualified X/Y DPI state and negotiated `DPI_EVENT` records SDL scale/DPI observations; redisplay still consumes fixed `FRAME_UPDATE` values |
+| Monitor change | GDK signal | Frontend event/redisplay | P1 | Degraded | SDL display/scale changes refresh frontend-local monitor facts and negotiated `MONITOR_EVENT`/`DPI_EVENT` EPXL transport is smoke-verified; redisplay adaptation and Emacs migration remain pending |
 
 ### 6.2 Frame lifecycle
 

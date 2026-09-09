@@ -556,6 +556,8 @@ pub const TranslatedEvent = union(enum) {
     pointer_v2: PointerEventV2,
     wheel: frontend.WheelInput,
     focus: protocol.FocusEvent,
+    monitor: protocol.MonitorEvent,
+    dpi: protocol.DpiEvent,
     theme: protocol.ThemeEvent,
     window: protocol.WindowRequest,
     scroll: protocol.ScrollRequest,
@@ -630,6 +632,20 @@ pub const Queue = struct {
         protocol.validateThemeEvent(event) catch return error.InvalidThemeEvent;
         if (self.length == queue_capacity) return error.InputQueueFull;
         self.items[self.length] = .{ .theme = event };
+        self.length += 1;
+    }
+
+    pub fn pushMonitor(self: *Queue, event: protocol.MonitorEvent) !void {
+        protocol.validateMonitorEvent(event) catch return error.InvalidMonitorEvent;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .monitor = event };
+        self.length += 1;
+    }
+
+    pub fn pushDpi(self: *Queue, event: protocol.DpiEvent) !void {
+        protocol.validateDpiEvent(event) catch return error.InvalidDpiEvent;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .dpi = event };
         self.length += 1;
     }
 
@@ -736,6 +752,8 @@ pub const DeliveryJournal = struct {
     key_v2_negotiated: bool = false,
     pointer_v2_negotiated: bool = false,
     platform_negotiated: bool = false,
+    monitor_negotiated: bool = false,
+    dpi_negotiated: bool = false,
     theme_negotiated: bool = false,
     scroll_request_negotiated: bool = false,
     scrollbar_event_negotiated: bool = false,
@@ -846,6 +864,18 @@ pub const DeliveryJournal = struct {
         try self.queue.pushTheme(event);
     }
 
+    pub fn pushMonitor(self: *DeliveryJournal, event: protocol.MonitorEvent) !void {
+        if (!self.monitor_negotiated) return error.MonitorCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushMonitor(event);
+    }
+
+    pub fn pushDpi(self: *DeliveryJournal, event: protocol.DpiEvent) !void {
+        if (!self.dpi_negotiated) return error.DpiCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushDpi(event);
+    }
+
     pub fn pushWindow(self: *DeliveryJournal, event: protocol.WindowRequest) !void {
         if (!self.platform_negotiated) return error.PlatformCapabilityNotNegotiated;
         if (self.pointer_active) return error.PointerSessionActive;
@@ -916,6 +946,30 @@ pub const DeliveryJournal = struct {
             error.PointerSessionActive,
             error.InputQueueFull,
             error.InvalidThemeEvent,
+            => return false,
+        };
+        return true;
+    }
+
+    pub fn pushMonitorIfNegotiated(self: *DeliveryJournal, effective: bool, event: protocol.MonitorEvent) !bool {
+        if (!effective or !self.monitor_negotiated) return false;
+        self.pushMonitor(event) catch |err| switch (err) {
+            error.MonitorCapabilityNotNegotiated,
+            error.PointerSessionActive,
+            error.InputQueueFull,
+            error.InvalidMonitorEvent,
+            => return false,
+        };
+        return true;
+    }
+
+    pub fn pushDpiIfNegotiated(self: *DeliveryJournal, effective: bool, event: protocol.DpiEvent) !bool {
+        if (!effective or !self.dpi_negotiated) return false;
+        self.pushDpi(event) catch |err| switch (err) {
+            error.DpiCapabilityNotNegotiated,
+            error.PointerSessionActive,
+            error.InputQueueFull,
+            error.InvalidDpiEvent,
             => return false,
         };
         return true;
@@ -1096,6 +1150,35 @@ test "theme transfer is capability gated" {
     const sent = (try journal.take()).?;
     try std.testing.expectEqual(protocol.ThemeAppearance.dark, sent.event.theme.appearance);
     if (!journal.acknowledge(sent.sequence)) return error.InvalidSequence;
+}
+
+test "monitor and DPI transfers are independently capability gated" {
+    var journal: DeliveryJournal = .{};
+    const monitor: protocol.MonitorEvent = .{
+        .kind = .current_changed,
+        .monitor_id = 42,
+        .x = 0,
+        .y = 0,
+        .width = 1920,
+        .height = 1080,
+        .primary = true,
+        .current = true,
+    };
+    const dpi: protocol.DpiEvent = .{ .frame_id = 7, .sdl_window_id = 9, .scale_milli_percent = 2000 };
+    try std.testing.expectError(error.MonitorCapabilityNotNegotiated, journal.pushMonitor(monitor));
+    try std.testing.expectError(error.DpiCapabilityNotNegotiated, journal.pushDpi(dpi));
+    try std.testing.expect(!try journal.pushMonitorIfNegotiated(false, monitor));
+    try std.testing.expect(!try journal.pushDpiIfNegotiated(false, dpi));
+    journal.monitor_negotiated = true;
+    journal.dpi_negotiated = true;
+    try std.testing.expect(try journal.pushMonitorIfNegotiated(true, monitor));
+    try std.testing.expect(try journal.pushDpiIfNegotiated(true, dpi));
+    const first = (try journal.take()).?;
+    try std.testing.expectEqual(monitor, first.event.monitor);
+    if (!journal.acknowledge(first.sequence)) return error.InvalidSequence;
+    const second = (try journal.take()).?;
+    try std.testing.expectEqual(@as(u32, 2000), second.event.dpi.scale_milli_percent);
+    if (!journal.acknowledge(second.sequence)) return error.InvalidSequence;
 }
 
 test "validates bounded clipboard copy payload" {
