@@ -313,7 +313,7 @@ fn pointerButtonEvent(
     return event;
 }
 
-fn wheelEvent(y: i32) SDL_Event {
+fn wheelEvent(x: i32, y: i32) SDL_Event {
     var event: SDL_Event = undefined;
     event.wheel = .{
         .type = SDL_EVENT_MOUSE_WHEEL,
@@ -321,12 +321,12 @@ fn wheelEvent(y: i32) SDL_Event {
         .timestamp = 0,
         .window_id = 0,
         .which = 0,
-        .x = 0,
+        .x = @floatFromInt(x),
         .y = @floatFromInt(y),
         .direction = 0,
         .mouse_x = 0,
         .mouse_y = 0,
-        .integer_x = 0,
+        .integer_x = x,
         .integer_y = y,
     };
     return event;
@@ -398,6 +398,7 @@ const Config = struct {
     synthetic_clipboard_unicode: bool = false,
     clipboard_unicode_publisher: bool = false,
     pointer_selection_publisher: bool = false,
+    pointer_generic_publisher: bool = false,
     pointer_middle_paste_publisher: bool = false,
     drop_first_input_ack: bool = false,
     gap_fault: bool = false,
@@ -1402,6 +1403,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     try child_environment.put(try gpa.dupe(u8, "PROTO_UI_CLIPBOARD_PATH"), clipboard_path);
     try child_environment.put(try gpa.dupe(u8, "PROTO_UI_CLIPBOARD_UNICODE"), if (config.clipboard_unicode_publisher) "1" else "0");
     try child_environment.put(try gpa.dupe(u8, "PROTO_UI_POINTER_SELECTION"), if (config.pointer_selection_publisher) "1" else "0");
+    try child_environment.put(try gpa.dupe(u8, "PROTO_UI_POINTER_GENERIC"), if (config.pointer_generic_publisher) "1" else "0");
     try child_environment.put(try gpa.dupe(u8, "PROTO_UI_POINTER_MIDDLE_PASTE"), if (config.pointer_middle_paste_publisher) "1" else "0");
 
     var emacs_child = try std.process.spawn(io, .{
@@ -1872,8 +1874,11 @@ fn awaitFrameAck(
                     try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "text", encoded[0..encoded_len]);
                 } else if (is_wheel) {
                     const event = try frontend.decodeWheelInput(payload.bytes);
-                    const direction: []const u8 = if (event.y > 0) "down" else "up";
-                    const value = try std.fmt.allocPrint(gpa, "{s} {d}", .{ direction, @abs(event.y) });
+                    const direction: []const u8 = if (event.x != 0)
+                        (if (event.x > 0) "right" else "left")
+                    else if (event.y > 0) "down" else "up";
+                    const amount = if (event.x != 0) @abs(event.x) else @abs(event.y);
+                    const value = try std.fmt.allocPrint(gpa, "{s} {d}", .{ direction, amount });
                     defer gpa.free(value);
                     try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "wheel", value);
                 } else if (is_pointer_v2) {
@@ -5216,12 +5221,17 @@ fn pollEpxlInteractiveInput(
             SDL_EVENT_MOUSE_WHEEL => {
                 if (config.interactive_synthetic and !config.synthetic_wheel) return;
                 if (event.wheel.direction != SDL_MOUSEWHEEL_NORMAL) return;
-                if (event.wheel.integer_x != 0 or event.wheel.x != 0) return;
+                const x = event.wheel.integer_x;
                 const y = event.wheel.integer_y;
-                if (y != 0 and @abs(y) <= frontend.max_wheel_ticks and
+                if ((x != 0) == (y != 0)) return;
+                if (@abs(x) <= frontend.max_wheel_ticks and @abs(y) <= frontend.max_wheel_ticks and
+                    event.wheel.x == @as(f32, @floatFromInt(x)) and
                     event.wheel.y == @as(f32, @floatFromInt(y)))
                 {
-                    try delivery.pushWheel(.{ .y = @intCast(y) });
+                    try delivery.pushWheel(.{
+                        .x = @intCast(x),
+                        .y = @intCast(y),
+                    });
                     dirty.* = true;
                 }
             },
@@ -5717,6 +5727,7 @@ fn runEpxlInteractiveFrontend(
     var copy_unicode_exact = false;
     var pointer_release_delivered = false;
     var wheel_ticks_delivered: i32 = 0;
+    var horizontal_wheel_ticks_delivered: i32 = 0;
     if (config.interactive_synthetic) {
         // Seed the real SDL event queue so headless automation validates the
         // same input translation path as an operator typing in the window.
@@ -5735,11 +5746,15 @@ fn runEpxlInteractiveFrontend(
         if (!SDL_PushEvent(&copy)) return sdlFail("SDL_PushEvent");
     }
     if (config.synthetic_wheel) {
-        var down = wheelEvent(1);
+        var down = wheelEvent(0, 1);
         if (!SDL_PushEvent(&down)) return sdlFail("SDL_PushEvent");
         if (!config.synthetic_viewport) {
-            var up = wheelEvent(-1);
+            var up = wheelEvent(0, -1);
             if (!SDL_PushEvent(&up)) return sdlFail("SDL_PushEvent");
+            var right = wheelEvent(1, 0);
+            if (!SDL_PushEvent(&right)) return sdlFail("SDL_PushEvent");
+            var left = wheelEvent(-1, 0);
+            if (!SDL_PushEvent(&left)) return sdlFail("SDL_PushEvent");
         }
     }
     if (config.synthetic_pointer_selection) {
@@ -5800,7 +5815,10 @@ fn runEpxlInteractiveFrontend(
                         if (pointer.buttons == input_policy.pointer_button_middle)
                             middle_release_sequence = outcome.delivered.sequence;
                     },
-                    .wheel => |wheel| wheel_ticks_delivered += @abs(wheel.y),
+                    .wheel => |wheel| {
+                        wheel_ticks_delivered += @abs(wheel.y);
+                        horizontal_wheel_ticks_delivered += @abs(wheel.x);
+                    },
                     .scrollbar_event => scrollbar_event_delivered = true,
                     else => {},
                 }
@@ -5900,6 +5918,15 @@ fn runEpxlInteractiveFrontend(
         return error.InteractiveInputNotApplied;
     if (config.synthetic_wheel and !config.synthetic_viewport and wheel_ticks_delivered < 2)
         return error.WheelScrollNotApplied;
+    if (config.synthetic_wheel and !config.synthetic_viewport and
+        horizontal_wheel_ticks_delivered < 2)
+        return error.HorizontalWheelScrollNotApplied;
+    if (config.synthetic_wheel and !config.synthetic_viewport) {
+        std.debug.print(
+            "sdl3-wheel-smoke: {{\"kind\":\"sdl3-wheel-smoke\",\"vertical_ticks\":{d},\"horizontal_ticks\":{d},\"result\":\"pass\"}}\n",
+            .{ wheel_ticks_delivered, horizontal_wheel_ticks_delivered },
+        );
+    }
     if (config.synthetic_viewport) {
         const moved = scene.viewport != null and
             initial_viewport != null and
@@ -7190,7 +7217,12 @@ fn runEmacsEpxlSession(
             gap_fault_arg,
             auto_quit_arg,
             if (config.clipboard_unicode_publisher) "--clipboard-unicode-publisher" else "--clipboard-ascii-publisher",
-            if (config.pointer_selection_publisher) "--pointer-selection-publisher" else "--clipboard-ascii-publisher",
+            if (config.pointer_selection_publisher)
+                "--pointer-selection-publisher"
+            else if (config.pointer_generic_publisher)
+                "--pointer-generic-publisher"
+            else
+                "--clipboard-ascii-publisher",
             if (config.pointer_middle_paste_publisher) "--pointer-middle-paste-publisher" else "--clipboard-ascii-publisher",
             "--interactive-publisher",
         }
@@ -7385,6 +7417,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
             config.synthetic_pointer = true;
+            config.synthetic_pointer_v2 = true;
+            config.pointer_generic_publisher = true;
         } else if (std.mem.eql(u8, arg, "--emacs-frame-smoke")) {
             config.mode = .frame_lifecycle;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-interactive-smoke")) {
@@ -7417,6 +7451,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.clipboard_unicode_publisher = true;
         } else if (std.mem.eql(u8, arg, "--pointer-selection-publisher")) {
             config.pointer_selection_publisher = true;
+        } else if (std.mem.eql(u8, arg, "--pointer-generic-publisher")) {
+            config.pointer_generic_publisher = true;
         } else if (std.mem.eql(u8, arg, "--pointer-middle-paste-publisher")) {
             config.pointer_middle_paste_publisher = true;
         } else if (std.mem.eql(u8, arg, "--clipboard-unicode-publisher")) {

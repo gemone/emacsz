@@ -40,6 +40,8 @@
   (equal (getenv "PROTO_UI_CLIPBOARD_UNICODE") "1"))
 (defconst proto-ui--pointer-selection
   (equal (getenv "PROTO_UI_POINTER_SELECTION") "1"))
+(defconst proto-ui--pointer-generic
+  (equal (getenv "PROTO_UI_POINTER_GENERIC") "1"))
 (defconst proto-ui--pointer-middle-paste
   (equal (getenv "PROTO_UI_POINTER_MIDDLE_PASTE") "1"))
 
@@ -236,6 +238,18 @@
          (modifiers (plist-get event :modifiers))
          (window (selected-window))
          (buffer (window-buffer window)))
+    (when (and (or proto-ui--pointer-generic proto-ui--pointer-selection)
+               (member phase '("press" "drag" "release"))
+               (eql buttons 1) (eql clicks 1) (eql modifiers 0)
+               (numberp x) (numberp y))
+      (condition-case nil
+          (let ((point (posn-point (posn-at-x-y x y window))))
+            (when point
+              (with-current-buffer buffer
+                (goto-char point)
+                (set-window-point window point)
+                (redisplay))))
+      (error nil)))
     (when (and proto-ui--pointer-selection
                (member phase '("press" "drag" "release"))
                (eql buttons 1) (eql clicks 1) (eql modifiers 0)
@@ -290,9 +304,15 @@
     (when (= (length wheel) 2)
       (with-current-buffer (window-buffer (selected-window))
         (condition-case nil
-            (if (string= (nth 0 wheel) "down")
-                (scroll-up (string-to-number (nth 1 wheel)))
+            (cond
+             ((string= (nth 0 wheel) "down")
+              (scroll-up (string-to-number (nth 1 wheel))))
+             ((string= (nth 0 wheel) "up")
               (scroll-down (string-to-number (nth 1 wheel))))
+             ((string= (nth 0 wheel) "right")
+              (scroll-right (string-to-number (nth 1 wheel))))
+             ((string= (nth 0 wheel) "left")
+              (scroll-left (string-to-number (nth 1 wheel)))))
           (error nil))))))
 
 (defun proto-ui--consume-input ()

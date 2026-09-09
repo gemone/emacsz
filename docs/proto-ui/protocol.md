@@ -2522,11 +2522,13 @@ taskbar guarantees remain pending.
 
 The facts profile defines a deliberately bounded `WHEEL_EVENT` subset for
 `0x0603`: `u8 unit` (`1=line`), `u8 source` (`1=wheel`), `u8 modifiers`
-(`0=none`), `i8 x` (`0` in this profile), `i8 y` (`-8..8`, excluding zero),
-and nine reserved zero bytes. Only vertical whole-line wheel ticks are
-accepted. Horizontal scroll, pixel/page units, touchpad/gesture sources, smooth
-deltas, and modifiers remain outside the bounded profile. Wheel intents use the
-same frontend-to-core sequence and EPXL `ACK` rules as other reverse input.
+(`0=none`), `i8 x` and `i8 y`, and nine reserved zero bytes. Exactly one axis
+is nonzero; its whole-line value is `-8..8`. The current diagnostic publisher
+maps vertical ticks to public `scroll-up`/`scroll-down` and horizontal ticks to
+public `scroll-right`/`scroll-left`. Diagonal, zero, pixel/page units,
+touchpad/gesture sources, smooth deltas, and modifiers remain outside the
+bounded profile. Wheel intents use the same frontend-to-core sequence and EPXL
+`ACK` rules as other reverse input.
 
 The facts profile defines a deliberately bounded `POINTER_EVENT` subset for
 `0x0602`: `u8 phase` (`1=motion`, `2=press`, `3=release`), `u8 button`,

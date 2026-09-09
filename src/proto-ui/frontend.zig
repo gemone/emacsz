@@ -560,8 +560,8 @@ pub const WheelInput = struct {
 
     pub fn valid(self: WheelInput) bool {
         if (self.modifiers != 0 or self.unit != .line or self.source != .wheel) return false;
-        if (self.x != 0) return false;
-        return self.y != 0 and @abs(self.y) <= max_wheel_ticks;
+        if ((self.x == 0) == (self.y == 0)) return false; // one axis only
+        return @abs(self.x) <= max_wheel_ticks and @abs(self.y) <= max_wheel_ticks;
     }
 };
 
@@ -11155,6 +11155,15 @@ test "wheel codec accepts only bounded line wheel ticks" {
     try std.testing.expectEqual(@as(i8, 1), (try decodeWheelInput(bytes.items)).y);
     try std.testing.expectError(Error.Unsupported, encodeWheelInput(a, .{ .y = 0 }, &bytes));
     try std.testing.expectError(Error.Unsupported, encodeWheelInput(a, .{ .y = max_wheel_ticks + 1 }, &bytes));
+    try std.testing.expectError(Error.Unsupported, encodeWheelInput(a, .{ .x = 1, .y = 1 }, &bytes));
+    bytes.clearRetainingCapacity();
+    try encodeWheelInput(a, .{ .x = -1 }, &bytes);
+    const horizontal = try decodeWheelInput(bytes.items);
+    try std.testing.expectEqual(@as(i8, -1), horizontal.x);
+    try std.testing.expectEqual(@as(i8, 0), horizontal.y);
+    bytes.clearRetainingCapacity();
+    try encodeWheelInput(a, .{ .x = max_wheel_ticks }, &bytes);
+    try std.testing.expectEqual(@as(i8, max_wheel_ticks), (try decodeWheelInput(bytes.items)).x);
     try std.testing.expectError(Error.Unsupported, encodeWheelInput(a, .{ .x = 1, .y = 1 }, &bytes));
     bytes.items[5] = 1;
     try std.testing.expectError(Error.Unsupported, decodeWheelInput(bytes.items));

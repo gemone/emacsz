@@ -1852,7 +1852,7 @@ pub fn build(b: *std.Build) void {
         if (sdl3_frontend_dep) |step| run_sdl3_wheel.step.dependOn(step);
         const sdl3_wheel_step = b.step(
             "sdl3-wheel-smoke",
-            "Deliver bounded SDL wheel ticks over EPXL to public Emacs scrolling",
+            "Deliver bounded vertical and horizontal SDL wheel ticks over EPXL",
         );
         sdl3_wheel_step.dependOn(&run_sdl3_wheel.step);
 

@@ -148,6 +148,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8e-a bounded SDL pointer motion/click | Approved |
 | W8e-b ordered left drag/release | Approved |
 | W8f-a bounded wheel scroll intent | Approved |
+| W8f-b bounded horizontal wheel intent | Implemented |
 | W8g2 publisher Elisp resource and atomic facts | Approved |
 | W8g3 manual authenticated EPXL session | Implemented; bounded bridge, not `output_proto` |
 | W9g2 bounded viewport facts | Approved |
@@ -1315,9 +1316,9 @@ public Emacs scrolling without opening pixel-level or touchpad gesture scope.
 6. Add `sdl3-wheel-smoke` with real SDL down/up events and require both
    delivered wheel intents to be acknowledged after Emacs application.
 
-Implemented limits: only vertical line ticks are supported; horizontal scroll,
-pixel/page units, momentum/touchpad phase, smooth deltas, precise scroll
-position, and full window-scroll state remain pending.
+Implemented limits: W8f-a covered only vertical line ticks.  W8f-b extends the
+same bounded profile to horizontal whole-line ticks while preserving the
+one-axis-only rule.
 
 Acceptance:
 
@@ -1329,6 +1330,39 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-smoke
 ```
 
 Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes; approved fixes rejected zero/horizontal/diagonal, flipped-direction, and fractional/mismatched wheel deltas, and corrected reverse-input idempotence docs. Final checks verified wheel smoke, pointer/interactive regressions, boundary and inherited-C audits, and the full built-in check run.
+
+#### W8f-b — Bounded horizontal wheel intent (implemented)
+
+Goal: extend the existing line-wheel bridge to horizontal scrolling without
+introducing pixel, momentum, touchpad, or modifier scope.
+
+1. Keep `WHEEL_EVENT` byte compatibility and require exactly one of `x`/`y` to
+   be nonzero, bounded to `-8..8`.
+2. Translate normal-direction SDL horizontal wheel deltas with exact integer/
+   float agreement.
+3. Preserve bounded delivery-journal admission, EPXL sequencing, and apply-ACK
+   rules.
+4. Map positive/negative horizontal ticks to public Emacs
+   `scroll-right`/`scroll-left` in the diagnostic publisher.
+5. Extend `sdl3-wheel-smoke` to require two vertical and two horizontal
+   acknowledged intents.
+6. Extend the pointer smoke to negotiated Pointer v2 and add an explicit
+   generic publisher mode that maps bounded left press/drag/release to the
+   public point; selection and middle-paste publisher modes remain unchanged.
+
+Implemented limits: pixel/page scrolling, momentum/touchpad phase, smooth
+deltas, precise scroll position, modifiers, diagonal wheels, and full
+window-scroll state remain pending.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
+  sdl3-wheel-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
+  sdl3-emacs-interactive-smoke --summary all
+```
 
 #### W8g2 — Publisher Elisp resource and atomic facts (approved)
 
