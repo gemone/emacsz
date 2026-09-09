@@ -208,6 +208,36 @@ requested, both transport peers reject the session unless
 A fatal `VERSION_MISMATCH` is transported on a fresh connection after the
 normal positive-path session closes.
 
+### Session resynchronization payloads
+
+`RESYNC_REQUEST` is 40 bytes: `u16 schema=1`, `u8 reason`, `u8 flags`, 4
+reserved bytes, `u64 first_missing_sequence`, `u64 last_missing_sequence`,
+`u64 requested_resources`, and 8 reserved bytes.  Reasons are sequence gap=1,
+missing resource=2, state digest mismatch=3, and publisher restart=4.  Flags
+are full snapshot=1 and resources=2.  Resource bits are faces=1, fonts=2,
+strings=4, images=8, and fringe bitmaps=16.  Explicit missing ranges use
+nonzero first/last with `first <= last`; sequence gaps require an explicit
+range.  A resource mask requires the resources flag, and missing resources
+requires that flag and a nonzero mask.  Publisher restart requires a full
+snapshot.
+
+`RESYNC_BEGIN` is 32 bytes: `u16 schema=1`, `u8 scope`, 5 reserved bytes,
+`u64 nonzero resync_id`, `u64 nonzero first_sequence`, and 8 reserved bytes.
+Scopes are display-only=1, resources-only=2, and full=3.  Scope follows the
+request: full flag requires full; resources plus a nonzero mask requires
+resources-only; otherwise display-only.  An explicit gap requires
+`first_sequence == request.first_missing_sequence`.  The frontend scene may
+discard old display truth only at this authorized point.
+
+`RESYNC_COMPLETE` is 32 bytes: `u16 schema=1`, 6 reserved bytes,
+`u64 nonzero resync_id`, `u64 nonzero coherent_next_sequence`, and 8 reserved
+bytes.  The ID must match BEGIN, and coherent next must be after the last
+missing sequence for an explicit gap.
+
+These EUP controls are distinct from the smaller authenticated EPXC control
+records.  They define payload, ordering, and state ownership; real runtime
+history replay and publisher-crash recovery remain separate work.
+
 ## 10. Frame messages
 
 | ID | Name | Direction | Payload | Semantics |

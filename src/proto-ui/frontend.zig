@@ -3696,20 +3696,85 @@ pub const Scene = struct {
         self.recovery_requested = false;
     }
 
+    /// Clears display truth at an authorized EUP RESYNC_BEGIN while preserving
+    /// the already-authorized session-control state and transport identity.
+    pub fn resetDisplayForResync(self: *Scene, scope: session.ResyncScope, next_sequence: u64) void {
+        const control = self.control;
+        const session_id = self.session_id;
+        const stats = self.stats;
+        if (scope != .full and scope != .display_only) {
+            self.next_sequence = next_sequence;
+            self.recovery_requested = false;
+            return;
+        }
+        self.deinit();
+        self.resync_count += 1;
+        self.recovery_requested = false;
+        self.control = control;
+        self.session_id = session_id;
+        self.stats = stats;
+        self.next_sequence = next_sequence;
+    }
+
     pub fn apply(self: *Scene, message: []const u8) Error!void {
         const payload = try protocol.decodeEnvelope(message);
         const previous_session = self.session_id;
         if (self.session_id) |expected| {
             if (payload.envelope.session_id != expected) return Error.InvalidMessage;
         }
+        const next_sequence = std.math.add(u64, payload.envelope.sequence, 1) catch return Error.InvalidSequence;
+        var resync_begin: ?session.ResyncBegin = null;
+        var resync_complete: ?session.ResyncComplete = null;
+        if (payload.envelope.message_type == protocol.Message.resync_begin) {
+            resync_begin = try session.decodeResyncBegin(payload.bytes);
+            if (resync_begin.?.first_sequence != next_sequence) return Error.InvalidSequence;
+        } else if (payload.envelope.message_type == protocol.Message.resync_complete) {
+            resync_complete = try session.decodeResyncComplete(payload.bytes);
+            if (resync_complete.?.coherent_next_sequence != next_sequence) return Error.InvalidSequence;
+        }
+
         if (self.next_sequence) |expected| {
             if (payload.envelope.sequence != expected) {
+                if (self.control.stage == .resync_requested or self.control.stage == .resync_active)
+                    return Error.InvalidSessionStage;
                 self.recovery_requested = true;
                 return Error.InvalidSequence;
             }
         }
-        const next_sequence = std.math.add(u64, payload.envelope.sequence, 1) catch return Error.InvalidSequence;
+        switch (payload.envelope.message_type) {
+            protocol.Message.resync_begin => {
+                const begin = resync_begin.?;
+                try self.control.apply(payload.envelope.message_type, payload.bytes);
+                self.stats.control_messages += 1;
+                self.resetDisplayForResync(begin.scope, begin.first_sequence);
+                return;
+            },
+            protocol.Message.resync_complete => {
+                const complete = resync_complete.?;
+                try self.control.apply(payload.envelope.message_type, payload.bytes);
+                self.stats.control_messages += 1;
+                self.next_sequence = complete.coherent_next_sequence;
+                self.recovery_requested = false;
+                if (previous_session == null) self.session_id = payload.envelope.session_id;
+                return;
+            },
+            protocol.Message.resync_request => {
+                try self.control.apply(payload.envelope.message_type, payload.bytes);
+                self.stats.control_messages += 1;
+                self.recovery_requested = true;
+                if (previous_session == null) self.session_id = payload.envelope.session_id;
+                return;
+            },
+            else => {},
+        }
 
+        var authoritative_sequence = next_sequence;
+        if (payload.envelope.message_type == protocol.Message.session_resumed) {
+            const resumed = try session.decodeResumed(payload.bytes);
+            if (resumed.next_sequence <= payload.envelope.sequence)
+                return Error.InvalidSequence;
+            authoritative_sequence = resumed.next_sequence;
+        }
         switch (payload.envelope.message_type) {
             protocol.Message.session_suspend,
             protocol.Message.session_resume,
@@ -3720,13 +3785,6 @@ pub const Scene = struct {
             protocol.Message.session_error,
             protocol.Message.version_mismatch,
             => {
-                var authoritative_sequence = next_sequence;
-                if (payload.envelope.message_type == protocol.Message.session_resumed) {
-                    const resumed = try session.decodeResumed(payload.bytes);
-                    if (resumed.next_sequence <= payload.envelope.sequence)
-                        return Error.InvalidSequence;
-                    authoritative_sequence = resumed.next_sequence;
-                }
                 try self.control.apply(payload.envelope.message_type, payload.bytes);
                 self.stats.control_messages += 1;
                 self.next_sequence = authoritative_sequence;
@@ -3737,6 +3795,12 @@ pub const Scene = struct {
         }
 
         if (self.control.stage == .fatal or self.control.stage == .closed)
+            return Error.InvalidSessionStage;
+        if (self.control.stage == .resync_requested and
+            payload.envelope.message_type != protocol.Message.resync_begin)
+            return Error.InvalidSessionStage;
+        if (self.control.stage == .resync_active and
+            payload.envelope.message_type != protocol.Message.resync_complete)
             return Error.InvalidSessionStage;
         if ((self.control.stage == .suspended or self.control.stage == .resume_pending) and
             (payload.envelope.message_type >= protocol.Message.frame_create and
@@ -14316,4 +14380,180 @@ test "sequence gap requests recovery without mutating scene" {
     try std.testing.expect(!scene.recovery_requested);
     try std.testing.expectEqual(@as(u32, 1), scene.resync_count);
     try std.testing.expect(scene.next_sequence == null);
+}
+
+test "EUP resync controls reset display and adopt coherent sequence" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+    const baseline = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(baseline);
+    try scene.apply(baseline);
+
+    const request: session.ResyncRequest = .{ .reason = .sequence_gap, .first_missing_sequence = 4, .last_missing_sequence = 4 };
+    var request_payload: std.ArrayList(u8) = .empty;
+    defer request_payload.deinit(a);
+    try session.encodeResyncRequest(a, request, &request_payload);
+    const request_wire = try sessionControlMessage(a, 3, protocol.Message.resync_request, request_payload.items);
+    defer a.free(request_wire);
+    try scene.apply(request_wire);
+    try std.testing.expectEqual(session.ControlStage.resync_requested, scene.control.stage);
+    try std.testing.expect(scene.recovery_requested);
+
+    const blocked = try updateMessage(a, 4, 7, 7, 90, 0);
+    defer a.free(blocked);
+    try std.testing.expectError(Error.InvalidSessionStage, scene.apply(blocked));
+
+    const begin: session.ResyncBegin = .{ .scope = .display_only, .resync_id = 9, .first_sequence = 4 };
+    var begin_payload: std.ArrayList(u8) = .empty;
+    defer begin_payload.deinit(a);
+    try session.encodeResyncBegin(a, begin, &begin_payload);
+    const begin_wire = try sessionControlMessage(a, 3, protocol.Message.resync_begin, begin_payload.items);
+    defer a.free(begin_wire);
+    try scene.apply(begin_wire);
+    try std.testing.expectEqual(session.ControlStage.resync_active, scene.control.stage);
+    try std.testing.expectEqual(@as(u32, 1), scene.resync_count);
+    try std.testing.expectEqual(@as(usize, 0), scene.rows.items.len);
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const complete: session.ResyncComplete = .{ .resync_id = 9, .coherent_next_sequence = 5 };
+    var complete_payload: std.ArrayList(u8) = .empty;
+    defer complete_payload.deinit(a);
+    try session.encodeResyncComplete(a, complete, &complete_payload);
+    const complete_wire = try sessionControlMessage(a, 4, protocol.Message.resync_complete, complete_payload.items);
+    defer a.free(complete_wire);
+    try scene.apply(complete_wire);
+    try std.testing.expectEqual(session.ControlStage.active, scene.control.stage);
+    try std.testing.expectEqual(@as(u64, 5), scene.next_sequence.?);
+
+    const replay_create = try createMessage(a, 5, 7, 7);
+    defer a.free(replay_create);
+    try scene.apply(replay_create);
+    try std.testing.expect(scene.frame != null);
+}
+
+test "resources-only resync begin preserves display truth" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+    const baseline = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(baseline);
+    try scene.apply(baseline);
+
+    const request: session.ResyncRequest = .{
+        .reason = .resource_missing,
+        .flags = session.ResyncRequestFlag.resources,
+        .requested_resources = session.ResyncResource.faces,
+    };
+    var request_payload: std.ArrayList(u8) = .empty;
+    defer request_payload.deinit(a);
+    try session.encodeResyncRequest(a, request, &request_payload);
+    const request_wire = try sessionControlMessage(a, 3, protocol.Message.resync_request, request_payload.items);
+    defer a.free(request_wire);
+    try scene.apply(request_wire);
+
+    const begin: session.ResyncBegin = .{ .scope = .resources_only, .resync_id = 8, .first_sequence = 4 };
+    var begin_payload: std.ArrayList(u8) = .empty;
+    defer begin_payload.deinit(a);
+    try session.encodeResyncBegin(a, begin, &begin_payload);
+    const begin_wire = try sessionControlMessage(a, 3, protocol.Message.resync_begin, begin_payload.items);
+    defer a.free(begin_wire);
+    try scene.apply(begin_wire);
+    try std.testing.expectEqual(@as(usize, 1), scene.rows.items.len);
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+}
+
+test "full resync scene integration is atomic and rejects out-of-order controls" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+    const baseline = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(baseline);
+    try scene.apply(baseline);
+
+    const request: session.ResyncRequest = .{
+        .reason = .publisher_restart,
+        .flags = session.ResyncRequestFlag.full_snapshot,
+    };
+    var request_payload: std.ArrayList(u8) = .empty;
+    defer request_payload.deinit(a);
+    try session.encodeResyncRequest(a, request, &request_payload);
+    const request_wire = try sessionControlMessage(a, 3, protocol.Message.resync_request, request_payload.items);
+    defer a.free(request_wire);
+    try scene.apply(request_wire);
+    try std.testing.expectEqual(session.ControlStage.resync_requested, scene.control.stage);
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+    try std.testing.expectEqual(@as(usize, 1), scene.rows.items.len);
+
+    const early_complete: session.ResyncComplete = .{ .resync_id = 9, .coherent_next_sequence = 4 };
+    var early_complete_payload: std.ArrayList(u8) = .empty;
+    defer early_complete_payload.deinit(a);
+    try session.encodeResyncComplete(a, early_complete, &early_complete_payload);
+    const early_complete_wire = try sessionControlMessage(a, 3, protocol.Message.resync_complete, early_complete_payload.items);
+    defer a.free(early_complete_wire);
+    try std.testing.expectError(Error.InvalidSessionStage, scene.apply(early_complete_wire));
+    try std.testing.expectEqual(session.ControlStage.resync_requested, scene.control.stage);
+    try std.testing.expectEqual(@as(usize, 1), scene.rows.items.len);
+
+    const blocked = try updateMessage(a, 3, 7, 7, 90, 0);
+    defer a.free(blocked);
+    try std.testing.expectError(Error.InvalidSessionStage, scene.apply(blocked));
+    try std.testing.expectEqual(@as(usize, 1), scene.rows.items.len);
+
+    const begin: session.ResyncBegin = .{ .scope = .full, .resync_id = 9, .first_sequence = 4 };
+    var begin_payload: std.ArrayList(u8) = .empty;
+    defer begin_payload.deinit(a);
+    try session.encodeResyncBegin(a, begin, &begin_payload);
+    const begin_wire = try sessionControlMessage(a, 3, protocol.Message.resync_begin, begin_payload.items);
+    defer a.free(begin_wire);
+    const stats_before_reset = scene.stats;
+    try scene.apply(begin_wire);
+    try std.testing.expectEqual(session.ControlStage.resync_active, scene.control.stage);
+    try std.testing.expectEqual(@as(u64, stats_before_reset.control_messages + 1), scene.stats.control_messages);
+    try std.testing.expectEqual(@as(u32, 1), scene.resync_count);
+    try std.testing.expect(scene.frame == null);
+    try std.testing.expectEqual(@as(usize, 0), scene.rows.items.len);
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const duplicate_begin: session.ResyncBegin = .{ .scope = .full, .resync_id = 10, .first_sequence = 5 };
+    var duplicate_begin_payload: std.ArrayList(u8) = .empty;
+    defer duplicate_begin_payload.deinit(a);
+    try session.encodeResyncBegin(a, duplicate_begin, &duplicate_begin_payload);
+    const duplicate_begin_wire = try sessionControlMessage(a, 4, protocol.Message.resync_begin, duplicate_begin_payload.items);
+    defer a.free(duplicate_begin_wire);
+    try std.testing.expectError(Error.InvalidSessionStage, scene.apply(duplicate_begin_wire));
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const active_update = try updateMessage(a, 4, 7, 7, 90, 0);
+    defer a.free(active_update);
+    try std.testing.expectError(Error.InvalidSessionStage, scene.apply(active_update));
+
+    const wrong_complete: session.ResyncComplete = .{ .resync_id = 8, .coherent_next_sequence = 5 };
+    var wrong_complete_payload: std.ArrayList(u8) = .empty;
+    defer wrong_complete_payload.deinit(a);
+    try session.encodeResyncComplete(a, wrong_complete, &wrong_complete_payload);
+    const wrong_complete_wire = try sessionControlMessage(a, 4, protocol.Message.resync_complete, wrong_complete_payload.items);
+    defer a.free(wrong_complete_wire);
+    try std.testing.expectError(Error.InvalidSessionPayload, scene.apply(wrong_complete_wire));
+    try std.testing.expectEqual(session.ControlStage.resync_active, scene.control.stage);
+    try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+
+    const complete: session.ResyncComplete = .{ .resync_id = 9, .coherent_next_sequence = 5 };
+    var complete_payload: std.ArrayList(u8) = .empty;
+    defer complete_payload.deinit(a);
+    try session.encodeResyncComplete(a, complete, &complete_payload);
+    const complete_wire = try sessionControlMessage(a, 4, protocol.Message.resync_complete, complete_payload.items);
+    defer a.free(complete_wire);
+    try scene.apply(complete_wire);
+    try std.testing.expectEqual(session.ControlStage.active, scene.control.stage);
+    try std.testing.expectEqual(@as(u64, 5), scene.next_sequence.?);
 }

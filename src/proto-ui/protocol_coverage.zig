@@ -62,7 +62,7 @@ const ranges = [_]Range{
     .{ .low = 0x0003, .high = 0x0004, .status = .implemented_codec, .domain = .session, .family = "capabilities", .note = "capability table encode/decode and negotiation tests" },
     .{ .low = 0x0005, .high = 0x0006, .status = .implemented_codec, .domain = .session, .family = "session-ready", .note = "standard ready handshake codecs and bounded state machine" },
     .{ .low = 0x0007, .high = 0x000e, .status = .implemented_codec, .domain = .session, .family = "session-control", .note = "codecs and control state machine; not EPXL-wired" },
-    .{ .low = 0x000f, .high = 0x0011, .status = .partial, .domain = .session, .family = "resync", .note = "authenticated local resync/recovery smoke; arbitrary recovery pending" },
+    .{ .low = 0x000f, .high = 0x0011, .status = .implemented_codec, .domain = .session, .family = "resync", .note = "bounded request/begin/complete payload codecs and ordered control state machine; real runtime history replay and publisher-crash recovery pending" },
     .{ .low = 0x0200, .high = 0x0200, .status = .implemented_codec, .domain = .frame, .family = "frame-create", .note = "frontend lifecycle and runtime bridge conformance" },
     .{ .low = 0x0201, .high = 0x0201, .status = .implemented_codec, .domain = .frame, .family = "frame-patch", .note = "exact 40-byte atomic patch for visibility/focus/opacity/decoration/scale with Scene and SDL evidence; title, geometry, monitor, z-order, and full PGTK semantics pending" },
     .{ .low = 0x0202, .high = 0x0202, .status = .implemented_codec, .domain = .frame, .family = "frame-snapshot", .note = "exact 128-byte atomic core presentation snapshot with strict geometry containment, Scene restoration, and SDL evidence; title/icon/monitor/z-order/parent and full parameter snapshot pending" },
@@ -312,8 +312,8 @@ test "implemented and planned protocol coverage remain honest" {
     const dnd_enter = entryFor(0x0820) catch unreachable;
     try std.testing.expectEqual(Status.implemented_codec, dnd_enter.status);
     const counts = counters();
-    try std.testing.expectEqual(@as(usize, 161), counts.implemented_codec);
-    try std.testing.expectEqual(@as(usize, 3), counts.partial);
+    try std.testing.expectEqual(@as(usize, 164), counts.implemented_codec);
+    try std.testing.expectEqual(@as(usize, 0), counts.partial);
     try std.testing.expectEqual(@as(usize, 0), counts.planned);
     try std.testing.expectError(error.UnknownMessageId, entryFor(0xffff));
 }

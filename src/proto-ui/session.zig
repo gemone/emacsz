@@ -374,9 +374,67 @@ pub const ControlStage = enum {
     active,
     suspended,
     resume_pending,
+    resync_requested,
+    resync_active,
     closed,
     fatal,
 };
+
+pub const ResyncReason = enum(u8) {
+    sequence_gap = 1,
+    resource_missing = 2,
+    state_digest_mismatch = 3,
+    publisher_restart = 4,
+};
+
+pub const ResyncRequestFlag = struct {
+    pub const full_snapshot: u8 = 1;
+    pub const resources: u8 = 2;
+    pub const valid_mask: u8 = full_snapshot | resources;
+};
+
+pub const ResyncResource = struct {
+    pub const faces: u64 = 1;
+    pub const fonts: u64 = 2;
+    pub const strings: u64 = 4;
+    pub const images: u64 = 8;
+    pub const fringe_bitmaps: u64 = 16;
+    pub const valid_mask: u64 = faces | fonts | strings | images | fringe_bitmaps;
+};
+
+pub const ResyncRequest = struct {
+    schema: u16 = 1,
+    reason: ResyncReason,
+    flags: u8 = 0,
+    first_missing_sequence: u64 = 0,
+    last_missing_sequence: u64 = 0,
+    requested_resources: u64 = 0,
+};
+
+pub const resync_request_size: usize = 40;
+
+pub const ResyncScope = enum(u8) {
+    display_only = 1,
+    resources_only = 2,
+    full = 3,
+};
+
+pub const ResyncBegin = struct {
+    schema: u16 = 1,
+    scope: ResyncScope,
+    resync_id: u64,
+    first_sequence: u64,
+};
+
+pub const resync_begin_size: usize = 32;
+
+pub const ResyncComplete = struct {
+    schema: u16 = 1,
+    resync_id: u64,
+    coherent_next_sequence: u64,
+};
+
+pub const resync_complete_size: usize = 32;
 
 pub const Control = struct {
     stage: ControlStage = .active,
@@ -388,9 +446,17 @@ pub const Control = struct {
     last_error_code: u16 = 0,
     last_error_severity: ErrorSeverity = .info,
     recoverable_error_count: u64 = 0,
+    resync_request: ?ResyncRequest = null,
+    resync_scope: ?ResyncScope = null,
+    resync_id: u64 = 0,
+    resync_first_sequence: u64 = 0,
 
     pub fn apply(self: *Control, message_type: u16, payload: []const u8) Error!void {
         if (self.stage == .fatal or self.stage == .closed) return error.InvalidSessionStage;
+        if (self.stage == .resync_requested and message_type != protocol.Message.resync_begin)
+            return error.InvalidSessionStage;
+        if (self.stage == .resync_active and message_type != protocol.Message.resync_complete)
+            return error.InvalidSessionStage;
         switch (message_type) {
             protocol.Message.session_suspend => {
                 if (self.stage != .active) return error.InvalidSessionStage;
@@ -437,6 +503,53 @@ pub const Control = struct {
                 } else {
                     self.recoverable_error_count += 1;
                 }
+            },
+            protocol.Message.resync_request => {
+                if (self.stage != .active) return error.InvalidSessionStage;
+                const value = try decodeResyncRequest(payload);
+                self.resync_request = value;
+                self.resync_scope = null;
+                self.resync_id = 0;
+                self.stage = .resync_requested;
+            },
+            protocol.Message.resync_begin => {
+                if (self.stage != .resync_requested) return error.InvalidSessionStage;
+                const request = self.resync_request orelse return error.InvalidSessionStage;
+                const value = try decodeResyncBegin(payload);
+                const expected_scope: ResyncScope = if (request.flags & ResyncRequestFlag.full_snapshot != 0)
+                    .full
+                else if (request.flags & ResyncRequestFlag.resources != 0 and
+                    request.requested_resources != 0)
+                    .resources_only
+                else
+                    .display_only;
+                if (value.scope != expected_scope) return error.InvalidSessionPayload;
+                if (request.first_missing_sequence != 0 and
+                    value.first_sequence != request.first_missing_sequence)
+                    return error.InvalidSessionPayload;
+                self.resync_scope = value.scope;
+                self.resync_id = value.resync_id;
+                self.resync_first_sequence = value.first_sequence;
+                self.stage = .resync_active;
+            },
+            protocol.Message.resync_complete => {
+                if (self.stage != .resync_active) return error.InvalidSessionStage;
+                const request = self.resync_request orelse return error.InvalidSessionStage;
+                const value = try decodeResyncComplete(payload);
+                if (value.resync_id != self.resync_id) return error.InvalidSessionPayload;
+                if (request.first_missing_sequence != 0) {
+                    const expected_next = std.math.add(u64, request.last_missing_sequence, 1) catch
+                        return error.InvalidSessionPayload;
+                    if (value.coherent_next_sequence != expected_next)
+                        return error.InvalidSessionPayload;
+                } else if (value.coherent_next_sequence <= self.resync_first_sequence) {
+                    return error.InvalidSessionPayload;
+                }
+                self.stage = .active;
+                self.resync_request = null;
+                self.resync_scope = null;
+                self.resync_id = 0;
+                self.resync_first_sequence = 0;
             },
             protocol.Message.version_mismatch => {
                 _ = try decodeVersionMismatch(payload);
@@ -767,4 +880,319 @@ test "session control validates reserved bytes and bounded UTF-8 detail" {
 
     const header = [_]u8{ 1, 0, 1, 1 } ++ std.mem.toBytes(@as(u32, 1)) ++ std.mem.toBytes(@as(u16, max_session_error_detail + 1)) ++ [2]u8{ 0, 0 };
     try std.testing.expectError(error.InvalidSessionPayload, decodeSessionError(&header ++ long_detail));
+}
+
+pub fn encodeResyncRequest(gpa: std.mem.Allocator, value: ResyncRequest, out: *std.ArrayList(u8)) !void {
+    try validateResyncRequest(value);
+    var bytes: [resync_request_size]u8 = @splat(0);
+    std.mem.writeInt(u16, bytes[0..2], value.schema, .little);
+    bytes[2] = @intFromEnum(value.reason);
+    bytes[3] = value.flags;
+    std.mem.writeInt(u64, bytes[8..16], value.first_missing_sequence, .little);
+    std.mem.writeInt(u64, bytes[16..24], value.last_missing_sequence, .little);
+    std.mem.writeInt(u64, bytes[24..32], value.requested_resources, .little);
+    try out.appendSlice(gpa, &bytes);
+}
+
+pub fn decodeResyncRequest(data: []const u8) Error!ResyncRequest {
+    if (data.len != resync_request_size) return error.InvalidSessionPayload;
+    if (!std.mem.allEqual(u8, data[4..8], 0) or !std.mem.allEqual(u8, data[32..40], 0))
+        return error.InvalidSessionPayload;
+    const value: ResyncRequest = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .reason = switch (data[2]) {
+            1 => .sequence_gap,
+            2 => .resource_missing,
+            3 => .state_digest_mismatch,
+            4 => .publisher_restart,
+            else => return error.InvalidSessionPayload,
+        },
+        .flags = data[3],
+        .first_missing_sequence = std.mem.readInt(u64, data[8..16], .little),
+        .last_missing_sequence = std.mem.readInt(u64, data[16..24], .little),
+        .requested_resources = std.mem.readInt(u64, data[24..32], .little),
+    };
+    try validateResyncRequest(value);
+    return value;
+}
+
+fn validateResyncRequest(value: ResyncRequest) Error!void {
+    if (value.schema != 1 or value.flags & ~ResyncRequestFlag.valid_mask != 0 or
+        value.requested_resources & ~ResyncResource.valid_mask != 0) return error.InvalidSessionPayload;
+    if (value.requested_resources != 0 and value.flags & ResyncRequestFlag.resources == 0)
+        return error.InvalidSessionPayload;
+    if (value.reason == .resource_missing and
+        (value.flags & ResyncRequestFlag.resources == 0 or value.requested_resources == 0))
+        return error.InvalidSessionPayload;
+    if (value.reason == .publisher_restart and value.flags & ResyncRequestFlag.full_snapshot == 0)
+        return error.InvalidSessionPayload;
+    const has_range = value.first_missing_sequence != 0 or value.last_missing_sequence != 0;
+    if (has_range and (value.first_missing_sequence == 0 or
+        value.first_missing_sequence > value.last_missing_sequence or
+        value.last_missing_sequence == std.math.maxInt(u64)))
+        return error.InvalidSessionPayload;
+    if (value.reason == .sequence_gap and !has_range) return error.InvalidSessionPayload;
+}
+
+pub fn encodeResyncBegin(gpa: std.mem.Allocator, value: ResyncBegin, out: *std.ArrayList(u8)) !void {
+    try validateResyncBegin(value);
+    var bytes: [resync_begin_size]u8 = @splat(0);
+    std.mem.writeInt(u16, bytes[0..2], value.schema, .little);
+    bytes[2] = @intFromEnum(value.scope);
+    std.mem.writeInt(u64, bytes[8..16], value.resync_id, .little);
+    std.mem.writeInt(u64, bytes[16..24], value.first_sequence, .little);
+    try out.appendSlice(gpa, &bytes);
+}
+
+pub fn decodeResyncBegin(data: []const u8) Error!ResyncBegin {
+    if (data.len != resync_begin_size) return error.InvalidSessionPayload;
+    if (!std.mem.allEqual(u8, data[3..8], 0) or !std.mem.allEqual(u8, data[24..32], 0))
+        return error.InvalidSessionPayload;
+    const value: ResyncBegin = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .scope = switch (data[2]) {
+            1 => .display_only,
+            2 => .resources_only,
+            3 => .full,
+            else => return error.InvalidSessionPayload,
+        },
+        .resync_id = std.mem.readInt(u64, data[8..16], .little),
+        .first_sequence = std.mem.readInt(u64, data[16..24], .little),
+    };
+    try validateResyncBegin(value);
+    return value;
+}
+
+fn validateResyncBegin(value: ResyncBegin) Error!void {
+    if (value.schema != 1 or value.resync_id == 0 or value.first_sequence == 0)
+        return error.InvalidSessionPayload;
+}
+
+pub fn encodeResyncComplete(gpa: std.mem.Allocator, value: ResyncComplete, out: *std.ArrayList(u8)) !void {
+    try validateResyncComplete(value);
+    var bytes: [resync_complete_size]u8 = @splat(0);
+    std.mem.writeInt(u16, bytes[0..2], value.schema, .little);
+    std.mem.writeInt(u64, bytes[8..16], value.resync_id, .little);
+    std.mem.writeInt(u64, bytes[16..24], value.coherent_next_sequence, .little);
+    try out.appendSlice(gpa, &bytes);
+}
+
+pub fn decodeResyncComplete(data: []const u8) Error!ResyncComplete {
+    if (data.len != resync_complete_size) return error.InvalidSessionPayload;
+    if (!std.mem.allEqual(u8, data[2..8], 0) or !std.mem.allEqual(u8, data[24..32], 0))
+        return error.InvalidSessionPayload;
+    const value: ResyncComplete = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .resync_id = std.mem.readInt(u64, data[8..16], .little),
+        .coherent_next_sequence = std.mem.readInt(u64, data[16..24], .little),
+    };
+    try validateResyncComplete(value);
+    return value;
+}
+
+fn validateResyncComplete(value: ResyncComplete) Error!void {
+    if (value.schema != 1 or value.resync_id == 0 or value.coherent_next_sequence == 0)
+        return error.InvalidSessionPayload;
+}
+
+test "resync request and begin codecs round trip and reject malformed state" {
+    const request: ResyncRequest = .{
+        .reason = .sequence_gap,
+        .first_missing_sequence = 8,
+        .last_missing_sequence = 10,
+    };
+    var bytes: [resync_request_size]u8 = encodeResyncRequestBytes(request);
+    try std.testing.expectEqualDeep(request, try decodeResyncRequest(&bytes));
+    bytes[24] = 1;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncRequest(&bytes));
+
+    var begin_bytes: [resync_begin_size]u8 = @splat(0);
+    std.mem.writeInt(u16, begin_bytes[0..2], 1, .little);
+    begin_bytes[2] = @intFromEnum(ResyncScope.full);
+    std.mem.writeInt(u64, begin_bytes[8..16], 9, .little);
+    std.mem.writeInt(u64, begin_bytes[16..24], 11, .little);
+    const begin = try decodeResyncBegin(&begin_bytes);
+    try std.testing.expectEqual(ResyncScope.full, begin.scope);
+    begin_bytes[3] = 1;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncBegin(&begin_bytes));
+}
+
+fn encodeResyncRequestBytes(value: ResyncRequest) [resync_request_size]u8 {
+    var bytes: [resync_request_size]u8 = @splat(0);
+    std.mem.writeInt(u16, bytes[0..2], value.schema, .little);
+    bytes[2] = @intFromEnum(value.reason);
+    bytes[3] = value.flags;
+    std.mem.writeInt(u64, bytes[8..16], value.first_missing_sequence, .little);
+    std.mem.writeInt(u64, bytes[16..24], value.last_missing_sequence, .little);
+    std.mem.writeInt(u64, bytes[24..32], value.requested_resources, .little);
+    return bytes;
+}
+
+test "resync control state machine enforces scope id and coherent sequence" {
+    var control: Control = .{};
+    const request: ResyncRequest = .{ .reason = .sequence_gap, .first_missing_sequence = 8, .last_missing_sequence = 8 };
+    try control.apply(protocol.Message.resync_request, &encodeResyncRequestBytes(request));
+    try std.testing.expectEqual(ControlStage.resync_requested, control.stage);
+
+    var begin: [resync_begin_size]u8 = @splat(0);
+    std.mem.writeInt(u16, begin[0..2], 1, .little);
+    begin[2] = @intFromEnum(ResyncScope.display_only);
+    std.mem.writeInt(u64, begin[8..16], 77, .little);
+    std.mem.writeInt(u64, begin[16..24], 8, .little);
+    try control.apply(protocol.Message.resync_begin, &begin);
+    try std.testing.expectEqual(ControlStage.resync_active, control.stage);
+
+    var complete: [resync_complete_size]u8 = @splat(0);
+    std.mem.writeInt(u16, complete[0..2], 1, .little);
+    std.mem.writeInt(u64, complete[8..16], 77, .little);
+    std.mem.writeInt(u64, complete[16..24], 9, .little);
+    try control.apply(protocol.Message.resync_complete, &complete);
+    try std.testing.expectEqual(ControlStage.active, control.stage);
+    try std.testing.expectEqual(@as(?ResyncRequest, null), control.resync_request);
+}
+
+test "resync codecs reject reserved schemas enums ranges and sequence boundaries" {
+    const request: ResyncRequest = .{ .reason = .sequence_gap, .first_missing_sequence = 3, .last_missing_sequence = 3 };
+    var bytes: [resync_request_size]u8 = encodeResyncRequestBytes(request);
+
+    bytes[0] = 2;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncRequest(&bytes));
+    bytes[0] = 1;
+    bytes[2] = 5;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncRequest(&bytes));
+    bytes[2] = 1;
+    bytes[3] = 8;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncRequest(&bytes));
+    bytes[3] = 2;
+    bytes[24] = 0x80;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncRequest(&bytes));
+    bytes[24] = 0;
+    bytes[4] = 4;
+    bytes[12] = 3;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncRequest(&bytes));
+    bytes[4] = 3;
+    std.mem.writeInt(u64, bytes[16..24], std.math.maxInt(u64), .little);
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncRequest(&bytes));
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncRequest(bytes[0 .. bytes.len - 1]));
+    var trailing_bytes: [resync_request_size + 1]u8 = undefined;
+    @memcpy(trailing_bytes[0..resync_request_size], &bytes);
+    trailing_bytes[resync_request_size] = 0;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncRequest(&trailing_bytes));
+
+    const begin_valid: ResyncBegin = .{ .scope = .resources_only, .resync_id = 7, .first_sequence = 4 };
+    var begin: [resync_begin_size]u8 = @splat(0);
+    std.mem.writeInt(u16, begin[0..2], begin_valid.schema, .little);
+    begin[2] = @intFromEnum(begin_valid.scope);
+    std.mem.writeInt(u64, begin[8..16], begin_valid.resync_id, .little);
+    std.mem.writeInt(u64, begin[16..24], begin_valid.first_sequence, .little);
+    try std.testing.expectEqualDeep(begin_valid, try decodeResyncBegin(&begin));
+    begin[0] = 3;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncBegin(&begin));
+    begin[0] = 1;
+    begin[2] = 7;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncBegin(&begin));
+    begin[2] = 2;
+    std.mem.writeInt(u64, begin[8..16], 0, .little);
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncBegin(&begin));
+    std.mem.writeInt(u64, begin[8..16], 7, .little);
+    std.mem.writeInt(u64, begin[16..24], 0, .little);
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncBegin(&begin));
+    begin[16] = 0;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncBegin(&begin));
+    begin[16] = 4;
+    begin[3] = 1;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncBegin(&begin));
+    begin[3] = 0;
+    begin[25] = 1;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncBegin(&begin));
+    begin[25] = 0;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncBegin(begin[0 .. begin.len - 1]));
+
+    const complete_valid: ResyncComplete = .{ .resync_id = 7, .coherent_next_sequence = 4 };
+    var complete: [resync_complete_size]u8 = @splat(0);
+    std.mem.writeInt(u16, complete[0..2], complete_valid.schema, .little);
+    std.mem.writeInt(u64, complete[8..16], complete_valid.resync_id, .little);
+    std.mem.writeInt(u64, complete[16..24], complete_valid.coherent_next_sequence, .little);
+    try std.testing.expectEqualDeep(complete_valid, try decodeResyncComplete(&complete));
+    complete[0] = 4;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncComplete(&complete));
+    complete[0] = 1;
+    complete[2] = 1;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncComplete(&complete));
+    complete[2] = 0;
+    std.mem.writeInt(u64, complete[8..16], 0, .little);
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncComplete(&complete));
+    std.mem.writeInt(u64, complete[8..16], 7, .little);
+    std.mem.writeInt(u64, complete[16..24], 0, .little);
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncComplete(&complete));
+    complete[16] = 5;
+    try std.testing.expectEqual(@as(u64, 5), (try decodeResyncComplete(&complete)).coherent_next_sequence);
+    complete[16] = 4;
+    complete[3] = 1;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncComplete(&complete));
+    complete[3] = 0;
+    complete[25] = 1;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncComplete(&complete));
+    complete[25] = 0;
+    try std.testing.expectError(error.InvalidSessionPayload, decodeResyncComplete(complete[0 .. complete.len - 1]));
+}
+
+test "resync control scope mapping transitions and invalid states are atomic" {
+    const cases = [_]struct { request: ResyncRequest, scope: ResyncScope }{
+        .{ .request = .{ .reason = .sequence_gap, .first_missing_sequence = 4, .last_missing_sequence = 4 }, .scope = .display_only },
+        .{ .request = .{ .reason = .resource_missing, .flags = ResyncRequestFlag.resources, .requested_resources = ResyncResource.faces }, .scope = .resources_only },
+        .{ .request = .{ .reason = .publisher_restart, .flags = ResyncRequestFlag.full_snapshot | ResyncRequestFlag.resources, .requested_resources = ResyncResource.faces }, .scope = .full },
+    };
+    for (cases) |case| {
+        var control: Control = .{};
+        try control.apply(protocol.Message.resync_request, &encodeResyncRequestBytes(case.request));
+        try std.testing.expectEqual(ControlStage.resync_requested, control.stage);
+        try std.testing.expectError(Error.InvalidSessionStage, control.apply(protocol.Message.resync_request, &encodeResyncRequestBytes(case.request)));
+
+        var begin: [resync_begin_size]u8 = @splat(0);
+        std.mem.writeInt(u16, begin[0..2], 1, .little);
+        begin[2] = @intFromEnum(case.scope);
+        std.mem.writeInt(u64, begin[8..16], 9, .little);
+        const first_sequence: u64 = if (case.request.first_missing_sequence == 0) 1 else case.request.first_missing_sequence;
+        std.mem.writeInt(u64, begin[16..24], first_sequence, .little);
+        try control.apply(protocol.Message.resync_begin, &begin);
+        try std.testing.expectEqual(ControlStage.resync_active, control.stage);
+
+        var bad_control: Control = .{};
+        try bad_control.apply(protocol.Message.resync_request, &encodeResyncRequestBytes(case.request));
+        var bad_begin = begin;
+        bad_begin[2] = @intFromEnum(if (case.scope == .display_only) ResyncScope.full else ResyncScope.display_only);
+        try std.testing.expectError(Error.InvalidSessionPayload, bad_control.apply(protocol.Message.resync_begin, &bad_begin));
+        try std.testing.expectEqual(ControlStage.resync_requested, bad_control.stage);
+
+        var complete: [resync_complete_size]u8 = @splat(0);
+        std.mem.writeInt(u16, complete[0..2], 1, .little);
+        std.mem.writeInt(u64, complete[8..16], 9, .little);
+        if (case.request.first_missing_sequence != 0) {
+            std.mem.writeInt(u64, complete[16..24], case.request.last_missing_sequence + 1, .little);
+        } else {
+            std.mem.writeInt(u64, complete[16..24], first_sequence + 1, .little);
+        }
+        try control.apply(protocol.Message.resync_complete, &complete);
+        try std.testing.expectEqual(ControlStage.active, control.stage);
+        try std.testing.expectEqual(@as(?ResyncRequest, null), control.resync_request);
+    }
+
+    var control: Control = .{};
+    const request: ResyncRequest = .{ .reason = .sequence_gap, .first_missing_sequence = 4, .last_missing_sequence = 4 };
+    try control.apply(protocol.Message.resync_request, &encodeResyncRequestBytes(request));
+    var begin: [resync_begin_size]u8 = @splat(0);
+    std.mem.writeInt(u16, begin[0..2], 1, .little);
+    begin[2] = @intFromEnum(ResyncScope.display_only);
+    std.mem.writeInt(u64, begin[8..16], 1, .little);
+    std.mem.writeInt(u64, begin[16..24], 4, .little);
+    try control.apply(protocol.Message.resync_begin, &begin);
+    const saved_control = control;
+    var complete: [resync_complete_size]u8 = @splat(0);
+    std.mem.writeInt(u16, complete[0..2], 1, .little);
+    std.mem.writeInt(u64, complete[8..16], 9, .little);
+    std.mem.writeInt(u64, complete[16..24], 4, .little);
+    try std.testing.expectError(Error.InvalidSessionPayload, control.apply(protocol.Message.resync_complete, &complete));
+    try std.testing.expectEqual(saved_control.stage, control.stage);
+    try std.testing.expectEqual(saved_control.resync_id, control.resync_id);
 }
