@@ -2253,8 +2253,10 @@ The payload is exactly 16 bytes. The envelope frame ID, active frame identity,
 and `frame_generation` must agree. The referenced string must be live with the
 exact generation. Scene owns a zero-terminated copy of the resolved title and
 clears it on frame destruction, authenticated resync, or scene teardown. The
-diagnostic SDL bridge applies this Scene-owned title to the SDL window. This
-does not claim Emacs runtime title publication, complete frame-parameter
+diagnostic SDL bridge applies this Scene-owned title to the SDL window.  A
+publisher snapshot that omits the optional title suppresses title transport and
+leaves the prior diagnostic title unchanged.  This is bounded public-title
+observation, not Emacs runtime title ownership, complete frame-parameter
 parity, or `output_proto` registration.
 
 #### Frame alpha state

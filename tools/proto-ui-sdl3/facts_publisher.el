@@ -164,6 +164,27 @@
     (set-window-point (selected-window) (point))
     (redisplay)))
 
+(defun proto-ui--bounded-title (frame)
+  (let* ((raw (frame-parameter frame 'title))
+         (decoded (condition-case nil
+                      (decode-coding-string raw 'utf-8)
+                    (error nil)))
+         (encoded (and decoded
+                       (encode-coding-string decoded 'utf-8)))
+         (valid (and (stringp raw) (stringp decoded) (stringp encoded)
+                     (string= raw encoded)
+                     (> (length raw) 0)
+                     (<= (string-bytes raw) 120))))
+    (when valid
+      (let ((index 0))
+        (while (and valid (< index (length raw)))
+          (let ((char (aref raw index)))
+            (when (or (< char 32) (= char 127)
+                      (and (>= char 128) (<= char 159)))
+              (setq valid nil)))
+          (setq index (1+ index)))))
+    (and valid decoded)))
+
 (defun proto-ui--copy-first-line ()
   (with-current-buffer (window-buffer (selected-window))
     (let* ((copy-end (progn (goto-char (point-min))
@@ -388,21 +409,23 @@
                    :windows))
          (window-states (proto-ui--window-states frame))
          (cursor (list :line cursor-line :column cursor-column))
+         (title (proto-ui--bounded-title frame))
          (temporary-path (concat proto-ui--facts-path ".tmp"))
          (coding-system-for-write 'utf-8))
-    (with-temp-file temporary-path
-      (insert (json-serialize
-               (list :identity "process_lifetime"
-                     :frame_width (plist-get facts :frame_width)
-                     :frame_height (plist-get facts :frame_height)
-                     :window_width (plist-get facts :window_width)
-                     :window_height (plist-get facts :window_height)
-                     :windows windows
-                     :window_states window-states
-                     :text (vconcat lines)
-                     :cursor cursor
-                     :window_start_line start-line
-                     :window_visible_lines (length lines)))))
+    (let ((wire (list :identity "process_lifetime"
+                      :frame_width (plist-get facts :frame_width)
+                      :frame_height (plist-get facts :frame_height)
+                      :window_width (plist-get facts :window_width)
+                      :window_height (plist-get facts :window_height)
+                      :windows windows
+                      :window_states window-states
+                      :text (vconcat lines)
+                      :cursor cursor
+                      :window_start_line start-line
+                      :window_visible_lines (length lines))))
+      (when title (plist-put wire :title title))
+      (with-temp-file temporary-path
+        (insert (json-serialize wire))))
     (rename-file temporary-path proto-ui--facts-path t)))
 
 (let* ((frame (selected-frame))
@@ -416,6 +439,8 @@
   (dotimes (index 28) (insert (format "\nline %02d" index)))
   (set-window-point window (point-min))
   (redisplay)
+  (when (equal (getenv "PROTO_UI_TITLE_SMOKE") "1")
+    (set-frame-parameter frame 'title "Emacs Proto-UI Title"))
   (while t
     (setq window (frame-selected-window frame)
           buffer (window-buffer window))

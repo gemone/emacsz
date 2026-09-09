@@ -47,7 +47,7 @@ yet an Emacs-to-SDL3 focus or visibility runtime round trip.
 W12d-t adds `FRAME_TITLE` v1 as a strict generation-qualified reference to a
 live string resource.  `Scene` owns a zero-terminated resolved title and the
 diagnostic SDL bridge applies it to its real SDL window.  This is protocol and
-frontend state only, not Emacs title publication or `output_proto` frame
+frontend state only, not full Emacs frame-title/parameter ownership or `output_proto` frame
 ownership.
 
 W12d-a adds `FRAME_ALPHA` v1 for active, inactive, and background opacity in

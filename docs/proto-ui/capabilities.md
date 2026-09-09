@@ -237,7 +237,7 @@ Priorities:
 | Parent frame | P2 | Degraded | EUP `FRAME_PARENT` v1 models nullable parent relation and modal policy; Scene validates active-parent identity and the SDL probe verifies unparent path, while linked child-window ownership remains pending |
 | Child frame | P2 | Pending | EUP relation policy exists, but linked SDL child ownership, visibility propagation, tooltip behavior, and Emacs child-frame parity remain pending |
 | Tooltip frame | P2 | Pending | W12/W16 PGTK parity gate not met |
-| Title/name | P0 | Degraded | EUP `FRAME_TITLE` v1 resolves a generation-qualified string and sets the diagnostic SDL window title; Emacs title publication and frame-parameter parity remain pending |
+| Title/name | P0 | Degraded | Public Emacs title facts publish through bounded `FRAME_TITLE` v1 and set the diagnostic SDL window title; complete frame title/name/icon-name parameters and PGTK parity remain pending |
 | Icon | P1 | Degraded | `ICON_DEFINE`/`DELETE` v1 own complete RGBA8 icons and `FRAME_ICON` v1 references them through SDL; multi-resolution, animated, and taskbar parity remain pending |
 | Outer/native/text geometry | P0 | Degraded | Public frame/window geometry facts; no platform-native geometry contract |
 | Size hints | P1 | Degraded | EUP `FRAME_SIZE_HINTS` v1 models min/max, increment, and aspect constraints; SDL applies min/max/aspect and Scene owns increments, while redisplay geometry adaptation remains pending |

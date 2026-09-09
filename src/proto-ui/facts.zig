@@ -132,13 +132,17 @@ pub const Snapshot = struct {
     text: TextLines = .{},
     cursor: CursorFacts = .{ .line = 0, .column = 0 },
     viewport: ViewportFacts = .{ .start_line = 1, .line_count = 0 },
+    title: ?[]const u8 = null,
 
     pub fn eql(left: Snapshot, right: Snapshot) bool {
         return factsEql(left.facts, right.facts) and left.text.eql(right.text) and
             windowsEql(left.windows, right.windows) and
             windowContentsEql(left.contents, right.contents) and
             std.meta.eql(left.cursor, right.cursor) and
-            std.meta.eql(left.viewport, right.viewport);
+            std.meta.eql(left.viewport, right.viewport) and
+            ((left.title == null and right.title == null) or
+                (left.title != null and right.title != null and
+                    std.mem.eql(u8, left.title.?, right.title.?)));
     }
 
     pub fn deinit(self: *Snapshot, gpa: std.mem.Allocator) void {
@@ -148,6 +152,8 @@ pub const Snapshot = struct {
         if (self.contents.len != 0) gpa.free(self.contents);
         self.contents = &.{};
         self.text.deinit(gpa);
+        if (self.title) |title| gpa.free(title);
+        self.title = null;
     }
 };
 pub const Error = std.json.ParseError(std.json.Scanner) || error{
@@ -157,6 +163,7 @@ pub const Error = std.json.ParseError(std.json.Scanner) || error{
     InvalidViewportFacts,
     InvalidModeLineFacts,
     InvalidAuxLineFacts,
+    InvalidTitleFacts,
 };
 
 const SnapshotWire = struct {
@@ -171,6 +178,7 @@ const SnapshotWire = struct {
     cursor: CursorFacts = .{ .line = 1, .column = 0 },
     window_start_line: i32 = 1,
     window_visible_lines: i32 = 0,
+    title: ?[]const u8 = null,
 };
 
 const WindowStateWire = struct {
@@ -425,6 +433,11 @@ pub fn parseSnapshot(gpa: std.mem.Allocator, bytes: []const u8) !Snapshot {
     const viewport = ViewportFacts{ .start_line = wire.window_start_line, .line_count = wire.window_visible_lines };
     if (!viewport.valid()) return error.InvalidViewportFacts;
     if (viewport.line_count != wire.text.len) return error.InvalidViewportFacts;
+    if (wire.title) |title| {
+        if (title.len == 0 or title.len > max_text_columns or
+            !frontend.validBoundedUtf8Text(title, max_text_columns))
+            return error.InvalidTitleFacts;
+    }
     if ((wire.windows.len != 0 or wire.window_states.len != 0) and
         !std.mem.eql(u8, wire.identity, "process_lifetime"))
         return error.InvalidWindowFacts;
@@ -462,6 +475,7 @@ pub fn parseSnapshot(gpa: std.mem.Allocator, bytes: []const u8) !Snapshot {
         .text = .{ .lines = slices, .owner = owner },
         .cursor = wire.cursor,
         .viewport = viewport,
+        .title = if (wire.title) |title| try gpa.dupe(u8, title) else null,
     };
 }
 
@@ -999,6 +1013,62 @@ pub fn appendWireSnapshot(
     return appendWireSnapshotWindows(gpa, facts, &.{}, &.{}, text, cursor, viewport, scene, messages);
 }
 
+pub fn appendTitleMessages(
+    gpa: std.mem.Allocator,
+    scene: *frontend.Scene,
+    title: []const u8,
+    messages: *std.ArrayList([]const u8),
+) !void {
+    if (title.len == 0 or title.len > max_text_columns or
+        !frontend.validBoundedUtf8Text(title, max_text_columns)) return error.InvalidTitleFacts;
+    const sequence = scene.next_sequence orelse return error.InvalidTitleFacts;
+    if (sequence > std.math.maxInt(u32) - 1) return error.InvalidTitleFacts;
+    const generation: u32 = @intCast(sequence);
+    const frame_generation = scene.frame orelse return error.InvalidTitleFacts;
+
+    var string_payload: std.ArrayList(u8) = .empty;
+    defer string_payload.deinit(gpa);
+    try protocol.encodeStringDefine(gpa, .{
+        .resource_id = 9001,
+        .generation = generation,
+        .bytes = title,
+    }, &string_payload);
+    var string_message: std.ArrayList(u8) = .empty;
+    defer string_message.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.string_define,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = scene.session_id orelse 0x1001,
+        .frame_id = 1,
+        .timestamp_ns = sequence,
+    }, string_payload.items, &string_message);
+    try messages.append(gpa, try gpa.dupe(u8, string_message.items));
+    try scene.apply(string_message.items);
+
+    var title_payload: std.ArrayList(u8) = .empty;
+    defer title_payload.deinit(gpa);
+    try protocol.encodeFrameTitle(gpa, .{
+        .string_resource_id = 9001,
+        .string_generation = generation,
+        .frame_generation = frame_generation.generation,
+    }, &title_payload);
+    var title_message: std.ArrayList(u8) = .empty;
+    defer title_message.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = protocol.Message.frame_title,
+        .sequence = sequence + 1,
+        .ack_sequence = 0,
+        .session_id = scene.session_id orelse 0x1001,
+        .frame_id = 1,
+        .timestamp_ns = sequence + 1,
+    }, title_payload.items, &title_message);
+    try messages.append(gpa, try gpa.dupe(u8, title_message.items));
+    try scene.apply(title_message.items);
+}
+
 pub fn appendWireSnapshotWindows(
     gpa: std.mem.Allocator,
     facts: FrameFacts,
@@ -1382,6 +1452,30 @@ test "wire snapshots advance contiguous scene sequences" {
     try std.testing.expectEqual(@as(usize, 3), messages.items.len);
     try std.testing.expectEqual(@as(u64, 2), scene.stats.frame_updates);
     try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+}
+
+test "title facts parse and wire through string plus frame title" {
+    const a = std.testing.allocator;
+    const json = "{\"frame_width\":120,\"frame_height\":90,\"window_width\":110,\"window_height\":75,\"title\":\"Emacs Proto-UI\"}";
+    var snapshot = try parseSnapshot(a, json);
+    defer snapshot.deinit(a);
+    try std.testing.expectEqualStrings("Emacs Proto-UI", snapshot.title.?);
+
+    const invalid = "{\"frame_width\":120,\"frame_height\":90,\"window_width\":110,\"window_height\":75,\"title\":\"\"}";
+    try std.testing.expectError(error.InvalidTitleFacts, parseSnapshot(a, invalid));
+
+    var messages: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (messages.items) |message| a.free(message);
+        messages.deinit(a);
+    }
+    var scene = frontend.Scene.init(a);
+    defer scene.deinit();
+    try appendWireSnapshot(a, snapshot.facts, snapshot.text.lines, snapshot.cursor, snapshot.viewport, &scene, &messages);
+    try appendTitleMessages(a, &scene, snapshot.title.?, &messages);
+    try std.testing.expectEqual(@as(usize, 4), messages.items.len);
+    try std.testing.expectEqual(@as(u64, 5), scene.next_sequence.?);
+    try std.testing.expectEqualStrings("Emacs Proto-UI", scene.title.?);
 }
 
 test "viewport facts parse and wire into scene metadata" {

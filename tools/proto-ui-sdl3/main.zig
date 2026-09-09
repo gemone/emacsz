@@ -66,6 +66,7 @@ extern fn SDL_Quit() void;
 extern fn SDL_CreateWindow(title: [*:0]const u8, w: c_int, h: c_int, flags: SDLWindowFlags) ?*SDL_Window;
 extern fn SDL_DestroyWindow(window: *SDL_Window) void;
 extern fn SDL_SetWindowTitle(window: *SDL_Window, title: [*:0]const u8) void;
+extern fn SDL_GetWindowTitle(window: *SDL_Window) [*:0]const u8;
 extern fn SDL_SetWindowOpacity(window: *SDL_Window, opacity: f32) bool;
 extern fn SDL_GetWindowOpacity(window: *SDL_Window) f32;
 extern fn SDL_SetWindowBordered(window: *SDL_Window, bordered: bool) bool;
@@ -405,6 +406,7 @@ const Config = struct {
     interactive_publisher: bool = false,
     manual_emacs_session: bool = false,
     interactive_synthetic: bool = false,
+    title_smoke: bool = false,
     force_frontend_failure: bool = false,
     synthetic_pointer: bool = false,
     synthetic_pointer_v2: bool = false,
@@ -1405,6 +1407,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     try child_environment.put(try gpa.dupe(u8, "PROTO_UI_POINTER_SELECTION"), if (config.pointer_selection_publisher) "1" else "0");
     try child_environment.put(try gpa.dupe(u8, "PROTO_UI_POINTER_GENERIC"), if (config.pointer_generic_publisher) "1" else "0");
     try child_environment.put(try gpa.dupe(u8, "PROTO_UI_POINTER_MIDDLE_PASTE"), if (config.pointer_middle_paste_publisher) "1" else "0");
+    try child_environment.put(try gpa.dupe(u8, "PROTO_UI_TITLE_SMOKE"), if (config.title_smoke) "1" else "0");
 
     var emacs_child = try std.process.spawn(io, .{
         .argv = &.{ config.emacs_path, "--batch", "--load", "tools/proto-ui-sdl3/facts_publisher.el" },
@@ -1474,6 +1477,22 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
         published = initial_snapshot;
         var acks = live.AckTracker.init(1);
         try sendSnapshotMessages(gpa, published.?, published.?.text.lines, published.?.cursor, published.?.viewport, &scene, &acks, io, &reader, &writer, input_path, &input_sequence, negotiated.effective, false);
+        if (published.?.title) |title| {
+            var title_messages: std.ArrayList([]const u8) = .empty;
+            defer {
+                for (title_messages.items) |message| gpa.free(message);
+                title_messages.deinit(gpa);
+            }
+            try facts.appendTitleMessages(gpa, &scene, title, &title_messages);
+            for (title_messages.items) |message| {
+                const envelope = (try protocol.decodeEnvelope(message)).envelope;
+                try acks.markSent(envelope.sequence);
+                try live.writeFrame(&writer.interface, message);
+                try writer.interface.flush();
+                try awaitFrameAck(gpa, io, &reader, &writer, envelope.sequence, input_path, &input_sequence, envelope.session_id, envelope.frame_id, negotiated.effective);
+                try acks.ack(envelope.sequence);
+            }
+        }
         const complete_sequence = scene.next_sequence.? - 1;
         try live.writeControl(&writer.interface, .{ .kind = .resync_complete, .sequence = complete_sequence });
         try writer.interface.flush();
@@ -1510,6 +1529,11 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
             }
             if (heartbeat_due and (!config.interactive_publisher or heartbeat_ms >= 100)) {
                 var change_acks = live.AckTracker.init(1);
+                var title_messages: std.ArrayList([]const u8) = .empty;
+                defer {
+                    for (title_messages.items) |message| gpa.free(message);
+                    title_messages.deinit(gpa);
+                }
                 sendSnapshotMessages(gpa, published.?, published.?.text.lines, published.?.cursor, published.?.viewport, &scene, &change_acks, io, &reader, &writer, input_path, &input_sequence, negotiated.effective, gap_fault_pending) catch |err| {
                     if (err == error.ResyncRequested) {
                         gap_fault_pending = false;
@@ -1522,6 +1546,26 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
                         return err;
                     }
                 };
+                if (published.?.title) |title| {
+                    facts.appendTitleMessages(gpa, &scene, title, &title_messages) catch |append_err| {
+                        if (append_err == error.SocketUnconnected or append_err == error.WriteFailed) break;
+                        return append_err;
+                    };
+                    for (title_messages.items) |message| {
+                        const title_envelope = (try protocol.decodeEnvelope(message)).envelope;
+                        try change_acks.markSent(title_envelope.sequence);
+                        live.writeFrame(&writer.interface, message) catch |write_err| {
+                            if (write_err == error.SocketUnconnected or write_err == error.WriteFailed) break;
+                            return write_err;
+                        };
+                        try writer.interface.flush();
+                        awaitFrameAck(gpa, io, &reader, &writer, title_envelope.sequence, input_path, &input_sequence, title_envelope.session_id, title_envelope.frame_id, negotiated.effective) catch |read_err| {
+                            if (read_err == error.ReadFailed or read_err == error.SocketUnconnected) break;
+                            return read_err;
+                        };
+                        try change_acks.ack(title_envelope.sequence);
+                    }
+                }
                 heartbeat_due = false;
                 heartbeat_ms = 0;
             }
@@ -5958,33 +6002,51 @@ fn runEpxlInteractiveFrontend(
     var scene = frontend.Scene.init(gpa);
     errdefer scene.deinit();
     var scrollbar_event_delivered = false;
+    var title_applied = false;
     try live.writeControl(&writer.interface, .{ .kind = .resync_request, .sequence = 1 });
     try writer.interface.flush();
     const begin = try readControlExact(&reader);
     if (begin.kind != .resync_begin or begin.sequence != 1) return error.InvalidResyncRequest;
     scene.resetForResync();
 
-    for (0..2) |_| {
-        const message = (try live.readFrame(&reader.interface, gpa)) orelse return error.IncompleteResync;
-        defer gpa.free(message);
-        const envelope = (try protocol.decodeEnvelope(message)).envelope;
-        try scene.apply(message);
-        if (envelope.message_type == protocol.Message.frame_update) {
-            try deliveryAllowed(delivery, negotiated.effective);
-            const outcome = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
-            if (outcome == .delivered) {
-                switch (outcome.delivered.event) {
-                    .scrollbar_event => scrollbar_event_delivered = true,
-                    else => {},
+    while (true) {
+        const inbound = try readInbound(&reader, gpa);
+        switch (inbound) {
+            .control => |control| {
+                if (control.kind != .resync_complete or
+                    control.sequence != scene.next_sequence.? - 1)
+                    return error.IncompleteResync;
+                break;
+            },
+            .frame => |message| {
+                defer gpa.free(message);
+                const envelope = (try protocol.decodeEnvelope(message)).envelope;
+                try scene.apply(message);
+                if (envelope.message_type == protocol.Message.frame_title) {
+                    if (scene.title) |title| {
+                        SDL_SetWindowTitle(window, title.ptr);
+                        title_applied = std.mem.eql(
+                            u8,
+                            std.mem.span(SDL_GetWindowTitle(window)),
+                            title,
+                        );
+                    }
                 }
-            }
+                if (envelope.message_type == protocol.Message.frame_update) {
+                    try deliveryAllowed(delivery, negotiated.effective);
+                    const outcome = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
+                    if (outcome == .delivered) {
+                        switch (outcome.delivered.event) {
+                            .scrollbar_event => scrollbar_event_delivered = true,
+                            else => {},
+                        }
+                    }
+                }
+                try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
+                try writer.interface.flush();
+            },
         }
-        try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
-        try writer.interface.flush();
     }
-    const complete = try readControlExact(&reader);
-    if (complete.kind != .resync_complete or
-        complete.sequence != scene.next_sequence.? - 1) return error.IncompleteResync;
 
     _ = observeSceneDamage(&scene, &frame_gate, &frame_counters);
     const initial_cursor = scene.cursor;
@@ -6067,6 +6129,16 @@ fn runEpxlInteractiveFrontend(
         defer gpa.free(message);
         const envelope = (try protocol.decodeEnvelope(message)).envelope;
         try scene.apply(message);
+        if (envelope.message_type == protocol.Message.frame_title) {
+            if (scene.title) |title| {
+                SDL_SetWindowTitle(window, title.ptr);
+                title_applied = std.mem.eql(
+                    u8,
+                    std.mem.span(SDL_GetWindowTitle(window)),
+                    title,
+                );
+            }
+        }
         const is_frame_update = envelope.message_type == protocol.Message.frame_update;
         var damage: ?renderer_policy.DamageDecision = null;
         if (is_frame_update) damage = observeSceneDamage(&scene, &frame_gate, &frame_counters);
@@ -6192,6 +6264,21 @@ fn runEpxlInteractiveFrontend(
     if (config.synthetic_wheel and !config.synthetic_viewport and
         horizontal_wheel_ticks_delivered < 2)
         return error.HorizontalWheelScrollNotApplied;
+    if (config.interactive_synthetic) {
+        const expected_title = "Emacs Proto-UI Title";
+        if (!title_applied or scene.title == null or
+            !std.mem.eql(u8, scene.title.?, expected_title))
+        {
+            return error.EmacsTitleNotApplied;
+        }
+        std.debug.print(
+            "sdl3-emacs-interactive-smoke: {{\"kind\":\"sdl3-emacs-interactive-smoke\",\"title\":\"{s}\",\"result\":\"pass\"}}\n",
+            .{scene.title.?},
+        );
+    }
+    if (scene.title != null and !title_applied)
+        return error.EmacsTitleNotApplied;
+
     if (config.synthetic_wheel and !config.synthetic_viewport) {
         std.debug.print(
             "sdl3-wheel-smoke: {{\"kind\":\"sdl3-wheel-smoke\",\"vertical_ticks\":{d},\"horizontal_ticks\":{d},\"result\":\"pass\"}}\n",
@@ -7590,6 +7677,7 @@ fn runEmacsEpxlSession(
             resync_sessions_arg,
             gap_fault_arg,
             auto_quit_arg,
+            if (config.title_smoke) "--title-smoke" else "--no-title-smoke",
             if (config.clipboard_unicode_publisher) "--clipboard-unicode-publisher" else "--clipboard-ascii-publisher",
             if (config.pointer_selection_publisher)
                 "--pointer-selection-publisher"
@@ -7743,10 +7831,15 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
             config.manual_emacs_session = true;
+        } else if (std.mem.eql(u8, arg, "--title-smoke")) {
+            config.title_smoke = true;
+        } else if (std.mem.eql(u8, arg, "--no-title-smoke")) {
+            config.title_smoke = false;
         } else if (std.mem.eql(u8, arg, "--emacs-interactive-smoke")) {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
             config.interactive_synthetic = true;
+            config.title_smoke = true;
         } else if (std.mem.eql(u8, arg, "--emacs-copy-smoke")) {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
