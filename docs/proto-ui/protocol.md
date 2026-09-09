@@ -2699,8 +2699,20 @@ metadata. A `FRAME_UPDATE` may carry at most one such section; its payload is
 exactly `i32 window_start_line` followed by `i32 window_visible_lines`. The
 producer derives both from public Emacs window observation and caps the
 rendered line count to the facts-profile row limit. The viewport section is
-validated and committed atomically with the update. Extension section `0x8000`
-remains the separate bounded text-line records section.
+validated and committed atomically with the update.
+
+Facts text uses extension section `0x8002` (`TEXT_LINE_V2`). Each record is
+`u64 window_id`, `u32 row_index`, `u32 UTF-8 length`, and UTF-8 bytes. IDs must
+match a live window in the same update and row indexes must match a live row
+owned by that window. Duplicate `(window_id,row_index)` pairs, invalid UTF-8,
+zero IDs, and reserved trailing bytes are invalid. `0x8000` remains a
+single-window legacy migration section: it is accepted only when the update has
+exactly one window and its records are assigned to that window. A
+`FRAME_UPDATE` may contain at most one text section (`0x8000` or `0x8002`), not
+both. The facts publisher currently emits only `0x8002`; non-selected observed
+windows still have geometry and diagnostic outlines but no published rows or
+text. Scene text is bounded UTF-8, while the SDL debug renderer draws only its
+ASCII subset.
 
 The facts profile defines a deliberately bounded `WHEEL_EVENT` subset for
 `0x0603`: `u8 unit` (`1=line`), `u8 source` (`1=wheel`), `u8 modifiers`

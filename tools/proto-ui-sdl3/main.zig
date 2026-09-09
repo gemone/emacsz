@@ -5206,6 +5206,9 @@ fn observeSceneDamage(
     for (scene.text.items) |line| {
         var row_bytes: [4]u8 = undefined;
         std.mem.writeInt(u32, &row_bytes, line.row_index, .little);
+        var window_bytes: [8]u8 = undefined;
+        std.mem.writeInt(u64, &window_bytes, line.window_id, .little);
+        hasher.update(&window_bytes);
         hasher.update(&row_bytes);
         hasher.update(line.bytes);
         hasher.update(&.{0});
@@ -5251,8 +5254,11 @@ fn observeSceneDamage(
             text_lines_complete = false;
             break;
         }
-        const row = scene.rows.items[line.row_index];
-        const owner = findWindowById(scene.windows.items, row.window_id) orelse {
+        const row = findSceneRow(scene, line.window_id, line.row_index) orelse {
+            text_lines_complete = false;
+            break;
+        };
+        const owner = findWindowById(scene.windows.items, line.window_id) orelse {
             text_lines_complete = false;
             break;
         };
@@ -5261,6 +5267,7 @@ fn observeSceneDamage(
             break;
         };
         text_lines[bounded_text_line_count] = .{
+            .window_id = line.window_id,
             .row_index = line.row_index,
             .hash = std.hash.Wyhash.hash(0, line.bytes),
             .rect = damage_rect,
@@ -5768,6 +5775,13 @@ fn debugTextOrigin(owner: frontend.Window, row: frontend.Row) struct { x: i64, y
     };
 }
 
+fn findSceneRow(scene: *const frontend.Scene, window_id: u64, row_index: u32) ?frontend.Row {
+    for (scene.rows.items) |row| {
+        if (row.window_id == window_id and row.index == row_index) return row;
+    }
+    return null;
+}
+
 fn publicFactsGlyphRun(
     scene: *const frontend.Scene,
     text: []const u8,
@@ -6032,9 +6046,8 @@ fn buildSceneDrawList(
     }
 
     for (scene.text.items) |line| {
-        if (line.row_index >= scene.rows.items.len) return error.InvalidTextRow;
-        const row = scene.rows.items[line.row_index];
-        const owner = findSceneWindow(scene, row.window_id) orelse continue;
+        const row = findSceneRow(scene, line.window_id, line.row_index) orelse continue;
+        const owner = findSceneWindow(scene, line.window_id) orelse continue;
         if (line.bytes.len == 0) continue;
         if (rowHasGlyphRun(scene, owner.id, row.index)) continue;
         // The ASCII bitmap path has no text shaping or CJK font fallback.

@@ -171,6 +171,7 @@ pub fn decodeImagePlacement(data: []const u8) Error!ImagePlacement {
 }
 
 pub const TextLine = struct {
+    window_id: u64 = 1,
     row_index: u32,
     bytes: [:0]const u8,
 };
@@ -396,6 +397,12 @@ fn validGlyphRunText(text: []const u8) bool {
 }
 
 pub const TextLineWire = struct {
+    row_index: u32,
+    line: []const u8,
+};
+
+pub const TextLineV2Wire = struct {
+    window_id: u64,
     row_index: u32,
     line: []const u8,
 };
@@ -2658,6 +2665,28 @@ pub fn decodeTextLine(bytes: []const u8) Error!TextLineWire {
     return .{ .row_index = std.mem.readInt(u32, bytes[0..4], .little), .line = payload };
 }
 
+pub fn encodeTextLineV2(a: std.mem.Allocator, line: TextLineV2Wire, out: *std.ArrayList(u8)) !void {
+    if (line.window_id == 0) return Error.InvalidTable;
+    if (!validBoundedUtf8Text(line.line, max_text_columns)) return Error.InvalidTable;
+    try putU64(out, a, line.window_id);
+    try putU32(out, a, line.row_index);
+    try putU32(out, a, @intCast(line.line.len));
+    try out.appendSlice(a, line.line);
+}
+
+pub fn decodeTextLineV2(bytes: []const u8) Error!TextLineV2Wire {
+    if (bytes.len < 16) return Error.InvalidTable;
+    const length = std.mem.readInt(u32, bytes[12..16], .little);
+    if (bytes.len != 16 + length) return Error.InvalidTable;
+    const payload = bytes[16..];
+    if (!validBoundedUtf8Text(payload, max_text_columns)) return Error.InvalidTable;
+    return .{
+        .window_id = std.mem.readInt(u64, bytes[0..8], .little),
+        .row_index = std.mem.readInt(u32, bytes[8..12], .little),
+        .line = payload,
+    };
+}
+
 pub fn encodeTextInput(a: std.mem.Allocator, input: TextInput, out: *std.ArrayList(u8)) !void {
     if (!validBoundedUtf8Text(input.text, max_text_columns)) return Error.InvalidTable;
     try putU32(out, a, @intCast(input.text.len));
@@ -4559,6 +4588,7 @@ pub const Scene = struct {
         var text: std.ArrayList(TextLine) = .empty;
         defer text.deinit(self.allocator);
         errdefer for (text.items) |line| self.allocator.free(line.bytes);
+        var text_section_seen = false;
         var image_placements: [max_image_placements]ImagePlacement = undefined;
         var image_placement_count: usize = 0;
         var cursor: ?Cursor = null;
@@ -4679,6 +4709,8 @@ pub const Scene = struct {
                     viewport = wire;
                 },
                 protocol.SectionKind.extension_min => {
+                    if (text_section_seen) return Error.InvalidTable;
+                    text_section_seen = true;
                     var offset: usize = 0;
                     while (offset < section.records.len) {
                         if (section.records.len - offset < 8) return Error.InvalidTable;
@@ -4687,12 +4719,43 @@ pub const Scene = struct {
                         if (record_length > section.records.len - offset) return Error.InvalidTable;
                         const wire = try decodeTextLine(section.records[offset..][0..record_length]);
                         for (text.items) |old| {
-                            if (old.row_index == wire.row_index) return Error.InvalidTable;
+                            if (windows.items.len == 1 and old.window_id == windows.items[0].id and
+                                old.row_index == wire.row_index) return Error.InvalidTable;
                         }
-                        if (wire.row_index >= rows.items.len) return Error.InvalidMessage;
+                        if (windows.items.len != 1 or wire.row_index >= rows.items.len) return Error.InvalidMessage;
                         const owned = try self.allocator.dupeZ(u8, wire.line);
                         errdefer self.allocator.free(owned);
-                        try text.append(self.allocator, .{ .row_index = wire.row_index, .bytes = owned });
+                        try text.append(self.allocator, .{ .window_id = windows.items[0].id, .row_index = wire.row_index, .bytes = owned });
+                        offset += record_length;
+                    }
+                },
+                protocol.SectionKind.extension_min + 2 => {
+                    if (text_section_seen) return Error.InvalidTable;
+                    text_section_seen = true;
+                    var offset: usize = 0;
+                    while (offset < section.records.len) {
+                        if (section.records.len - offset < 16) return Error.InvalidTable;
+                        const length = std.mem.readInt(u32, section.records[offset + 12 ..][0..4], .little);
+                        const record_length = 16 + length;
+                        if (record_length > section.records.len - offset) return Error.InvalidTable;
+                        const wire = try decodeTextLineV2(section.records[offset..][0..record_length]);
+                        const owner = findWindow(windows.items, wire.window_id) orelse return Error.InvalidMessage;
+                        for (text.items) |old| {
+                            if (old.window_id == wire.window_id and old.row_index == wire.row_index)
+                                return Error.InvalidTable;
+                        }
+                        var row: ?Row = null;
+                        for (rows.items) |candidate| {
+                            if (candidate.window_id == wire.window_id and candidate.index == wire.row_index) {
+                                row = candidate;
+                                break;
+                            }
+                        }
+                        if (row == null) return Error.InvalidMessage;
+                        if (row.?.window_id != owner.id) return Error.InvalidMessage;
+                        const owned = try self.allocator.dupeZ(u8, wire.line);
+                        errdefer self.allocator.free(owned);
+                        try text.append(self.allocator, .{ .window_id = wire.window_id, .row_index = wire.row_index, .bytes = owned });
                         offset += record_length;
                     }
                 },
@@ -4821,7 +4884,9 @@ pub const Scene = struct {
         }
         var text_i: usize = 0;
         while (text_i < self.text.items.len) {
-            if (self.text.items[text_i].row_index == delete.row_index) {
+            if (self.text.items[text_i].window_id == delete.window_id and
+                self.text.items[text_i].row_index == delete.row_index)
+            {
                 const owned = self.text.items[text_i].bytes;
                 _ = self.text.orderedRemove(text_i);
                 self.allocator.free(owned);
@@ -7277,14 +7342,39 @@ test "row snapshot update and delete maintain bounded row state" {
     try scene.apply(update_message);
     try std.testing.expectEqual(@as(i32, 12), scene.rows.items[1].height);
 
+    const other_window = try windowCreateMessage(a, 5, 7, .{
+        .window_id = 101,
+        .parent_window_id = 0,
+        .x = 0,
+        .y = 0,
+        .width = 80,
+        .height = 60,
+        .flags = 2,
+        .default_face_id = 0,
+        .depth = 0,
+    });
+    defer a.free(other_window);
+    try scene.apply(other_window);
+    const other_row: Row = .{ .window_id = 101, .index = 2, .flags = 0, .x = 0, .y = 40, .width = 80, .height = 10, .ascent = 7, .descent = 2, .baseline = 7, .visible_height = 10 };
+    payload.clearRetainingCapacity();
+    try encodeRowSnapshot(a, 1, other_row, &payload);
+    const other_snapshot = try windowLifecycleMessage(a, protocol.Message.row_snapshot, 6, 7, payload.items);
+    defer a.free(other_snapshot);
+    try scene.apply(other_snapshot);
+    try scene.text.append(a, .{ .window_id = 100, .row_index = 2, .bytes = try a.dupeZ(u8, "one hundred") });
+    try scene.text.append(a, .{ .window_id = 101, .row_index = 2, .bytes = try a.dupeZ(u8, "one oh one") });
+
     const delete: RowDelete = .{ .frame_generation = 1, .window_id = 100, .row_index = 2 };
     payload.clearRetainingCapacity();
     try encodeRowDelete(a, delete, &payload);
     try std.testing.expectEqual(row_delete_size, payload.items.len);
-    const deletion = try windowLifecycleMessage(a, protocol.Message.row_delete, 5, 7, payload.items);
+    const deletion = try windowLifecycleMessage(a, protocol.Message.row_delete, 7, 7, payload.items);
     defer a.free(deletion);
     try scene.apply(deletion);
-    try std.testing.expectEqual(@as(usize, 1), scene.rows.items.len);
+    try std.testing.expectEqual(@as(usize, 2), scene.rows.items.len);
+    try std.testing.expectEqual(@as(usize, 1), scene.text.items.len);
+    try std.testing.expectEqual(@as(u64, 101), scene.text.items[0].window_id);
+    try std.testing.expectEqualStrings("one oh one", scene.text.items[0].bytes);
 }
 
 test "update boundaries reject nesting and stale close" {
@@ -11648,4 +11738,143 @@ test "dialog lifecycle validates owner, generation, and cleanup" {
     try std.testing.expect(scene.dialog == null);
     scene.resetForResync();
     try std.testing.expect(scene.dialog == null);
+}
+
+test "bounded text v2 preserves window ownership" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    const line: TextLineV2Wire = .{
+        .window_id = 102,
+        .row_index = 3,
+        .line = "visible ASCII",
+    };
+    try encodeTextLineV2(a, line, &bytes);
+    const decoded = try decodeTextLineV2(bytes.items);
+    try std.testing.expectEqual(line.window_id, decoded.window_id);
+    try std.testing.expectEqual(line.row_index, decoded.row_index);
+    try std.testing.expectEqualStrings(line.line, decoded.line);
+    try std.testing.expectError(Error.InvalidTable, decodeTextLineV2(bytes.items[0 .. bytes.items.len - 1]));
+    bytes.items[16] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeTextLineV2(bytes.items));
+}
+
+fn textV2Update(
+    a: std.mem.Allocator,
+    records: []const []const u8,
+    include_legacy: bool,
+    legacy_record: []const u8,
+) ![]u8 {
+    const header: protocol.FrameUpdateHeader = .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .sequence = 2,
+        .redisplay_generation = 1,
+        .logical_x = 0,
+        .logical_y = 0,
+        .logical_width = 80,
+        .logical_height = 60,
+        .physical_x = 0,
+        .physical_y = 0,
+        .physical_width = 80,
+        .physical_height = 60,
+        .scale = 1,
+        .dpi_x = 96,
+        .dpi_y = 96,
+        .damage_mode = 2,
+        .update_cause = 1,
+        .coalesced_count = 0,
+        .timestamp_ns = 2,
+    };
+    var window_bytes: std.ArrayList(u8) = .empty;
+    defer window_bytes.deinit(a);
+    try encodeWindow(a, .{ .id = 100, .frame_id = 7, .x = 0, .y = 0, .width = 80, .height = 60 }, &window_bytes);
+    var row_bytes: std.ArrayList(u8) = .empty;
+    defer row_bytes.deinit(a);
+    try encodeRow(a, .{ .window_id = 100, .index = 0, .flags = 0, .x = 0, .y = 0, .width = 80, .height = 10, .ascent = 7, .descent = 3, .baseline = 7, .visible_height = 10 }, &row_bytes);
+    var damage_bytes: std.ArrayList(u8) = .empty;
+    defer damage_bytes.deinit(a);
+    try encodeRect(a, .{ .x = 0, .y = 0, .width = 80, .height = 60 }, &damage_bytes);
+    var text_bytes: std.ArrayList(u8) = .empty;
+    defer text_bytes.deinit(a);
+    for (records) |record| try text_bytes.appendSlice(a, record);
+    var sections: std.ArrayList(protocol.Section) = .empty;
+    defer sections.deinit(a);
+    try sections.append(a, .{ .kind = protocol.SectionKind.windows, .records = window_bytes.items });
+    try sections.append(a, .{ .kind = protocol.SectionKind.rows, .records = row_bytes.items });
+    try sections.append(a, .{ .kind = protocol.SectionKind.damage, .records = damage_bytes.items });
+    if (include_legacy) try sections.append(a, .{ .kind = protocol.SectionKind.extension_min, .records = legacy_record });
+    try sections.append(a, .{ .kind = protocol.SectionKind.extension_min + 2, .records = text_bytes.items });
+    _ = &sections;
+    var update: std.ArrayList(u8) = .empty;
+    defer update.deinit(a);
+    try protocol.encodeFrameUpdate(a, .{ .header = header, .sections = sections.items }, &update);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{ .flags = protocol.Flags.delta, .message_type = protocol.Message.frame_update, .sequence = 2, .ack_sequence = 0, .session_id = 9, .frame_id = 7, .timestamp_ns = 2 }, update.items, &message);
+    return message.toOwnedSlice(a);
+}
+
+test "text v2 scene ownership is deterministic" {
+    const a = std.testing.allocator;
+    var valid_records: [1][]const u8 = undefined;
+    var valid_record: std.ArrayList(u8) = .empty;
+    defer valid_record.deinit(a);
+    try encodeTextLineV2(a, .{ .window_id = 100, .row_index = 0, .line = "one" }, &valid_record);
+    valid_records[0] = valid_record.items;
+
+    var duplicate_record: std.ArrayList(u8) = .empty;
+    defer duplicate_record.deinit(a);
+    try encodeTextLineV2(a, .{ .window_id = 100, .row_index = 0, .line = "two" }, &duplicate_record);
+    var duplicate_records: [2][]const u8 = undefined;
+    duplicate_records[0] = valid_record.items;
+    duplicate_records[1] = duplicate_record.items;
+
+    var unknown_record: std.ArrayList(u8) = .empty;
+    defer unknown_record.deinit(a);
+    try encodeTextLineV2(a, .{ .window_id = 999, .row_index = 0, .line = "bad" }, &unknown_record);
+    var unknown_records: [1][]const u8 = undefined;
+    unknown_records[0] = unknown_record.items;
+
+    var missing_record: std.ArrayList(u8) = .empty;
+    defer missing_record.deinit(a);
+    try encodeTextLineV2(a, .{ .window_id = 100, .row_index = 1, .line = "bad" }, &missing_record);
+    var missing_records: [1][]const u8 = undefined;
+    missing_records[0] = missing_record.items;
+
+    const cases = [_][]const []const u8{ &valid_records, &duplicate_records, &unknown_records, &missing_records };
+    for (cases, 0..) |records, case_index| {
+        var scene = Scene.init(a);
+        defer scene.deinit();
+        const create = try createMessage(a, 1, 7, 7);
+        defer a.free(create);
+        try scene.apply(create);
+        const message = try textV2Update(a, records, false, "");
+        defer a.free(message);
+        if (case_index == 0) {
+            try scene.apply(message);
+            try std.testing.expectEqual(@as(u64, 100), scene.text.items[0].window_id);
+        } else if (case_index == 1) {
+            try std.testing.expectError(Error.InvalidTable, scene.apply(message));
+        } else {
+            try std.testing.expectError(Error.InvalidMessage, scene.apply(message));
+        }
+    }
+
+    var legacy_record: std.ArrayList(u8) = .empty;
+    defer legacy_record.deinit(a);
+    try encodeTextLine(a, .{ .row_index = 0, .line = "legacy" }, &legacy_record);
+    var mixed_records: [2][]const u8 = undefined;
+    mixed_records[0] = legacy_record.items;
+    mixed_records[1] = valid_record.items;
+    {
+        var scene = Scene.init(a);
+        defer scene.deinit();
+        const create = try createMessage(a, 1, 7, 7);
+        defer a.free(create);
+        try scene.apply(create);
+        const message = try textV2Update(a, &mixed_records, true, legacy_record.items);
+        defer a.free(message);
+        try std.testing.expectError(Error.InvalidTable, scene.apply(message));
+    }
 }

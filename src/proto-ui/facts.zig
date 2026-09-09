@@ -328,6 +328,7 @@ test "parses bounded real windows into wire snapshot" {
     try std.testing.expectEqual(@as(usize, 2), scene.windows.items.len);
     try std.testing.expectEqual(@as(u64, 102), scene.windows.items[1].id);
     try std.testing.expectEqual(@as(u64, 101), scene.windows.items[0].id);
+    try std.testing.expectEqual(@as(u64, 102), scene.text.items[0].window_id);
     try std.testing.expectEqual(@as(i32, 8), scene.cursor.?.x);
     try std.testing.expectEqual(@as(i32, 0), scene.cursor.?.y);
 
@@ -699,7 +700,11 @@ pub fn appendWireSnapshotWindows(
     const wire_text_count = @min(text.len, @as(usize, @intCast(row_count)));
     for (text[0..wire_text_count], 0..) |line, index| {
         if (line.len > max_text_columns) return error.InvalidTextFacts;
-        try frontend.encodeTextLine(gpa, .{ .row_index = @intCast(index), .line = line }, &text_bytes);
+        try frontend.encodeTextLineV2(gpa, .{
+            .window_id = selected.id,
+            .row_index = @intCast(index),
+            .line = line,
+        }, &text_bytes);
     }
 
     const sections = [_]protocol.Section{
@@ -707,7 +712,7 @@ pub fn appendWireSnapshotWindows(
         .{ .kind = protocol.SectionKind.rows, .records = row_bytes.items },
         .{ .kind = protocol.SectionKind.cursors, .records = cursor_bytes.items },
         .{ .kind = protocol.SectionKind.extension_min + 1, .records = &wire_viewport_bytes },
-        .{ .kind = protocol.SectionKind.extension_min, .records = text_bytes.items },
+        .{ .kind = protocol.SectionKind.extension_min + 2, .records = text_bytes.items },
         .{ .kind = protocol.SectionKind.damage, .records = damage_bytes.items },
         .{ .kind = protocol.SectionKind.present_hint, .records = present_bytes.items },
     };

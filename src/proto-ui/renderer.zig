@@ -177,6 +177,7 @@ pub const TextLineRect = struct {
 };
 
 pub const TextLineObservation = struct {
+    window_id: u64 = 0,
     row_index: u32 = 0,
     hash: u64 = 0,
     rect: TextLineRect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
@@ -232,10 +233,11 @@ fn addTextLineRect(clip: *?LogicalRect, rect: TextLineRect) void {
 
 fn textLineByRow(
     observation: SceneDamageObservation,
+    window_id: u64,
     row_index: u32,
 ) ?TextLineObservation {
     for (observation.text_lines[0..observation.bounded_text_line_count]) |line| {
-        if (line.row_index == row_index) return line;
+        if (line.window_id == window_id and line.row_index == row_index) return line;
     }
     return null;
 }
@@ -257,14 +259,14 @@ pub fn textDamageClip(
     var union_rect: ?LogicalRect = null;
     var changed = false;
     for (old.text_lines[0..old.bounded_text_line_count]) |line| {
-        const replacement = textLineByRow(new, line.row_index);
+        const replacement = textLineByRow(new, line.window_id, line.row_index);
         if (replacement == null or replacement.?.hash != line.hash) {
             changed = true;
             addTextLineRect(&union_rect, line.rect);
         }
     }
     for (new.text_lines[0..new.bounded_text_line_count]) |line| {
-        const previous = textLineByRow(old, line.row_index);
+        const previous = textLineByRow(old, line.window_id, line.row_index);
         if (previous == null or previous.?.hash != line.hash) {
             changed = true;
             addTextLineRect(&union_rect, line.rect);
@@ -1419,4 +1421,39 @@ test "draw list records atlas glyph source and destination regions" {
     try std.testing.expectEqual(@as(f32, 1), command.destination.x);
     try std.testing.expectEqual(@as(f32, 0), command.source.x);
     try std.testing.expectEqual(@as(u64, 1), list.stats.atlas_glyphs);
+}
+
+test "text damage matches window and row, not row alone" {
+    const make = struct {
+        fn observation(first_hash: u64, second_hash: u64) SceneDamageObservation {
+            var result: SceneDamageObservation = .{
+                .viewport_start_line = 1,
+                .viewport_line_count = 0,
+                .cursor = null,
+                .text_hash = .{0} ** 32,
+                .text_line_count = 2,
+                .structure_hash = .{0} ** 32,
+                .structure_object_count = 2,
+            };
+            result.text_lines[0] = .{
+                .window_id = 101,
+                .row_index = 0,
+                .hash = first_hash,
+                .rect = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+            };
+            result.text_lines[1] = .{
+                .window_id = 102,
+                .row_index = 0,
+                .hash = second_hash,
+                .rect = .{ .x = 50, .y = 0, .width = 10, .height = 10 },
+            };
+            result.bounded_text_line_count = 2;
+            return result;
+        }
+    };
+    const old = make.observation(1, 2);
+    const unchanged = make.observation(1, 2);
+    const changed = make.observation(1, 3);
+    try std.testing.expect(textDamageClip(old, unchanged, 120, 80) == null);
+    try std.testing.expect(textDamageClip(old, changed, 120, 80) != null);
 }

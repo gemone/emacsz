@@ -1711,7 +1711,11 @@ Both sessions must complete `RESYNC_*` successfully.  The final SDL3 scene must
 be coherent and render at least two validated updates; additional cursor-only or
 mixed snapshots are allowed under the same contiguous-sequence rules.
 
-### W9j — Public ASCII text observation (approved)
+### W9j — Public text observation (historical; superseded by `TEXT_LINE_V2`)
+
+This section records the original W9j ASCII bridge. Its `0x8000` and
+printable-ASCII claims are historical. The current bounded facts contract is
+UTF-8 `TEXT_LINE_V2` at `0x8002`, with explicit window ownership.
 
 Goal: move the first real visible-window text from public Emacs APIs through
 EPXL into the SDL3 renderer, while keeping the full glyph/face/font model
@@ -1722,14 +1726,17 @@ Implemented:
 1. The facts smoke observes visible window text with public
    `window-buffer`, `window-start`, `window-end`, and
    `buffer-substring-no-properties` calls.
-2. `facts.parseText` bounds text to 32 lines and 120 printable-ASCII columns per
-   line and owns decoded line storage.
-3. `appendWireSnapshot` emits adapter-owned extension section `0x8000`; each
-   record maps one text line to an existing row index and is length bounded.
+2. Historical `facts.parseText` bounds text to 32 lines and 120 columns per
+   line and owns decoded line storage.  Current validation accepts bounded
+   UTF-8, not only printable ASCII.
+3. Historical `appendWireSnapshot` emitted adapter-owned extension section
+   `0x8000`.  The current publisher emits `0x8002` records that carry
+   `(window_id,row_index)` ownership and are length bounded.
 4. `frontend.Scene` decodes text atomically with the rest of `FRAME_UPDATE`,
-   validates row mapping, uniqueness, ordering limits, and printable ASCII, and
-   owns the null-terminated line storage.
-5. SDL3 renders each line with its debug text facility at the mapped row.  The
+   validates live window/row mapping, uniqueness, ordering limits, and UTF-8,
+   and owns the null-terminated line storage.
+5. SDL3 renders each line with its debug text facility at the mapped window and
+   row; that debug renderer remains ASCII-only.  The
    EPXL resync smoke fails unless the recovered scene contains the public text
    marker `Emacs Proto-UI`.
 
