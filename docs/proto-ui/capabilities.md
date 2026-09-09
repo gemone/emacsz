@@ -312,7 +312,7 @@ Priorities:
 | Multibyte input | P0 | Pending | No IME composition/commit path; bounded context lifecycle wire validation only |
 | IME context lifecycle | P1 | Degraded | `IME_ATTACH`/`DETACH`/`FOCUS`/`CURSOR_RECT`/`ALLOWED_INPUT`/`SURROUNDING_TEXT`/`RESET` codecs and Scene owner validation; platform backend, composition, commit, and candidates pending |
 | IME policy and surrounding state | P1 | Degraded | Bounded policy mask and 120-byte surrounding-text snapshot in Scene; platform backend and Emacs application pending |
-| IME reverse wire reports | P1 | Degraded | Bounded attached/detached/preedit/commit/surrounding/delete/candidate/cancel codecs; Scene stores bounded preedit start/update/end state, but has no platform backend, rendering, or core commit application |
+| IME reverse wire reports | P1 | Degraded | Bounded attached/detached/preedit/commit/surrounding/delete/candidate/cancel codecs; Scene preedit state and bounded ASCII SDL overlay proven, with no platform backend or core commit application |
 | Dead keys | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Mouse motion | P0 | Degraded | Bounded hover/drag admission; negotiated v2 preserves the exact button mask |
 | Mouse buttons | P0 | Degraded | Bounded left plus negotiated strict left/middle/right/X1/X2 v2 intents; diagnostic generic publisher moves point for bounded left v2 press/drag/release |
@@ -328,7 +328,7 @@ Priorities:
 | Focus enter/leave | P0 | Degraded | Negotiated strict FOCUS_EVENT observation; no Emacs core focus mutation (`sdl3-focus-window-smoke`) |
 | Window requests | P1 | Degraded | Negotiated strict close/resize/move/fullscreen/maximize/minimize/restore intents; no host contract or runtime mutation (`sdl3-focus-window-smoke`) |
 | IME activation | P1 | Pending | W12/W16 PGTK parity gate not met |
-| Preedit | P1 | Degraded | EUP start/update/end Scene state with bounded UTF-8 text, cursor offset, and selected length; SDL platform input, rendering, and PGTK parity pending |
+| Preedit | P1 | Degraded | EUP start/update/end Scene state with bounded UTF-8 text, cursor offset, selected length, and bounded ASCII SDL overlay; platform input, Unicode/font rendering, and PGTK parity pending |
 | Commit | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Surrounding text | P2 | Pending | W12/W16 PGTK parity gate not met |
 | Candidate placement | P1 | Pending | W12/W16 PGTK parity gate not met |

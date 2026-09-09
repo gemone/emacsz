@@ -2513,8 +2513,10 @@ context.  This is control-plane
 preparation.  In addition, bounded `Scene` state is implemented for
 `IME_PREEDIT_START`, `IME_PREEDIT_UPDATE`, and `IME_PREEDIT_END`: start creates
 an empty composition, update atomically replaces at most 120 UTF-8 bytes plus
-its cursor/selection offsets, and end/reset/detach clear it.  There is no
-platform IME backend, preedit rendering, commit application, candidate UI,
+its cursor/selection offsets, and end/reset/detach clear it.  The SDL
+diagnostic bridge has a bounded ASCII overlay only; this is not protocol-owned
+or production preedit rendering.  Unicode preedit remains retained state.
+There is no platform IME backend, commit application, candidate UI,
 surrounding-text query, or full multibyte-input claim.
 Every preedit message must use the active frame and the context's creating
 frame; update also requires an active composition.  All integer fields are

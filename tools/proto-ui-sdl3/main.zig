@@ -2379,6 +2379,29 @@ fn sendStandardEupFrame(
     try acks.ack(sequence);
 }
 
+fn applyRuntimeSceneMessage(
+    gpa: std.mem.Allocator,
+    scene: *frontend.Scene,
+    message_type: u16,
+    sequence: u64,
+    session_id: u64,
+    frame_id: u32,
+    payload: []const u8,
+) !void {
+    var message: std.ArrayList(u8) = .empty;
+    defer message.deinit(gpa);
+    try protocol.encodeEnvelope(gpa, .{
+        .flags = 0,
+        .message_type = message_type,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = session_id,
+        .frame_id = frame_id,
+        .timestamp_ns = 1,
+    }, payload, &message);
+    try scene.apply(message.items);
+}
+
 fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     var host: runtime_host.FakeHost = undefined;
     const table = runtime_host.fakeTable(&host);
@@ -4556,8 +4579,9 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
         SDL_Delay(10);
     }
-    if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0)
+    if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0) {
         return error.RuntimeBridgeNotRendered;
+    }
     const mode_sequence = scene.next_sequence.?;
     const mode_frame_id: u32 = scene.frame.?.frame_id;
     var mode_windows: std.ArrayList(u8) = .empty;
@@ -4653,6 +4677,135 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         return error.WindowLineRenderFailed;
     if (!mode_bar_rendered or !mode_line_rendered or scene.mode_line_count != 1)
         return error.ModeLineRenderFailed;
+
+    // A focused focused-context IME fixture proves the preedit state reaches
+    // the draw list, while Unicode preedit remains state-only in this renderer.
+    var ime_payload: std.ArrayList(u8) = .empty;
+    defer ime_payload.deinit(gpa);
+    const ime_sequence = scene.next_sequence.?;
+    const ime_frame: u32 = scene.frame.?.frame_id;
+    try frontend.encodeImeAttach(gpa, .{ .context_id = 11, .window_id = 10 }, &ime_payload);
+    try applyRuntimeSceneMessage(gpa, &scene, protocol.Message.ime_attach, ime_sequence, capability.session_id, ime_frame, ime_payload.items);
+    ime_payload.clearRetainingCapacity();
+    try frontend.encodeImeFocus(gpa, .{ .context_id = 11, .window_id = 10, .focused = true }, &ime_payload);
+    try applyRuntimeSceneMessage(gpa, &scene, protocol.Message.ime_focus, ime_sequence + 1, capability.session_id, ime_frame, ime_payload.items);
+    ime_payload.clearRetainingCapacity();
+    try frontend.encodeImeCursorRect(gpa, .{ .context_id = 11, .window_id = 10, .x = 20, .y = 0, .width = 4, .height = 12 }, &ime_payload);
+    try applyRuntimeSceneMessage(gpa, &scene, protocol.Message.ime_cursor_rect, ime_sequence + 2, capability.session_id, ime_frame, ime_payload.items);
+    ime_payload.clearRetainingCapacity();
+    try frontend.encodeImePreeditStart(gpa, 11, &ime_payload);
+    try applyRuntimeSceneMessage(gpa, &scene, protocol.Message.ime_preedit_start, ime_sequence + 3, capability.session_id, ime_frame, ime_payload.items);
+    ime_payload.clearRetainingCapacity();
+    try frontend.encodeImePreeditUpdate(gpa, .{ .context_id = 11, .cursor_offset = 3, .selected_length = 1, .bytes = "abc" }, &ime_payload);
+    try applyRuntimeSceneMessage(gpa, &scene, protocol.Message.ime_preedit_update, ime_sequence + 4, capability.session_id, ime_frame, ime_payload.items);
+
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    var preedit_box_rendered = false;
+    var preedit_text_rendered = false;
+    var preedit_text_position_rendered = false;
+    var preedit_top_border_rendered = false;
+    var preedit_bottom_border_rendered = false;
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .fill => |fill| {
+                if (fill.rect.x == 28 and fill.rect.y == 8 and
+                    fill.rect.width == 72 and fill.rect.height == 16 and
+                    fill.color.r == 0x20 and fill.color.g == 0x28 and
+                    fill.color.b == 0x38 and fill.color.a == 255)
+                    preedit_box_rendered = true;
+                if (fill.rect.x == 28 and fill.rect.y == 8 and
+                    fill.rect.width == 72 and fill.rect.height == 1 and
+                    fill.color.r == 0x71 and fill.color.g == 0xa6 and
+                    fill.color.b == 0xf2 and fill.color.a == 255)
+                    preedit_top_border_rendered = true;
+                if (fill.rect.x == 28 and fill.rect.y == 23 and
+                    fill.rect.width == 72 and fill.rect.height == 1 and
+                    fill.color.r == 0x71 and fill.color.g == 0xa6 and
+                    fill.color.b == 0xf2 and fill.color.a == 255)
+                    preedit_bottom_border_rendered = true;
+            },
+            .text => |preedit_text| {
+                if (preedit_text.x == 32 and preedit_text.y == 11 and std.mem.eql(u8, preedit_text.bytes, "abc"))
+                    preedit_text_rendered = true;
+                if (preedit_text.x == 32 and preedit_text.y == 11 and
+                    preedit_text.color != null and
+                    preedit_text.color.?.r == 0xff and preedit_text.color.?.g == 0xd5 and
+                    preedit_text.color.?.b == 0x4d and preedit_text.color.?.a == 255)
+                    preedit_text_position_rendered = true;
+            },
+            else => {},
+        }
+    }
+    if (!preedit_box_rendered or !preedit_text_rendered or
+        !preedit_top_border_rendered or !preedit_bottom_border_rendered)
+        return error.ImePreeditNotRendered;
+    if (!preedit_text_position_rendered)
+        return error.ImePreeditTextIncomplete;
+
+    ime_payload.clearRetainingCapacity();
+    try frontend.encodeImePreeditEnd(gpa, 11, &ime_payload);
+    try applyRuntimeSceneMessage(gpa, &scene, protocol.Message.ime_preedit_end, ime_sequence + 5, capability.session_id, ime_frame, ime_payload.items);
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    var stale_preedit_overlay = false;
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .fill => |fill| {
+                if (fill.rect.x == 28 and fill.rect.y == 8 and
+                    fill.rect.width == 72 and
+                    ((fill.rect.height == 16 and fill.color.r == 0x20 and
+                        fill.color.g == 0x28 and fill.color.b == 0x38 and fill.color.a == 255) or
+                        (fill.rect.height == 1 and fill.color.r == 0x71 and
+                            fill.color.g == 0xa6 and fill.color.b == 0xf2 and fill.color.a == 255)))
+                    stale_preedit_overlay = true;
+            },
+            .text => |preedit_text| {
+                if (preedit_text.x == 32 and preedit_text.y == 11 and
+                    preedit_text.color != null and
+                    preedit_text.color.?.r == 0xff and preedit_text.color.?.g == 0xd5 and
+                    preedit_text.color.?.b == 0x4d and preedit_text.color.?.a == 255)
+                    return error.ImePreeditClearFailed;
+            },
+            else => {},
+        }
+    }
+    if (stale_preedit_overlay) return error.ImePreeditClearFailed;
+
+    ime_payload.clearRetainingCapacity();
+    try frontend.encodeImePreeditStart(gpa, 11, &ime_payload);
+    try applyRuntimeSceneMessage(gpa, &scene, protocol.Message.ime_preedit_start, ime_sequence + 6, capability.session_id, ime_frame, ime_payload.items);
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    var empty_preedit_overlay = false;
+    var empty_preedit_text = false;
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .fill => |fill| {
+                if (fill.rect.x == 28 and fill.rect.y == 8 and
+                    fill.rect.width == 72 and fill.rect.height == 16)
+                    empty_preedit_overlay = true;
+            },
+            .text => |preedit_text| {
+                if (preedit_text.x == 32 and preedit_text.y == 11)
+                    empty_preedit_text = true;
+            },
+            else => {},
+        }
+    }
+    if (!empty_preedit_overlay or empty_preedit_text)
+        return error.ImePreeditEmptyTextInvalid;
+
+    ime_payload.clearRetainingCapacity();
+    try frontend.encodeImePreeditUpdate(gpa, .{ .context_id = 11, .cursor_offset = 3, .selected_length = 0, .bytes = "汉" }, &ime_payload);
+    try applyRuntimeSceneMessage(gpa, &scene, protocol.Message.ime_preedit_update, ime_sequence + 7, capability.session_id, ime_frame, ime_payload.items);
+    try buildSceneDrawList(&scene, &draw_list, 240, 96);
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .text => |preedit_text| {
+                if (preedit_text.x == 32 and preedit_text.y == 11)
+                    return error.ImePreeditUnicodeTextRendered;
+            },
+            else => {},
+        }
+    }
     std.debug.print(
         "sdl3-runtime-bridge-smoke: {{\"kind\":\"sdl3-runtime-bridge-smoke\",\"runs\":1,\"text\":\"Emacs\",\"title_applied\":true,\"session_suspend_resume\":true,\"present_feedback_codec\":true,\"geometry_scene_applied\":true,\"border_query\":{},\"icon_applied\":{},\"size_hints_applied\":{},\"z_order_applied\":{},\"parent_unparented\":{},\"cursor_update_rendered\":{},\"damage_rects\":{},\"scroll_run_plan\":{},\"scroll_copy_executed\":{},\"scroll_copy_bytes\":{},\"border_style\":{},\"divider_update\":{},\"fringe_update\":{},\"scrollbar_state\":{},\"font_patch\":true,\"fringe_bitmap\":true,\"tooltip\":true,\"menu_model\":true,\"menu_open\":true,\"frame_patch\":true,\"frame_snapshot\":true,\"menu_patch\":true,\"toolbar_model\":true,\"toolbar_patch\":true,\"dialog\":true,\"window_face\":{},\"window_geometry\":{},\"window_zones\":{},\"window_position\":true,\"mouse_highlight\":{},\"flush_boundary\":{},\"render_hint_applied\":{},\"opacity_supported\":{},\"decorations_supported\":{},\"scale_supported\":{},\"platform_scale_milli\":{},\"fullscreen_supported\":{},\"monitor_supported\":{},\"platform_monitor_id\":{},\"platform_monitor_width\":{},\"platform_monitor_height\":{},\"maximize_supported\":{},\"explicit_submitted_commands\":{},\"explicit_skipped_commands\":{},\"inputs\":2,\"rendered\":true,\"emacs_registered\":false,\"result\":\"pass\"}}\n",
         .{
@@ -6695,6 +6848,51 @@ fn buildSceneDrawList(
         // and retained, but full font rendering is not claimed here.
         if (input_policy.isAsciiText(text)) {
             try list.drawText(rect.x + 4, rect.y + 3, text, .{ .r = 0xff, .g = 0xd5, .b = 0x4d });
+        }
+    }
+
+    var preedit_context: ?*const frontend.ImeContext = null;
+    for (scene.ime_contexts[0..scene.ime_context_count]) |*context| {
+        const active_frame = scene.frame orelse return error.NoFrameUpdate;
+        if (context.frame_id == active_frame.frame_id and context.focused and
+            context.has_preedit and context.cursor_width > 0 and context.cursor_height > 0)
+        {
+            preedit_context = context;
+            break;
+        }
+    }
+    if (preedit_context) |context| {
+        const owner = findSceneWindow(scene, context.window_id) orelse
+            return error.ImePreeditWithoutWindow;
+        const width: i32 = @max(72, context.cursor_width + 8);
+        const height: i32 = @max(16, context.cursor_height);
+        const rect = renderer_policy.LogicalRect{
+            .x = @floatFromInt(owner.x + context.cursor_x),
+            .y = @floatFromInt(owner.y + context.cursor_y),
+            .width = @floatFromInt(width),
+            .height = @floatFromInt(height),
+        };
+        try list.fillRect(rect, .{ .r = 0x20, .g = 0x28, .b = 0x38, .a = 255 });
+        try list.fillRect(.{
+            .x = rect.x,
+            .y = rect.y,
+            .width = rect.width,
+            .height = 1,
+        }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2, .a = 255 });
+        try list.fillRect(.{
+            .x = rect.x,
+            .y = rect.y + rect.height - 1,
+            .width = rect.width,
+            .height = 1,
+        }, .{ .r = 0x71, .g = 0xa6, .b = 0xf2, .a = 255 });
+        const preedit = context.preedit_bytes[0..context.preedit_len];
+        if (preedit.len > 0 and input_policy.isAsciiText(preedit)) {
+            try list.drawText(
+                rect.x + 4,
+                rect.y + 3,
+                preedit,
+                .{ .r = 0xff, .g = 0xd5, .b = 0x4d, .a = 255 },
+            );
         }
     }
 }
