@@ -3097,7 +3097,8 @@ Review gates:
 
 Goal: prove the documented performance improvement.
 
-Status: W14-a complete. `proto-ui-bench` is an opt-in, adapter-only baseline.
+Status: W14-a complete. `proto-ui-bench` is an opt-in, adapter-only
+ReleaseFast baseline that installs `zig-out/proto-ui/benchmark.json`.
 It covers EUP `FRAME_UPDATE` encoding, envelope/payload decode and validation,
 fresh `frontend.Scene.apply`, atomic `CaptureService` encoding, and bounded
 memory-sink sending on deterministic 960x600, 30-row fixtures. It reports
@@ -3123,7 +3124,8 @@ Tasks:
 Acceptance:
 
 ```sh
-zig build -Dproto-ui=true proto-ui-bench
+zig build -Dproto-ui=true proto-ui-bench --summary all
+cat zig-out/proto-ui/benchmark.json
 ```
 
 The W14-a baseline acceptance is the command above; its `result` proves only

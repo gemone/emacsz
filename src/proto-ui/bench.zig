@@ -709,7 +709,7 @@ pub fn writeReport(
     if (results.len == 0) return error.EmptyReport;
     try out.appendSlice(allocator, "{\"schema_version\":");
     try out.print(allocator, "{d}", .{schema_version});
-    try out.appendSlice(allocator, ",\"kind\":\"proto-ui-adapter-hotpath-benchmark\",\"protocol\":{\"name\":\"EUP\",\"version\":\"1.0\"},\"transport\":\"memory\",\"renderer_tier\":\"not-applicable\",\"optimization_mode\":\"");
+    try out.appendSlice(allocator, ",\"kind\":\"proto-ui-adapter-hotpath-benchmark\",\"protocol\":{\"name\":\"EUP\",\"version\":\"1.0\"},\"host_profile\":\"unspecified\",\"frame\":{\"logical_width\":960,\"logical_height\":600,\"rows\":30},\"scale\":1.0,\"transport\":\"memory\",\"renderer_tier\":\"not-applicable\",\"optimization_mode\":\"");
     try out.appendSlice(allocator, @tagName(builtin.mode));
     try out.appendSlice(allocator, "\",\"iterations\":");
     try out.print(allocator, "{d}", .{options.iterations});
@@ -748,7 +748,7 @@ pub fn writeReport(
         } else {
             try out.appendSlice(allocator, "null");
         }
-        try out.appendSlice(allocator, ",\"transport\":\"memory\",\"renderer_tier\":\"not-applicable\",\"result\":\"pass\"}");
+        try out.appendSlice(allocator, ",\"frame_drop_ratio\":null,\"memory_peak_bytes\":null,\"atlas_hit_rate\":null,\"damage_coverage\":null,\"transport\":\"memory\",\"renderer_tier\":\"not-applicable\",\"result\":\"pass\"}");
     }
     try out.appendSlice(allocator, "]}\n");
 }
@@ -901,4 +901,10 @@ test "short measurement run reports all operations and bounded JSON" {
     try std.testing.expect(std.mem.indexOf(u8, report.items, "\"transport\":\"memory\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, report.items, "\"renderer_tier\":\"not-applicable\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, report.items, "\"optimization_mode\":\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report.items, "\"host_profile\":\"unspecified\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report.items, "\"frame\":{\"logical_width\":960,\"logical_height\":600,\"rows\":30}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report.items, "\"frame_drop_ratio\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report.items, "\"memory_peak_bytes\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report.items, "\"atlas_hit_rate\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report.items, "\"damage_coverage\":null") != null);
 }

@@ -1,6 +1,7 @@
 # Proto-UI Performance Baseline
 
-Status: normative performance design
+Status: normative performance design; the opt-in adapter hot-path baseline is
+measured in ReleaseFast and written to `zig-out/proto-ui/benchmark.json`.
 Protocol: EUP v1
 
 ## 1. Goals
@@ -361,6 +362,13 @@ damage coverage
 ```
 
 Machine-readable output is required.
+
+The current W14-a adapter baseline covers the protocol, transport, adapter
+fixture size, scale, workload, iteration count, latency percentiles, bandwidth,
+and allocation count.  It explicitly records `null` for fields that require the
+future real frame path: frame drops, memory peak, atlas hit rate, and damage
+coverage.  Do not interpret this adapter baseline as PGTK comparison evidence,
+redisplay-owned workload evidence, or end-to-end latency evidence.
 
 ## 13. Correctness precedence
 

@@ -148,10 +148,11 @@ R7 adds a source-authoritative, machine-checkable host-registration decision
 contract. Its current decision is pending, so runtime registration and a real
 `output_proto` frame remain explicitly unavailable.
 
-W14-a adds an opt-in, adapter-only hot-path benchmark. It measures five
-memory-transport scenarios with deterministic 960x600 fixtures, reports
+W14-a adds an opt-in, adapter-only hot-path benchmark in ReleaseFast. It
+measures five memory-transport scenarios with deterministic 960x600 fixtures, reports
 iteration/warmup counts, byte volume, monotonic p50/p95/p99/mean latency,
-throughput, observed allocation counts, build mode, and protocol version.
+throughput, observed allocation counts, build mode, and protocol version. The
+step installs the JSON report at `zig-out/proto-ui/benchmark.json`.
 It is evidence only: success does not depend on host timing, the runtime
 contract stays pending, and no SDL or inherited Emacs C/Lisp dependency is
 introduced.

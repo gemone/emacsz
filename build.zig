@@ -617,23 +617,32 @@ pub fn build(b: *std.Build) void {
         isolation_audit_step.dependOn(&run_isolation_audit.step);
         isolation_audit_step.dependOn(&install_isolation_audit.step);
 
-        // W14-a: hot-path evidence is opt-in.  Timing is intentionally kept
-        // out of the boundary gate so slow or noisy machines cannot fail the
-        // adapter compatibility suite.
+        // W14-a: hot-path evidence is opt-in and always measured in
+        // ReleaseFast.  Timing is intentionally kept out of the boundary gate
+        // so slow or noisy machines cannot fail the compatibility suite.
         const bench_tool = b.addExecutable(.{
             .name = "proto-ui-bench",
             .root_module = b.createModule(.{
                 .target = b.graph.host,
-                .optimize = optimize,
+                .optimize = .ReleaseFast,
                 .root_source_file = b.path("src/proto-ui/bench.zig"),
             }),
         });
         const run_bench = b.addRunArtifact(bench_tool);
+        const bench_report = run_bench.captureStdOut(.{
+            .basename = "proto-ui-benchmark.json",
+            .trim_whitespace = .all,
+        });
+        const install_bench_report = b.addInstallFile(
+            bench_report,
+            "proto-ui/benchmark.json",
+        );
         const bench_step = b.step(
             "proto-ui-bench",
-            "Run opt-in adapter hot-path benchmark evidence",
+            "Run opt-in ReleaseFast adapter hot-path benchmark evidence",
         );
         bench_step.dependOn(&run_bench.step);
+        bench_step.dependOn(&install_bench_report.step);
         if (b.args) |bench_args| run_bench.addArgs(bench_args);
 
         // W15-a: validate the *existing* Emacs runtime, not Proto-UI
