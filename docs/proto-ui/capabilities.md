@@ -310,9 +310,9 @@ Priorities:
 | Keyboard events | P0 | Degraded | Printable ASCII insert, backspace, arrows, copy, paste, bounded Ctrl/Alt motion commands; no general keymap commands |
 | Modifier state | P0 | Degraded | Ctrl+C/V and bounded Ctrl/Alt motion commands through full key v2; arbitrary modifier combinations and general commands pending |
 | Multibyte input | P0 | Pending | No IME composition/commit path; bounded context lifecycle wire validation only |
-| IME context lifecycle | P1 | Degraded | `IME_ATTACH`/`DETACH`/`FOCUS`/`CURSOR_RECT`/`ALLOWED_INPUT`/`SURROUNDING_TEXT`/`RESET` codecs and Scene owner validation; platform backend, composition, and commit pending |
+| IME context lifecycle | P1 | Degraded | `IME_ATTACH`/`DETACH`/`FOCUS`/`CURSOR_RECT`/`ALLOWED_INPUT`/`SURROUNDING_TEXT`/`RESET` codecs and Scene owner validation; platform backend and composition pending; bounded commit report state exists without core text application |
 | IME policy and surrounding state | P1 | Degraded | Bounded policy mask and 120-byte surrounding-text snapshot in Scene; platform backend and Emacs application pending |
-| IME reverse wire reports | P1 | Degraded | Bounded attached/detached/preedit/commit/surrounding/delete/candidate/cancel codecs; Scene preedit/candidate state and bounded ASCII SDL overlays proven, with no platform backend or core commit application |
+| IME reverse wire reports | P1 | Degraded | Bounded attached/detached/preedit/commit/surrounding/delete/candidate/cancel codecs; Scene preedit/candidate/commit state and bounded ASCII SDL overlays proven, with no platform backend or core commit application |
 | Dead keys | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Mouse motion | P0 | Degraded | Bounded hover/drag admission; negotiated v2 preserves the exact button mask |
 | Mouse buttons | P0 | Degraded | Bounded left plus negotiated strict left/middle/right/X1/X2 v2 intents; diagnostic generic publisher moves point for bounded left v2 press/drag/release |
@@ -329,7 +329,7 @@ Priorities:
 | Window requests | P1 | Degraded | Negotiated strict close/resize/move/fullscreen/maximize/minimize/restore intents; no host contract or runtime mutation (`sdl3-focus-window-smoke`) |
 | IME activation | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Preedit | P1 | Degraded | EUP start/update/end Scene state with bounded UTF-8 text, cursor offset, selected length, and bounded ASCII SDL overlay; platform input, Unicode/font rendering, and PGTK parity pending |
-| Commit | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Commit | P1 | Degraded | `IME_COMMIT` stores bounded UTF-8 committed text and clears active preedit/candidates in Scene; no platform IME hook or core buffer application |
 | Surrounding text | P2 | Pending | W12/W16 PGTK parity gate not met |
 | Candidate placement | P1 | Degraded | `IME_CANDIDATE_UPDATE` stores selected index/count/page and bounded selected label with an SDL diagnostic overlay; full candidate lists, Unicode label rendering, platform IME, selection input, and PGTK parity pending |
 
@@ -524,7 +524,7 @@ parity.
 | Base Emacs compatibility | Existing-buffer health gate for version, text/undo, narrowing, properties, faces, windows, scroll/recenter, buffer locals, optional real PGTK frame lifecycle, and a seven-scenario deterministic TTY/PGTK semantic matrix | Proto-frame compatibility and full PGTK parity | `proto-ui-compat` (opt-in); `compatibility.pgtk_base_gate` and `compatibility.backend_semantic_matrix` are degraded and non-negotiable |
 | Disabled/default isolation | Bounded marker audit of inherited C/Header/Lisp files and generated `src/config.h`; explicit owned-root/build-output exclusion; deterministic machine-readable fail-closed JSON | Runtime host registration, real `output_proto` enablement, and proto-frame compatibility | `proto-ui-isolation-audit`; `isolation.disabled_default_gate` is degraded and non-negotiable |
 
-The status audit contains 120 PGTK capability rows: 26 Degraded, 94 Pending,
+The status audit contains 120 PGTK capability rows: 27 Degraded, 93 Pending,
 0 Blocked, and 0 fully Implemented. A Degraded row always identifies both the
 verified bounded subset and the parity gap that remains.
 

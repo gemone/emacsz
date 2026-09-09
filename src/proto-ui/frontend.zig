@@ -3542,6 +3542,9 @@ pub const ImeContext = struct {
     candidate_label: [max_text_columns]u8 = undefined,
     candidate_label_len: u16 = 0,
     has_candidates: bool = false,
+    commit_bytes: [max_text_columns]u8 = undefined,
+    commit_len: u16 = 0,
+    has_commit: bool = false,
 
     pub fn clearSurrounding(self: *ImeContext) void {
         self.surrounding_len = 0;
@@ -3555,6 +3558,11 @@ pub const ImeContext = struct {
         self.preedit_cursor_offset = 0;
         self.preedit_selected_length = 0;
         self.has_preedit = false;
+    }
+
+    pub fn clearCommit(self: *ImeContext) void {
+        self.commit_len = 0;
+        self.has_commit = false;
     }
 
     pub fn clearCandidates(self: *ImeContext) void {
@@ -3940,6 +3948,7 @@ pub const Scene = struct {
             protocol.Message.ime_preedit_update => try self.applyImePreeditUpdate(payload),
             protocol.Message.ime_preedit_end => try self.applyImePreeditEnd(payload),
             protocol.Message.ime_candidate_update => try self.applyImeCandidateUpdate(payload),
+            protocol.Message.ime_commit => try self.applyImeCommit(payload),
             protocol.Message.ime_cancel => try self.applyImeCancel(payload),
             else => self.stats.control_messages += 1,
         }
@@ -5486,6 +5495,7 @@ pub const Scene = struct {
         context.clearSurrounding();
         context.clearPreedit();
         context.clearCandidates();
+        context.clearCommit();
         context.focused = false;
         context.cursor_x = 0;
         context.cursor_y = 0;
@@ -5560,6 +5570,22 @@ pub const Scene = struct {
             context.candidate_label_len = @intCast(update.selected_label.len);
             context.has_candidates = true;
         }
+        self.stats.control_messages += 1;
+    }
+
+    fn applyImeCommit(self: *Scene, payload: protocol.Payload) Error!void {
+        const commit = try decodeImeCommit(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id) return Error.InvalidMessage;
+        const context = self.findImeContext(commit.context_id) orelse return Error.InvalidMessage;
+        if (context.frame_id != frame.frame_id) return Error.InvalidMessage;
+        _ = findWindow(self.windows.items, context.window_id) orelse return Error.InvalidMessage;
+        if (!context.focused) return Error.InvalidMessage;
+        @memcpy(context.commit_bytes[0..commit.bytes.len], commit.bytes);
+        context.commit_len = @intCast(commit.bytes.len);
+        context.has_commit = true;
+        context.clearPreedit();
+        context.clearCandidates();
         self.stats.control_messages += 1;
     }
 
@@ -7333,6 +7359,69 @@ test "ime candidate state stores selected metadata and clears atomically" {
     try std.testing.expect(!scene.ime_contexts[0].has_candidates);
     try std.testing.expectEqual(@as(u16, 0), scene.ime_contexts[0].candidate_label_len);
     try std.testing.expect(!scene.ime_contexts[0].has_preedit);
+}
+
+test "ime commit stores bounded UTF-8 and finishes composition" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeImeAttach(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    const attach = try windowLifecycleMessage(a, protocol.Message.ime_attach, 3, 7, payload.items);
+    defer a.free(attach);
+    try scene.apply(attach);
+    payload.clearRetainingCapacity();
+    try encodeImeFocus(a, .{ .context_id = 11, .window_id = 100, .focused = true }, &payload);
+    const focus = try windowLifecycleMessage(a, protocol.Message.ime_focus, 4, 7, payload.items);
+    defer a.free(focus);
+    try scene.apply(focus);
+    payload.clearRetainingCapacity();
+    try encodeImePreeditStart(a, 11, &payload);
+    const start = try windowLifecycleMessage(a, protocol.Message.ime_preedit_start, 5, 7, payload.items);
+    defer a.free(start);
+    try scene.apply(start);
+    payload.clearRetainingCapacity();
+    try encodeImeCandidateUpdate(a, .{
+        .context_id = 11,
+        .selected_index = 0,
+        .candidate_count = 1,
+        .page_index = 0,
+        .page_count = 1,
+        .cursor_x = 0,
+        .cursor_y = 0,
+        .cursor_width = 20,
+        .cursor_height = 10,
+        .selected_label = "abc",
+    }, &payload);
+    const candidate = try windowLifecycleMessage(a, protocol.Message.ime_candidate_update, 6, 7, payload.items);
+    defer a.free(candidate);
+    try scene.apply(candidate);
+    payload.clearRetainingCapacity();
+    try encodeImeCommit(a, .{ .context_id = 11, .bytes = "你好" }, &payload);
+    const commit = try windowLifecycleMessage(a, protocol.Message.ime_commit, 7, 7, payload.items);
+    defer a.free(commit);
+    try scene.apply(commit);
+    try std.testing.expect(scene.ime_contexts[0].has_commit);
+    try std.testing.expectEqualStrings("你好", scene.ime_contexts[0].commit_bytes[0..scene.ime_contexts[0].commit_len]);
+    try std.testing.expectEqual(@as(u16, 6), scene.ime_contexts[0].commit_len);
+    try std.testing.expect(!scene.ime_contexts[0].has_preedit);
+    try std.testing.expect(!scene.ime_contexts[0].has_candidates);
+
+    payload.clearRetainingCapacity();
+    try encodeImeReset(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    const reset = try windowLifecycleMessage(a, protocol.Message.ime_reset, 8, 7, payload.items);
+    defer a.free(reset);
+    try scene.apply(reset);
+    try std.testing.expect(!scene.ime_contexts[0].has_commit);
+    try std.testing.expectEqual(@as(u16, 0), scene.ime_contexts[0].commit_len);
 }
 
 test "frame update reconciles invalid candidate placement" {

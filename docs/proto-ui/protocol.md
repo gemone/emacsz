@@ -2498,6 +2498,9 @@ nonzero `u64 context_id` then nonzero `u64 window_id`.  Exact forms are:
   `u32 selected_length`, and `u32 byte_length` at offsets 8, 12, and 16,
   followed by UTF-8 bytes.  `selected_length <= cursor_offset <= byte_length`
   and `byte_length` is bounded to 0..120; C0/C1 controls and DEL are invalid.
+* `IME_COMMIT` (`0x0715`, variable): nonzero `u64 context_id`, `u32
+  byte_length` at offset 8, then bounded UTF-8 text.  Length is 1..120; C0/C1
+  controls and DEL are invalid.
 * `IME_CANDIDATE_UPDATE` (`0x0718`, variable): nonzero context ID, four `u32`
   metadata fields at offsets 8/12/16/20 (selected index, candidate count, page
   index, page count), four window-relative `i32` placement fields at offsets
@@ -2536,9 +2539,11 @@ focused context, validates the placement against its live owner, and atomically
 stores selected index/count/page metadata plus at most 120 UTF-8 label bytes.
 A zero-count update clears candidates.  The SDL diagnostic bridge can draw one
 bounded ASCII selected-label metadata overlay; Unicode labels remain retained
-state.  `IME_CANCEL` clears candidates and preedit.  There is no platform IME
-backend, commit application, full candidate-list UI, or complete
-multibyte-input claim.
+state.  `IME_CANCEL` clears candidates and preedit.  `IME_COMMIT` requires a focused
+live context, records at most 120 UTF-8 committed bytes for diagnostics, and
+clears preedit/candidates; it does not mutate Emacs buffer text.  There is no
+platform IME backend, core commit application, full candidate-list UI, or
+complete multibyte-input claim.
 
 #### Standalone icon resource v1
 
