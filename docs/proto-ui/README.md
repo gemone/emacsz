@@ -148,6 +148,11 @@ R7 adds a source-authoritative, machine-checkable host-registration decision
 contract. Its current decision is pending, so runtime registration and a real
 `output_proto` frame remain explicitly unavailable.
 
+The R7 reviewer packet packages the proposal, policy contract, unselected host
+adapter, blocked activation plan, and R8 readiness into one deterministic
+SHA-256 provenance audit.  It remains pending/fail-closed; packet review never
+activates the runtime by itself.
+
 W14-a adds an opt-in, adapter-only hot-path benchmark in ReleaseFast. It
 measures five memory-transport scenarios with deterministic 960x600 fixtures, reports
 iteration/warmup counts, byte volume, monotonic p50/p95/p99/mean latency,

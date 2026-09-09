@@ -1027,6 +1027,60 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&install_r7_proposal.step);
         boundary_step.dependOn(&run_r7_proposal_gate.step);
 
+        // The review packet packages the pending R7 decision for a human
+        // reviewer.  It cannot approve, select, link, register, or activate.
+        const r7_review_packet_gen_tool = b.addExecutable(.{
+            .name = "proto-ui-r7-review-packet-gen",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/r7_review_packet_gen.zig"),
+            }),
+        });
+        r7_review_packet_gen_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_r7_review_packet_gen = b.addRunArtifact(r7_review_packet_gen_tool);
+        const r7_review_packet_artifact = run_r7_review_packet_gen.addOutputFileArg(
+            "r7_review_packet.json",
+        );
+        const install_r7_review_packet = b.addInstallFile(
+            r7_review_packet_artifact,
+            "proto-ui/r7_review_packet.json",
+        );
+
+        const r7_review_packet_gate_tool = b.addExecutable(.{
+            .name = "proto-ui-r7-review-packet-gate",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/r7_review_packet_gate.zig"),
+            }),
+        });
+        r7_review_packet_gate_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_r7_review_packet_gate = b.addRunArtifact(r7_review_packet_gate_tool);
+        run_r7_review_packet_gate.addFileArg(r7_review_packet_artifact);
+        run_r7_review_packet_gate.addFileArg(r7_proposal_artifact);
+        run_r7_review_packet_gate.addFileArg(host_contract_artifact);
+        run_r7_review_packet_gate.addFileArg(host_adapter_artifact);
+        run_r7_review_packet_gate.addFileArg(runtime_activation_artifact);
+        run_r7_review_packet_gate.addFileArg(r8_readiness_artifact);
+        run_r7_review_packet_gate.step.dependOn(&run_r7_review_packet_gen.step);
+        run_r7_review_packet_gate.step.dependOn(&run_r7_proposal_gen.step);
+        run_r7_review_packet_gate.step.dependOn(&run_host_contract_gen.step);
+        run_r7_review_packet_gate.step.dependOn(&run_host_adapter_gen.step);
+        run_r7_review_packet_gate.step.dependOn(&run_runtime_activation_gen.step);
+        run_r7_review_packet_gate.step.dependOn(&run_r8_readiness_gen.step);
+
+        const r7_review_packet_step = b.step(
+            "proto-ui-r7-review-packet",
+            "Generate and audit the fail-closed R7 review packet",
+        );
+        r7_review_packet_step.dependOn(&run_r7_review_packet_gen.step);
+        r7_review_packet_step.dependOn(&install_r7_review_packet.step);
+        r7_review_packet_step.dependOn(&run_r7_review_packet_gate.step);
+
+        boundary_step.dependOn(&install_r7_review_packet.step);
+        boundary_step.dependOn(&run_r7_review_packet_gate.step);
+
         // P1: this manifest plans differential evidence; it is deliberately
         // distinct from the future sdl3-pgtk-parity runtime acceptance gate.
         const pgtk_parity_gen_tool = b.addExecutable(.{
@@ -6444,6 +6498,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true proto-ui-isolation-audit - disabled/default runtime isolation audit
         \\
         \\  zig build -Dproto-ui=true proto-ui-host-contract - pending registration decision audit
+        \\  zig build -Dproto-ui=true proto-ui-r7-review-packet - fail-closed R7 reviewer packet
         \\  zig build -Dproto-ui=true proto-ui-host-adapter - unselected pure-SDL3 host adapter audit
         \\  zig build -Dproto-ui=true proto-ui-runtime-activation - blocked runtime activation audit
         \\  zig build -Dproto-ui=true proto-ui-runtime-manifest - fail-closed runtime manifest audit

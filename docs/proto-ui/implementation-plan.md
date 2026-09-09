@@ -170,6 +170,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W12j R5 frame service mapping | Approved |
 | W12k R6 atomic capture batches | Approved |
 | W12l R7 host-registration decision contract | Approved |
+| W12l-a R7 reviewer packet | Implemented; decision remains pending |
 | W12m R8 entry-readiness manifest and negative gate | Approved; R8 entry remains blocked |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |

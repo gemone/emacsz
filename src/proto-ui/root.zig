@@ -18,6 +18,7 @@ pub const capture_service = @import("capture_service.zig");
 pub const host_contract = @import("host_contract.zig");
 pub const host_adapter = @import("host_adapter.zig");
 pub const r7_proposal = @import("r7_proposal.zig");
+pub const r7_review_packet = @import("r7_review_packet.zig");
 pub const pgtk_parity = @import("pgtk_parity.zig");
 pub const runtime_host = @import("runtime_host.zig");
 pub const runtime_bridge = @import("runtime_bridge.zig");
@@ -49,6 +50,7 @@ test {
     _ = host_contract;
     _ = host_adapter;
     _ = r7_proposal;
+    _ = r7_review_packet;
     _ = pgtk_parity;
     _ = runtime_host;
     _ = runtime_bridge;

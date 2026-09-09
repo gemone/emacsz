@@ -229,6 +229,38 @@ manifest must record:
 | R8. First terminal smoke | Real `window-system . proto` frame | Emacs creates, displays, operates, and deletes one SDL3 frame |
 | R9. Differential compatibility | PGTK vs Proto-UI behavior suite | Frame, text, cursor, input, scroll, resize, and lifecycle baselines pass |
 
+### 10.1 R7 reviewer packet
+
+The deterministic R7 review packet is source-authoritative and fail closed:
+
+```sh
+zig build -Dproto-ui=true proto-ui-r7-review-packet --summary all
+cat zig-out/proto-ui/r7_review_packet.json
+```
+
+The packet embeds SHA-256 provenance for five generated review artifacts and
+builds/validates each exact artifact: the registration proposal, registration
+contract, unselected host-adapter selection, blocked activation contract, and
+R8 readiness record.  The runtime design is carried as an explicit, unverified
+reference document.  The packet presents six pending reviewer questions:
+
+1. pure-SDL3/`output_proto` boundary policy;
+2. no edits, replacement, patching, or interposition in tracked inherited
+   Emacs C/Lisp source;
+3. complete versioned terminal/frame/redisplay/input/lifecycle callback table;
+4. reproducible prerequisite, fail-closed, pure-frame, and differential
+   evidence gates;
+5. reverse rollback and default-build isolation;
+6. complete reviewer metadata only when the source decision leaves pending.
+
+Approving a packet merge is not an R7 approval.  The gate compares every
+generated input byte-for-byte with the source-derived artifact before reporting
+the pending state.  Approval requires a separate reviewed source-contract
+change that records reviewer, decision ID, review time, and approval scope
+while all packet checks pass.  Only then may the host adapter selection and R8
+entry record be changed; runtime activation remains a separate explicit path
+and cannot happen implicitly.
+
 P5 preparation extends `PureRuntimeHostV1.RunRecord` with a bounded
 printable-ASCII payload and geometry so `runtime_bridge` can project host runs
 into existing debug `GLYPH_RUN` messages.  Production shaped runs remain pending.
