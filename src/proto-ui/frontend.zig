@@ -3622,6 +3622,11 @@ pub const Scene = struct {
     mode_line_count: usize = 0,
     ime_contexts: [max_ime_contexts]ImeContext = undefined,
     ime_context_count: usize = 0,
+    selection_kind: ?protocol.SelectionKind = null,
+    selection_generation: u32 = 0,
+    selection_flags: u8 = 0,
+    selection_offers: []protocol.SelectionOffer = &.{},
+    selection_targets: []u8 = &.{},
     aux_lines: [max_aux_lines]ModeLine = undefined,
     aux_line_count: usize = 0,
     title: ?[:0]u8 = null,
@@ -3713,6 +3718,7 @@ pub const Scene = struct {
         self.cursor = null;
         self.cursor_count = 0;
         self.ime_context_count = 0;
+        self.clearSelectionOwnership();
         self.present = null;
         self.flush = null;
         self.render_hint = null;
@@ -3950,6 +3956,9 @@ pub const Scene = struct {
             protocol.Message.ime_candidate_update => try self.applyImeCandidateUpdate(payload),
             protocol.Message.ime_commit => try self.applyImeCommit(payload),
             protocol.Message.ime_cancel => try self.applyImeCancel(payload),
+            protocol.Message.selection_owner_set => try self.applySelectionOwnerSet(payload),
+            protocol.Message.selection_owner_clear => try self.applySelectionClear(payload),
+            protocol.Message.selection_lost => try self.applySelectionLost(payload),
             else => self.stats.control_messages += 1,
         }
         self.next_sequence = next_sequence;
@@ -5260,6 +5269,70 @@ pub const Scene = struct {
         self.removeGlyphRunsForFace(patch.face_id, current.generation);
         self.removeWindowFacesForFace(patch.face_id, current.generation);
         self.removeMouseHighlightsForFace(patch.face_id, current.generation);
+        self.stats.control_messages += 1;
+    }
+
+    fn clearSelectionOwnership(self: *Scene) void {
+        if (self.selection_offers.len != 0) self.allocator.free(self.selection_offers);
+        if (self.selection_targets.len != 0) self.allocator.free(self.selection_targets);
+        self.selection_offers = &.{};
+        self.selection_targets = &.{};
+        self.selection_kind = null;
+        self.selection_generation = 0;
+        self.selection_flags = 0;
+    }
+
+    fn setSelectionOwnership(
+        self: *Scene,
+        owner: protocol.SelectionOwnerSet,
+    ) Error!void {
+        if (owner.kind != .primary) return Error.Unsupported;
+        if (self.selection_kind) |current_kind| {
+            if (current_kind != .primary) return Error.Unsupported;
+            if (owner.generation <= self.selection_generation) return Error.StaleGeneration;
+        }
+
+        var target_bytes: usize = 0;
+        for (owner.offers) |offer| target_bytes += offer.target.len;
+        const offers = try self.allocator.dupe(protocol.SelectionOffer, owner.offers);
+        errdefer self.allocator.free(offers);
+        const targets = try self.allocator.alloc(u8, target_bytes);
+        errdefer self.allocator.free(targets);
+        var offset: usize = 0;
+        for (offers) |*offer| {
+            @memcpy(targets[offset..][0..offer.target.len], offer.target);
+            offer.target = targets[offset..][0..offer.target.len];
+            offset += offer.target.len;
+        }
+
+        self.clearSelectionOwnership();
+        self.selection_offers = offers;
+        self.selection_targets = targets;
+        self.selection_kind = owner.kind;
+        self.selection_generation = owner.generation;
+        self.selection_flags = owner.flags;
+    }
+
+    fn applySelectionOwnerSet(self: *Scene, payload: protocol.Payload) Error!void {
+        var owner = try protocol.decodeSelectionOwnerSet(self.allocator, payload.bytes);
+        defer protocol.freeSelectionOwnerSet(self.allocator, &owner);
+        try self.setSelectionOwnership(owner);
+        self.stats.control_messages += 1;
+    }
+
+    fn applySelectionClear(self: *Scene, payload: protocol.Payload) Error!void {
+        const clear = try protocol.decodeSelectionClear(payload.bytes);
+        if (clear.kind != .primary or self.selection_kind != .primary or
+            self.selection_generation != clear.generation) return Error.StaleGeneration;
+        self.clearSelectionOwnership();
+        self.stats.control_messages += 1;
+    }
+
+    fn applySelectionLost(self: *Scene, payload: protocol.Payload) Error!void {
+        const lost = try protocol.decodeSelectionLost(payload.bytes);
+        if (lost.kind != .primary or self.selection_kind != .primary or
+            self.selection_generation != lost.generation) return Error.StaleGeneration;
+        self.clearSelectionOwnership();
         self.stats.control_messages += 1;
     }
 
@@ -7359,6 +7432,90 @@ test "ime candidate state stores selected metadata and clears atomically" {
     try std.testing.expect(!scene.ime_contexts[0].has_candidates);
     try std.testing.expectEqual(@as(u16, 0), scene.ime_contexts[0].candidate_label_len);
     try std.testing.expect(!scene.ime_contexts[0].has_preedit);
+}
+
+test "selection ownership state validates generations and clears loss" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    const offers = [_]protocol.SelectionOffer{
+        .{ .target = "UTF8_STRING", .priority = 2 },
+        .{ .target = "STRING", .priority = 1 },
+    };
+    try protocol.encodeSelectionOwnerSet(a, .{
+        .kind = .primary,
+        .generation = 1,
+        .flags = protocol.SelectionOwnerFlags.export_to_platform |
+            protocol.SelectionOwnerFlags.notify_on_loss,
+        .offers = offers[0..],
+    }, &payload);
+    const owner = try windowLifecycleMessage(a, protocol.Message.selection_owner_set, 1, 7, payload.items);
+    defer a.free(owner);
+    try scene.apply(owner);
+    try std.testing.expectEqual(protocol.SelectionKind.primary, scene.selection_kind.?);
+    try std.testing.expectEqual(@as(u32, 1), scene.selection_generation);
+    try std.testing.expectEqual(@as(usize, 2), scene.selection_offers.len);
+    try std.testing.expectEqualStrings("UTF8_STRING", scene.selection_offers[0].target);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeSelectionOwnerSet(a, .{
+        .kind = .primary,
+        .generation = 1,
+        .flags = 0,
+        .offers = offers[0..1],
+    }, &payload);
+    const stale = try windowLifecycleMessage(a, protocol.Message.selection_owner_set, 2, 7, payload.items);
+    defer a.free(stale);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(stale));
+    try std.testing.expectEqual(@as(u32, 1), scene.selection_generation);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeSelectionOwnerSet(a, .{
+        .kind = .primary,
+        .generation = 2,
+        .flags = protocol.SelectionOwnerFlags.export_to_platform,
+        .offers = offers[0..1],
+    }, &payload);
+    const replacement = try windowLifecycleMessage(a, protocol.Message.selection_owner_set, 2, 7, payload.items);
+    defer a.free(replacement);
+    try scene.apply(replacement);
+    try std.testing.expectEqual(@as(u32, 2), scene.selection_generation);
+    try std.testing.expectEqual(@as(usize, 1), scene.selection_offers.len);
+    try std.testing.expectEqualStrings("UTF8_STRING", scene.selection_offers[0].target);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeSelectionClear(a, .{ .generation = 2, .kind = .primary }, &payload);
+    const clear = try windowLifecycleMessage(a, protocol.Message.selection_owner_clear, 3, 7, payload.items);
+    defer a.free(clear);
+    try scene.apply(clear);
+    try std.testing.expectEqual(@as(?protocol.SelectionKind, null), scene.selection_kind);
+    try std.testing.expectEqual(@as(usize, 0), scene.selection_offers.len);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeSelectionOwnerSet(a, .{
+        .kind = .primary,
+        .generation = 3,
+        .flags = protocol.SelectionOwnerFlags.notify_on_loss,
+        .offers = offers[0..1],
+    }, &payload);
+    const recreate = try windowLifecycleMessage(a, protocol.Message.selection_owner_set, 4, 7, payload.items);
+    defer a.free(recreate);
+    try scene.apply(recreate);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeSelectionLost(a, .{
+        .kind = .primary,
+        .reason = .replacement,
+        .generation = 3,
+    }, &payload);
+    const lost = try windowLifecycleMessage(a, protocol.Message.selection_lost, 5, 7, payload.items);
+    defer a.free(lost);
+    try scene.apply(lost);
+    try std.testing.expectEqual(@as(?protocol.SelectionKind, null), scene.selection_kind);
+    try std.testing.expectEqual(@as(usize, 0), scene.selection_offers.len);
 }
 
 test "ime commit stores bounded UTF-8 and finishes composition" {

@@ -1610,6 +1610,17 @@ drag_phase hover source
 
 Pointer events include enter, leave, motion, press, release, click, double-click, triple-click, drag, and cancel.
 
+### Bounded primary ownership state v1
+
+`SELECTION_OWNER_SET` (`0x0800`), `SELECTION_OWNER_CLEAR` (`0x0801`), and
+`SELECTION_LOST` (`0x0802`) now have bounded Scene state for primary ownership
+only.  An owner records its generation, owner flags, and up to eight unique
+target offers with priorities; a newer generation replaces it, while clear/lost
+must match the live kind and generation.  The target list is ownership metadata,
+not request/data transfer.  Platform ownership, target conversion, clipboard or
+PRIMARY exchange, secondary selection, and request/data/error Scene handling
+remain pending.
+
 ### Wheel event fields
 
 ```text
