@@ -446,6 +446,7 @@ Available:
 | `performance.md` | Performance tiers, budgets, test scenarios, instrumentation, and regression gates |
 | `implementation-plan.md` | Workstreams, concrete tasks, acceptance gates, and final definition of done |
 | [`runbook.md`](runbook.md) | Current build/test commands, expected smoke behavior, and troubleshooting boundary |
+| [`publisher-lifecycle.md`](publisher-lifecycle.md) | Bounded authenticated publisher contract, atomic facts, reverse-input gates, and shutdown ordering |
 
 ## 4. Core principle
 
