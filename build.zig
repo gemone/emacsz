@@ -1537,6 +1537,29 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_epxl_recovery_step.dependOn(&run_sdl3_epxl_recovery.step);
 
+        const run_sdl3_epxl_gap = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-gap-recovery-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=2000",
+        });
+        run_sdl3_epxl_gap.setCwd(b.path("."));
+        run_sdl3_epxl_gap.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_epxl_gap.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_epxl_gap.step.dependOn(step);
+        const sdl3_epxl_gap_step = b.step(
+            "sdl3-epxl-gap-recovery-smoke",
+            "Drop a display sequence and recover the real Emacs scene in-session",
+        );
+        sdl3_epxl_gap_step.dependOn(&run_sdl3_epxl_gap.step);
+
         const run_sdl3_epxl_interactive = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/proto-ui-sdl3",
             "--emacs-epxl-interactive-smoke",

@@ -3539,6 +3539,8 @@ pub const Scene = struct {
     allocator: std.mem.Allocator,
     session_id: ?u64 = null,
     next_sequence: ?u64 = null,
+    resync_count: u32 = 0,
+    recovery_requested: bool = false,
     frame: ?FrameIdentity = null,
     frames: lifecycle.FrameRegistry = .{},
     resources: lifecycle.ResourceRegistry = .{},
@@ -3690,6 +3692,8 @@ pub const Scene = struct {
     /// identity is preserved so the same scene can continue after recovery.
     pub fn resetForResync(self: *Scene) void {
         self.deinit();
+        self.resync_count += 1;
+        self.recovery_requested = false;
     }
 
     pub fn apply(self: *Scene, message: []const u8) Error!void {
@@ -3700,6 +3704,7 @@ pub const Scene = struct {
         }
         if (self.next_sequence) |expected| {
             if (payload.envelope.sequence != expected) {
+                self.recovery_requested = true;
                 return Error.InvalidSequence;
             }
         }
@@ -14282,4 +14287,33 @@ test "text v2 scene ownership is deterministic" {
         defer a.free(message);
         try std.testing.expectError(Error.InvalidTable, scene.apply(message));
     }
+}
+
+test "sequence gap requests recovery without mutating scene" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(update);
+
+    const gap = try updateMessage(a, 4, 7, 7, 90, 0);
+    defer a.free(gap);
+    try std.testing.expectError(Error.InvalidSequence, scene.apply(gap));
+    try std.testing.expect(scene.recovery_requested);
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+    try std.testing.expectEqual(@as(u64, 1), scene.stats.frame_updates);
+    try std.testing.expectEqual(@as(i32, 80), scene.frame_header.?.physical_width);
+    try std.testing.expectEqual(@as(i32, 60), scene.frame_header.?.physical_height);
+    try std.testing.expectEqual(@as(i32, 80), scene.windows.items[0].width);
+    try std.testing.expectEqual(@as(i32, 60), scene.windows.items[0].height);
+    try std.testing.expectEqual(@as(i32, 80), scene.rows.items[0].width);
+
+    scene.resetForResync();
+    try std.testing.expect(!scene.recovery_requested);
+    try std.testing.expectEqual(@as(u32, 1), scene.resync_count);
+    try std.testing.expect(scene.next_sequence == null);
 }

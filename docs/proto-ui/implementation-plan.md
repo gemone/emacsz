@@ -73,7 +73,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P6-prep reverse input bridge | Implemented for bounded SDL key/text intents through PureRuntimeHostV1 delivery/result/completion; not keymap/command parity |
 | P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
 | P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
-| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 108 implemented codecs, 3 partial, and 53 planned; prevents an unclassified or overclaimed protocol table |
+| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 127 implemented codecs, 3 partial, and 34 planned; prevents an unclassified or overclaimed protocol table |
 | Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
 | P12-prep EUP session setup | Implemented standard HELLO/HELLO_ACK/SESSION_READY/READY_ACK codecs and bounded state machine; not yet wired to EPXL transport |
 | P12-prep EUP session control | Implemented all eight standard-control codecs, automatic PONG, Scene integration, and EPXL transport for every control, including fatal VERSION_MISMATCH |
@@ -1082,6 +1082,43 @@ Status: approved. The dedicated reviewer completed correctness, integration/buil
 and boundary/docs/status passes. Final checks verified same-sequence retry,
 publisher idempotence, exact recovered text/cursor state, all EPXL regressions,
 changed-path and inherited-C audits, and the default-build isolation gate.
+
+#### W8c-c-c — Display sequence-gap recovery (implemented)
+
+Goal: detect a lost or skipped display-frame sequence during an established EPXL
+session and recover from the next authoritative snapshot instead of applying a
+frame out of order or silently tearing down the session.
+
+Implemented:
+
+1. `frontend.Scene` records that a sequence mismatch requires recovery and
+    rejects the mismatched message without advancing its sequence or mutating
+    display state.
+2. `Scene.resetForResync` tracks recovery generations and clears the pending
+    recovery request before the authenticated `RESYNC_BEGIN` snapshot.
+3. The SDL EPXL frontend converts the rejected-message signal into
+    `RESYNC_REQUEST`, resets only after `RESYNC_BEGIN`, ACKs each coherent
+    recovery frame, and validates `RESYNC_COMPLETE` against the final recovered
+    sequence.
+4. The facts publisher recognizes the mid-session request, resets its assigned
+    display scene, emits one authoritative bounded-facts snapshot, and closes
+    the recovery with the final sequence.
+5. An opt-in gap-fault path suppresses the first changed display message and
+    requires the frontend to recover in the same authenticated transport
+    session.
+
+Implemented limits: this covers the bounded facts profile and an in-session
+authoritative snapshot. It does not recover arbitrary resources, replay display
+history, recover a crashed publisher, or coalesce redisplay updates. Sequence
+monotonicity restarts at the recovery boundary by explicit snapshot semantics.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true proto-ui-boundary
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-gap-recovery-smoke
+```
 
 #### W8d-a — Real SDL3 EPXL interactive input (approved)
 
@@ -3165,7 +3202,7 @@ P9 geometry preparation adds `refreshFrameGeometry`, authoritative frame
 bounds, and observation validation in `runtime_bridge`; real monitor and scale
 events remain pending.
 P29 protocol coverage remains source-authoritative for every assigned EUP ID;
-current counts are 108 implemented codecs, 3 partial, and 53 planned.
+current counts are 127 implemented codecs, 3 partial, and 34 planned.
 P12 session-setup preparation adds concrete standard EUP HELLO, HELLO_ACK,
 SESSION_READY, and READY_ACK codecs with a bounded frontend state machine.  The
 authenticated EPXL handshake remains the current transport path.

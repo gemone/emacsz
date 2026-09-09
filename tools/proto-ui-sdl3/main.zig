@@ -373,7 +373,7 @@ const SDL_FRect = extern struct {
     h: f32,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, emacs_clipboard_unicode, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_gap, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, emacs_clipboard_unicode, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -400,6 +400,7 @@ const Config = struct {
     pointer_selection_publisher: bool = false,
     pointer_middle_paste_publisher: bool = false,
     drop_first_input_ack: bool = false,
+    gap_fault: bool = false,
     interactive_publisher: bool = false,
     interactive_synthetic: bool = false,
     synthetic_pointer: bool = false,
@@ -1107,6 +1108,28 @@ fn destroyRenderer(selected: SelectedRenderer) void {
     SDL_DestroyRenderer(selected.handle);
 }
 
+fn finishPublisherResync(
+    gpa: std.mem.Allocator,
+    snapshot: facts.Snapshot,
+    scene: *frontend.Scene,
+    io: std.Io,
+    reader: anytype,
+    writer: anytype,
+    input_path: []const u8,
+    input_sequence: *u64,
+    capabilities: capability.Set,
+) !void {
+    scene.resetForResync();
+    scene.next_sequence = 5; // capability exchange reserved session sequences 1..4
+    const wire_writer = @constCast(&writer.interface);
+    try live.writeControl(wire_writer, .{ .kind = .resync_begin, .sequence = 1 });
+    try wire_writer.flush();
+    var acks = live.AckTracker.init(1);
+    try sendSnapshotMessages(gpa, snapshot, snapshot.text.lines, snapshot.cursor, snapshot.viewport, scene, &acks, io, reader, writer, input_path, input_sequence, capabilities, false);
+    try live.writeControl(wire_writer, .{ .kind = .resync_complete, .sequence = scene.next_sequence.? - 1 });
+    try wire_writer.flush();
+}
+
 fn setString(gpa: std.mem.Allocator, field: *[]const u8, value: []const u8) !void {
     const copied = try gpa.dupe(u8, value);
     errdefer gpa.free(copied);
@@ -1473,7 +1496,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     _ = std.Io.Dir.cwd().deleteFile(io, config.endpoint) catch {};
     const eval = try std.fmt.allocPrint(
         gpa,
-        "(progn (setq-default buffer-file-coding-system (quote utf-8)) (defun proto-ui--bounded-lines (text) (let* ((lines (split-string text \"\\n\" t)) (bounded (delq nil (mapcar (lambda (line) (and (<= (string-bytes line) 120) line)) lines)))) (if (> (length bounded) 8) (butlast bounded (- (length bounded) 8)) bounded))) (defun proto-ui--safe-window-line (win height format) (when (> height 0) (let* ((raw (condition-case nil (format-mode-line format nil win) (error nil))) (valid (and raw (> (length raw) 0) (<= (string-bytes raw) 120))) (index 0)) (while (and valid (< index (length raw))) (let ((char (aref raw index))) (when (or (< char 32) (= char 127) (and (>= char 128) (<= char 159))) (setq valid nil)) (setq index (+ index 1)))) (when valid (condition-case nil (let ((encoded (encode-coding-string raw (quote utf-8)))) (decode-coding-string encoded (quote utf-8))) (error nil)))))) (defun proto-ui--safe-mode-line (win) (proto-ui--safe-window-line win (window-mode-line-height win) mode-line-format)) (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (defun proto-ui--window-states (frame) (vconcat (mapcar (lambda (win) (let* ((id (proto-ui-window-id win)) (buf (window-buffer win)) (start (window-start win)) (end (window-end win t)) (raw (with-current-buffer buf (buffer-substring-no-properties start end))) (all-lines (split-string raw \"\\n\" t)) (byte-bounded (delq nil (mapcar (lambda (line) (and (<= (string-bytes line) 120) line)) all-lines))) (lines (if (> (length byte-bounded) 8) (butlast byte-bounded (- (length byte-bounded) 8)) byte-bounded)) (point (window-point win)) (start-line (with-current-buffer buf (save-excursion (goto-char start) (line-number-at-pos)))) (point-line (with-current-buffer buf (save-excursion (goto-char point) (line-number-at-pos)))) (cursor-line (+ 1 (- point-line start-line))) (cursor-column (with-current-buffer buf (save-excursion (goto-char point) (current-column)))) (cursor (when (and (>= cursor-line 1) (<= cursor-line (length lines)) (>= cursor-column 0) (<= cursor-column 120)) (list :line cursor-line :column cursor-column))) (cursor-active (eq win (selected-window)))) (modeline-raw-height (window-mode-line-height win)) (modeline-text (proto-ui--safe-mode-line win)) (modeline-height (if modeline-text modeline-raw-height 0)) (header-raw-height (window-header-line-height win)) (header-text (proto-ui--safe-window-line win header-raw-height header-line-format)) (header-height (if header-text header-raw-height 0)) (tab-raw-height (window-tab-line-height win)) (tab-text (proto-ui--safe-window-line win tab-raw-height tab-line-format)) (tab-height (if tab-text tab-raw-height 0)) (list :id id :lines (vconcat lines) :window_start_line 1 :window_visible_lines (length lines) :cursor cursor :cursor_active cursor-active :mode_line modeline-text :mode_line_height modeline-height :header_line header-text :header_line_height header-height :tab_line tab-text :tab_line_height tab-height))) (window-list frame)))) (let* ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\")))) (clipboard-path (expand-file-name (format \"%s\" (format \"{s}\")))) (buffer (window-buffer window)) (buffer-ready (progn (with-current-buffer buffer (set-buffer-multibyte t)) t)) (bounded-selection nil) (clipboard-unicode {s}) (window-facts (proto-ui-window-facts frame)) (window-states (proto-ui--window-states frame)) (windows (plist-get (json-parse-string window-facts :object-type (quote plist) :array-type (quote vector) :false-object nil :null-object nil) :windows)) (facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (lines (proto-ui--bounded-lines text)) (point (with-current-buffer buffer (window-point window))) (cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column))))) (viewport-start (window-start window)) (viewport-end (window-end window t)) (viewport-start-line 1) (viewport-line-count 0) (viewport-cursor-line 1)) (with-current-buffer buffer (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII textZ\") (dotimes (i 28) (insert (format \"\\nline %02d\" i))) (redisplay)) (setq viewport-start (window-start window)) (setq viewport-end (window-end window t)) (setq viewport-start-line (line-number-at-pos viewport-start)) (setq viewport-line-count (count-lines viewport-start viewport-end)) (setq text (buffer-substring-no-properties viewport-start viewport-end)) (setq lines (proto-ui--bounded-lines text)) (setq viewport-line-count (length lines)) (setq point (window-point window)) (setq viewport-cursor-line (min 15 (max 1 (+ 1 (- (line-number-at-pos point) viewport-start-line))))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line viewport-cursor-line :column (current-column))))) (setq window-facts (proto-ui-window-facts frame)) (setq windows (plist-get (json-parse-string window-facts :object-type (quote plist) :array-type (quote vector) :false-object nil :null-object nil) :windows)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (setq window-states (proto-ui--window-states frame)) (let ((coding-system-for-write (quote utf-8))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :windows windows :window_states window-states :text (vconcat lines) :cursor cursor :window_start_line viewport-start-line :window_visible_lines viewport-line-count))))) (sit-for 0.2) (set-frame-size frame 240 30) (while t (setq window (frame-selected-window frame)) (setq buffer (window-buffer window)) (setq window-states (proto-ui--window-states frame)) (when (file-readable-p input-path) (let ((action (split-string (with-temp-buffer (let ((coding-system-for-read (quote utf-8))) (insert-file-contents input-path)) (buffer-string)) \"\\n\" t))) (cond ((and (= (length action) 3) (string= (nth 1 action) \"key-v2\")) (let* ((event (json-parse-string (nth 2 action) :object-type (quote plist))) (logical (decode-coding-string (base64-decode-string (plist-get event :logical_key)) (quote utf-8))) (state (plist-get event :state)) (modifiers (plist-get event :modifiers)) (physical (plist-get event :physical_key))) (when (and (= state 1) (= modifiers 2)) (with-current-buffer buffer (cond ((and (= physical 4) (string= logical \"a\")) (beginning-of-line)) ((and (= physical 8) (string= logical \"e\")) (end-of-line))) (set-window-point window (point)) (redisplay))))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"backspace\")) (with-current-buffer buffer (goto-char (point-max)) (delete-char -1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-left\")) (with-current-buffer buffer (backward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-right\")) (with-current-buffer buffer (forward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-up\")) (with-current-buffer buffer (previous-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-down\")) (with-current-buffer buffer (next-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"copy\")) (with-current-buffer buffer (let* ((copy-end (progn (goto-char (point-min)) (line-end-position))) (copy-length (<= (- copy-end (point-min)) 120)) (copy-ascii (save-excursion (let ((ascii t) (pos (point-min))) (while (< pos copy-end) (let ((ch (char-after pos))) (when (or (< ch 32) (> ch 126)) (setq ascii nil) (setq pos copy-end))) (setq pos (+ pos 1))) ascii))) (copy-text (if clipboard-unicode \"Emacs 你好\" (and copy-length copy-ascii (buffer-substring-no-properties (point-min) copy-end))))) (when copy-text (kill-ring-save (point-min) copy-end) (with-temp-file clipboard-path (insert (if clipboard-unicode (concat \"base64:\" (base64-encode-string (encode-coding-string copy-text (quote utf-8)) t)) copy-text))) (set-window-point window (point)) (redisplay))))) ((and (= (length action) 3) (string= (nth 1 action) \"pointer-v2\") (or {s} {s})) (let* ((event (condition-case nil (json-parse-string (nth 2 action) :object-type (quote plist)) (error nil))) (phase (and event (plist-get event :phase))) (buttons (and event (plist-get event :buttons))) (pointer-x (and event (plist-get event :x))) (pointer-y (and event (plist-get event :y))) (pointer-clicks (and event (plist-get event :clicks))) (pointer-modifiers (and event (plist-get event :modifiers)))) (cond ((and {s} (member phase (list \"press\" \"drag\" \"release\")) (eql buttons 1) (eql pointer-clicks 1) (eql pointer-modifiers 0) (numberp pointer-x) (numberp pointer-y)) (condition-case nil (let ((point (posn-point (posn-at-x-y pointer-x pointer-y window)))) (when point (with-current-buffer buffer (goto-char point) (when (string= phase \"press\") (push-mark point nil t)) (when (string= phase \"release\") (let* ((copy-start (min (mark) (point))) (copy-end (max (mark) (point))) (copy-length (<= (- copy-end copy-start) 120)) (copy-ascii (save-excursion (let ((ascii t) (pos copy-start)) (while (< pos copy-end) (let ((ch (char-after pos))) (when (or (< ch 32) (> ch 126)) (setq ascii nil) (setq pos copy-end))) (setq pos (+ pos 1))) ascii))) (copy-text (and mark-active copy-length copy-ascii (buffer-substring-no-properties copy-start copy-end)))) (when copy-text (kill-ring-save copy-start copy-end) (with-temp-file clipboard-path (insert (concat \"base64:\" (base64-encode-string (encode-coding-string copy-text (quote utf-8)) t)))) (setq mark-active nil) (setq bounded-selection t)))) (set-window-point window (point)) (redisplay)))) (error nil))) ((and {s} bounded-selection (string= phase \"release\") (eql buttons 2) (eql pointer-clicks 1) (eql pointer-modifiers 0) (numberp pointer-x) (numberp pointer-y)) (condition-case nil (let ((point (posn-point (posn-at-x-y pointer-x pointer-y window)))) (when point (with-current-buffer buffer (goto-char point) (yank) (set-window-point window (point)) (redisplay)))) (error nil))) (t nil)))) ((and (= (length action) 3) (string= (nth 1 action) \"pointer\")) (let* ((pointer (split-string (nth 2 action) \" \" t)) (pointer-phase (nth 0 pointer)) (pointer-x (string-to-number (nth 1 pointer))) (pointer-y (string-to-number (nth 2 pointer)))) (when (and (= (length pointer) 3) (or (string= pointer-phase \"press\") (string= pointer-phase \"release\"))) (condition-case nil (let ((point (posn-point (posn-at-x-y pointer-x pointer-y window)))) (when point (with-current-buffer buffer (goto-char point) (redisplay)))) (error nil))))) ((and (= (length action) 3) (string= (nth 1 action) \"wheel\")) (let ((wheel (split-string (nth 2 action) \" \" t))) (when (= (length wheel) 2) (with-current-buffer buffer (condition-case nil (if (string= (nth 0 wheel) \"down\") (scroll-up (string-to-number (nth 1 wheel))) (scroll-down (string-to-number (nth 1 wheel)))) (error nil)))))) ((and (= (length action) 3) (string= (nth 1 action) \"text\") (> (length (nth 2 action)) 0)) (with-current-buffer buffer (goto-char (point-min)) (insert (decode-coding-string (base64-decode-string (nth 2 action)) (quote utf-8))) (set-window-point window (point)) (redisplay)))) (let ((coding-system-for-write (quote utf-8))) (with-temp-file (concat input-path \".ack\") (insert (nth 0 action)))) (delete-file input-path))) (setq viewport-start (window-start window)) (setq viewport-end (window-end window t)) (setq viewport-start-line (line-number-at-pos viewport-start)) (setq viewport-line-count (count-lines viewport-start viewport-end)) (setq text (buffer-substring-no-properties viewport-start viewport-end)) (setq lines (proto-ui--bounded-lines text)) (setq viewport-line-count (length lines)) (setq point (window-point window)) (setq viewport-cursor-line (min 15 (max 1 (+ 1 (- (line-number-at-pos point) viewport-start-line))))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line viewport-cursor-line :column (current-column))))) (setq window-facts (proto-ui-window-facts frame)) (setq windows (plist-get (json-parse-string window-facts :object-type (quote plist) :array-type (quote vector) :false-object nil :null-object nil) :windows)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (setq window-states (proto-ui--window-states frame)) (let ((coding-system-for-write (quote utf-8))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :windows windows :window_states window-states :text (vconcat lines) :cursor cursor :window_start_line viewport-start-line :window_visible_lines viewport-line-count))))) (sit-for 0.1))))",
+        "(progn (setq-default buffer-file-coding-system (quote utf-8)) (defun proto-ui--bounded-lines (text) (let* ((lines (split-string text \"\\n\" t)) (bounded (delq nil (mapcar (lambda (line) (and (<= (string-bytes line) 120) line)) lines)))) (if (> (length bounded) 8) (butlast bounded (- (length bounded) 8)) bounded))) (defun proto-ui--safe-window-line (win height format) (when (> height 0) (let* ((raw (condition-case nil (format-mode-line format nil win) (error nil))) (valid (and raw (> (length raw) 0) (<= (string-bytes raw) 120))) (index 0)) (while (and valid (< index (length raw))) (let ((char (aref raw index))) (when (or (< char 32) (= char 127) (and (>= char 128) (<= char 159))) (setq valid nil)) (setq index (+ index 1)))) (when valid (condition-case nil (let ((encoded (encode-coding-string raw (quote utf-8)))) (decode-coding-string encoded (quote utf-8))) (error nil)))))) (defun proto-ui--safe-mode-line (win) (proto-ui--safe-window-line win (window-mode-line-height win) mode-line-format)) (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (defun proto-ui--window-states (frame) (vconcat (mapcar (lambda (win) (let* ((id (proto-ui-window-id win)) (buf (window-buffer win)) (start (window-start win)) (end (window-end win t)) (raw (with-current-buffer buf (buffer-substring-no-properties start end))) (all-lines (split-string raw \"\\n\" t)) (byte-bounded (delq nil (mapcar (lambda (line) (and (<= (string-bytes line) 120) line)) all-lines))) (lines (if (> (length byte-bounded) 8) (butlast byte-bounded (- (length byte-bounded) 8)) byte-bounded)) (point (window-point win)) (start-line (with-current-buffer buf (save-excursion (goto-char start) (line-number-at-pos)))) (point-line (with-current-buffer buf (save-excursion (goto-char point) (line-number-at-pos)))) (cursor-line (+ 1 (- point-line start-line))) (cursor-column (with-current-buffer buf (save-excursion (goto-char point) (current-column)))) (cursor (when (and (>= cursor-line 1) (<= cursor-line (length lines)) (>= cursor-column 0) (<= cursor-column 120)) (list :line cursor-line :column cursor-column))) (cursor-active (eq win (selected-window))) (modeline-raw-height (window-mode-line-height win)) (modeline-text (proto-ui--safe-mode-line win)) (modeline-height (if modeline-text modeline-raw-height 0)) (header-raw-height (window-header-line-height win)) (header-text (proto-ui--safe-window-line win header-raw-height header-line-format)) (header-height (if header-text header-raw-height 0)) (tab-raw-height (window-tab-line-height win)) (tab-text (proto-ui--safe-window-line win tab-raw-height tab-line-format)) (tab-height (if tab-text tab-raw-height 0)) (list :id id :lines (vconcat lines) :window_start_line 1 :window_visible_lines (length lines) :cursor cursor :cursor_active cursor-active :mode_line modeline-text :mode_line_height modeline-height :header_line header-text :header_line_height header-height :tab_line tab-text :tab_line_height tab-height))) (window-list frame)))) (let* ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\")))) (clipboard-path (expand-file-name (format \"%s\" (format \"{s}\")))) (buffer (window-buffer window)) (buffer-ready (progn (with-current-buffer buffer (set-buffer-multibyte t)) t)) (bounded-selection nil) (clipboard-unicode {s}) (window-facts (proto-ui-window-facts frame)) (window-states (proto-ui--window-states frame)) (windows (plist-get (json-parse-string window-facts :object-type (quote plist) :array-type (quote vector) :false-object nil :null-object nil) :windows)) (facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (lines (proto-ui--bounded-lines text)) (point (with-current-buffer buffer (window-point window))) (cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column))))) (viewport-start (window-start window)) (viewport-end (window-end window t)) (viewport-start-line 1) (viewport-line-count 0) (viewport-cursor-line 1)) (with-current-buffer buffer (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII textZ\") (dotimes (i 28) (insert (format \"\\nline %02d\" i))) (redisplay)) (setq viewport-start (window-start window)) (setq viewport-end (window-end window t)) (setq viewport-start-line (line-number-at-pos viewport-start)) (setq viewport-line-count (count-lines viewport-start viewport-end)) (setq text (buffer-substring-no-properties viewport-start viewport-end)) (setq lines (proto-ui--bounded-lines text)) (setq viewport-line-count (length lines)) (setq point (window-point window)) (setq viewport-cursor-line (min 15 (max 1 (+ 1 (- (line-number-at-pos point) viewport-start-line))))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line viewport-cursor-line :column (current-column))))) (setq window-facts (proto-ui-window-facts frame)) (setq windows (plist-get (json-parse-string window-facts :object-type (quote plist) :array-type (quote vector) :false-object nil :null-object nil) :windows)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (setq window-states (proto-ui--window-states frame)) (let ((coding-system-for-write (quote utf-8))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :windows windows :window_states window-states :text (vconcat lines) :cursor cursor :window_start_line viewport-start-line :window_visible_lines viewport-line-count))))) (sit-for 0.2) (set-frame-size frame 240 30) (while t (setq window (frame-selected-window frame)) (setq buffer (window-buffer window)) (setq window-states (proto-ui--window-states frame)) (when (file-readable-p input-path) (let ((action (split-string (with-temp-buffer (let ((coding-system-for-read (quote utf-8))) (insert-file-contents input-path)) (buffer-string)) \"\\n\" t))) (cond ((and (= (length action) 3) (string= (nth 1 action) \"key-v2\")) (let* ((event (json-parse-string (nth 2 action) :object-type (quote plist))) (logical (decode-coding-string (base64-decode-string (plist-get event :logical_key)) (quote utf-8))) (state (plist-get event :state)) (modifiers (plist-get event :modifiers)) (physical (plist-get event :physical_key))) (when (and (= state 1) (= modifiers 2)) (with-current-buffer buffer (cond ((and (= physical 4) (string= logical \"a\")) (beginning-of-line)) ((and (= physical 8) (string= logical \"e\")) (end-of-line))) (set-window-point window (point)) (redisplay))))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"backspace\")) (with-current-buffer buffer (goto-char (point-max)) (delete-char -1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-left\")) (with-current-buffer buffer (backward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-right\")) (with-current-buffer buffer (forward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-up\")) (with-current-buffer buffer (previous-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-down\")) (with-current-buffer buffer (next-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"copy\")) (with-current-buffer buffer (let* ((copy-end (progn (goto-char (point-min)) (line-end-position))) (copy-length (<= (- copy-end (point-min)) 120)) (copy-ascii (save-excursion (let ((ascii t) (pos (point-min))) (while (< pos copy-end) (let ((ch (char-after pos))) (when (or (< ch 32) (> ch 126)) (setq ascii nil) (setq pos copy-end))) (setq pos (+ pos 1))) ascii))) (copy-text (if clipboard-unicode \"Emacs 你好\" (and copy-length copy-ascii (buffer-substring-no-properties (point-min) copy-end))))) (when copy-text (kill-ring-save (point-min) copy-end) (with-temp-file clipboard-path (insert (if clipboard-unicode (concat \"base64:\" (base64-encode-string (encode-coding-string copy-text (quote utf-8)) t)) copy-text))) (set-window-point window (point)) (redisplay))))) ((and (= (length action) 3) (string= (nth 1 action) \"pointer-v2\") (or {s} {s})) (let* ((event (condition-case nil (json-parse-string (nth 2 action) :object-type (quote plist)) (error nil))) (phase (and event (plist-get event :phase))) (buttons (and event (plist-get event :buttons))) (pointer-x (and event (plist-get event :x))) (pointer-y (and event (plist-get event :y))) (pointer-clicks (and event (plist-get event :clicks))) (pointer-modifiers (and event (plist-get event :modifiers)))) (cond ((and {s} (member phase (list \"press\" \"drag\" \"release\")) (eql buttons 1) (eql pointer-clicks 1) (eql pointer-modifiers 0) (numberp pointer-x) (numberp pointer-y)) (condition-case nil (let ((point (posn-point (posn-at-x-y pointer-x pointer-y window)))) (when point (with-current-buffer buffer (goto-char point) (when (string= phase \"press\") (push-mark point nil t)) (when (string= phase \"release\") (let* ((copy-start (min (mark) (point))) (copy-end (max (mark) (point))) (copy-length (<= (- copy-end copy-start) 120)) (copy-ascii (save-excursion (let ((ascii t) (pos copy-start)) (while (< pos copy-end) (let ((ch (char-after pos))) (when (or (< ch 32) (> ch 126)) (setq ascii nil) (setq pos copy-end))) (setq pos (+ pos 1))) ascii))) (copy-text (and mark-active copy-length copy-ascii (buffer-substring-no-properties copy-start copy-end)))) (when copy-text (kill-ring-save copy-start copy-end) (with-temp-file clipboard-path (insert (concat \"base64:\" (base64-encode-string (encode-coding-string copy-text (quote utf-8)) t)))) (setq mark-active nil) (setq bounded-selection t)))) (set-window-point window (point)) (redisplay)))) (error nil))) ((and {s} bounded-selection (string= phase \"release\") (eql buttons 2) (eql pointer-clicks 1) (eql pointer-modifiers 0) (numberp pointer-x) (numberp pointer-y)) (condition-case nil (let ((point (posn-point (posn-at-x-y pointer-x pointer-y window)))) (when point (with-current-buffer buffer (goto-char point) (yank) (set-window-point window (point)) (redisplay)))) (error nil))) (t nil)))) ((and (= (length action) 3) (string= (nth 1 action) \"pointer\")) (let* ((pointer (split-string (nth 2 action) \" \" t)) (pointer-phase (nth 0 pointer)) (pointer-x (string-to-number (nth 1 pointer))) (pointer-y (string-to-number (nth 2 pointer)))) (when (and (= (length pointer) 3) (or (string= pointer-phase \"press\") (string= pointer-phase \"release\"))) (condition-case nil (let ((point (posn-point (posn-at-x-y pointer-x pointer-y window)))) (when point (with-current-buffer buffer (goto-char point) (redisplay)))) (error nil))))) ((and (= (length action) 3) (string= (nth 1 action) \"wheel\")) (let ((wheel (split-string (nth 2 action) \" \" t))) (when (= (length wheel) 2) (with-current-buffer buffer (condition-case nil (if (string= (nth 0 wheel) \"down\") (scroll-up (string-to-number (nth 1 wheel))) (scroll-down (string-to-number (nth 1 wheel)))) (error nil)))))) ((and (= (length action) 3) (string= (nth 1 action) \"text\") (> (length (nth 2 action)) 0)) (with-current-buffer buffer (goto-char (point-min)) (insert (decode-coding-string (base64-decode-string (nth 2 action)) (quote utf-8))) (set-window-point window (point)) (redisplay)))) (let ((coding-system-for-write (quote utf-8))) (with-temp-file (concat input-path \".ack\") (insert (nth 0 action)))) (delete-file input-path))) (setq viewport-start (window-start window)) (setq viewport-end (window-end window t)) (setq viewport-start-line (line-number-at-pos viewport-start)) (setq viewport-line-count (count-lines viewport-start viewport-end)) (setq text (buffer-substring-no-properties viewport-start viewport-end)) (setq lines (proto-ui--bounded-lines text)) (setq viewport-line-count (length lines)) (setq point (window-point window)) (setq viewport-cursor-line (min 15 (max 1 (+ 1 (- (line-number-at-pos point) viewport-start-line))))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line viewport-cursor-line :column (current-column))))) (setq window-facts (proto-ui-window-facts frame)) (setq windows (plist-get (json-parse-string window-facts :object-type (quote plist) :array-type (quote vector) :false-object nil :null-object nil) :windows)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (setq window-states (proto-ui--window-states frame)) (let ((coding-system-for-write (quote utf-8))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :windows windows :window_states window-states :text (vconcat lines) :cursor cursor :window_start_line viewport-start-line :window_visible_lines viewport-line-count))))) (sit-for 0.1)))))",
         .{
             config.module_path,
             config.facts_path,
@@ -1505,6 +1528,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     var published: ?facts.Snapshot = null;
     defer if (published != null) published.?.deinit(gpa);
     var input_sequence: u64 = 5;
+    var gap_fault_pending = config.gap_fault;
     const publish_duration = if (config.interactive_publisher)
         config.auto_quit_ms
     else
@@ -1539,7 +1563,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
 
         var initial_snapshot: ?facts.Snapshot = null;
         var facts_wait_ms: u32 = 0;
-        while (initial_snapshot == null and facts_wait_ms < 1000) : (facts_wait_ms += 20) {
+        while (initial_snapshot == null and facts_wait_ms < 30000) : (facts_wait_ms += 20) {
             const snapshot_bytes = std.Io.Dir.cwd().readFileAlloc(io, config.facts_path, gpa, .limited(64 * 1024)) catch |err| switch (err) {
                 error.FileNotFound => null,
                 else => return err,
@@ -1555,7 +1579,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
         if (published) |*previous| previous.deinit(gpa);
         published = initial_snapshot;
         var acks = live.AckTracker.init(1);
-        try sendSnapshotMessages(gpa, published.?, published.?.text.lines, published.?.cursor, published.?.viewport, &scene, &acks, io, &reader, &writer, input_path, &input_sequence, negotiated.effective);
+        try sendSnapshotMessages(gpa, published.?, published.?.text.lines, published.?.cursor, published.?.viewport, &scene, &acks, io, &reader, &writer, input_path, &input_sequence, negotiated.effective, false);
         const complete_sequence = scene.next_sequence.? - 1;
         try live.writeControl(&writer.interface, .{ .kind = .resync_complete, .sequence = complete_sequence });
         try writer.interface.flush();
@@ -1592,12 +1616,17 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
             }
             if (heartbeat_due and (!config.interactive_publisher or heartbeat_ms >= 100)) {
                 var change_acks = live.AckTracker.init(1);
-                sendSnapshotMessages(gpa, published.?, published.?.text.lines, published.?.cursor, published.?.viewport, &scene, &change_acks, io, &reader, &writer, input_path, &input_sequence, negotiated.effective) catch |err| {
-                    // The interactive client intentionally closes at its smoke
-                    // deadline; stop the healthy publisher instead of failing.
-                    if (config.interactive_publisher and
-                        (err == error.WriteFailed or err == error.SocketUnconnected)) break;
-                    return err;
+                sendSnapshotMessages(gpa, published.?, published.?.text.lines, published.?.cursor, published.?.viewport, &scene, &change_acks, io, &reader, &writer, input_path, &input_sequence, negotiated.effective, gap_fault_pending) catch |err| {
+                    if (err == error.ResyncRequested) {
+                        gap_fault_pending = false;
+                        try finishPublisherResync(gpa, published.?, &scene, io, &reader, &writer, input_path, &input_sequence, negotiated.effective);
+                    } else {
+                        // The interactive client intentionally closes at its smoke
+                        // deadline; stop the healthy publisher instead of failing.
+                        if (config.interactive_publisher and
+                            (err == error.WriteFailed or err == error.SocketUnconnected)) break;
+                        return err;
+                    }
                 };
                 heartbeat_due = false;
                 heartbeat_ms = 0;
@@ -1861,6 +1890,7 @@ fn awaitFrameAck(
         const inbound = try readInbound(reader, gpa);
         switch (inbound) {
             .control => |control| {
+                if (control.kind == .resync_request) return error.ResyncRequested;
                 if (control.kind != .ack or control.sequence != expected_sequence) {
                     return error.ExpectedAck;
                 }
@@ -2117,6 +2147,7 @@ fn sendSnapshotMessages(
     input_path: []const u8,
     input_sequence: *u64,
     capabilities: capability.Set,
+    skip_first: bool,
 ) !void {
     var messages: std.ArrayList([]const u8) = .empty;
     defer {
@@ -2124,11 +2155,14 @@ fn sendSnapshotMessages(
         messages.deinit(gpa);
     }
     try facts.appendWireSnapshotWindows(gpa, snapshot.facts, snapshot.windows, snapshot.contents, text, cursor, viewport, scene, &messages);
-    for (messages.items) |message| {
+    for (messages.items, 0..) |message, index| {
+        if (skip_first and index == 0) continue;
         const envelope = (try protocol.decodeEnvelope(message)).envelope;
         try acks.markSent(envelope.sequence);
         try live.writeFrame(&writer.interface, message);
         try writer.interface.flush();
+        // A skipped sequence makes the frontend reject the next frame and ask
+        // for an authoritative snapshot instead of ACKing it.
         try awaitFrameAck(gpa, io, reader, writer, envelope.sequence, input_path, input_sequence, envelope.session_id, envelope.frame_id, capabilities);
         try acks.ack(envelope.sequence);
     }
@@ -4756,6 +4790,67 @@ fn textEventFromPayload(input: *const runtime_host.InputEvent) SDL_Event {
     return textEvent(@ptrCast(&runtime_bridge_text_payload));
 }
 
+fn recoverLiveScene(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    reader: anytype,
+    writer: anytype,
+    scene: *frontend.Scene,
+    delivery: *input_policy.DeliveryJournal,
+    capabilities: capability.Set,
+    config: *const Config,
+    input_ack_lost: *bool,
+    scrollbar_event_delivered: *bool,
+) !void {
+    _ = io;
+    const wire_writer = @constCast(&writer.interface);
+    try live.writeControl(wire_writer, .{ .kind = .resync_request, .sequence = 1 });
+    try wire_writer.flush();
+    var began = false;
+    var recovered_snapshot = false;
+    while (true) {
+        const inbound = try readInbound(reader, gpa);
+        switch (inbound) {
+            .control => |control| {
+                if (control.kind == .resync_begin) {
+                    if (began or control.sequence != 1) return error.InvalidResyncRequest;
+                    scene.resetForResync();
+                    began = true;
+                    recovered_snapshot = false;
+                    continue;
+                }
+                if (control.kind == .resync_complete) {
+                    const next_sequence = scene.next_sequence orelse return error.InvalidSequence;
+                    if (!began or !recovered_snapshot or
+                        control.sequence != next_sequence - 1) return error.InvalidSequence;
+                    return;
+                }
+                return error.ExpectedResyncControl;
+            },
+            .frame => |message| {
+                defer gpa.free(message);
+                if (!began) return error.ExpectedResyncBegin;
+                const envelope = try protocol.decodeEnvelope(message);
+                try scene.apply(message);
+                recovered_snapshot = true;
+                if (envelope.envelope.message_type == protocol.Message.frame_update) {
+                    try deliveryAllowed(delivery, capabilities);
+                    const outcome = try sendDeliveryEvent(gpa, delivery, config, writer, reader, envelope.envelope);
+                    if (outcome == .ack_lost) input_ack_lost.* = true;
+                    if (outcome == .delivered) {
+                        switch (outcome.delivered.event) {
+                            .scrollbar_event => scrollbar_event_delivered.* = true,
+                            else => {},
+                        }
+                    }
+                }
+                try live.writeControl(wire_writer, .{ .kind = .ack, .sequence = envelope.envelope.sequence });
+                try wire_writer.flush();
+            },
+        }
+    }
+}
+
 fn runLiveFrontend(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -4843,7 +4938,7 @@ fn runLiveFrontend(
     reserveFrontendInputSequence(delivery);
 
     const use_resync = config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect or
-        config.mode == .emacs_epxl_recovery or config.mode == .emacs_epxl_input or
+        config.mode == .emacs_epxl_recovery or config.mode == .emacs_epxl_gap or config.mode == .emacs_epxl_input or
         config.mode == .emacs_epxl_unicode_input or config.mode == .emacs_epxl_edit or
         config.mode == .emacs_epxl_key_v2 or config.mode == .emacs_epxl_sequence;
     var scene = frontend.Scene.init(gpa);
@@ -4852,33 +4947,18 @@ fn runLiveFrontend(
     var resync_complete = false;
     var input_ack_lost = false;
     if (use_resync) {
-        try live.writeControl(&writer.interface, .{ .kind = .resync_request, .sequence = 1 });
-        try writer.interface.flush();
-        const begin = try readControlExact(&reader);
-        if (begin.kind != .resync_begin or begin.sequence != 1) return error.InvalidResyncRequest;
-        scene.resetForResync();
-        for (0..2) |_| {
-            const message = (try live.readFrame(&reader.interface, gpa)) orelse return error.IncompleteResync;
-            defer gpa.free(message);
-            const envelope = (try protocol.decodeEnvelope(message)).envelope;
-            try scene.apply(message);
-            if (envelope.message_type == protocol.Message.frame_update) {
-                try deliveryAllowed(delivery, negotiated.effective);
-                const outcome = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
-                if (outcome == .ack_lost) input_ack_lost = true;
-                if (outcome == .delivered) {
-                    switch (outcome.delivered.event) {
-                        .scrollbar_event => scrollbar_event_delivered = true,
-                        else => {},
-                    }
-                }
-            }
-            try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
-            try writer.interface.flush();
-        }
-        const complete = try readControlExact(&reader);
-        if (complete.kind != .resync_complete) return error.IncompleteResync;
-        if (complete.sequence != scene.next_sequence.? - 1) return error.InvalidSequence;
+        try recoverLiveScene(
+            gpa,
+            io,
+            &reader,
+            &writer,
+            &scene,
+            delivery,
+            negotiated.effective,
+            config,
+            &input_ack_lost,
+            &scrollbar_event_delivered,
+        );
         resync_complete = true;
     }
     while (true) {
@@ -4890,7 +4970,23 @@ fn runLiveFrontend(
         }) orelse break;
         defer gpa.free(message);
         const envelope = (try protocol.decodeEnvelope(message)).envelope;
-        try scene.apply(message);
+        scene.apply(message) catch |err| {
+            if (err != frontend.Error.InvalidSequence or !scene.recovery_requested)
+                return err;
+            try recoverLiveScene(
+                gpa,
+                io,
+                &reader,
+                &writer,
+                &scene,
+                delivery,
+                negotiated.effective,
+                config,
+                &input_ack_lost,
+                &scrollbar_event_delivered,
+            );
+            continue;
+        };
         if (envelope.message_type == protocol.Message.frame_update) {
             try deliveryAllowed(delivery, negotiated.effective);
             const outcome = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
@@ -7145,6 +7241,8 @@ fn runEmacsEpxlSession(
     defer gpa.free(absolute_module_path);
     const resync_sessions_arg = try std.fmt.allocPrint(gpa, "--resync-sessions={d}", .{sessions});
     defer gpa.free(resync_sessions_arg);
+    const gap_fault_arg = try std.fmt.allocPrint(gpa, "--gap-fault={}", .{config.gap_fault});
+    defer gpa.free(gap_fault_arg);
     const auto_quit_arg = try std.fmt.allocPrint(
         gpa,
         "--auto-quit-ms={d}",
@@ -7173,6 +7271,7 @@ fn runEmacsEpxlSession(
             "--token-file",
             config.token_path,
             resync_sessions_arg,
+            gap_fault_arg,
             auto_quit_arg,
             if (config.clipboard_unicode_publisher) "--clipboard-unicode-publisher" else "--clipboard-ascii-publisher",
             if (config.pointer_selection_publisher) "--pointer-selection-publisher" else "--clipboard-ascii-publisher",
@@ -7194,6 +7293,7 @@ fn runEmacsEpxlSession(
             "--token-file",
             config.token_path,
             resync_sessions_arg,
+            gap_fault_arg,
             auto_quit_arg,
         };
     var child = try std.process.spawn(io, .{
@@ -7334,6 +7434,15 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_epxl_recovery;
             config.auto_input = "X";
             config.drop_first_input_ack = true;
+        } else if (std.mem.eql(u8, arg, "--emacs-epxl-gap-recovery-smoke")) {
+            config.mode = .emacs_epxl_gap;
+            config.auto_input = "X";
+            config.interactive_publisher = true;
+            config.gap_fault = true;
+        } else if (std.mem.eql(u8, arg, "--gap-fault=true")) {
+            config.gap_fault = true;
+        } else if (std.mem.eql(u8, arg, "--gap-fault=false")) {
+            config.gap_fault = false;
         } else if (std.mem.eql(u8, arg, "--emacs-viewport-smoke")) {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
@@ -7421,7 +7530,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     }
 
     if ((config.mode == .replay or config.mode == .live) and config.replay_path.len == 0) return error.MissingReplayPath;
-    if (config.auto_quit_ms > 10_000) return error.AutoQuitMsOutOfRange;
+    if (config.auto_quit_ms > 60_000) return error.AutoQuitMsOutOfRange;
     if (renderer_policy.parseRequest(config.renderer_request) == null) return error.UnknownRendererPolicy;
     if (renderer_policy.parsePresentMode(config.present_mode) == null) return error.UnknownPresentMode;
 
@@ -7649,6 +7758,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .emacs_epxl => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_reconnect => try runEmacsEpxlSession(gpa, io, &config, 2),
         .emacs_epxl_recovery => try runEmacsEpxlSession(gpa, io, &config, 2),
+        .emacs_epxl_gap => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_interactive => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_input => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_unicode_input => try runEmacsEpxlSession(gpa, io, &config, 1),
@@ -7676,6 +7786,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         !sceneHasText(&scene, "Emacs Proto-UI")) return error.NoEmacsText;
     if (config.mode == .emacs_epxl_recovery and scene.stats.frame_updates < 1)
         return error.UnexpectedFactUpdateCount;
+    if (config.mode == .emacs_epxl_gap and scene.resync_count != 2)
+        return error.GapNotRecovered;
+    if (config.mode == .emacs_epxl_gap and scene.stats.frame_updates < 2)
+        return error.UnexpectedFactUpdateCount;
+    if (config.mode == .emacs_epxl_gap and
+        !sceneHasText(&scene, "XEmacs Proto-UI")) return error.GapInputNotApplied;
     if (config.mode == .emacs_epxl_recovery) {
         const applied = scene.text.items.len > 0 and
             std.mem.eql(u8, scene.text.items[0].bytes, "XEmacs Proto-UI") and
