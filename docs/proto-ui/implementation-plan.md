@@ -2002,7 +2002,13 @@ Acceptance:
 
 ```sh
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-key-v2-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-key-modifier-smoke --summary all
 ```
+
+`sdl3-key-modifier-smoke` extends the observed subset to Ctrl-F, Alt-F, and
+Ctrl-B.  The Emacs-owned publisher maps these exact modifier/scancode records to
+public motion commands and the smoke asserts the final public cursor fact.  This
+is still a bounded compatibility subset, not general keymap execution.
 
 ### W9n — Backward-compatible pointer event v2 transport (approved)
 

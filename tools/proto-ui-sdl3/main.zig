@@ -373,7 +373,7 @@ const SDL_FRect = extern struct {
     h: f32,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_gap, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, emacs_clipboard_unicode, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke, emacs_epxl_failure_cleanup };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_gap, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, emacs_epxl_key_modifier, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, emacs_clipboard_unicode, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke, emacs_epxl_failure_cleanup };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -5109,12 +5109,25 @@ fn runLiveFrontend(
         try delivery.pushKeyV2(input_policy.translateFullKey(60, "F5", true, false, 0, 0).?);
     }
 
+    if (config.mode == .emacs_epxl_key_modifier) {
+        if (!negotiated.effective.contains(.input_key_bounded) or
+            !negotiated.effective.contains(.input_key_full_v2))
+            return error.FullKeyCapabilityNotNegotiated;
+        std.debug.print(
+            "sdl3-key-modifier-smoke: {{\"kind\":\"sdl3-key-modifier-smoke\",\"negotiated\":{{\"input.key_bounded\":true,\"input.key_full_v2\":true}},\"result\":\"negotiated\"}}\n",
+            .{},
+        );
+        try delivery.pushKeyV2(input_policy.translateFullKey(9, "f", true, false, input_policy.sdl_kmod_lctrl, 0).?);
+        try delivery.pushKeyV2(input_policy.translateFullKey(9, "f", true, false, input_policy.sdl_kmod_lalt, 0).?);
+        try delivery.pushKeyV2(input_policy.translateFullKey(5, "b", true, false, input_policy.sdl_kmod_lctrl, 0).?);
+    }
+
     reserveFrontendInputSequence(delivery);
 
     const use_resync = config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect or
         config.mode == .emacs_epxl_recovery or config.mode == .emacs_epxl_gap or config.mode == .emacs_epxl_input or
         config.mode == .emacs_epxl_unicode_input or config.mode == .emacs_epxl_edit or
-        config.mode == .emacs_epxl_key_v2 or config.mode == .emacs_epxl_sequence;
+        config.mode == .emacs_epxl_key_v2 or config.mode == .emacs_epxl_key_modifier or config.mode == .emacs_epxl_sequence;
     var scene = frontend.Scene.init(gpa);
     errdefer scene.deinit();
     var frontend_sequence: u64 = frontend_pong_sequence_start;
@@ -7796,6 +7809,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.auto_input = "你好";
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-key-v2-smoke")) {
             config.mode = .emacs_epxl_key_v2;
+        } else if (std.mem.eql(u8, arg, "--emacs-epxl-key-modifier-smoke")) {
+            config.mode = .emacs_epxl_key_modifier;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-edit-smoke")) {
             config.mode = .emacs_epxl_edit;
             config.auto_key = .backspace;
@@ -8120,6 +8135,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .emacs_epxl_input => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_unicode_input => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_key_v2 => try runEmacsEpxlSession(gpa, io, &config, 1),
+        .emacs_epxl_key_modifier => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_edit => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_sequence => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_clipboard_unicode => try runEmacsEpxlSession(gpa, io, &config, 1),
@@ -8165,10 +8181,19 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         return error.CursorNotApplied;
     if (config.mode == .emacs_epxl_unicode_input and scene.stats.frame_updates < 2)
         return error.UnexpectedFactUpdateCount;
-    if (config.mode == .emacs_epxl_key_v2 and scene.stats.frame_updates < 3)
+    if (config.mode == .emacs_epxl_key_modifier and scene.stats.frame_updates < 2)
         return error.UnexpectedFactUpdateCount;
+
+    if (config.mode == .emacs_epxl_key_modifier) {
+        if (scene.cursor == null or scene.cursor.?.x != 32 or scene.cursor.?.y != 0)
+            return error.ModifierCursorNotApplied;
+        std.debug.print(
+            "sdl3-key-modifier-smoke: {{\"kind\":\"sdl3-key-modifier-smoke\",\"cursor_x\":{d},\"cursor_y\":{d},\"first_text\":\"{s}\",\"result\":\"pass\"}}\n",
+            .{ scene.cursor.?.x, scene.cursor.?.y, scene.text.items[0].bytes[0..@min(scene.text.items[0].bytes.len, 16)] },
+        );
+    }
     if (config.mode == .emacs_epxl_key_v2 and
-        (scene.cursor == null or scene.cursor.?.x != 56 or scene.cursor.?.y != 14))
+        (scene.cursor == null or scene.cursor.?.x != 72 or scene.cursor.?.y != 0))
         return error.FullKeyExecutionNotApplied;
     if (config.mode == .emacs_epxl_key_v2)
         std.debug.print(

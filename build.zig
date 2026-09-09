@@ -1948,6 +1948,29 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_epxl_key_v2_step.dependOn(&run_sdl3_epxl_key_v2.step);
 
+        const run_sdl3_key_modifier = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-key-modifier-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=6000",
+        });
+        run_sdl3_key_modifier.setCwd(b.path("."));
+        run_sdl3_key_modifier.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_key_modifier.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_key_modifier.step.dependOn(step);
+        const sdl3_key_modifier_step = b.step(
+            "sdl3-key-modifier-smoke",
+            "Execute bounded Ctrl and Alt motion commands through full key v2",
+        );
+        sdl3_key_modifier_step.dependOn(&run_sdl3_key_modifier.step);
+
         const run_sdl3_epxl_edit = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/proto-ui-sdl3",
             "--emacs-epxl-edit-smoke",
