@@ -430,8 +430,53 @@ pub const ModeLineWire = struct {
 
 pub const mode_line_header_size: usize = 30;
 pub const mode_line_active: u16 = 1;
+pub const aux_line_header: u16 = 1 << 1;
+pub const aux_line_tab: u16 = 1 << 2;
+pub const aux_line_kind_mask: u16 = aux_line_header | aux_line_tab;
+pub const aux_line_header_size: usize = 30;
+pub const max_aux_lines: usize = 32;
 
-/// Bounded facts/scene text is UTF-8 and excludes C0 controls (including NUL).
+pub fn encodeWindowAuxLineV1(a: std.mem.Allocator, line: ModeLineWire, out: *std.ArrayList(u8)) !void {
+    if (line.window_id == 0 or line.width <= 0 or line.height <= 0 or
+        line.flags & ~aux_line_kind_mask != 0 or
+        line.flags & aux_line_kind_mask == 0 or
+        line.flags & aux_line_kind_mask == aux_line_kind_mask)
+        return Error.InvalidTable;
+    if (!validBoundedUtf8Text(line.line, max_text_columns)) return Error.InvalidTable;
+    var header: [aux_line_header_size]u8 = undefined;
+    std.mem.writeInt(u64, header[0..8], line.window_id, .little);
+    inline for (.{ line.x, line.y, line.width, line.height }, 0..) |value, index| {
+        std.mem.writeInt(i32, header[8 + index * 4 ..][0..4], value, .little);
+    }
+    std.mem.writeInt(u16, header[24..26], line.flags, .little);
+    std.mem.writeInt(u32, header[26..30], @intCast(line.line.len), .little);
+    try out.appendSlice(a, &header);
+    try out.appendSlice(a, line.line);
+}
+
+pub fn decodeWindowAuxLineV1(bytes: []const u8) Error!ModeLineWire {
+    if (bytes.len < aux_line_header_size) return Error.InvalidTable;
+    const length = std.mem.readInt(u32, bytes[26..30], .little);
+    if (bytes.len != aux_line_header_size + length) return Error.InvalidTable;
+    const payload = bytes[aux_line_header_size..];
+    if (!validBoundedUtf8Text(payload, max_text_columns)) return Error.InvalidTable;
+    const flags = std.mem.readInt(u16, bytes[24..26], .little);
+    if (flags & ~aux_line_kind_mask != 0 or
+        flags & aux_line_kind_mask == 0 or
+        flags & aux_line_kind_mask == aux_line_kind_mask)
+        return Error.InvalidTable;
+    return .{
+        .window_id = std.mem.readInt(u64, bytes[0..8], .little),
+        .x = @bitCast(std.mem.readInt(u32, bytes[8..12], .little)),
+        .y = @bitCast(std.mem.readInt(u32, bytes[12..16], .little)),
+        .width = @bitCast(std.mem.readInt(u32, bytes[16..20], .little)),
+        .height = @bitCast(std.mem.readInt(u32, bytes[20..24], .little)),
+        .flags = flags,
+        .line = payload,
+    };
+}
+
+/// Bounded facts/scene text is UTF-8 and excludes C0/C1 controls and DEL.
 /// Printable ASCII remains a strict subset; combining marks and CJK are valid.
 pub fn validBoundedUtf8Text(text: []const u8, max_bytes: usize) bool {
     if (!validBoundedUtf8Line(text, max_bytes)) return false;
@@ -440,10 +485,14 @@ pub fn validBoundedUtf8Text(text: []const u8, max_bytes: usize) bool {
 
 pub fn validBoundedUtf8Line(text: []const u8, max_bytes: usize) bool {
     if (text.len > max_bytes) return false;
-    for (text) |byte| {
-        if (byte < 0x20) return false;
+    if (!std.unicode.utf8ValidateSlice(text)) return false;
+    var view = std.unicode.Utf8View.initUnchecked(text);
+    var iterator = view.iterator();
+    while (iterator.nextCodepoint()) |codepoint| {
+        if (codepoint < 0x20 or (codepoint >= 0x7f and codepoint <= 0x9f))
+            return false;
     }
-    return std.unicode.utf8ValidateSlice(text);
+    return true;
 }
 
 pub const TextInput = struct {
@@ -2935,6 +2984,8 @@ pub const Scene = struct {
     text: std.ArrayList(TextLine) = .empty,
     mode_lines: [max_mode_lines]ModeLine = undefined,
     mode_line_count: usize = 0,
+    aux_lines: [max_aux_lines]ModeLine = undefined,
+    aux_line_count: usize = 0,
     title: ?[:0]u8 = null,
     alpha: ?protocol.FrameAlphaPayload = null,
     decorations: ?protocol.FrameDecorationsPayload = null,
@@ -3228,6 +3279,7 @@ pub const Scene = struct {
         self.window_positions = .empty;
         self.text = .empty;
         self.mode_line_count = 0;
+        self.aux_line_count = 0;
         self.frame_header = null;
         self.cursor = null;
         self.present = null;
@@ -4688,6 +4740,8 @@ pub const Scene = struct {
         defer text.deinit(self.allocator);
         var mode_lines: [max_mode_lines]ModeLine = undefined;
         var mode_line_count: usize = 0;
+        var aux_lines: [max_aux_lines]ModeLine = undefined;
+        var aux_line_count: usize = 0;
         errdefer for (text.items) |line| self.allocator.free(line.bytes);
         var text_section_seen = false;
         var image_placements: [max_image_placements]ImagePlacement = undefined;
@@ -4913,6 +4967,41 @@ pub const Scene = struct {
                     }
                     if (mode_line_count != 0 and active_mode_lines != 1) return Error.InvalidMessage;
                 },
+                protocol.SectionKind.extension_min + 4 => {
+                    if (aux_line_count != 0) return Error.InvalidTable;
+                    var offset: usize = 0;
+                    while (offset < section.records.len) {
+                        if (section.records.len - offset < aux_line_header_size) return Error.InvalidTable;
+                        const length = std.mem.readInt(u32, section.records[offset + 26 ..][0..4], .little);
+                        const record_length = aux_line_header_size + length;
+                        if (record_length > section.records.len - offset) return Error.InvalidTable;
+                        const wire = try decodeWindowAuxLineV1(section.records[offset..][0..record_length]);
+                        const owner = findWindow(windows.items, wire.window_id) orelse return Error.InvalidMessage;
+                        for (aux_lines[0..aux_line_count]) |old| {
+                            if (old.window_id == wire.window_id and old.flags == wire.flags)
+                                return Error.InvalidTable;
+                        }
+                        if (wire.x < 0 or wire.y < 0 or wire.width <= 0 or wire.height <= 0 or
+                            !inside(wire.x, wire.width, owner.width) or
+                            !inside(wire.y, wire.height, owner.height))
+                            return Error.InvalidMessage;
+                        if (aux_line_count == max_aux_lines) return Error.Unsupported;
+                        var storage: [121]u8 = undefined;
+                        @memcpy(storage[0..wire.line.len], wire.line);
+                        aux_lines[aux_line_count] = .{
+                            .window_id = wire.window_id,
+                            .x = wire.x,
+                            .y = wire.y,
+                            .width = wire.width,
+                            .height = wire.height,
+                            .flags = wire.flags,
+                            .bytes = storage,
+                            .len = @intCast(wire.line.len),
+                        };
+                        aux_line_count += 1;
+                        offset += record_length;
+                    }
+                },
                 else => {},
             }
         }
@@ -4946,6 +5035,8 @@ pub const Scene = struct {
         self.text = text;
         self.mode_lines = mode_lines;
         self.mode_line_count = mode_line_count;
+        self.aux_lines = aux_lines;
+        self.aux_line_count = aux_line_count;
         self.clear_areas.clearRetainingCapacity();
         self.scroll_runs.clearRetainingCapacity();
         self.dividers.clearRetainingCapacity();
@@ -4967,6 +5058,7 @@ pub const Scene = struct {
         damage = old_damage;
         text = .empty;
         mode_line_count = 0;
+        aux_line_count = 0;
         self.frame_header = update.header;
         self.cursors = cursors;
         self.cursor_count = cursor_count;
@@ -5757,6 +5849,64 @@ test "frame update rejects invalid cursor cardinalities" {
     try std.testing.expectError(Error.Unsupported, scene.apply(oversized));
 }
 
+fn auxLineFrameUpdateMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    owner_count: usize,
+    wires: []const ModeLineWire,
+) ![]u8 {
+    std.debug.assert(owner_count != 0);
+    const header: protocol.FrameUpdateHeader = .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .sequence = sequence,
+        .redisplay_generation = 1,
+        .logical_x = 0,
+        .logical_y = 0,
+        .logical_width = 80,
+        .logical_height = 60,
+        .physical_x = 0,
+        .physical_y = 0,
+        .physical_width = 80,
+        .physical_height = 60,
+        .scale = 1,
+        .dpi_x = 96,
+        .dpi_y = 96,
+        .damage_mode = 2,
+        .update_cause = 1,
+        .coalesced_count = 0,
+        .timestamp_ns = 2,
+    };
+    var windows: std.ArrayList(u8) = .empty;
+    defer windows.deinit(a);
+    var rows: std.ArrayList(u8) = .empty;
+    defer rows.deinit(a);
+    var aux: std.ArrayList(u8) = .empty;
+    defer aux.deinit(a);
+    var damage: std.ArrayList(u8) = .empty;
+    defer damage.deinit(a);
+    for (0..owner_count) |index| {
+        const id: u64 = 100 + index;
+        try encodeWindow(a, .{ .id = id, .frame_id = 7, .x = 0, .y = 0, .width = 80, .height = 60 }, &windows);
+        try encodeRow(a, .{ .window_id = id, .index = 0, .flags = 0, .x = 0, .y = 0, .width = 80, .height = 10, .ascent = 7, .descent = 3, .baseline = 7, .visible_height = 10 }, &rows);
+    }
+    for (wires) |wire| try encodeWindowAuxLineV1(a, wire, &aux);
+    try encodeRect(a, .{ .x = 0, .y = 0, .width = 80, .height = 60 }, &damage);
+    const sections = [_]protocol.Section{
+        .{ .kind = protocol.SectionKind.windows, .records = windows.items },
+        .{ .kind = protocol.SectionKind.rows, .records = rows.items },
+        .{ .kind = protocol.SectionKind.extension_min + 4, .records = aux.items },
+        .{ .kind = protocol.SectionKind.damage, .records = damage.items },
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeFrameUpdate(a, .{ .header = header, .sections = &sections }, &payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{ .flags = protocol.Flags.delta, .message_type = protocol.Message.frame_update, .sequence = sequence, .ack_sequence = 0, .session_id = 9, .frame_id = 7, .timestamp_ns = 2 }, payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
 test "mode line frame updates validate bounds, cardinality, and replacement" {
     const a = std.testing.allocator;
     var scene = Scene.init(a);
@@ -5823,6 +5973,71 @@ test "mode line frame updates validate bounds, cardinality, and replacement" {
     try std.testing.expectError(Error.Unsupported, oversized.apply(many_update));
 }
 
+test "window aux lines validate kinds, owners, and authoritative replacement" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const baseline = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(baseline);
+    try scene.apply(create);
+    try scene.apply(baseline);
+
+    const valid = [_]ModeLineWire{
+        .{ .window_id = 100, .x = 0, .y = 0, .width = 80, .height = 4, .flags = aux_line_header, .line = "Header" },
+        .{ .window_id = 100, .x = 0, .y = 4, .width = 80, .height = 4, .flags = aux_line_tab, .line = "Tab" },
+        .{ .window_id = 101, .x = 0, .y = 0, .width = 80, .height = 4, .flags = aux_line_header, .line = "Other" },
+    };
+    const update = try auxLineFrameUpdateMessage(a, 3, 2, &valid);
+    defer a.free(update);
+    try scene.apply(update);
+    try std.testing.expectEqual(@as(usize, 3), scene.aux_line_count);
+    try std.testing.expectEqualStrings("Header", scene.aux_lines[0].bytes[0..scene.aux_lines[0].len]);
+
+    const omitted = try updateMessage(a, 4, 7, 7, 80, 0);
+    defer a.free(omitted);
+    try scene.apply(omitted);
+    try std.testing.expectEqual(@as(usize, 0), scene.aux_line_count);
+
+    const invalid_sets = [_][]const ModeLineWire{
+        &.{.{ .window_id = 100, .x = 78, .y = 0, .width = 10, .height = 4, .flags = aux_line_header, .line = "wide" }},
+    };
+    for (invalid_sets) |wires| {
+        var bad = Scene.init(a);
+        defer bad.deinit();
+        try bad.apply(create);
+        try bad.apply(baseline);
+        const message = try auxLineFrameUpdateMessage(a, 3, @max(1, wires.len), wires);
+        defer a.free(message);
+        try std.testing.expectError(Error.InvalidMessage, bad.apply(message));
+    }
+
+    const duplicate = [_]ModeLineWire{
+        .{ .window_id = 100, .x = 0, .y = 0, .width = 80, .height = 4, .flags = aux_line_header, .line = "one" },
+        .{ .window_id = 100, .x = 0, .y = 4, .width = 80, .height = 4, .flags = aux_line_header, .line = "duplicate" },
+    };
+    var duplicated = Scene.init(a);
+    defer duplicated.deinit();
+    try duplicated.apply(create);
+    try duplicated.apply(baseline);
+    const duplicate_update = try auxLineFrameUpdateMessage(a, 3, 1, &duplicate);
+    defer a.free(duplicate_update);
+    try std.testing.expectError(Error.InvalidTable, duplicated.apply(duplicate_update));
+
+    var many: [max_aux_lines + 1]ModeLineWire = undefined;
+    for (&many, 0..) |*wire, index| {
+        wire.* = .{ .window_id = 100 + @as(u64, @intCast(index)), .x = 0, .y = 0, .width = 80, .height = 4, .flags = aux_line_header, .line = "line" };
+    }
+    var oversized = Scene.init(a);
+    defer oversized.deinit();
+    try oversized.apply(create);
+    try oversized.apply(baseline);
+    const many_update = try auxLineFrameUpdateMessage(a, 3, max_aux_lines + 1, &many);
+    defer a.free(many_update);
+    try std.testing.expectError(Error.Unsupported, oversized.apply(many_update));
+}
+
 test "mode line payload accepts 120 bytes and rejects 121" {
     const a = std.testing.allocator;
     var bytes: std.ArrayList(u8) = .empty;
@@ -5836,6 +6051,54 @@ test "mode line payload accepts 120 bytes and rejects 121" {
     var long: [121]u8 = @splat('b');
     const invalid: ModeLineWire = .{ .window_id = 100, .x = 0, .y = 0, .width = 80, .height = 2, .line = &long };
     try std.testing.expectError(Error.InvalidTable, encodeModeLineV1(a, invalid, &bytes));
+}
+
+test "aux line codec validates kind bits and bounds" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    const valid: ModeLineWire = .{ .window_id = 101, .x = 0, .y = 0, .width = 80, .height = 4, .flags = aux_line_tab, .line = "Tab" };
+    try encodeWindowAuxLineV1(a, valid, &bytes);
+    const decoded = try decodeWindowAuxLineV1(bytes.items);
+    try std.testing.expectEqual(valid.window_id, decoded.window_id);
+    try std.testing.expectEqual(valid.flags, decoded.flags);
+    try std.testing.expectEqualStrings(valid.line, decoded.line);
+    try std.testing.expectError(Error.InvalidTable, decodeWindowAuxLineV1(bytes.items[0 .. bytes.items.len - 1]));
+    bytes.items[25] ^= @as(u8, 1);
+    try std.testing.expectError(Error.InvalidTable, decodeWindowAuxLineV1(bytes.items));
+    bytes.clearRetainingCapacity();
+    const invalid_flags: ModeLineWire = .{ .window_id = 101, .x = 0, .y = 0, .width = 80, .height = 4, .flags = mode_line_active | aux_line_header, .line = "bad" };
+    try std.testing.expectError(Error.InvalidTable, encodeWindowAuxLineV1(a, invalid_flags, &bytes));
+}
+
+test "window aux line codec rejects malformed and unsafe payloads" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    const valid: ModeLineWire = .{ .window_id = 100, .x = 0, .y = 0, .width = 80, .height = 4, .flags = aux_line_header, .line = "A" };
+    try encodeWindowAuxLineV1(a, valid, &bytes);
+    try std.testing.expectEqualStrings("A", (try decodeWindowAuxLineV1(bytes.items)).line);
+    bytes.items[24] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeWindowAuxLineV1(bytes.items));
+    bytes.items[24] = 4;
+    try std.testing.expectEqual(aux_line_tab, (try decodeWindowAuxLineV1(bytes.items)).flags);
+    bytes.items[24] = 3;
+    try std.testing.expectError(Error.InvalidTable, decodeWindowAuxLineV1(bytes.items));
+    bytes.items[24] = 2;
+
+    const empty: ModeLineWire = .{ .window_id = 100, .x = 0, .y = 0, .width = 80, .height = 4, .flags = aux_line_header, .line = "" };
+    try std.testing.expectError(Error.InvalidTable, encodeWindowAuxLineV1(a, empty, &bytes));
+    var long: [121]u8 = @splat('x');
+    const oversized: ModeLineWire = .{ .window_id = 100, .x = 0, .y = 0, .width = 80, .height = 4, .flags = aux_line_header, .line = &long };
+    try std.testing.expectError(Error.InvalidTable, encodeWindowAuxLineV1(a, oversized, &bytes));
+    const malformed_utf8: ModeLineWire = .{ .window_id = 100, .x = 0, .y = 0, .width = 80, .height = 4, .flags = aux_line_header, .line = &.{0xff} };
+    try std.testing.expectError(Error.InvalidTable, encodeWindowAuxLineV1(a, malformed_utf8, &bytes));
+    const del: ModeLineWire = .{ .window_id = 100, .x = 0, .y = 0, .width = 80, .height = 4, .flags = aux_line_header, .line = "A\u{7f}" };
+    try std.testing.expectError(Error.InvalidTable, encodeWindowAuxLineV1(a, del, &bytes));
+    const c1_start: ModeLineWire = .{ .window_id = 100, .x = 0, .y = 0, .width = 80, .height = 4, .flags = aux_line_header, .line = "A\u{80}" };
+    try std.testing.expectError(Error.InvalidTable, encodeWindowAuxLineV1(a, c1_start, &bytes));
+    const c1_end: ModeLineWire = .{ .window_id = 100, .x = 0, .y = 0, .width = 80, .height = 4, .flags = aux_line_header, .line = "A\u{9f}" };
+    try std.testing.expectError(Error.InvalidTable, encodeWindowAuxLineV1(a, c1_end, &bytes));
 }
 
 test "damage rects have a bounded variable wire form" {

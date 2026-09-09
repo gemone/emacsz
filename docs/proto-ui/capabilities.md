@@ -268,8 +268,8 @@ Priorities:
 | Window divider | P1 | Degraded | `DIVIDER_UPDATE` v1 validates orientation/bounds/generation and SDL renders fixed-color divider; draggable/resize semantics pending |
 | Vertical border | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Mode line | P0 | Degraded | Bounded public `WINDOW_MODE_LINE_V1` observation and diagnostic SDL bar; item models, faces, mouse interaction, redisplay ownership, and PGTK parity pending |
-| Header line | P1 | Pending | W12/W16 PGTK parity gate not met |
-| Tab line | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Header line | P1 | Degraded | Bounded public `WINDOW_AUX_LINE_V1` text/height observation and SDL diagnostic bar; item models, faces, mouse, redisplay ownership, and parity pending |
+| Tab line | P1 | Degraded | Bounded public `WINDOW_AUX_LINE_V1` text/height observation and SDL diagnostic bar; item models, faces, mouse, redisplay ownership, and parity pending |
 | Tab bar | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Tool bar | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Menu bar | P1 | Pending | W12/W16 PGTK parity gate not met |

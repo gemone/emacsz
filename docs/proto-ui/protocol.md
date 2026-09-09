@@ -2422,7 +2422,7 @@ remain future work.
 
 The adapter-owned `0x8000` frame-update extension carries bounded facts-profile
 text.  Each record is `u32 row_index`, `u32 byte_length`, and valid UTF-8 bytes
-without C0 controls; the current producer limits lines to 32 and columns to 120
+without C0/C1 controls and DEL; the current producer limits lines to 32 and columns to 120
 bytes and maps every row index to a row in the same update.  This is not the
 normative `GLYPH_RUN` path and must not be used to claim shaped-text or
 face/font compatibility.
@@ -2730,7 +2730,7 @@ record is a 30-byte header—`u64 window_id`, four window-relative `i32` values
 `x/y/width/height`, `u16 flags`, and `u32 UTF-8 length`—followed by the UTF-8
 payload.  A record is in bounds only when `x/y` are nonnegative, `width/height` are
 positive, `x+width` fits its owner, and `y+height` fits its owner.  A payload
-is 1..120 valid UTF-8 bytes. Window IDs are unique, at most 16 records are
+is 1..120 valid UTF-8 bytes and excludes C0/C1 controls and DEL. Window IDs are unique, at most 16 records are
 accepted in the facts profile, exactly one record must set flag bit zero to
 designate the selected/active mode line, and all other flags are invalid.  The
 Mode-line publication is all-or-nothing: when the selected window's mode line is
@@ -2741,6 +2741,17 @@ batch public-fact publishers omit this field when the public mode-line format is
 unavailable or empty rather than synthesizing placeholder text.  The diagnostic renderer draws the bar
 and its ASCII subset; this public observation is not redisplay-owned mode-line
 semantics, full item/face interaction, or complete mode-line parity.
+
+Header and tab lines use extension section `0x8004` (`WINDOW_AUX_LINE_V1`).  It
+reuses the same 30-byte header and bounded payload form as mode lines, but
+`flags` bit 1 selects a header line and bit 2 selects a tab line; both kind bits
+or any other flag bit is invalid.  A window may carry at most one header and one
+tab line, while the facts profile accepts at most 32 records per update.  When both lines are present,
+their heights must together fit the owner. Each record must fit its owner and
+carry 1..120 valid UTF-8 bytes excluding C0/C1 controls and DEL.  These are public
+text/height observations rendered as diagnostic bars; they are not mode/header/
+tab item models, face-accurate lines, mouse targets, redisplay-owned capture, or
+PGTK parity.
 
 The facts profile defines a deliberately bounded `WHEEL_EVENT` subset for
 `0x0603`: `u8 unit` (`1=line`), `u8 source` (`1=wheel`), `u8 modifiers`

@@ -656,20 +656,22 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
         \\    (let* ((lines (split-string text "\n" t))
         \\           (bounded (delq nil (mapcar (lambda (line) (and (<= (string-bytes line) 120) line)) lines))))
         \\      (if (> (length bounded) 8) (butlast bounded (- (length bounded) 8)) bounded)))
+        \\  (defun proto-ui--safe-window-line (win height format)
+        \\    (when (> height 0)
+        \\      (let* ((raw (condition-case nil (format-mode-line format nil win) (error nil)))
+        \\             (valid (and raw (> (length raw) 0) (<= (string-bytes raw) 120)))
+        \\             (index 0))
+        \\        (while (and valid (< index (length raw)))
+        \\          (let ((char (aref raw index)))
+        \\            (when (or (< char 32) (= char 127) (and (>= char 128) (<= char 159))) (setq valid nil))
+        \\            (setq index (+ index 1))))
+        \\        (when valid
+        \\          (condition-case nil
+        \\              (let ((encoded (encode-coding-string raw (quote utf-8))))
+        \\                (decode-coding-string encoded (quote utf-8)))
+        \\            (error nil)))))))
         \\  (defun proto-ui--safe-mode-line (win)
-        \\    (let* ((height (window-mode-line-height win))
-        \\           (raw (condition-case nil (format-mode-line mode-line-format nil win) (error nil)))
-        \\           (valid (and raw (> height 0) (> (length raw) 0) (<= (string-bytes raw) 120)))
-        \\           (index 0))
-        \\      (while (and valid (< index (length raw)))
-        \\        (let ((char (aref raw index)))
-        \\          (when (or (< char 32) (= char 127)) (setq valid nil))
-        \\          (setq index (+ index 1))))
-        \\      (when valid
-        \\        (condition-case nil
-        \\            (let ((encoded (encode-coding-string raw (quote utf-8))))
-        \\              (decode-coding-string encoded (quote utf-8)))
-        \\          (error nil)))))
+        \\    (proto-ui--safe-window-line win (window-mode-line-height win) mode-line-format))
         \\  (let* ((frame (selected-frame))
         \\         (window (selected-window))
         \\         (path (expand-file-name "{s}"))
@@ -705,11 +707,20 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
         \\                 (cursor (when (and (>= cursor-line 1) (<= cursor-line (length lines)) (>= cursor-column 0) (<= cursor-column 120))
         \\                           (list :line cursor-line :column cursor-column)))
         \\                 (cursor-active (eq win (selected-window)))
-        \\                 (modeline-height (window-mode-line-height win))
-        \\                 (modeline-text (proto-ui--safe-mode-line win)))
+        \\                 (modeline-raw-height (window-mode-line-height win))
+        \\                 (modeline-text (proto-ui--safe-mode-line win))
+        \\                 (modeline-height (if modeline-text modeline-raw-height 0))
+        \\                 (header-raw-height (window-header-line-height win))
+        \\                 (header-text (proto-ui--safe-window-line win header-raw-height header-line-format))
+        \\                 (header-height (if header-text header-raw-height 0))
+        \\                 (tab-raw-height (window-tab-line-height win))
+        \\                 (tab-text (proto-ui--safe-window-line win tab-raw-height tab-line-format))
+        \\                 (tab-height (if tab-text tab-raw-height 0)))
         \\            (list :id id :lines (vconcat lines) :window_start_line 1 :window_visible_lines (length lines)
         \\                  :cursor cursor :cursor_active cursor-active
-        \\                  :mode_line modeline-text :mode_line_height modeline-height))))
+        \\                  :mode_line modeline-text :mode_line_height modeline-height
+        \\                  :header_line header-text :header_line_height header-height
+        \\                  :tab_line tab-text :tab_line_height tab-height))))
         \\        (window-list frame))))
         \\    (setq window-states (proto-ui--window-states frame))
         \\    (set-frame-size frame 240 30)
@@ -1462,7 +1473,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
     _ = std.Io.Dir.cwd().deleteFile(io, config.endpoint) catch {};
     const eval = try std.fmt.allocPrint(
         gpa,
-        "(progn (setq-default buffer-file-coding-system (quote utf-8)) (defun proto-ui--bounded-lines (text) (let* ((lines (split-string text \"\\n\" t)) (bounded (delq nil (mapcar (lambda (line) (and (<= (string-bytes line) 120) line)) lines)))) (if (> (length bounded) 8) (butlast bounded (- (length bounded) 8)) bounded))) (defun proto-ui--safe-mode-line (win) (let* ((height (window-mode-line-height win)) (raw (condition-case nil (format-mode-line mode-line-format nil win) (error nil))) (valid (and raw (> height 0) (> (length raw) 0) (<= (string-bytes raw) 120))) (index 0)) (while (and valid (< index (length raw))) (let ((char (aref raw index))) (when (or (< char 32) (= char 127)) (setq valid nil)) (setq index (+ index 1)))) (when valid (condition-case nil (let ((encoded (encode-coding-string raw (quote utf-8)))) (decode-coding-string encoded (quote utf-8))) (error nil))))) (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (defun proto-ui--window-states (frame) (vconcat (mapcar (lambda (win) (let* ((id (proto-ui-window-id win)) (buf (window-buffer win)) (start (window-start win)) (end (window-end win t)) (raw (with-current-buffer buf (buffer-substring-no-properties start end))) (all-lines (split-string raw \"\\n\" t)) (byte-bounded (delq nil (mapcar (lambda (line) (and (<= (string-bytes line) 120) line)) all-lines))) (lines (if (> (length byte-bounded) 8) (butlast byte-bounded (- (length byte-bounded) 8)) byte-bounded)) (point (window-point win)) (start-line (with-current-buffer buf (save-excursion (goto-char start) (line-number-at-pos)))) (point-line (with-current-buffer buf (save-excursion (goto-char point) (line-number-at-pos)))) (cursor-line (+ 1 (- point-line start-line))) (cursor-column (with-current-buffer buf (save-excursion (goto-char point) (current-column)))) (cursor (when (and (>= cursor-line 1) (<= cursor-line (length lines)) (>= cursor-column 0) (<= cursor-column 120)) (list :line cursor-line :column cursor-column))) (cursor-active (eq win (selected-window)))) (modeline-height (window-mode-line-height win)) (modeline-text (proto-ui--safe-mode-line win)) (list :id id :lines (vconcat lines) :window_start_line 1 :window_visible_lines (length lines) :cursor cursor :cursor_active cursor-active :mode_line modeline-text :mode_line_height modeline-height))) (window-list frame)))) (let* ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\")))) (clipboard-path (expand-file-name (format \"%s\" (format \"{s}\")))) (buffer (window-buffer window)) (buffer-ready (progn (with-current-buffer buffer (set-buffer-multibyte t)) t)) (bounded-selection nil) (clipboard-unicode {s}) (window-facts (proto-ui-window-facts frame)) (window-states (proto-ui--window-states frame)) (windows (plist-get (json-parse-string window-facts :object-type (quote plist) :array-type (quote vector) :false-object nil :null-object nil) :windows)) (facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (lines (proto-ui--bounded-lines text)) (point (with-current-buffer buffer (window-point window))) (cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column))))) (viewport-start (window-start window)) (viewport-end (window-end window t)) (viewport-start-line 1) (viewport-line-count 0) (viewport-cursor-line 1)) (with-current-buffer buffer (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII textZ\") (dotimes (i 28) (insert (format \"\\nline %02d\" i))) (redisplay)) (setq viewport-start (window-start window)) (setq viewport-end (window-end window t)) (setq viewport-start-line (line-number-at-pos viewport-start)) (setq viewport-line-count (count-lines viewport-start viewport-end)) (setq text (buffer-substring-no-properties viewport-start viewport-end)) (setq lines (proto-ui--bounded-lines text)) (setq viewport-line-count (length lines)) (setq point (window-point window)) (setq viewport-cursor-line (min 15 (max 1 (+ 1 (- (line-number-at-pos point) viewport-start-line))))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line viewport-cursor-line :column (current-column))))) (setq window-facts (proto-ui-window-facts frame)) (setq windows (plist-get (json-parse-string window-facts :object-type (quote plist) :array-type (quote vector) :false-object nil :null-object nil) :windows)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (setq window-states (proto-ui--window-states frame)) (let ((coding-system-for-write (quote utf-8))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :windows windows :window_states window-states :text (vconcat lines) :cursor cursor :window_start_line viewport-start-line :window_visible_lines viewport-line-count))))) (sit-for 0.2) (set-frame-size frame 240 30) (while t (setq window (frame-selected-window frame)) (setq buffer (window-buffer window)) (setq window-states (proto-ui--window-states frame)) (when (file-readable-p input-path) (let ((action (split-string (with-temp-buffer (let ((coding-system-for-read (quote utf-8))) (insert-file-contents input-path)) (buffer-string)) \"\\n\" t))) (cond ((and (= (length action) 3) (string= (nth 1 action) \"key-v2\")) (let* ((event (json-parse-string (nth 2 action) :object-type (quote plist))) (logical (decode-coding-string (base64-decode-string (plist-get event :logical_key)) (quote utf-8))) (state (plist-get event :state)) (modifiers (plist-get event :modifiers)) (physical (plist-get event :physical_key))) (when (and (= state 1) (= modifiers 2)) (with-current-buffer buffer (cond ((and (= physical 4) (string= logical \"a\")) (beginning-of-line)) ((and (= physical 8) (string= logical \"e\")) (end-of-line))) (set-window-point window (point)) (redisplay))))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"backspace\")) (with-current-buffer buffer (goto-char (point-max)) (delete-char -1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-left\")) (with-current-buffer buffer (backward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-right\")) (with-current-buffer buffer (forward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-up\")) (with-current-buffer buffer (previous-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-down\")) (with-current-buffer buffer (next-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"copy\")) (with-current-buffer buffer (let* ((copy-end (progn (goto-char (point-min)) (line-end-position))) (copy-length (<= (- copy-end (point-min)) 120)) (copy-ascii (save-excursion (let ((ascii t) (pos (point-min))) (while (< pos copy-end) (let ((ch (char-after pos))) (when (or (< ch 32) (> ch 126)) (setq ascii nil) (setq pos copy-end))) (setq pos (+ pos 1))) ascii))) (copy-text (if clipboard-unicode \"Emacs 你好\" (and copy-length copy-ascii (buffer-substring-no-properties (point-min) copy-end))))) (when copy-text (kill-ring-save (point-min) copy-end) (with-temp-file clipboard-path (insert (if clipboard-unicode (concat \"base64:\" (base64-encode-string (encode-coding-string copy-text (quote utf-8)) t)) copy-text))) (set-window-point window (point)) (redisplay))))) ((and (= (length action) 3) (string= (nth 1 action) \"pointer-v2\") (or {s} {s})) (let* ((event (condition-case nil (json-parse-string (nth 2 action) :object-type (quote plist)) (error nil))) (phase (and event (plist-get event :phase))) (buttons (and event (plist-get event :buttons))) (pointer-x (and event (plist-get event :x))) (pointer-y (and event (plist-get event :y))) (pointer-clicks (and event (plist-get event :clicks))) (pointer-modifiers (and event (plist-get event :modifiers)))) (cond ((and {s} (member phase (list \"press\" \"drag\" \"release\")) (eql buttons 1) (eql pointer-clicks 1) (eql pointer-modifiers 0) (numberp pointer-x) (numberp pointer-y)) (condition-case nil (let ((point (posn-point (posn-at-x-y pointer-x pointer-y window)))) (when point (with-current-buffer buffer (goto-char point) (when (string= phase \"press\") (push-mark point nil t)) (when (string= phase \"release\") (let* ((copy-start (min (mark) (point))) (copy-end (max (mark) (point))) (copy-length (<= (- copy-end copy-start) 120)) (copy-ascii (save-excursion (let ((ascii t) (pos copy-start)) (while (< pos copy-end) (let ((ch (char-after pos))) (when (or (< ch 32) (> ch 126)) (setq ascii nil) (setq pos copy-end))) (setq pos (+ pos 1))) ascii))) (copy-text (and mark-active copy-length copy-ascii (buffer-substring-no-properties copy-start copy-end)))) (when copy-text (kill-ring-save copy-start copy-end) (with-temp-file clipboard-path (insert (concat \"base64:\" (base64-encode-string (encode-coding-string copy-text (quote utf-8)) t)))) (setq mark-active nil) (setq bounded-selection t)))) (set-window-point window (point)) (redisplay)))) (error nil))) ((and {s} bounded-selection (string= phase \"release\") (eql buttons 2) (eql pointer-clicks 1) (eql pointer-modifiers 0) (numberp pointer-x) (numberp pointer-y)) (condition-case nil (let ((point (posn-point (posn-at-x-y pointer-x pointer-y window)))) (when point (with-current-buffer buffer (goto-char point) (yank) (set-window-point window (point)) (redisplay)))) (error nil))) (t nil)))) ((and (= (length action) 3) (string= (nth 1 action) \"pointer\")) (let* ((pointer (split-string (nth 2 action) \" \" t)) (pointer-phase (nth 0 pointer)) (pointer-x (string-to-number (nth 1 pointer))) (pointer-y (string-to-number (nth 2 pointer)))) (when (and (= (length pointer) 3) (or (string= pointer-phase \"press\") (string= pointer-phase \"release\"))) (condition-case nil (let ((point (posn-point (posn-at-x-y pointer-x pointer-y window)))) (when point (with-current-buffer buffer (goto-char point) (redisplay)))) (error nil))))) ((and (= (length action) 3) (string= (nth 1 action) \"wheel\")) (let ((wheel (split-string (nth 2 action) \" \" t))) (when (= (length wheel) 2) (with-current-buffer buffer (condition-case nil (if (string= (nth 0 wheel) \"down\") (scroll-up (string-to-number (nth 1 wheel))) (scroll-down (string-to-number (nth 1 wheel)))) (error nil)))))) ((and (= (length action) 3) (string= (nth 1 action) \"text\") (> (length (nth 2 action)) 0)) (with-current-buffer buffer (goto-char (point-min)) (insert (decode-coding-string (base64-decode-string (nth 2 action)) (quote utf-8))) (set-window-point window (point)) (redisplay)))) (let ((coding-system-for-write (quote utf-8))) (with-temp-file (concat input-path \".ack\") (insert (nth 0 action)))) (delete-file input-path))) (setq viewport-start (window-start window)) (setq viewport-end (window-end window t)) (setq viewport-start-line (line-number-at-pos viewport-start)) (setq viewport-line-count (count-lines viewport-start viewport-end)) (setq text (buffer-substring-no-properties viewport-start viewport-end)) (setq lines (proto-ui--bounded-lines text)) (setq viewport-line-count (length lines)) (setq point (window-point window)) (setq viewport-cursor-line (min 15 (max 1 (+ 1 (- (line-number-at-pos point) viewport-start-line))))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line viewport-cursor-line :column (current-column))))) (setq window-facts (proto-ui-window-facts frame)) (setq windows (plist-get (json-parse-string window-facts :object-type (quote plist) :array-type (quote vector) :false-object nil :null-object nil) :windows)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (setq window-states (proto-ui--window-states frame)) (let ((coding-system-for-write (quote utf-8))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :windows windows :window_states window-states :text (vconcat lines) :cursor cursor :window_start_line viewport-start-line :window_visible_lines viewport-line-count))))) (sit-for 0.1))))",
+        "(progn (setq-default buffer-file-coding-system (quote utf-8)) (defun proto-ui--bounded-lines (text) (let* ((lines (split-string text \"\\n\" t)) (bounded (delq nil (mapcar (lambda (line) (and (<= (string-bytes line) 120) line)) lines)))) (if (> (length bounded) 8) (butlast bounded (- (length bounded) 8)) bounded))) (defun proto-ui--safe-window-line (win height format) (when (> height 0) (let* ((raw (condition-case nil (format-mode-line format nil win) (error nil))) (valid (and raw (> (length raw) 0) (<= (string-bytes raw) 120))) (index 0)) (while (and valid (< index (length raw))) (let ((char (aref raw index))) (when (or (< char 32) (= char 127) (and (>= char 128) (<= char 159))) (setq valid nil)) (setq index (+ index 1)))) (when valid (condition-case nil (let ((encoded (encode-coding-string raw (quote utf-8)))) (decode-coding-string encoded (quote utf-8))) (error nil)))))) (defun proto-ui--safe-mode-line (win) (proto-ui--safe-window-line win (window-mode-line-height win) mode-line-format)) (module-load (expand-file-name (format \"%s\" (format \"{s}\")))) (defun proto-ui--window-states (frame) (vconcat (mapcar (lambda (win) (let* ((id (proto-ui-window-id win)) (buf (window-buffer win)) (start (window-start win)) (end (window-end win t)) (raw (with-current-buffer buf (buffer-substring-no-properties start end))) (all-lines (split-string raw \"\\n\" t)) (byte-bounded (delq nil (mapcar (lambda (line) (and (<= (string-bytes line) 120) line)) all-lines))) (lines (if (> (length byte-bounded) 8) (butlast byte-bounded (- (length byte-bounded) 8)) byte-bounded)) (point (window-point win)) (start-line (with-current-buffer buf (save-excursion (goto-char start) (line-number-at-pos)))) (point-line (with-current-buffer buf (save-excursion (goto-char point) (line-number-at-pos)))) (cursor-line (+ 1 (- point-line start-line))) (cursor-column (with-current-buffer buf (save-excursion (goto-char point) (current-column)))) (cursor (when (and (>= cursor-line 1) (<= cursor-line (length lines)) (>= cursor-column 0) (<= cursor-column 120)) (list :line cursor-line :column cursor-column))) (cursor-active (eq win (selected-window)))) (modeline-raw-height (window-mode-line-height win)) (modeline-text (proto-ui--safe-mode-line win)) (modeline-height (if modeline-text modeline-raw-height 0)) (header-raw-height (window-header-line-height win)) (header-text (proto-ui--safe-window-line win header-raw-height header-line-format)) (header-height (if header-text header-raw-height 0)) (tab-raw-height (window-tab-line-height win)) (tab-text (proto-ui--safe-window-line win tab-raw-height tab-line-format)) (tab-height (if tab-text tab-raw-height 0)) (list :id id :lines (vconcat lines) :window_start_line 1 :window_visible_lines (length lines) :cursor cursor :cursor_active cursor-active :mode_line modeline-text :mode_line_height modeline-height :header_line header-text :header_line_height header-height :tab_line tab-text :tab_line_height tab-height))) (window-list frame)))) (let* ((frame (selected-frame)) (window (selected-window)) (path (expand-file-name (format \"%s\" (format \"{s}\")))) (input-path (expand-file-name (format \"%s\" (format \"{s}\")))) (clipboard-path (expand-file-name (format \"%s\" (format \"{s}\")))) (buffer (window-buffer window)) (buffer-ready (progn (with-current-buffer buffer (set-buffer-multibyte t)) t)) (bounded-selection nil) (clipboard-unicode {s}) (window-facts (proto-ui-window-facts frame)) (window-states (proto-ui--window-states frame)) (windows (plist-get (json-parse-string window-facts :object-type (quote plist) :array-type (quote vector) :false-object nil :null-object nil) :windows)) (facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (text (with-current-buffer buffer (buffer-substring-no-properties (point-min) (point-max)))) (lines (proto-ui--bounded-lines text)) (point (with-current-buffer buffer (window-point window))) (cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line (line-number-at-pos point) :column (current-column))))) (viewport-start (window-start window)) (viewport-end (window-end window t)) (viewport-start-line 1) (viewport-line-count 0) (viewport-cursor-line 1)) (with-current-buffer buffer (erase-buffer) (insert \"Emacs Proto-UI\\nvisible ASCII textZ\") (dotimes (i 28) (insert (format \"\\nline %02d\" i))) (redisplay)) (setq viewport-start (window-start window)) (setq viewport-end (window-end window t)) (setq viewport-start-line (line-number-at-pos viewport-start)) (setq viewport-line-count (count-lines viewport-start viewport-end)) (setq text (buffer-substring-no-properties viewport-start viewport-end)) (setq lines (proto-ui--bounded-lines text)) (setq viewport-line-count (length lines)) (setq point (window-point window)) (setq viewport-cursor-line (min 15 (max 1 (+ 1 (- (line-number-at-pos point) viewport-start-line))))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line viewport-cursor-line :column (current-column))))) (setq window-facts (proto-ui-window-facts frame)) (setq windows (plist-get (json-parse-string window-facts :object-type (quote plist) :array-type (quote vector) :false-object nil :null-object nil) :windows)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (setq window-states (proto-ui--window-states frame)) (let ((coding-system-for-write (quote utf-8))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :windows windows :window_states window-states :text (vconcat lines) :cursor cursor :window_start_line viewport-start-line :window_visible_lines viewport-line-count))))) (sit-for 0.2) (set-frame-size frame 240 30) (while t (setq window (frame-selected-window frame)) (setq buffer (window-buffer window)) (setq window-states (proto-ui--window-states frame)) (when (file-readable-p input-path) (let ((action (split-string (with-temp-buffer (let ((coding-system-for-read (quote utf-8))) (insert-file-contents input-path)) (buffer-string)) \"\\n\" t))) (cond ((and (= (length action) 3) (string= (nth 1 action) \"key-v2\")) (let* ((event (json-parse-string (nth 2 action) :object-type (quote plist))) (logical (decode-coding-string (base64-decode-string (plist-get event :logical_key)) (quote utf-8))) (state (plist-get event :state)) (modifiers (plist-get event :modifiers)) (physical (plist-get event :physical_key))) (when (and (= state 1) (= modifiers 2)) (with-current-buffer buffer (cond ((and (= physical 4) (string= logical \"a\")) (beginning-of-line)) ((and (= physical 8) (string= logical \"e\")) (end-of-line))) (set-window-point window (point)) (redisplay))))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"backspace\")) (with-current-buffer buffer (goto-char (point-max)) (delete-char -1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-left\")) (with-current-buffer buffer (backward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-right\")) (with-current-buffer buffer (forward-char 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-up\")) (with-current-buffer buffer (previous-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"cursor-down\")) (with-current-buffer buffer (next-line 1) (set-window-point window (point)) (redisplay))) ((and (= (length action) 3) (string= (nth 1 action) \"key\") (string= (nth 2 action) \"copy\")) (with-current-buffer buffer (let* ((copy-end (progn (goto-char (point-min)) (line-end-position))) (copy-length (<= (- copy-end (point-min)) 120)) (copy-ascii (save-excursion (let ((ascii t) (pos (point-min))) (while (< pos copy-end) (let ((ch (char-after pos))) (when (or (< ch 32) (> ch 126)) (setq ascii nil) (setq pos copy-end))) (setq pos (+ pos 1))) ascii))) (copy-text (if clipboard-unicode \"Emacs 你好\" (and copy-length copy-ascii (buffer-substring-no-properties (point-min) copy-end))))) (when copy-text (kill-ring-save (point-min) copy-end) (with-temp-file clipboard-path (insert (if clipboard-unicode (concat \"base64:\" (base64-encode-string (encode-coding-string copy-text (quote utf-8)) t)) copy-text))) (set-window-point window (point)) (redisplay))))) ((and (= (length action) 3) (string= (nth 1 action) \"pointer-v2\") (or {s} {s})) (let* ((event (condition-case nil (json-parse-string (nth 2 action) :object-type (quote plist)) (error nil))) (phase (and event (plist-get event :phase))) (buttons (and event (plist-get event :buttons))) (pointer-x (and event (plist-get event :x))) (pointer-y (and event (plist-get event :y))) (pointer-clicks (and event (plist-get event :clicks))) (pointer-modifiers (and event (plist-get event :modifiers)))) (cond ((and {s} (member phase (list \"press\" \"drag\" \"release\")) (eql buttons 1) (eql pointer-clicks 1) (eql pointer-modifiers 0) (numberp pointer-x) (numberp pointer-y)) (condition-case nil (let ((point (posn-point (posn-at-x-y pointer-x pointer-y window)))) (when point (with-current-buffer buffer (goto-char point) (when (string= phase \"press\") (push-mark point nil t)) (when (string= phase \"release\") (let* ((copy-start (min (mark) (point))) (copy-end (max (mark) (point))) (copy-length (<= (- copy-end copy-start) 120)) (copy-ascii (save-excursion (let ((ascii t) (pos copy-start)) (while (< pos copy-end) (let ((ch (char-after pos))) (when (or (< ch 32) (> ch 126)) (setq ascii nil) (setq pos copy-end))) (setq pos (+ pos 1))) ascii))) (copy-text (and mark-active copy-length copy-ascii (buffer-substring-no-properties copy-start copy-end)))) (when copy-text (kill-ring-save copy-start copy-end) (with-temp-file clipboard-path (insert (concat \"base64:\" (base64-encode-string (encode-coding-string copy-text (quote utf-8)) t)))) (setq mark-active nil) (setq bounded-selection t)))) (set-window-point window (point)) (redisplay)))) (error nil))) ((and {s} bounded-selection (string= phase \"release\") (eql buttons 2) (eql pointer-clicks 1) (eql pointer-modifiers 0) (numberp pointer-x) (numberp pointer-y)) (condition-case nil (let ((point (posn-point (posn-at-x-y pointer-x pointer-y window)))) (when point (with-current-buffer buffer (goto-char point) (yank) (set-window-point window (point)) (redisplay)))) (error nil))) (t nil)))) ((and (= (length action) 3) (string= (nth 1 action) \"pointer\")) (let* ((pointer (split-string (nth 2 action) \" \" t)) (pointer-phase (nth 0 pointer)) (pointer-x (string-to-number (nth 1 pointer))) (pointer-y (string-to-number (nth 2 pointer)))) (when (and (= (length pointer) 3) (or (string= pointer-phase \"press\") (string= pointer-phase \"release\"))) (condition-case nil (let ((point (posn-point (posn-at-x-y pointer-x pointer-y window)))) (when point (with-current-buffer buffer (goto-char point) (redisplay)))) (error nil))))) ((and (= (length action) 3) (string= (nth 1 action) \"wheel\")) (let ((wheel (split-string (nth 2 action) \" \" t))) (when (= (length wheel) 2) (with-current-buffer buffer (condition-case nil (if (string= (nth 0 wheel) \"down\") (scroll-up (string-to-number (nth 1 wheel))) (scroll-down (string-to-number (nth 1 wheel)))) (error nil)))))) ((and (= (length action) 3) (string= (nth 1 action) \"text\") (> (length (nth 2 action)) 0)) (with-current-buffer buffer (goto-char (point-min)) (insert (decode-coding-string (base64-decode-string (nth 2 action)) (quote utf-8))) (set-window-point window (point)) (redisplay)))) (let ((coding-system-for-write (quote utf-8))) (with-temp-file (concat input-path \".ack\") (insert (nth 0 action)))) (delete-file input-path))) (setq viewport-start (window-start window)) (setq viewport-end (window-end window t)) (setq viewport-start-line (line-number-at-pos viewport-start)) (setq viewport-line-count (count-lines viewport-start viewport-end)) (setq text (buffer-substring-no-properties viewport-start viewport-end)) (setq lines (proto-ui--bounded-lines text)) (setq viewport-line-count (length lines)) (setq point (window-point window)) (setq viewport-cursor-line (min 15 (max 1 (+ 1 (- (line-number-at-pos point) viewport-start-line))))) (setq cursor (with-current-buffer buffer (save-excursion (goto-char point) (list :line viewport-cursor-line :column (current-column))))) (setq window-facts (proto-ui-window-facts frame)) (setq windows (plist-get (json-parse-string window-facts :object-type (quote plist) :array-type (quote vector) :false-object nil :null-object nil) :windows)) (setq facts (json-parse-string (proto-ui-frame-facts frame) :object-type (quote plist))) (setq window-states (proto-ui--window-states frame)) (let ((coding-system-for-write (quote utf-8))) (with-temp-file path (insert (json-serialize (list :frame_width (plist-get facts :frame_width) :frame_height (plist-get facts :frame_height) :window_width (plist-get facts :window_width) :window_height (plist-get facts :window_height) :windows windows :window_states window-states :text (vconcat lines) :cursor cursor :window_start_line viewport-start-line :window_visible_lines viewport-line-count))))) (sit-for 0.1))))",
         .{
             config.module_path,
             config.facts_path,
@@ -4606,16 +4617,21 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     defer mode_rows.deinit(gpa);
     var mode_records: std.ArrayList(u8) = .empty;
     defer mode_records.deinit(gpa);
+    var aux_records: std.ArrayList(u8) = .empty;
+    defer aux_records.deinit(gpa);
     var mode_damage: std.ArrayList(u8) = .empty;
     defer mode_damage.deinit(gpa);
     try frontend.encodeWindow(gpa, .{ .id = 10, .frame_id = mode_frame_id, .x = 8, .y = 8, .width = 200, .height = 40 }, &mode_windows);
     try frontend.encodeRow(gpa, .{ .window_id = 10, .index = 0, .flags = 0, .x = 4, .y = 4, .width = 192, .height = 24, .ascent = 8, .descent = 2, .baseline = 8, .visible_height = 24 }, &mode_rows);
     try frontend.encodeModeLineV1(gpa, .{ .window_id = 10, .x = 0, .y = 24, .width = 200, .height = 16, .flags = frontend.mode_line_active, .line = "Mode" }, &mode_records);
+    try frontend.encodeWindowAuxLineV1(gpa, .{ .window_id = 10, .x = 0, .y = 0, .width = 200, .height = 16, .flags = frontend.aux_line_header, .line = "Header" }, &aux_records);
+    try frontend.encodeWindowAuxLineV1(gpa, .{ .window_id = 10, .x = 0, .y = 16, .width = 200, .height = 16, .flags = frontend.aux_line_tab, .line = "Tab" }, &aux_records);
     try frontend.encodeRect(gpa, .{ .x = 0, .y = 0, .width = 240, .height = 96 }, &mode_damage);
     const mode_sections = [_]protocol.Section{
         .{ .kind = protocol.SectionKind.windows, .records = mode_windows.items },
         .{ .kind = protocol.SectionKind.rows, .records = mode_rows.items },
         .{ .kind = protocol.SectionKind.extension_min + 3, .records = mode_records.items },
+        .{ .kind = protocol.SectionKind.extension_min + 4, .records = aux_records.items },
         .{ .kind = protocol.SectionKind.damage, .records = mode_damage.items },
     };
     var mode_payload: std.ArrayList(u8) = .empty;
@@ -4662,6 +4678,30 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
             else => {},
         }
     }
+    var header_text_rendered = false;
+    var tab_text_rendered = false;
+    var header_bar_rendered = false;
+    var tab_bar_rendered = false;
+    for (draw_list.commands.items) |command| {
+        switch (command) {
+            .fill => |fill| {
+                if (fill.rect.x == 8 and fill.rect.y == 8 and fill.rect.width == 200 and fill.rect.height == 16)
+                    header_bar_rendered = true;
+                if (fill.rect.x == 8 and fill.rect.y == 24 and fill.rect.width == 200 and fill.rect.height == 16)
+                    tab_bar_rendered = true;
+            },
+            .text => |line_text| {
+                if (std.mem.eql(u8, line_text.bytes, "Header"))
+                    header_text_rendered = true;
+                if (std.mem.eql(u8, line_text.bytes, "Tab"))
+                    tab_text_rendered = true;
+            },
+            else => {},
+        }
+    }
+    if (!header_bar_rendered or !header_text_rendered or !tab_bar_rendered or !tab_text_rendered or
+        scene.aux_line_count != 2)
+        return error.WindowLineRenderFailed;
     if (!mode_bar_rendered or !mode_line_rendered or scene.mode_line_count != 1)
         return error.ModeLineRenderFailed;
     std.debug.print(
@@ -4701,7 +4741,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
             frame_counters.explicit_skipped_commands,
         },
     );
-    std.debug.print("sdl3-runtime-bridge-smoke: mode_line_rendered={any} count={d}\n", .{ mode_line_rendered, scene.mode_line_count });
+    std.debug.print("sdl3-runtime-bridge-smoke: mode_line_rendered={any} count={d} aux_line_rendered={any} aux_count={d}\n", .{ mode_line_rendered, scene.mode_line_count, header_text_rendered and tab_text_rendered, scene.aux_line_count });
 }
 
 fn keyEvent(input: *const runtime_host.InputEvent) SDL_Event {
@@ -5328,7 +5368,7 @@ fn observeSceneDamage(
         hasher.update(&.{0});
     }
     var mode_line_hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    for (scene.mode_lines[0..scene.mode_line_count]) |mode_line| {
+    for (scene.mode_lines[0..scene.mode_line_count]) |*mode_line| {
         var window_bytes: [8]u8 = undefined;
         std.mem.writeInt(u64, &window_bytes, mode_line.window_id, .little);
         mode_line_hasher.update(&window_bytes);
@@ -5349,6 +5389,27 @@ fn observeSceneDamage(
     var mode_line_digest: [32]u8 = undefined;
     mode_line_hasher.final(&mode_line_digest);
     const mode_line_hash = std.mem.readInt(u64, mode_line_digest[0..8], .little);
+
+    var aux_line_hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    for (scene.aux_lines[0..scene.aux_line_count]) |line| {
+        var window_bytes: [8]u8 = undefined;
+        std.mem.writeInt(u64, &window_bytes, line.window_id, .little);
+        aux_line_hasher.update(&window_bytes);
+        var flag_bytes: [2]u8 = undefined;
+        std.mem.writeInt(u16, &flag_bytes, line.flags, .little);
+        aux_line_hasher.update(&flag_bytes);
+        aux_line_hasher.update(line.bytes[0..line.len]);
+        var geometry_bytes: [16]u8 = undefined;
+        std.mem.writeInt(i32, geometry_bytes[0..4], line.x, .little);
+        std.mem.writeInt(i32, geometry_bytes[4..8], line.y, .little);
+        std.mem.writeInt(i32, geometry_bytes[8..12], line.width, .little);
+        std.mem.writeInt(i32, geometry_bytes[12..16], line.height, .little);
+        aux_line_hasher.update(&geometry_bytes);
+        aux_line_hasher.update(&.{0});
+    }
+    var aux_line_digest: [32]u8 = undefined;
+    aux_line_hasher.final(&aux_line_digest);
+    const aux_line_hash = std.mem.readInt(u64, aux_line_digest[0..8], .little);
 
     var structure_hasher = std.crypto.hash.sha2.Sha256.init(.{});
     if (scene.frame_header) |header| {
@@ -5456,7 +5517,7 @@ fn observeSceneDamage(
         .cursor_hash = cursor_hash,
         .cursor_count = scene.cursor_count,
         .text_hash = text_hash,
-        .mode_line_hash = mode_line_hash,
+        .mode_line_hash = mode_line_hash ^ aux_line_hash,
         .text_line_count = scene.text.items.len,
         .structure_hash = structure_hash,
         .structure_object_count = scene.windows.items.len + scene.rows.items.len,
@@ -5998,6 +6059,35 @@ fn sceneHasText(scene: *const frontend.Scene, needle: []const u8) bool {
     return false;
 }
 
+fn drawDiagnosticWindowLine(
+    scene: *frontend.Scene,
+    list: *renderer_policy.DrawList,
+    line: *const frontend.ModeLine,
+) !void {
+    const owner = findSceneWindow(scene, line.window_id) orelse return error.WindowLineWithoutWindow;
+    try list.fillRect(.{
+        .x = @floatFromInt(owner.x + line.x),
+        .y = @floatFromInt(owner.y + line.y),
+        .width = @floatFromInt(line.width),
+        .height = @floatFromInt(line.height),
+    }, .{ .r = 0x20, .g = 0x24, .b = 0x2c, .a = 255 });
+    if (line.height >= 16 and input_policy.isAsciiText(line.bytes[0..line.len])) {
+        const available_width: i64 = @as(i64, line.width) - 8;
+        const visible_bytes: usize = if (available_width < 8)
+            0
+        else
+            @min(line.len, @as(usize, @intCast(@divTrunc(available_width, 8))));
+        if (visible_bytes > 0) {
+            try list.drawText(
+                @floatFromInt(owner.x + line.x + 4),
+                @floatFromInt(owner.y + line.y),
+                line.bytes[0..visible_bytes],
+                .{ .r = 0xe0, .g = 0xe6, .b = 0xf0, .a = 255 },
+            );
+        }
+    }
+}
+
 fn buildSceneDrawList(
     scene: *frontend.Scene,
     list: *renderer_policy.DrawList,
@@ -6414,28 +6504,10 @@ fn buildSceneDrawList(
     }
 
     for (scene.mode_lines[0..scene.mode_line_count]) |mode_line| {
-        const owner = findSceneWindow(scene, mode_line.window_id) orelse return error.ModeLineWithoutWindow;
-        try list.fillRect(.{
-            .x = @floatFromInt(owner.x + mode_line.x),
-            .y = @floatFromInt(owner.y + mode_line.y),
-            .width = @floatFromInt(mode_line.width),
-            .height = @floatFromInt(mode_line.height),
-        }, .{ .r = 0x20, .g = 0x24, .b = 0x2c, .a = 255 });
-        if (mode_line.height >= 16 and input_policy.isAsciiText(mode_line.bytes[0..mode_line.len])) {
-            const available_width: i64 = @as(i64, mode_line.width) - 8;
-            const visible_bytes: usize = if (available_width < 8)
-                0
-            else
-                @min(mode_line.len, @as(usize, @intCast(@divTrunc(available_width, 8))));
-            if (visible_bytes > 0) {
-                try list.drawText(
-                    @floatFromInt(owner.x + mode_line.x + 4),
-                    @floatFromInt(owner.y + mode_line.y),
-                    mode_line.bytes[0..visible_bytes],
-                    .{ .r = 0xe0, .g = 0xe6, .b = 0xf0, .a = 255 },
-                );
-            }
-        }
+        try drawDiagnosticWindowLine(scene, list, &mode_line);
+    }
+    for (scene.aux_lines[0..scene.aux_line_count]) |*aux_line| {
+        try drawDiagnosticWindowLine(scene, list, aux_line);
     }
 
     for (scene.cursors[0..scene.cursor_count]) |cursor| {

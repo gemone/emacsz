@@ -83,6 +83,10 @@ pub const WindowContent = struct {
     viewport: ViewportFacts,
     mode_line: ?[]const u8 = null,
     mode_line_height: i32 = 0,
+    header_line: ?[]const u8 = null,
+    header_line_height: i32 = 0,
+    tab_line: ?[]const u8 = null,
+    tab_line_height: i32 = 0,
     cursor: ?CursorFacts = null,
     cursor_active: bool = false,
 
@@ -94,12 +98,22 @@ pub const WindowContent = struct {
             ((left.mode_line == null and right.mode_line == null) or
                 (left.mode_line != null and right.mode_line != null and
                     std.mem.eql(u8, left.mode_line.?, right.mode_line.?))) and
-            left.mode_line_height == right.mode_line_height;
+            left.mode_line_height == right.mode_line_height and
+            ((left.header_line == null and right.header_line == null) or
+                (left.header_line != null and right.header_line != null and
+                    std.mem.eql(u8, left.header_line.?, right.header_line.?))) and
+            left.header_line_height == right.header_line_height and
+            ((left.tab_line == null and right.tab_line == null) or
+                (left.tab_line != null and right.tab_line != null and
+                    std.mem.eql(u8, left.tab_line.?, right.tab_line.?))) and
+            left.tab_line_height == right.tab_line_height;
     }
 
     pub fn deinit(self: *WindowContent, gpa: std.mem.Allocator) void {
         self.text.deinit(gpa);
         if (self.mode_line) |line| gpa.free(line);
+        if (self.header_line) |line| gpa.free(line);
+        if (self.tab_line) |line| gpa.free(line);
     }
 };
 
@@ -142,6 +156,7 @@ pub const Error = std.json.ParseError(std.json.Scanner) || error{
     InvalidWindowContent,
     InvalidViewportFacts,
     InvalidModeLineFacts,
+    InvalidAuxLineFacts,
 };
 
 const SnapshotWire = struct {
@@ -167,6 +182,10 @@ const WindowStateWire = struct {
     cursor_active: bool = false,
     mode_line: ?[]const u8 = null,
     mode_line_height: i32 = 0,
+    header_line: ?[]const u8 = null,
+    header_line_height: i32 = 0,
+    tab_line: ?[]const u8 = null,
+    tab_line_height: i32 = 0,
 };
 
 fn cursorFitsVertical(cursor: CursorFacts, window_height: i32) bool {
@@ -228,6 +247,23 @@ fn parseWindowContents(gpa: std.mem.Allocator, states: []const WindowStateWire, 
                 !frontend.validBoundedUtf8Text(state.mode_line.?, max_text_columns))
                 return error.InvalidModeLineFacts;
         }
+        if (state.header_line != null or state.header_line_height != 0) {
+            if (state.header_line == null or state.header_line_height <= 0 or
+                state.header_line_height > fact.height or
+                !frontend.validBoundedUtf8Text(state.header_line.?, max_text_columns))
+                return error.InvalidAuxLineFacts;
+        }
+        if (state.header_line != null and state.tab_line != null) {
+            const combined = @addWithOverflow(state.header_line_height, state.tab_line_height);
+            if (combined[1] != 0 or combined[0] > fact.height)
+                return error.InvalidAuxLineFacts;
+        }
+        if (state.tab_line != null or state.tab_line_height != 0) {
+            if (state.tab_line == null or state.tab_line_height <= 0 or
+                state.tab_line_height > fact.height or
+                !frontend.validBoundedUtf8Text(state.tab_line.?, max_text_columns))
+                return error.InvalidAuxLineFacts;
+        }
         contents[index] = .{
             .id = state.id,
             .text = try parseWindowText(gpa, state.lines),
@@ -236,6 +272,10 @@ fn parseWindowContents(gpa: std.mem.Allocator, states: []const WindowStateWire, 
             .cursor_active = state.cursor_active,
             .mode_line = if (state.mode_line) |line| try gpa.dupe(u8, line) else null,
             .mode_line_height = state.mode_line_height,
+            .header_line = if (state.header_line) |line| try gpa.dupe(u8, line) else null,
+            .header_line_height = state.header_line_height,
+            .tab_line = if (state.tab_line) |line| try gpa.dupe(u8, line) else null,
+            .tab_line_height = state.tab_line_height,
         };
         initialized = index + 1;
     }
@@ -517,10 +557,14 @@ test "projects bounded states for every window" {
         \\  "window_states":[
         \\    {"id":101,"lines":["left"],"window_start_line":1,"window_visible_lines":1,
         \\     "cursor":{"line":1,"column":1},"cursor_active":false,
-        \\     "mode_line":"Left","mode_line_height":2},
+        \\     "mode_line":"Left","mode_line_height":2,
+        \\     "header_line":"LH","header_line_height":2,
+        \\     "tab_line":"LT","tab_line_height":1},
         \\    {"id":102,"lines":["right"],"window_start_line":1,"window_visible_lines":1,
         \\     "cursor":{"line":1,"column":2},"cursor_active":true,
-        \\     "mode_line":"Right","mode_line_height":2}
+        \\     "mode_line":"Right","mode_line_height":2,
+        \\     "header_line":"RH","header_line_height":2,
+        \\     "tab_line":"RT","tab_line_height":1}
         \\  ],
         \\  "text":["right"],
         \\  "window_start_line":1,"window_visible_lines":1
@@ -561,6 +605,23 @@ test "projects bounded states for every window" {
     try std.testing.expectEqual(@as(usize, 2), scene.mode_line_count);
     try std.testing.expectEqualStrings("Left", scene.mode_lines[0].bytes[0..scene.mode_lines[0].len]);
     try std.testing.expectEqualStrings("Right", scene.mode_lines[1].bytes[0..scene.mode_lines[1].len]);
+    try std.testing.expectEqual(@as(usize, 4), scene.aux_line_count);
+    try std.testing.expectEqualStrings("LH", scene.aux_lines[0].bytes[0..scene.aux_lines[0].len]);
+    try std.testing.expectEqual(frontend.aux_line_header, scene.aux_lines[0].flags);
+    try std.testing.expectEqualStrings("LT", scene.aux_lines[1].bytes[0..scene.aux_lines[1].len]);
+    try std.testing.expectEqual(frontend.aux_line_tab, scene.aux_lines[1].flags);
+
+    const combined_overflow =
+        \\{"frame_width":120,"frame_height":40,"window_width":120,"window_height":20,
+        \\ "identity":"process_lifetime",
+        \\ "windows":[{"id":101,"index":0,"x":0,"y":0,"width":120,"height":20,"selected":true}],
+        \\ "window_states":[
+        \\  {"id":101,"lines":["left"],"window_start_line":1,"window_visible_lines":1,
+        \\   "header_line":"H","header_line_height":12,
+        \\   "tab_line":"T","tab_line_height":12}],
+        \\ "text":["left"],"window_start_line":1,"window_visible_lines":1}
+    ;
+    try std.testing.expectError(error.InvalidAuxLineFacts, parseSnapshot(a, combined_overflow));
 
     const duplicate =
         \\{"frame_width":120,"frame_height":40,"window_width":60,"window_height":20,
@@ -659,6 +720,89 @@ test "mode-line projection is all-or-nothing with selected mode line" {
         &messages,
     );
     try std.testing.expectEqual(@as(usize, 0), scene.mode_line_count);
+}
+
+test "aux-line projection rejects direct combined overflow safely" {
+    const a = std.testing.allocator;
+    const facts = FrameFacts{ .frame_width = 100, .frame_height = 20, .window_width = 100, .window_height = 20 };
+    const windows = [_]WindowFact{.{ .id = 101, .index = 0, .x = 0, .y = 0, .width = 100, .height = 20, .selected = true }};
+    var header_owner: [1]u8 = undefined;
+    header_owner[0] = 'H';
+    var tab_owner: [1]u8 = undefined;
+    tab_owner[0] = 'T';
+    const max_height = std.math.maxInt(i32);
+    const contents = [_]WindowContent{.{
+        .id = 101,
+        .text = .{},
+        .viewport = .{ .start_line = 1, .line_count = 0 },
+        .header_line = header_owner[0..1],
+        .header_line_height = max_height,
+        .tab_line = tab_owner[0..1],
+        .tab_line_height = max_height,
+    }};
+    var scene = frontend.Scene.init(a);
+    defer scene.deinit();
+    var messages: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (messages.items) |message| a.free(message);
+        messages.deinit(a);
+    }
+    try std.testing.expectError(error.InvalidAuxLineFacts, appendWireSnapshotWindows(
+        a,
+        facts,
+        &windows,
+        &contents,
+        &.{},
+        .{ .line = 1, .column = 0 },
+        .{ .start_line = 1, .line_count = 0 },
+        &scene,
+        &messages,
+    ));
+}
+
+test "unsafe omitted aux line preserves the remaining snapshot" {
+    const a = std.testing.allocator;
+    const json =
+        \\{
+        \\  "frame_width":120,"frame_height":40,"window_width":60,"window_height":20,
+        \\  "identity":"process_lifetime",
+        \\  "windows":[
+        \\    {"id":101,"index":0,"x":0,"y":0,"width":60,"height":20,"selected":false},
+        \\    {"id":102,"index":1,"x":60,"y":0,"width":60,"height":20,"selected":true}
+        \\  ],
+        \\  "window_states":[
+        \\    {"id":101,"lines":["left"],"window_start_line":1,"window_visible_lines":1},
+        \\    {"id":102,"lines":["right"],"window_start_line":1,"window_visible_lines":1,
+        \\     "header_line":null,"header_line_height":0,
+        \\     "tab_line":"Right tab","tab_line_height":2}
+        \\  ],
+        \\  "text":["right"],
+        \\  "window_start_line":1,"window_visible_lines":1
+        \\}
+    ;
+    var snapshot = try parseSnapshot(a, json);
+    defer snapshot.deinit(a);
+    var scene = frontend.Scene.init(a);
+    defer scene.deinit();
+    var messages: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (messages.items) |message| a.free(message);
+        messages.deinit(a);
+    }
+    try appendWireSnapshotWindows(
+        a,
+        snapshot.facts,
+        snapshot.windows,
+        snapshot.contents,
+        snapshot.text.lines,
+        snapshot.cursor,
+        snapshot.viewport,
+        &scene,
+        &messages,
+    );
+    try std.testing.expectEqual(@as(usize, 1), scene.aux_line_count);
+    try std.testing.expectEqual(frontend.aux_line_tab, scene.aux_lines[0].flags);
+    try std.testing.expectEqualStrings("Right tab", scene.aux_lines[0].bytes[0..scene.aux_lines[0].len]);
 }
 
 test "real window snapshot rejects malformed identities" {
@@ -950,6 +1094,8 @@ pub fn appendWireSnapshotWindows(
     defer row_bytes.deinit(gpa);
     var mode_line_bytes: std.ArrayList(u8) = .empty;
     defer mode_line_bytes.deinit(gpa);
+    var aux_line_bytes: std.ArrayList(u8) = .empty;
+    defer aux_line_bytes.deinit(gpa);
     if (!viewport.valid()) return error.InvalidViewportFacts;
     const fallback_content: WindowContent = .{
         .id = selected.id,
@@ -1006,6 +1152,30 @@ pub fn appendWireSnapshotWindows(
                 .flags = if (window.selected) frontend.mode_line_active else 0,
                 .line = line,
             }, &mode_line_bytes);
+        }
+        if (content.header_line != null and content.tab_line != null) {
+            const combined = @addWithOverflow(content.header_line_height, content.tab_line_height);
+            if (combined[1] != 0 or combined[0] > window.height)
+                return error.InvalidAuxLineFacts;
+        }
+        inline for (.{ .{ frontend.aux_line_header, content.header_line, content.header_line_height }, .{ frontend.aux_line_tab, content.tab_line, content.tab_line_height } }) |aux| {
+            if (aux[1]) |line| {
+                const height = aux[2];
+                const y = if (aux[0] == frontend.aux_line_tab and content.header_line != null)
+                    content.header_line_height
+                else
+                    0;
+                if (height <= 0 or height > window.height) return error.InvalidAuxLineFacts;
+                try frontend.encodeWindowAuxLineV1(gpa, .{
+                    .window_id = window.id,
+                    .x = 0,
+                    .y = y,
+                    .width = window.width,
+                    .height = height,
+                    .flags = aux[0],
+                    .line = line,
+                }, &aux_line_bytes);
+            }
         }
     }
     const selected_row_count: i32 = 15;
@@ -1120,6 +1290,7 @@ pub fn appendWireSnapshotWindows(
         .{ .kind = protocol.SectionKind.extension_min + 1, .records = &wire_viewport_bytes },
         .{ .kind = protocol.SectionKind.extension_min + 2, .records = text_bytes.items },
         .{ .kind = protocol.SectionKind.extension_min + 3, .records = mode_line_bytes.items },
+        .{ .kind = protocol.SectionKind.extension_min + 4, .records = aux_line_bytes.items },
         .{ .kind = protocol.SectionKind.damage, .records = damage_bytes.items },
         .{ .kind = protocol.SectionKind.present_hint, .records = present_bytes.items },
     };
