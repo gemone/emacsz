@@ -3579,6 +3579,36 @@ pub const ImeContext = struct {
     }
 };
 
+pub const SelectionTransferStatus = enum {
+    waiting,
+    completed,
+    failed,
+};
+
+pub const SelectionTransfer = struct {
+    request_id: u64,
+    generation: u32,
+    status: SelectionTransferStatus = .waiting,
+    target_len: u16 = 0,
+    target: [protocol.max_selection_target_len]u8 = undefined,
+    data: []u8 = &.{},
+    error_reason: ?protocol.SelectionErrorReason = null,
+    error_message: [protocol.max_selection_error_len]u8 = undefined,
+    error_len: u16 = 0,
+
+    pub fn targetSlice(self: *const SelectionTransfer) []const u8 {
+        return self.target[0..self.target_len];
+    }
+
+    pub fn dataSlice(self: *const SelectionTransfer) []const u8 {
+        return self.data;
+    }
+
+    pub fn errorSlice(self: *const SelectionTransfer) []const u8 {
+        return self.error_message[0..self.error_len];
+    }
+};
+
 pub const Scene = struct {
     allocator: std.mem.Allocator,
     session_id: ?u64 = null,
@@ -3627,6 +3657,7 @@ pub const Scene = struct {
     selection_flags: u8 = 0,
     selection_offers: []protocol.SelectionOffer = &.{},
     selection_targets: []u8 = &.{},
+    selection_transfer: ?SelectionTransfer = null,
     aux_lines: [max_aux_lines]ModeLine = undefined,
     aux_line_count: usize = 0,
     title: ?[:0]u8 = null,
@@ -3959,6 +3990,9 @@ pub const Scene = struct {
             protocol.Message.selection_owner_set => try self.applySelectionOwnerSet(payload),
             protocol.Message.selection_owner_clear => try self.applySelectionClear(payload),
             protocol.Message.selection_lost => try self.applySelectionLost(payload),
+            protocol.Message.selection_request => try self.applySelectionRequest(payload),
+            protocol.Message.selection_data => try self.applySelectionData(payload),
+            protocol.Message.selection_error => try self.applySelectionError(payload),
             else => self.stats.control_messages += 1,
         }
         self.next_sequence = next_sequence;
@@ -5272,7 +5306,15 @@ pub const Scene = struct {
         self.stats.control_messages += 1;
     }
 
+    fn clearSelectionTransfer(self: *Scene) void {
+        if (self.selection_transfer) |*transfer| {
+            if (transfer.data.len != 0) self.allocator.free(transfer.data);
+        }
+        self.selection_transfer = null;
+    }
+
     fn clearSelectionOwnership(self: *Scene) void {
+        self.clearSelectionTransfer();
         if (self.selection_offers.len != 0) self.allocator.free(self.selection_offers);
         if (self.selection_targets.len != 0) self.allocator.free(self.selection_targets);
         self.selection_offers = &.{};
@@ -5333,6 +5375,61 @@ pub const Scene = struct {
         if (lost.kind != .primary or self.selection_kind != .primary or
             self.selection_generation != lost.generation) return Error.StaleGeneration;
         self.clearSelectionOwnership();
+        self.stats.control_messages += 1;
+    }
+
+    fn applySelectionRequest(self: *Scene, payload: protocol.Payload) Error!void {
+        const request = try protocol.decodeSelectionRequest(payload.bytes);
+        if (request.kind != .primary or self.selection_kind != .primary or
+            self.selection_generation != request.generation) return Error.StaleGeneration;
+        if (self.selection_transfer) |transfer| {
+            if (transfer.status == .waiting) return Error.Unsupported;
+        }
+        var offered = false;
+        for (self.selection_offers) |offer| {
+            if (std.mem.eql(u8, offer.target, request.target)) {
+                offered = true;
+                break;
+            }
+        }
+        if (!offered) return Error.Unsupported;
+
+        self.clearSelectionTransfer();
+        self.selection_transfer = .{
+            .request_id = request.request_id,
+            .generation = request.generation,
+            .target_len = @intCast(request.target.len),
+        };
+        const transfer = &self.selection_transfer.?;
+        @memcpy(transfer.target[0..request.target.len], request.target);
+        self.stats.control_messages += 1;
+    }
+
+    fn applySelectionData(self: *Scene, payload: protocol.Payload) Error!void {
+        const data = try protocol.decodeSelectionData(payload.bytes);
+        if (self.selection_transfer == null) return Error.InvalidMessage;
+        const transfer = &self.selection_transfer.?;
+        if (data.kind != .primary or transfer.status != .waiting or
+            transfer.request_id != data.request_id or
+            transfer.generation != data.generation) return Error.InvalidMessage;
+        const copied = try self.allocator.dupe(u8, data.bytes);
+        transfer.data = copied;
+        // data.len is authoritative for the allocated slice.
+        transfer.status = .completed;
+        self.stats.control_messages += 1;
+    }
+
+    fn applySelectionError(self: *Scene, payload: protocol.Payload) Error!void {
+        const selection_error = try protocol.decodeSelectionError(payload.bytes);
+        if (self.selection_transfer == null) return Error.InvalidMessage;
+        const transfer = &self.selection_transfer.?;
+        if (selection_error.kind != .primary or transfer.status != .waiting or
+            transfer.request_id != selection_error.request_id or
+            transfer.generation != selection_error.generation) return Error.InvalidMessage;
+        transfer.status = .failed;
+        transfer.error_reason = selection_error.reason;
+        transfer.error_len = @intCast(selection_error.message.len);
+        @memcpy(transfer.error_message[0..selection_error.message.len], selection_error.message);
         self.stats.control_messages += 1;
     }
 
@@ -7516,6 +7613,135 @@ test "selection ownership state validates generations and clears loss" {
     try scene.apply(lost);
     try std.testing.expectEqual(@as(?protocol.SelectionKind, null), scene.selection_kind);
     try std.testing.expectEqual(@as(usize, 0), scene.selection_offers.len);
+}
+
+test "selection transfer state tracks offered request, data, and error" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    const offers = [_]protocol.SelectionOffer{
+        .{ .target = "UTF8_STRING", .priority = 1 },
+        .{ .target = "TEXT", .priority = 2 },
+    };
+    try protocol.encodeSelectionOwnerSet(a, .{
+        .kind = .primary,
+        .generation = 7,
+        .flags = protocol.SelectionOwnerFlags.export_to_platform,
+        .offers = offers[0..],
+    }, &payload);
+    const owner = try windowLifecycleMessage(a, protocol.Message.selection_owner_set, 1, 7, payload.items);
+    defer a.free(owner);
+    try scene.apply(owner);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeSelectionRequest(a, .{
+        .kind = .primary,
+        .request_id = 99,
+        .generation = 7,
+        .target = "UTF8_STRING",
+    }, &payload);
+    const request = try windowLifecycleMessage(a, protocol.Message.selection_request, 2, 7, payload.items);
+    defer a.free(request);
+    try scene.apply(request);
+    try std.testing.expectEqual(SelectionTransferStatus.waiting, scene.selection_transfer.?.status);
+    try std.testing.expectEqualStrings("UTF8_STRING", scene.selection_transfer.?.targetSlice());
+    const duplicate_request = try windowLifecycleMessage(a, protocol.Message.selection_request, 3, 7, payload.items);
+    defer a.free(duplicate_request);
+    try std.testing.expectError(Error.Unsupported, scene.apply(duplicate_request));
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeSelectionData(a, .{
+        .kind = .clipboard,
+        .request_id = 99,
+        .generation = 7,
+        .bytes = "wrong",
+    }, &payload);
+    const wrong_kind_data = try windowLifecycleMessage(a, protocol.Message.selection_data, 3, 7, payload.items);
+    defer a.free(wrong_kind_data);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_kind_data));
+    try std.testing.expectEqual(SelectionTransferStatus.waiting, scene.selection_transfer.?.status);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeSelectionData(a, .{
+        .kind = .primary,
+        .request_id = 99,
+        .generation = 7,
+        .bytes = "clipboard",
+    }, &payload);
+    const data = try windowLifecycleMessage(a, protocol.Message.selection_data, 3, 7, payload.items);
+    defer a.free(data);
+    try scene.apply(data);
+    try std.testing.expectEqual(SelectionTransferStatus.completed, scene.selection_transfer.?.status);
+    try std.testing.expectEqualStrings("clipboard", scene.selection_transfer.?.dataSlice());
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeSelectionRequest(a, .{
+        .kind = .primary,
+        .request_id = 100,
+        .generation = 7,
+        .target = "TEXT",
+    }, &payload);
+    const second_request = try windowLifecycleMessage(a, protocol.Message.selection_request, 4, 7, payload.items);
+    defer a.free(second_request);
+    try scene.apply(second_request);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeSelectionError(a, .{
+        .kind = .primary,
+        .reason = .unsupported_target,
+        .request_id = 100,
+        .generation = 7,
+        .message = "unsupported target",
+    }, &payload);
+    payload.clearRetainingCapacity();
+    try protocol.encodeSelectionError(a, .{
+        .kind = .clipboard,
+        .reason = .timeout,
+        .request_id = 100,
+        .generation = 7,
+        .message = "wrong selection",
+    }, &payload);
+    const wrong_kind_error = try windowLifecycleMessage(a, protocol.Message.selection_error, 5, 7, payload.items);
+    defer a.free(wrong_kind_error);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_kind_error));
+    try std.testing.expectEqual(SelectionTransferStatus.waiting, scene.selection_transfer.?.status);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeSelectionError(a, .{
+        .kind = .primary,
+        .reason = .unsupported_target,
+        .request_id = 100,
+        .generation = 7,
+        .message = "unsupported target",
+    }, &payload);
+    const selection_error = try windowLifecycleMessage(a, protocol.Message.selection_error, 5, 7, payload.items);
+    defer a.free(selection_error);
+    try scene.apply(selection_error);
+    try std.testing.expectEqual(SelectionTransferStatus.failed, scene.selection_transfer.?.status);
+    try std.testing.expectEqual(protocol.SelectionErrorReason.unsupported_target, scene.selection_transfer.?.error_reason.?);
+    try std.testing.expectEqualStrings("unsupported target", scene.selection_transfer.?.errorSlice());
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeSelectionRequest(a, .{
+        .kind = .primary,
+        .request_id = 101,
+        .generation = 7,
+        .target = "UTF8_STRING",
+    }, &payload);
+    const waiting_before_loss = try windowLifecycleMessage(a, protocol.Message.selection_request, 6, 7, payload.items);
+    defer a.free(waiting_before_loss);
+    try scene.apply(waiting_before_loss);
+    try std.testing.expectEqual(SelectionTransferStatus.waiting, scene.selection_transfer.?.status);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeSelectionLost(a, .{ .kind = .primary, .reason = .replacement, .generation = 7 }, &payload);
+    const lost = try windowLifecycleMessage(a, protocol.Message.selection_lost, 7, 7, payload.items);
+    defer a.free(lost);
+    try scene.apply(lost);
+    try std.testing.expectEqual(@as(?SelectionTransfer, null), scene.selection_transfer);
 }
 
 test "ime commit stores bounded UTF-8 and finishes composition" {

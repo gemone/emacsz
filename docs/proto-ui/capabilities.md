@@ -342,7 +342,7 @@ Priorities:
 | PRIMARY selection | P1 | Pending | W12/W16 PGTK parity gate not met |
 | SECONDARY selection | P2 | Pending | W12/W16 PGTK parity gate not met |
 | Selection ownership | P1 | Degraded | `SELECTION_OWNER_SET`/`CLEAR`/`LOST` validate and track bounded primary ownership with up to eight target offers in Scene; no platform ownership or clipboard/PRIMARY exchange |
-| Selection target negotiation | P1 | Pending | W12/W16 PGTK parity gate not met |
+| Selection target negotiation | P1 | Degraded | `SELECTION_REQUEST`/`DATA`/`ERROR` Scene state tracks bounded offered-target requests and transfers; no platform negotiation or Emacs/core transfer application |
 | DND text | P2 | Pending | W12/W16 PGTK parity gate not met |
 | DND files | P2 | Pending | W12/W16 PGTK parity gate not met |
 | DND images | P2 | Pending | W12/W16 PGTK parity gate not met |
@@ -524,7 +524,7 @@ parity.
 | Base Emacs compatibility | Existing-buffer health gate for version, text/undo, narrowing, properties, faces, windows, scroll/recenter, buffer locals, optional real PGTK frame lifecycle, and a seven-scenario deterministic TTY/PGTK semantic matrix | Proto-frame compatibility and full PGTK parity | `proto-ui-compat` (opt-in); `compatibility.pgtk_base_gate` and `compatibility.backend_semantic_matrix` are degraded and non-negotiable |
 | Disabled/default isolation | Bounded marker audit of inherited C/Header/Lisp files and generated `src/config.h`; explicit owned-root/build-output exclusion; deterministic machine-readable fail-closed JSON | Runtime host registration, real `output_proto` enablement, and proto-frame compatibility | `proto-ui-isolation-audit`; `isolation.disabled_default_gate` is degraded and non-negotiable |
 
-The status audit contains 120 PGTK capability rows: 28 Degraded, 92 Pending,
+The status audit contains 120 PGTK capability rows: 29 Degraded, 91 Pending,
 0 Blocked, and 0 fully Implemented. A Degraded row always identifies both the
 verified bounded subset and the parity gap that remains.
 

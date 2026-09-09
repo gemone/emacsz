@@ -1617,9 +1617,13 @@ Pointer events include enter, leave, motion, press, release, click, double-click
 only.  An owner records its generation, owner flags, and up to eight unique
 target offers with priorities; a newer generation replaces it, while clear/lost
 must match the live kind and generation.  The target list is ownership metadata,
-not request/data transfer.  Platform ownership, target conversion, clipboard or
-PRIMARY exchange, secondary selection, and request/data/error Scene handling
-remain pending.
+not request/data transfer.  `SELECTION_REQUEST` (`0x0803`), `SELECTION_DATA` (`0x0804`), and
+`SELECTION_ERROR` (`0x0805`) now have bounded Scene transfer state for a live
+primary owner.  A request must name a target offered by the current generation.
+Data/error must match the waiting request ID and generation; data stores at most
+4096 bytes and error stores a bounded UTF-8 reason.  A newer owner set, clear,
+or loss invalidates the transfer.  Platform negotiation, target conversion, and
+Emacs/core application remain pending.
 
 ### Wheel event fields
 
