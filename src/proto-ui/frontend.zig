@@ -609,6 +609,7 @@ pub const max_window_geometries: usize = 32;
 pub const max_window_zones: usize = 32;
 pub const max_window_positions: usize = 32;
 pub const max_mouse_highlights: usize = 32;
+pub const max_scene_cursors: usize = 16;
 
 pub const WindowGeometryState = struct {
     schema: u16 = 1,
@@ -2854,6 +2855,8 @@ pub const Scene = struct {
     image_placements: [max_image_placements]ImagePlacement = undefined,
     image_placement_count: usize = 0,
     cursor: ?Cursor = null,
+    cursors: [max_scene_cursors]Cursor = undefined,
+    cursor_count: usize = 0,
     damage: std.ArrayList(Rect) = .empty,
     clear_areas: std.ArrayList(ClearArea) = .empty,
     scroll_runs: std.ArrayList(ScrollRun) = .empty,
@@ -2957,6 +2960,7 @@ pub const Scene = struct {
         self.resources.reset();
         self.frame_header = null;
         self.cursor = null;
+        self.cursor_count = 0;
         self.present = null;
         self.flush = null;
         self.render_hint = null;
@@ -3664,7 +3668,7 @@ pub const Scene = struct {
         for (self.image_placements[0..self.image_placement_count]) |placement| {
             if (placement.window_id == window_id) return Error.ResourceNotLive;
         }
-        if (self.cursor) |cursor| {
+        for (self.cursors[0..self.cursor_count]) |cursor| {
             if (cursor.window_id == window_id) return Error.ResourceNotLive;
         }
         _ = self.windows.orderedRemove(window_index);
@@ -3766,9 +3770,15 @@ pub const Scene = struct {
                 ancestor_id = ancestor.parent_id;
             }
         }
-        if (self.cursor) |cursor| {
-            if (cursor.window_id == updated.id) _ = try cursor.withOwner(updated);
+        for (self.cursors[0..self.cursor_count]) |*cursor| {
+            if (cursor.window_id == updated.id) cursor.* = try cursor.withOwner(updated);
         }
+        self.cursor = if (self.cursor_count == 0) null else blk: {
+            for (self.cursors[0..self.cursor_count]) |candidate| {
+                if (candidate.active) break :blk candidate;
+            }
+            break :blk self.cursors[0];
+        };
         self.windows.items[window_index] = updated;
         for (self.window_geometries.items) |*geometry| {
             if (geometry.window_id == updated.id and !windowGeometryFits(updated, geometry.*)) {
@@ -3795,6 +3805,32 @@ pub const Scene = struct {
         const owner = findWindow(self.windows.items, update.cursor.window_id) orelse
             return Error.InvalidMessage;
         _ = try update.cursor.withOwner(owner);
+        var existing_active_count: usize = 0;
+        var replaced_index: ?usize = null;
+        for (self.cursors[0..self.cursor_count], 0..) |cursor, index| {
+            if (cursor.active) existing_active_count += 1;
+            if (cursor.window_id == update.cursor.window_id) replaced_index = index;
+        }
+        const replacement = replaced_index != null;
+        const projected_active_count = if (replacement) blk: {
+            const old = self.cursors[replaced_index.?];
+            break :blk existing_active_count - @intFromBool(old.active) + @intFromBool(update.cursor.active);
+        } else existing_active_count + @intFromBool(update.cursor.active);
+        if (projected_active_count != 1) return Error.InvalidMessage;
+        if (!replacement and self.cursor_count == max_scene_cursors) return Error.Unsupported;
+        var replaced = false;
+        for (self.cursors[0..self.cursor_count]) |*cursor| {
+            if (cursor.window_id == update.cursor.window_id) {
+                cursor.* = update.cursor;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            if (self.cursor_count == max_scene_cursors) return Error.Unsupported;
+            self.cursors[self.cursor_count] = update.cursor;
+            self.cursor_count += 1;
+        }
         self.cursor = update.cursor;
         self.stats.control_messages += 1;
     }
@@ -4591,7 +4627,8 @@ pub const Scene = struct {
         var text_section_seen = false;
         var image_placements: [max_image_placements]ImagePlacement = undefined;
         var image_placement_count: usize = 0;
-        var cursor: ?Cursor = null;
+        var cursors: [max_scene_cursors]Cursor = undefined;
+        var cursor_count: usize = 0;
         var present: ?PresentHint = null;
         var viewport: ?Viewport = null;
         var resource_declarations: [max_resources]ResourceDeclaration = undefined;
@@ -4636,13 +4673,28 @@ pub const Scene = struct {
                     }
                 },
                 protocol.SectionKind.cursors => {
-                    if (section.records.len != cursor_record_size or cursor != null) return Error.InvalidTable;
-                    const wire = try decodeCursor(section.records);
-                    const owner = findWindow(windows.items, wire.window_id) orelse return Error.InvalidMessage;
-                    if (!inside(wire.x, wire.width, owner.width) or
-                        !inside(wire.y, wire.height, owner.height))
-                        return Error.InvalidMessage;
-                    cursor = wire;
+                    if (section.records.len % cursor_record_size != 0) return Error.InvalidTable;
+                    cursor_count = section.records.len / cursor_record_size;
+                    if (cursor_count > max_scene_cursors) return Error.Unsupported;
+                    var active_count: usize = 0;
+                    var cursor_index: usize = 0;
+                    var offset: usize = 0;
+                    while (offset < section.records.len) : ({
+                        offset += cursor_record_size;
+                        cursor_index += 1;
+                    }) {
+                        const wire = try decodeCursor(section.records[offset..][0..cursor_record_size]);
+                        for (cursors[0..cursor_index]) |old| {
+                            if (old.window_id == wire.window_id) return Error.InvalidTable;
+                        }
+                        const owner = findWindow(windows.items, wire.window_id) orelse return Error.InvalidMessage;
+                        if (!inside(wire.x, wire.width, owner.width) or
+                            !inside(wire.y, wire.height, owner.height))
+                            return Error.InvalidMessage;
+                        if (wire.active) active_count += 1;
+                        cursors[cursor_index] = wire;
+                    }
+                    if (cursor_count != 0 and active_count != 1) return Error.InvalidMessage;
                 },
                 protocol.SectionKind.damage => {
                     if (section.records.len % damage_record_size != 0) return Error.InvalidTable;
@@ -4811,7 +4863,14 @@ pub const Scene = struct {
         damage = old_damage;
         text = .empty;
         self.frame_header = update.header;
-        self.cursor = cursor;
+        self.cursors = cursors;
+        self.cursor_count = cursor_count;
+        self.cursor = if (cursor_count == 0) null else blk: {
+            for (cursors[0..cursor_count]) |wire| {
+                if (wire.active) break :blk wire;
+            }
+            break :blk cursors[0];
+        };
         self.present = present;
         self.flush = null;
         self.viewport = viewport;
@@ -5402,6 +5461,139 @@ test "scene validates cursor update against active frame and owner" {
     try std.testing.expectEqual(valid, scene.cursor.?);
 }
 
+fn cursorFrameUpdateMessage(
+    a: std.mem.Allocator,
+    sequence: u64,
+    cursor_count: usize,
+    active_count: usize,
+) ![]u8 {
+    std.debug.assert(cursor_count != 0);
+    const header: protocol.FrameUpdateHeader = .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .sequence = sequence,
+        .redisplay_generation = 1,
+        .logical_x = 0,
+        .logical_y = 0,
+        .logical_width = 80,
+        .logical_height = 60,
+        .physical_x = 0,
+        .physical_y = 0,
+        .physical_width = 80,
+        .physical_height = 60,
+        .scale = 1,
+        .dpi_x = 96,
+        .dpi_y = 96,
+        .damage_mode = 2,
+        .update_cause = 1,
+        .coalesced_count = 0,
+        .timestamp_ns = 2,
+    };
+    var windows: std.ArrayList(u8) = .empty;
+    defer windows.deinit(a);
+    var rows: std.ArrayList(u8) = .empty;
+    defer rows.deinit(a);
+    var cursors: std.ArrayList(u8) = .empty;
+    defer cursors.deinit(a);
+    var damage: std.ArrayList(u8) = .empty;
+    defer damage.deinit(a);
+    for (0..cursor_count) |index| {
+        const id: u64 = 100 + index;
+        try encodeWindow(a, .{
+            .id = id,
+            .frame_id = 7,
+            .x = @intCast(index * 2),
+            .y = 0,
+            .width = 2,
+            .height = 60,
+        }, &windows);
+        try encodeRow(a, .{
+            .window_id = id,
+            .index = 0,
+            .flags = 0,
+            .x = 0,
+            .y = 0,
+            .width = 2,
+            .height = 10,
+            .ascent = 7,
+            .descent = 3,
+            .baseline = 7,
+            .visible_height = 10,
+        }, &rows);
+        try encodeCursor(a, .{
+            .window_id = id,
+            .x = 0,
+            .y = 0,
+            .width = 2,
+            .height = 10,
+            .kind = 1,
+            .visible = true,
+            .active = index < active_count,
+        }, &cursors);
+    }
+    try encodeRect(a, .{ .x = 0, .y = 0, .width = 80, .height = 60 }, &damage);
+    var sections: std.ArrayList(protocol.Section) = .empty;
+    defer sections.deinit(a);
+    try sections.append(a, .{ .kind = protocol.SectionKind.windows, .records = windows.items });
+    try sections.append(a, .{ .kind = protocol.SectionKind.rows, .records = rows.items });
+    try sections.append(a, .{ .kind = protocol.SectionKind.cursors, .records = cursors.items });
+    try sections.append(a, .{ .kind = protocol.SectionKind.damage, .records = damage.items });
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeFrameUpdate(a, .{ .header = header, .sections = sections.items }, &payload);
+    var message: std.ArrayList(u8) = .empty;
+    errdefer message.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = protocol.Flags.delta,
+        .message_type = protocol.Message.frame_update,
+        .sequence = sequence,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 7,
+        .timestamp_ns = 2,
+    }, payload.items, &message);
+    return message.toOwnedSlice(a);
+}
+
+test "frame update accepts exactly one active per-window cursor" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+    const update = try cursorFrameUpdateMessage(a, 2, 2, 1);
+    defer a.free(update);
+    try scene.apply(update);
+    try std.testing.expectEqual(@as(usize, 2), scene.cursor_count);
+    try std.testing.expect(scene.cursors[0].active);
+    try std.testing.expect(!scene.cursors[1].active);
+    try std.testing.expectEqual(scene.cursors[0], scene.cursor.?);
+}
+
+test "frame update rejects invalid cursor cardinalities" {
+    const a = std.testing.allocator;
+    inline for (.{ 0, 2 }) |active_count| {
+        var scene = Scene.init(a);
+        defer scene.deinit();
+        const create = try createMessage(a, 1, 7, 7);
+        defer a.free(create);
+        try scene.apply(create);
+        const update = try cursorFrameUpdateMessage(a, 2, 2, active_count);
+        defer a.free(update);
+        try std.testing.expectError(Error.InvalidMessage, scene.apply(update));
+    }
+
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+    const oversized = try cursorFrameUpdateMessage(a, 2, max_scene_cursors + 1, 1);
+    defer a.free(oversized);
+    try std.testing.expectError(Error.Unsupported, scene.apply(oversized));
+}
+
 test "damage rects have a bounded variable wire form" {
     const a = std.testing.allocator;
     var out: std.ArrayList(u8) = .empty;
@@ -5430,6 +5622,42 @@ test "damage rects have a bounded variable wire form" {
     try std.testing.expectError(Error.InvalidMessage, encodeDamageRects(a, 0, &rects, &out));
     try std.testing.expectError(Error.InvalidMessage, encodeDamageRects(a, 7, &.{}, &out));
     try std.testing.expectError(Error.InvalidTable, decodeDamageRects(a, out.items[0 .. out.items.len - 1]));
+}
+
+test "cursor update preserves exactly one active cursor" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+    const frame_update = try cursorFrameUpdateMessage(a, 2, 1, 1);
+    defer a.free(frame_update);
+    try scene.apply(frame_update);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    const inactive: Cursor = .{ .window_id = 100, .x = 0, .y = 0, .width = 2, .height = 10, .kind = 1, .visible = true, .active = false };
+    try encodeCursorUpdate(a, 1, inactive, &payload);
+    const deactivate_only = try windowLifecycleMessage(a, protocol.Message.cursor_update, 3, 7, payload.items);
+    defer a.free(deactivate_only);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(deactivate_only));
+    try std.testing.expectEqual(@as(usize, 1), scene.cursor_count);
+    try std.testing.expect(scene.cursor.?.active);
+
+    payload.clearRetainingCapacity();
+    try encodeCursorUpdate(a, 1, inactive, &payload);
+    const inactive_missing = try windowLifecycleMessage(a, protocol.Message.cursor_update, 3, 7, payload.items);
+    defer a.free(inactive_missing);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(inactive_missing));
+
+    const second_active: Cursor = .{ .window_id = 101, .x = 0, .y = 0, .width = 2, .height = 10, .kind = 1, .visible = true, .active = true };
+    payload.clearRetainingCapacity();
+    try encodeCursorUpdate(a, 1, second_active, &payload);
+    const append_active = try windowLifecycleMessage(a, protocol.Message.cursor_update, 3, 7, payload.items);
+    defer a.free(append_active);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(append_active));
+    try std.testing.expectEqual(@as(usize, 1), scene.cursor_count);
 }
 
 test "scene atomically replaces damage with bounded active-frame rects" {

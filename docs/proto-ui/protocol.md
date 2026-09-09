@@ -866,8 +866,13 @@ These messages are reserved for tools, debug, and explicitly negotiated fallback
 #### Cursor update v1 (implemented bounded adapter contract)
 
 `CURSOR_UPDATE` (`0x0407`) is an exact 64-byte little-endian payload.  It
-permits a cursor move or state change without a full `FRAME_UPDATE`, but only
-after an active frame update has established the Scene geometry.
+permits a bounded cursor move or state change without a full `FRAME_UPDATE`,
+but only after an active frame update has established the Scene geometry.  A
+matching window replaces that cursor in the bounded per-window cursor set; an
+unknown window appends it until the 16-cursor facts-profile cap; a cap-exceeding
+append is rejected. The resulting nonempty cursor set must still contain exactly
+one active cursor, so an update that would leave zero or multiple active cursors
+is rejected without mutating the Scene.
 
 | Offset | Size | Field | Rule |
 |---:|---:|---|---|
@@ -2224,7 +2229,7 @@ The W4a/W4b/W4c-a encoder emits these known sections in ascending order:
 
 1. `WINDOWS` (kind 2), for captured window geometry.
 2. `ROWS` (kind 3), for captured row metadata.
-3. `CURSORS` (kind 5), when a cursor was captured.
+3. `CURSORS` (kind 5), when cursors were captured.
 4. `DAMAGE` (kind 9), emitting captured rectangles or one conservative
    full-frame fallback.
 5. `PRESENT_HINT` (kind 11).
@@ -2304,9 +2309,11 @@ update, not a complete historical table or a guarantee that every visible
 window/row was rewritten.  Row coordinates are logical window-relative pixels;
 damage coordinates are logical frame-relative pixels because damage records
 have no owning-window field.  A row ID is currently its zero-based window row
-index.  The cursor section is optional and present only when the backend
-captured a cursor; W4a capture always emits one, while non-GUI proto paths may
-emit none.  The rejected W4c-b1-a real-row fixture used deterministic
+index.  The cursor section is optional and contains one record per observed
+window cursor, capped at 16 for the facts profile.  Window IDs must be unique;
+each cursor must fit its live owner, and a nonempty section has exactly one
+active cursor (the selected window).  Legacy publishers may emit one; non-GUI
+proto paths may emit none.  The rejected W4c-b1-a real-row fixture used deterministic
 placeholder metrics; it was quarantined under the adapter-first rule.  Concrete
 glyph, face, font, and image tables remain W5 work and
 must not be assumed present from this subset.
@@ -2712,8 +2719,11 @@ exactly one window and its records are assigned to that window. A
 both. The facts publisher emits `0x8002`; for each live window it carries up to
 eight visible rows bounded to 120 UTF-8 bytes per line. A missing or empty
 state list is a legacy fallback and projects text only on the selected window.
-Only the selected window has an EUP cursor. Scene text is bounded UTF-8, while
-the SDL debug renderer draws only its ASCII subset.
+A state may carry a public point-derived cursor (`line`, `column`) and
+`cursor_active`; at most one state may be active and only the selected window
+may publish an active cursor. The facts profile projects at most one cursor per
+live window, bounded to the window's projected rows and columns. Scene text is
+bounded UTF-8, while the SDL debug renderer draws only its ASCII subset.
 
 The facts profile defines a deliberately bounded `WHEEL_EVENT` subset for
 `0x0603`: `u8 unit` (`1=line`), `u8 source` (`1=wheel`), `u8 modifiers`

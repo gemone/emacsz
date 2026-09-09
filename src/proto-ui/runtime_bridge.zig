@@ -39,8 +39,8 @@ pub const Error = runtime_host.Error || frontend.Error || protocol.Error ||
         UnknownInput,
     };
 
-pub const max_windows: usize = 4;
-pub const max_rows: usize = 32;
+pub const max_windows: usize = 16;
+pub const max_rows: usize = 256;
 pub const max_runs: usize = 64;
 pub const max_shaped_runs: usize = 16;
 pub const max_faces: usize = 8;
@@ -49,7 +49,7 @@ pub const max_images: usize = 4;
 pub const max_image_capture_bytes: usize = 4096;
 pub const max_image_capture_fragments: u16 = 4;
 pub const max_image_capture_fragment_bytes: usize = 1024;
-pub const max_cursors: usize = 4;
+pub const max_cursors: usize = 16;
 pub const max_damage: usize = 32;
 pub const max_tracked_inputs: usize = 16;
 
@@ -499,6 +499,12 @@ pub const Bridge = struct {
     pub fn commitCapture(self: *Bridge) Error!void {
         try self.requireState(.capturing);
         if (self.counts.windows == 0 or self.counts.rows == 0)
+            return error.InvalidState;
+        var active_cursors: usize = 0;
+        for (self.cursors[0..self.counts.cursors]) |cursor| {
+            if (cursor.active) active_cursors += 1;
+        }
+        if (self.counts.cursors != 0 and active_cursors != 1)
             return error.InvalidState;
         const group = try self.redisplayGroup();
         const context = group.context orelse return error.InvalidRuntimeHost;
@@ -1638,6 +1644,38 @@ test "bridge rejects ok callbacks that return invalid identities" {
     try std.testing.expectEqual(State.frame_registered, active_bridge.state);
     try std.testing.expectEqual(@as(u64, 0), active_bridge.redisplay_generation);
     try std.testing.expect(!active_bridge.capture.valid());
+}
+
+test "bridge rejects cursor sets without exactly one active cursor" {
+    inline for (.{ 1, 2 }) |cursor_count| {
+        var host: runtime_host.FakeHost = undefined;
+        const table = runtime_host.fakeTable(&host);
+        var bridge = try Bridge.init(table);
+        try bridge.createTerminal(.{ .requested_generation = 1 });
+        try bridge.activateTerminal();
+        try bridge.registerFrame(.{ .id = 22, .generation = 8 });
+        _ = try bridge.refreshFrameGeometry();
+        try bridge.beginCapture(8);
+        inline for (.{ 10, 11 }) |window_id| {
+            try bridge.observeWindow(.{ .id = window_id, .generation = 8, .width = 80, .height = 60 });
+            try bridge.observeRow(.{ .window_id = window_id, .row_index = 0, .width = 80, .height = 10, .ascent = 7, .descent = 3, .baseline = 7, .visible_height = 10 });
+        }
+        try bridge.observeDamage(.{ .width = 800, .height = 600 });
+        inline for (0..cursor_count) |index| {
+            try bridge.observeCursor(.{
+                .window_id = 10 + index,
+                .x = @intCast(index * 2),
+                .y = 0,
+                .width = 2,
+                .height = 10,
+                .visible = true,
+                .active = cursor_count == 2,
+            });
+        }
+        try std.testing.expectEqual(cursor_count, bridge.snapshotCounts().cursors);
+        try std.testing.expectError(error.InvalidState, bridge.commitCapture());
+        try bridge.destroy();
+    }
 }
 
 test "bridge advances bounded redisplay capture generations" {

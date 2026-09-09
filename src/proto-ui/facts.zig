@@ -81,10 +81,14 @@ pub const WindowContent = struct {
     id: u32,
     text: TextLines,
     viewport: ViewportFacts,
+    cursor: ?CursorFacts = null,
+    cursor_active: bool = false,
 
     pub fn eql(left: WindowContent, right: WindowContent) bool {
         return left.id == right.id and left.text.eql(right.text) and
-            std.meta.eql(left.viewport, right.viewport);
+            std.meta.eql(left.viewport, right.viewport) and
+            std.meta.eql(left.cursor, right.cursor) and
+            left.cursor_active == right.cursor_active;
     }
 
     pub fn deinit(self: *WindowContent, gpa: std.mem.Allocator) void {
@@ -151,7 +155,15 @@ const WindowStateWire = struct {
     lines: []const []const u8 = &.{},
     window_start_line: i32 = 1,
     window_visible_lines: i32 = 0,
+    cursor: ?CursorFacts = null,
+    cursor_active: bool = false,
 };
+
+fn cursorFitsVertical(cursor: CursorFacts, window_height: i32) bool {
+    const row_height: i64 = @max(1, @divTrunc(window_height, 15));
+    const cursor_height: i64 = @max(2, @min(18, row_height));
+    return @as(i64, cursor.line - 1) * row_height + cursor_height <= window_height;
+}
 
 fn parseWindowText(gpa: std.mem.Allocator, lines: []const []const u8) !TextLines {
     if (lines.len > max_lines_per_window) return error.InvalidWindowContent;
@@ -182,18 +194,34 @@ fn parseWindowContents(gpa: std.mem.Allocator, states: []const WindowStateWire, 
         for (contents[0..initialized]) |*content| content.deinit(gpa);
         gpa.free(contents);
     }
+    var active_count: usize = 0;
     for (states, 0..) |state, index| {
         const fact = windows[index];
         if (state.id != fact.id or state.id == 0) return error.InvalidWindowContent;
         const viewport = ViewportFacts{ .start_line = state.window_start_line, .line_count = state.window_visible_lines };
         if (!viewport.valid() or viewport.line_count != state.lines.len) return error.InvalidWindowContent;
+        if (state.cursor == null and state.cursor_active) return error.InvalidCursorFacts;
+        if (state.cursor) |cursor| {
+            if (cursor.line < 1 or cursor.column < 0 or
+                cursor.line > state.lines.len or cursor.column > max_text_columns)
+                return error.InvalidCursorFacts;
+            if (@as(i64, cursor.column) * 8 + 2 > fact.width)
+                return error.InvalidCursorFacts;
+            if (!cursorFitsVertical(cursor, fact.height))
+                return error.InvalidCursorFacts;
+            if (!fact.selected and state.cursor_active) return error.InvalidCursorFacts;
+            if (state.cursor_active) active_count += 1;
+        }
         contents[index] = .{
             .id = state.id,
             .text = try parseWindowText(gpa, state.lines),
             .viewport = viewport,
+            .cursor = state.cursor,
+            .cursor_active = state.cursor_active,
         };
         initialized = index + 1;
     }
+    if (active_count > 1) return error.InvalidCursorFacts;
     for (contents, 0..) |left, index| {
         for (windows) |fact| {
             if (left.id == fact.id) break;
@@ -469,8 +497,10 @@ test "projects bounded states for every window" {
         \\    {"id":102,"index":1,"x":60,"y":0,"width":60,"height":20,"selected":true}
         \\  ],
         \\  "window_states":[
-        \\    {"id":101,"lines":["left"],"window_start_line":1,"window_visible_lines":1},
-        \\    {"id":102,"lines":["right"],"window_start_line":1,"window_visible_lines":1}
+        \\    {"id":101,"lines":["left"],"window_start_line":1,"window_visible_lines":1,
+        \\     "cursor":{"line":1,"column":1},"cursor_active":false},
+        \\    {"id":102,"lines":["right"],"window_start_line":1,"window_visible_lines":1,
+        \\     "cursor":{"line":1,"column":2},"cursor_active":true}
         \\  ],
         \\  "text":["right"],
         \\  "window_start_line":1,"window_visible_lines":1
@@ -503,6 +533,11 @@ test "projects bounded states for every window" {
     try std.testing.expectEqual(@as(usize, 2), scene.text.items.len);
     try std.testing.expectEqual(@as(u64, 101), scene.text.items[0].window_id);
     try std.testing.expectEqual(@as(u64, 102), scene.text.items[1].window_id);
+    try std.testing.expectEqual(@as(usize, 2), scene.cursor_count);
+    try std.testing.expectEqual(@as(u64, 101), scene.cursors[0].window_id);
+    try std.testing.expect(!scene.cursors[0].active);
+    try std.testing.expectEqual(@as(u64, 102), scene.cursor.?.window_id);
+    try std.testing.expect(scene.cursor.?.active);
 
     const duplicate =
         \\{"frame_width":120,"frame_height":40,"window_width":60,"window_height":20,
@@ -513,6 +548,52 @@ test "projects bounded states for every window" {
         \\ "text":[],"window_start_line":1,"window_visible_lines":0}
     ;
     try std.testing.expectError(error.InvalidWindowContent, parseSnapshot(a, duplicate));
+
+    const active_non_selected =
+        \\{"frame_width":120,"frame_height":40,"window_width":60,"window_height":20,
+        \\ "identity":"process_lifetime",
+        \\ "windows":[{"id":101,"index":0,"x":0,"y":0,"width":60,"height":20,"selected":false},
+        \\ {"id":102,"index":1,"x":60,"y":0,"width":60,"height":20,"selected":true}],
+        \\ "window_states":[
+        \\  {"id":101,"lines":["left"],"window_start_line":1,"window_visible_lines":1,
+        \\   "cursor":{"line":1,"column":1},"cursor_active":true},
+        \\  {"id":102,"lines":["right"],"window_start_line":1,"window_visible_lines":1}],
+        \\ "text":["right"],"window_start_line":1,"window_visible_lines":1}
+    ;
+    try std.testing.expectError(error.InvalidCursorFacts, parseSnapshot(a, active_non_selected));
+
+    const dangling_active =
+        \\{"frame_width":120,"frame_height":40,"window_width":120,"window_height":20,
+        \\ "identity":"process_lifetime",
+        \\ "windows":[{"id":101,"index":0,"x":0,"y":0,"width":120,"height":20,"selected":true}],
+        \\ "window_states":[
+        \\  {"id":101,"lines":["left"],"window_start_line":1,"window_visible_lines":1,
+        \\   "cursor_active":true}],
+        \\ "text":["left"],"window_start_line":1,"window_visible_lines":1}
+    ;
+    try std.testing.expectError(error.InvalidCursorFacts, parseSnapshot(a, dangling_active));
+
+    const oversized_cursor =
+        \\{"frame_width":120,"frame_height":40,"window_width":9,"window_height":20,
+        \\ "identity":"process_lifetime",
+        \\ "windows":[{"id":101,"index":0,"x":0,"y":0,"width":9,"height":20,"selected":true}],
+        \\ "window_states":[
+        \\  {"id":101,"lines":["left"],"window_start_line":1,"window_visible_lines":1,
+        \\   "cursor":{"line":1,"column":1},"cursor_active":true}],
+        \\ "text":["left"],"window_start_line":1,"window_visible_lines":1}
+    ;
+    try std.testing.expectError(error.InvalidCursorFacts, parseSnapshot(a, oversized_cursor));
+
+    const short_window_cursor =
+        \\{"frame_width":120,"frame_height":40,"window_width":120,"window_height":3,
+        \\ "identity":"process_lifetime",
+        \\ "windows":[{"id":101,"index":0,"x":0,"y":0,"width":120,"height":3,"selected":true}],
+        \\ "window_states":[
+        \\  {"id":101,"lines":["a","b","c"],"window_start_line":1,"window_visible_lines":3,
+        \\   "cursor":{"line":3,"column":0},"cursor_active":true}],
+        \\ "text":["a","b","c"],"window_start_line":1,"window_visible_lines":3}
+    ;
+    try std.testing.expectError(error.InvalidCursorFacts, parseSnapshot(a, short_window_cursor));
 }
 
 test "real window snapshot rejects malformed identities" {
@@ -840,27 +921,61 @@ pub fn appendWireSnapshotWindows(
         }
     }
     const selected_row_count: i32 = 15;
-    const selected_row_height: i32 = @max(1, @divTrunc(selected.height, selected_row_count));
     const wire_viewport: ViewportFacts = .{
         .start_line = viewport.start_line,
         .line_count = @min(viewport.line_count, selected_row_count),
     };
     if (cursor.line < 1 or cursor.line > selected_row_count or
-        cursor.column * 8 + 2 > facts.window_width)
+        @as(i64, cursor.column) * 8 + 2 > facts.window_width)
         return error.InvalidCursorFacts;
 
     var cursor_bytes: std.ArrayList(u8) = .empty;
     defer cursor_bytes.deinit(gpa);
-    try frontend.encodeCursor(gpa, .{
-        .window_id = selected.id,
-        .x = cursor.column * 8,
-        .y = (cursor.line - 1) * selected_row_height,
-        .width = 2,
-        .height = @max(2, @min(18, selected_row_height)),
-        .kind = 1,
-        .visible = true,
-        .active = true,
-    }, &cursor_bytes);
+    var active_cursor_count: usize = 0;
+    for (effective_windows) |window| {
+        var content = fallback_content;
+        var found = false;
+        if (contents.len != 0) {
+            for (contents) |candidate| {
+                if (candidate.id == window.id) {
+                    content = candidate;
+                    found = true;
+                    break;
+                }
+            } else continue;
+        }
+        const row_height = @max(1, @divTrunc(window.height, selected_row_count));
+        var wire_cursor: ?CursorFacts = null;
+        var wire_cursor_active = false;
+        if (found) {
+            wire_cursor = content.cursor;
+            wire_cursor_active = content.cursor_active;
+        }
+        if (wire_cursor == null and window.selected) {
+            wire_cursor = cursor;
+            wire_cursor_active = true;
+        }
+        const bounded_cursor = wire_cursor orelse continue;
+        if (!window.selected and wire_cursor_active) return error.InvalidCursorFacts;
+        if (bounded_cursor.line < 1 or bounded_cursor.line > selected_row_count or
+            bounded_cursor.column < 0 or
+            @as(i64, bounded_cursor.column) * 8 + 2 > window.width)
+            return error.InvalidCursorFacts;
+        if (!cursorFitsVertical(bounded_cursor, window.height))
+            return error.InvalidCursorFacts;
+        if (wire_cursor_active) active_cursor_count += 1;
+        try frontend.encodeCursor(gpa, .{
+            .window_id = window.id,
+            .x = bounded_cursor.column * 8,
+            .y = (bounded_cursor.line - 1) * row_height,
+            .width = 2,
+            .height = @max(2, @min(18, row_height)),
+            .kind = 1,
+            .visible = true,
+            .active = wire_cursor_active,
+        }, &cursor_bytes);
+    }
+    if (active_cursor_count != 1) return error.InvalidCursorFacts;
 
     var damage_bytes: std.ArrayList(u8) = .empty;
     defer damage_bytes.deinit(gpa);
