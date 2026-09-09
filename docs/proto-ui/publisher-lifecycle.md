@@ -15,6 +15,11 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
   sdl3-frame-smoke --summary all
 ```
 
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
+  sdl3-epxl-failure-cleanup-smoke --summary all
+```
+
 It creates and deletes one real PGTK observation frame while one SDL3 scene
 renders the matching EUP frame lifecycle.  This is not the same contract as a
 pure `output_proto` frame.

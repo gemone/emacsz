@@ -148,6 +148,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8e-a bounded SDL pointer motion/click | Approved |
 | W8e-b ordered left drag/release | Approved |
 | W8f-a bounded wheel scroll intent | Approved |
+| W8g2 publisher Elisp resource and atomic facts | Approved |
 | W9g2 bounded viewport facts | Approved |
 | W10b-b2a bounded glyph-atlas policy | Approved |
 | W10c-a damage classification baseline | Approved |
@@ -1326,6 +1327,46 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-smoke
 ```
 
 Status: approved. The dedicated reviewer completed correctness, integration/build, and boundary/docs/status passes; approved fixes rejected zero/horizontal/diagonal, flipped-direction, and fractional/mismatched wheel deltas, and corrected reverse-input idempotence docs. Final checks verified wheel smoke, pointer/interactive regressions, boundary and inherited-C audits, and the full built-in check run.
+
+#### W8g2 — Publisher Elisp resource and atomic facts (approved)
+
+Goal: remove the fragile escaped publisher `--eval` program while preserving
+the bounded authenticated EPXL facts and reverse-input behavior.
+
+1. Move authenticated publisher Lisp to
+   `tools/proto-ui-sdl3/facts_publisher.el`.
+2. Supply module, facts, input, clipboard, and capability switches through
+   `PROTO_UI_*` environment variables.
+3. Include `identity = "process_lifetime"` whenever public windows are present.
+4. Write the complete snapshot to `facts.json.tmp`, then atomically rename it
+   to `facts.json`.
+5. Keep the local interactive fallback on the same resource with a local
+   compatibility profile and two-field action artifacts.
+6. On frontend failure, wait for the publisher to observe transport closure and
+   terminate its Emacs child before deleting private session artifacts.
+
+Implemented limits: this remains a public-facts diagnostic bridge.  It does not
+register `output_proto`, capture redisplay, evaluate frontend-supplied Elisp,
+or claim PGTK parity.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
+  sdl3-emacs-interactive-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
+  sdl3-emacs-interactive-local-smoke --summary all
+```
+
+A failure-path gate also verifies that a frontend error waits for publisher and
+Emacs child exit before the private session directory is removed:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
+  sdl3-epxl-failure-cleanup-smoke --summary all
+```
+
+Status: approved.  The dedicated review completed correctness, lifecycle, allocator, pointer semantics, viewport behavior, and failure-path cleanup passes.  Focused local checks included unit/boundary gates and authenticated, local, Unicode, selection, middle-paste, wheel, frame, and failure-cleanup smokes.
 
 #### W9g2 — Bounded viewport facts (approved)
 
