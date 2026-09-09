@@ -73,7 +73,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P6-prep reverse input bridge | Implemented for bounded SDL key/text intents through PureRuntimeHostV1 delivery/result/completion; not keymap/command parity |
 | P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
 | P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
-| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 154 implemented codecs, 3 partial, and 7 planned; prevents an unclassified or overclaimed protocol table |
+| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 161 implemented codecs, 3 partial, and 0 planned; prevents an unclassified or overclaimed protocol table |
 | Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
 | P12-prep EUP session setup | Implemented standard HELLO/HELLO_ACK/SESSION_READY/READY_ACK codecs and bounded state machine; not yet wired to EPXL transport |
 | P12-prep EUP session control | Implemented all eight standard-control codecs, automatic PONG, Scene integration, and EPXL transport for every control, including fatal VERSION_MISMATCH |
@@ -3215,7 +3215,7 @@ P9 geometry preparation adds `refreshFrameGeometry`, authoritative frame
 bounds, and observation validation in `runtime_bridge`; real monitor and scale
 events remain pending.
 P29 protocol coverage remains source-authoritative for every assigned EUP ID;
-current counts are 154 implemented codecs, 3 partial, and 7 planned.
+current counts are 161 implemented codecs, 3 partial, and 0 planned.
 P12 session-setup preparation adds concrete standard EUP HELLO, HELLO_ACK,
 SESSION_READY, and READY_ACK codecs with a bounded frontend state machine.  The
 authenticated EPXL handshake remains the current transport path.
@@ -3399,6 +3399,7 @@ P58 multi-window content preparation publishes bounded `WINDOW_STATE` observatio
 P59 standalone icon-resource preparation adds `ICON_DEFINE`/`ICON_DELETE` v1 with complete bounded RGBA8 payloads, hotspot and dimension validation, Scene image-resource ownership, frame-icon compatibility, generation-aware deletion, and stale-resource rejection.  Multi-resolution bundles, animation, masks, and taskbar parity remain pending.
 P60 drag-and-drop preparation adds bounded DND enter/position/leave/drop/cancel/reply/data wire codecs with action masks, nonzero drag identities, bounded offers and payloads, and strict boundary validation.  SDL event mapping, Scene/core dispatch, platform ownership, and rich MIME conversion remain pending.
 P61 diagnostics preparation adds bounded EUP codecs for performance counters, frame timing, bandwidth, resource/damage statistics, input latency, desynchronization reports, trace begin/end, and replay checkpoints.  These are wire codecs only; producer/consumer integration, storage, dashboards, and core-side collection remain pending.
+P62 extended-input preparation adds all remaining planned concrete codecs for multi-contact touch, pan/pinch/rotate/long-press gestures, monitor and DPI changes, theme/accessibility preference, input-device arrival/removal, and bounded ordered input batches.  The manifest no longer has planned IDs; SDL/backend application and the three partial resync IDs remain pending.
 P57 real-window snapshot preparation projects bounded public `proto-ui-window-facts` into the `FRAME_UPDATE` window section.  Observed windows become Scene windows with authoritative frame-relative geometry and may carry bounded public point cursors; the selected window is the active EUP cursor.  IDs are adapter-owned process-lifetime identities, not cross-restart identities; redisplay-owned cursors, buffers, rows, faces, hierarchy, and command dispatch remain pending.
 P39 atlas-cache preparation adds a persistent SDL page-texture cache keyed by atlas/page identity, generation, and revision.  Runtime smoke proves one upload plus at least four hits; smoke-level renderer-loss clearing is wired; production-wide integration and replacement/eviction policy remain pending.
 P23 fringe preparation adds a 40-byte `FRINGE_UPDATE` v1 color-band subset with

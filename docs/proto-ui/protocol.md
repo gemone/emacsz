@@ -1589,485 +1589,85 @@ source modifiers momentum
 ```
 
 Units are pixel, line, or page. Sources include wheel, touchpad, gesture, and scrollbar.
+#### Bounded touch, gesture, and platform-event v1
 
-## 16. IME messages
-
-| ID | Name | Direction | Payload |
-|---|---|---|---|
-| `0x0700` | `IME_ATTACH` | C→F | Context and policies (bounded v1) |
-| `0x0701` | `IME_DETACH` | C→F | Context identity (bounded v1) |
-| `0x0702` | `IME_FOCUS` | C→F | Focus state (bounded v1) |
-| `0x0703` | `IME_CURSOR_RECT` | C→F | Candidate/preedit rectangle (bounded v1) |
-| `0x0704` | `IME_ALLOWED_INPUT` | C→F | Input policy |
-| `0x0705` | `IME_SURROUNDING_TEXT` | C→F | Text and selected range |
-| `0x0706` | `IME_RESET` | C→F | Reason (bounded v1) |
-| `0x0710` | `IME_ATTACHED` | F→C | Platform details (bounded v1) |
-| `0x0711` | `IME_DETACHED` | F→C | Context and reserved zero reason (bounded v1) |
-| `0x0712` | `IME_PREEDIT_START` | F→C | Context ID (bounded v1) |
-| `0x0713` | `IME_PREEDIT_UPDATE` | F→C | One unstyled preedit segment (bounded v1) |
-| `0x0714` | `IME_PREEDIT_END` | F→C | Context ID (bounded v1) |
-| `0x0715` | `IME_COMMIT` | F→C | Committed text (bounded v1) |
-| `0x0716` | `IME_REQUEST_SURROUNDING` | F→C | Context and request ID (bounded v1) |
-| `0x0717` | `IME_DELETE_SURROUNDING` | F→C | Offset and length (bounded v1) |
-| `0x0718` | `IME_CANDIDATE_UPDATE` | F→C | Selected label, state, and geometry (bounded v1) |
-| `0x0719` | `IME_CANCEL` | F→C | Context ID (bounded v1) |
-
-All reverse payloads are little-endian.  `ATTACHED` is 16 bytes (`u64 context`,
-`u8 platform=1`, three zero bytes, `u32 flags=0`).  `DETACHED` is 12 bytes
-(`u64 context`, `u8 reason=0`, three zero bytes); only this reserved zero reason
-is valid.  `PREEDIT_START`, `PREEDIT_END`, and `CANCEL` are exactly 8 bytes and
-contain only a nonzero context ID.  `PREEDIT_UPDATE` is `u64 context`, `u32
-cursor`, `u32 selected_length`, `u32 byte_length`, and UTF-8 bytes; text is
-0..120 bytes, excludes C0/C1/DEL, and `selected_length <= cursor <=
-byte_length`.  `COMMIT` is `u64 context`, `u32 byte_length`, and 1..120 UTF-8
-bytes excluding C0/C1/DEL.  `REQUEST_SURROUNDING` is 16 bytes with nonzero
-`u64 context` and `u64 request_id`.  `DELETE_SURROUNDING` is 16 bytes with
-`u64 context`, `i32 offset`, and `u32 length`; length is 1..120, offset is
--120..120, and a before-cursor deletion cannot cross offset zero.
-`CANDIDATE_UPDATE` is `u64 context`, four `u32` state values, four `i32`
-cursor-rectangle values, a `u32` label length, and label bytes; it allows up to
-64 candidates, 16 pages, a positive cursor rectangle, and one 0..120-byte
-label.  The full styled preedit/conversion-target and full candidate-list model
-remains pending.  These are wire codecs only: no platform IME backend or
-core-side application is claimed.
-
-## 17. Selection, clipboard, and DND messages
-
-| ID | Name | Direction | Payload |
-|---|---|---|---|
-| `0x0800` | `SELECTION_OWNER_SET` | C→F | Selection, targets, policy |
-| `0x0801` | `SELECTION_OWNER_CLEAR` | C→F | Selection |
-| `0x0802` | `SELECTION_LOST` | F→C | Selection/reason |
-| `0x0803` | `SELECTION_REQUEST` | F→C | Target/request ID |
-| `0x0804` | `SELECTION_DATA` | C→F | MIME target/data |
-| `0x0805` | `SELECTION_ERROR` | C/F | Request/reason |
-| `0x0810` | `CLIPBOARD_SET` | C→F | Offers/priority |
-| `0x0811` | `CLIPBOARD_GET` | C→F | Selection/target request |
-| `0x0812` | `CLIPBOARD_DATA` | F→C | MIME data |
-| `0x0813` | `CLIPBOARD_CLEAR` | C→F | Selection |
-| `0x0820` | `DND_ENTER` | F→C | Position/offers |
-| `0x0821` | `DND_POSITION` | F→C | Position/actions |
-| `0x0822` | `DND_LEAVE` | F→C | Drag ID |
-| `0x0823` | `DND_DROP` | F→C | Position/action |
-| `0x0824` | `DND_CANCEL` | F→C | Drag ID |
-| `0x0825` | `DND_REPLY` | C→F | Accepted action/rejection |
-| `0x0826` | `DND_DATA` | F/C | MIME payload |
-
-Selection kinds are `PRIMARY`, `SECONDARY`, and `CLIPBOARD`. Required text targets include UTF-8 text; image and rich-text targets are optional and negotiated.
-
-#### Bounded selection and clipboard transfer v1
-
-`SELECTION_OWNER_SET` and `CLIPBOARD_SET` share one payload.  The 12-byte
-header is `u16 schema=1`, `u8 kind`, `u8 flags`, `u32 nonzero generation`, and
-`u32 offer_count`.  Flag bit 1 requests platform export and bit 2 requests loss
-notification; all other bits are reserved.  Each offer is `u8 target_length`,
-`u16 priority`, and 1..64 printable non-space ASCII target bytes.  There are
-1..8 unique targets.
-
-`SELECTION_OWNER_CLEAR` and `CLIPBOARD_CLEAR` are 8 bytes: `u32 nonzero
-generation`, `u8 kind`, and 3 reserved zero bytes.  `SELECTION_LOST` is
-16 bytes: `u16 schema=1`, `u8 kind`, `u8 reason`, `u32 nonzero generation`,
-and `u64 request_id` (zero for an asynchronous external loss).  Loss reasons are
-replacement, platform shutdown, and owner cancellation.
-
-`SELECTION_REQUEST` and `CLIPBOARD_GET` use a 16-byte header (`u16 schema=1`,
-`u8 kind`, `u8 reserved`, `u64 nonzero request_id`, `u32 nonzero generation`)
-followed by `u16 target_length` and 1..64 printable non-space ASCII target
-bytes.  `SELECTION_DATA` and `CLIPBOARD_DATA` use a 20-byte header with the same
-identity fields plus `u32 byte_length`, followed by 1..4096 payload bytes in one
-complete EUP message.  v1 targets deliberately exclude spaces so that they
-remain bounded MIME-like tokens; parameterized MIME values with spaces remain
-future work.  Clipboard-form IDs (`0x0810`, `0x0811`, `0x0812`, and `0x0813`)
-must carry `CLIPBOARD`; the codec wrappers reject PRIMARY and SECONDARY forms.  `SELECTION_ERROR` uses a 16-byte header with kind and
-reason, followed by `u16 message_length` and 0..120 UTF-8 bytes; reasons are
-unsupported target, conversion failure, timeout, and cancellation.
-
-These are bounded wire codecs only.  Scene admission, platform ownership, core
-dispatch, rich MIME conversion, and incremental transfer remain pending.
-
-#### Bounded drag-and-drop v1
-
-All integers are little-endian.  Every drag uses one nonzero `u32 drag_id`.
-DND reuses the bounded selection offer encoding: `u8 target_length`, `u16
-priority`, then 1..64 printable non-space ASCII target bytes.  A payload may
-carry 1..8 unique offers.  DND actions are `none=0`, `copy=1`, `move=2`, and
-`ask=3`; allowed masks may contain copy `1`, move `2`, and ask `4`.  Every
-current or selected action must be permitted by the mask.  Reserved fields
-must be zero.
-
-| Payload | Exact little-endian layout |
-|---|---|
-| `DND_ENTER` | `u16 schema=1`, `u8 allowed_mask`, `u8 current_action`, `u32 drag_id`, `i32 x >= 0`, `i32 y >= 0`, `u16 offer_count=1..8`, `u16 reserved=0`; then the offers |
-| `DND_POSITION` | `u16 schema=1`, `u8 allowed_mask`, `u8 current_action`, `u32 drag_id`, `i32 x >= 0`, `i32 y >= 0` (16 bytes) |
-| `DND_LEAVE` | `u16 schema=1`, `u16 reserved=0`, `u32 nonzero drag_id` (8 bytes) |
-| `DND_DROP` | `u16 schema=1`, `u8 action != none`, `u8 reserved=0`, `u32 drag_id`, `i32 x >= 0`, `i32 y >= 0` (16 bytes) |
-| `DND_CANCEL` | `DND_LEAVE` exact 8-byte ID form |
-| `DND_REPLY` | `u16 schema=1`, `u8 result` (accepted=1 / rejected=2), `u8 action`, `u32 drag_id` (8 bytes); accepted requires an action, rejected requires none |
-| `DND_DATA` | `u16 schema=1`, `u16 reserved=0`, `u32 drag_id`, `u16 target_length=1..64`, `u32 data_length=1..4096`; then target bytes and data bytes (14-byte header) |
-
-These are transport codecs only.  SDL event mapping, Scene/core dispatch,
-platform ownership, rich MIME conversion, incremental transfer, and PGTK parity
-remain pending.
-
-## 18. Widget messages
-
-### Menu
-
-| ID | Name | Direction | Payload |
-|---|---|---|---|
-| `0x0900` | `MENU_MODEL` | C→F | Complete menu tree |
-| `0x0901` | `MENU_PATCH` | C→F | Item changes |
-| `0x0902` | `MENU_OPEN` | C→F | Placement/parent |
-| `0x0903` | `MENU_CLOSE` | C→F | Menu ID/reason |
-| `0x0904` | `MENU_RESULT` | F→C | Selected item ID |
-| `0x0905` | `MENU_CANCEL` | F→C | Menu ID |
-| `0x0906` | `MENU_HOVER` | F→C | Hover item ID |
-
-Menu item fields include ID, parent, label, help, key binding, icon, enabled, selected, radio, checkbox, separator, submenu, and accelerator.
-
-### Tool bar, dialog, tooltip, scrollbar
-
-| ID | Name | Direction | Payload |
-|---|---|---|---|
-| `0x0910` | `TOOLBAR_MODEL` | C→F | Complete tool bar |
-| `0x0911` | `TOOLBAR_PATCH` | C→F | Item changes |
-| `0x0912` | `TOOLBAR_CLICK` | F→C | Item/modifiers |
-| `0x0920` | `DIALOG_OPEN` | C→F | Dialog model |
-| `0x0921` | `DIALOG_UPDATE` | C→F | Changes |
-| `0x0922` | `DIALOG_CLOSE` | C→F | Dialog ID/reason |
-| `0x0923` | `DIALOG_RESULT` | F→C | Button/bounded UTF-8 text |
-| `0x0930` | `TOOLTIP_SHOW` | C→F | Content/placement |
-| `0x0931` | `TOOLTIP_MOVE` | C→F | New placement |
-| `0x0932` | `TOOLTIP_HIDE` | C→F | Tooltip ID |
-| `0x0940` | `SCROLLBAR_STATE` | C→F | Authoritative values |
-| `0x0941` | `SCROLLBAR_EVENT` | F→C | Absolute/relative intent |
-
-The bounded v1 slice implements message, prompt, and confirm.  Progress, file, color, font, and advanced custom dialogs remain planned extension IDs.
-
-#### `SCROLLBAR_STATE` / `SCROLLBAR_EVENT` v1 (implemented bounded adapter contracts)
-
-`SCROLLBAR_STATE = 0x0940` is an adapter alias for the existing exact 48-byte
-authoritative vertical scrollbar state payload.  The Scene applies the same
-nonzero owner, active-frame generation, content/viewport/position invariants,
-track bounds, and per-window upsert policy as `WINDOW_SCROLL_STATE`, and SDL
-renders the validated vertical track/thumb.  `SCROLLBAR_EVENT = 0x0941` is the
-dedicated reverse-intent alias for the exact 40-byte absolute/relative scroll
-request payload.  It requires separate `window.scrollbar_event_v1`
-negotiation, ordered DeliveryJournal ownership, and EPXL admission/ACK
-handling.  Drag, page, and step policies remain outside the bounded payload.
-
-This bounded slice does not add horizontal scrollbar state, native widget
-behavior, complete drag/page/step policy, keyboard accessibility, Emacs command
-dispatch, or PGTK scrollbar parity.
-
-#### `MENU_MODEL` v1 (implemented bounded adapter contract)
-
-`MENU_MODEL = 0x0900` is an authoritative complete menu-tree snapshot.  Its
-little-endian payload is a 32-byte header followed by 1..32 fixed 176-byte node
-records.  The header carries schema (`u16=1`), zero flags/reserved, active frame
-id/generation, nonzero menu id and strictly advancing generation, node count,
-and eight reserved bytes.
-
-Each node carries nonzero item id, optional parent item id, kind, flags, depth
-(`0..4`), and three exact UTF-8 byte strings: label, help text, and key binding.
-The fixed fields are 64-byte label, 64-byte help, and 32-byte key tails; unused
-tail bytes must be zero.  Kinds are `separator`, `command`, `checkbox`, `radio`,
-and `submenu`.  Flags are enabled, visible, and selected.  Separators have no
-text and no enabled/selected state; every other item requires a label.  Selected
-is valid only for enabled visible checkbox/radio items.  A child must have a
-visible enabled submenu parent, exact parent depth plus one, and no cycle.
-
-The envelope, payload frame identity, and active frame/header must agree.  The
-Scene replaces a complete model when the menu id is new or the generation is
-strictly newer, and clears it on frame destroy, resync, or teardown.  SDL renders
-a diagnostic menu bar for top-level visible items and ASCII debug labels.
-Unicode labels validate but the debug glyph path does not render them.  Menu
-patches, open/close state, navigation, hover, result dispatch, native menus,
-disabled hit testing, accessibility, keymap execution, and PGTK menu parity
-remain pending.
-
-#### `MENU_PATCH` v1 (implemented bounded adapter contract)
-
-`MENU_PATCH = 0x0901` is an authoritative incremental update.  Its payload is a
-32-byte header followed by 1..32 exact 184-byte operations.  The header carries
-schema, active frame id/generation, menu id, expected and strictly newer
-generation, operation count, and reserved bytes.  Each operation has kind
-`upsert` or `delete`, the same 176-byte fixed node body as `MENU_MODEL`, and
-four reserved bytes.
-
-Header layout:
-
-| Offset | Size | Field | Requirement |
-|---:|---:|---|---|
-| `0` | 2 | schema | `1` |
-| `2` | 1 | flags | `0` |
-| `3` | 1 | reserved | `0` |
-| `4` | 4 | frame id | nonzero and equal to the envelope/live frame |
-| `8` | 4 | frame generation | nonzero and equal to the live frame generation |
-| `12` | 4 | menu id | nonzero and equal to the live menu id |
-| `16` | 4 | expected generation | exact live menu generation |
-| `20` | 4 | new generation | strictly greater than expected |
-| `24` | 4 | operation count | `1..32` |
-| `28` | 4 | reserved | zero |
-
-Operation layout:
-
-| Offset | Size | Field | Requirement |
-|---:|---:|---|---|
-| `0` | 1 | operation | `1=upsert`, `2=delete` |
-| `1` | 3 | reserved | zero |
-| `4` | 4 | item id | nonzero |
-| `8` | 4 | parent item id | upsert: `0` or live working-set parent; delete: `0` |
-| `12` | 1 | node kind | upsert: valid `MENU_MODEL` kind; delete: `command` |
-| `13` | 1 | flags | upsert: valid `MENU_MODEL` flags; delete: `0` |
-| `14` | 1 | depth | upsert: valid hierarchy depth; delete: `0` |
-| `15` | 1 | label length | upsert: bounded UTF-8 length; delete: `0` |
-| `16` | 1 | help length | upsert: bounded UTF-8 length; delete: `0` |
-| `17` | 1 | key length | upsert: bounded UTF-8 length; delete: `0` |
-| `18` | 2 | reserved | zero |
-| `20` | 64 | label | upsert: UTF-8 body and zero tail; delete: zero |
-| `84` | 64 | help | upsert: UTF-8 body and zero tail; delete: zero |
-| `148` | 32 | key | upsert: UTF-8 body and zero tail; delete: zero |
-| `180` | 4 | reserved | zero |
-
-Operations apply in wire order.  `upsert` inserts a validated node or replaces
-the item with the same id; a nonzero parent must already exist in the working
-set.  `delete` removes that item and is rejected while any child remains or
-while an open popup references the item.  After all operations, the Scene
-validates the complete tree, allocates the replacement model, advances the menu
-generation, closes any popup, and swaps atomically.  Move-as-delete-plus-add is
-permitted; dedicated move semantics, conflict resolution beyond ordered
-operations, and full menu policy remain pending.
-
-#### `MENU_OPEN` / `MENU_CLOSE` v1 (implemented bounded adapter contract)
-
-`MENU_OPEN = 0x0902` is an exact 48-byte record that names the live menu id and
-generation, an enabled visible submenu item, owner window, active-frame
-generation, and a nonzero popup rectangle.  The rectangle is owner-relative,
-both coordinates are nonnegative, and each dimension is at most 16,384.
-`MENU_CLOSE = 0x0903` is an exact 24-byte record with reason (`selection`,
-`dismissal`, or `replacement`), the live menu identity, a live trigger item, and
-active-frame generation.
-
-Scene requires the complete `MENU_MODEL`, exact live model/generation, active
-frame/header/envelope identity, and a live owner.  Opening validates the submenu
-and containment.  Only one popup remains open; a later open replaces it.  Close
-requires an open popup with the same menu generation and a live trigger item,
-then clears the state.  Frame update, model replacement, owner deletion, frame
-destroy, resync, and teardown clear the popup.  SDL renders direct visible child
-rows and ASCII debug labels.  Keyboard navigation, hover, selection result
-dispatch, nested placement policy, native menus, accessibility, keymap
-execution, and PGTK parity remain pending.
-
-#### `MENU_RESULT` / `MENU_CANCEL` v1 (implemented bounded reverse intents)
-
-`MENU_RESULT = 0x0904` and `MENU_CANCEL = 0x0905` are exact 32/28-byte
-frontend-to-core intents.  Both carry schema `1`, nonzero menu id/generation,
-nonzero owner window, and nonzero frame generation; this codec does not look up
-Scene state to prove that those identities are currently live.  `MENU_RESULT`
-also requires zero flags/reserved and a nonzero selected item id.
-`MENU_CANCEL` requires zero reserved and a reason (`user`, `escape`, or
-`focus_lost`); its layout is menu/generation, 64-bit window, frame generation,
-then four reserved bytes.
-
-The frontend emits these only after `widget.menu_result_v1` is negotiated, in
-ordered acknowledged DeliveryJournal traffic.  These codecs prove bounded intent
-transport only.  They do not prove SDL hit testing, keyboard navigation, core
-receipt, keymap lookup, command execution, check/radio mutation, native menus, or
-PGTK menu parity.
-
-#### `TOOLBAR_MODEL` / `TOOLBAR_CLICK` v1 (implemented bounded adapter contracts)
-
-`TOOLBAR_MODEL = 0x0910` is an authoritative complete tool-bar snapshot.  Its
-payload is a 40-byte header followed by 1..16 exact 164-byte items.  The header
-carries schema, active frame id/generation, toolbar id/generation, item count,
-and reserved bytes.  Each item carries a nonzero item id, optional icon image
-id/generation, kind, flags, and bounded UTF-8 label/help/key tails.  Kinds are
-separator, button, toggle, and space.  Separators and spaces carry no text or
-icon; buttons require a label or icon and reject selected state; toggles may be
-selected.  Invisible items cannot be enabled, selected, or pressed.
-
-The envelope, frame header, payload frame identity, and active frame must agree.
-The Scene replaces a model when the toolbar id is new or the generation is
-strictly newer, and clears it on destroy, resync, or teardown.  SDL renders a
-diagnostic tool-bar row and ASCII labels.  `TOOLBAR_CLICK = 0x0912` is an exact
-48-byte reverse intent with phase press/release, nonzero toolbar/item/window/
-frame identity, click count, button index, modifiers, and nonnegative
-owner-relative coordinates.
-It is emitted only after `widget.toolbar_click_v1` negotiation and preserves
-ordered acknowledged DeliveryJournal semantics.  This does not implement icons,
-overflow/menus, drag customization, redisplay integration, hit testing, keymap
-execution, native tool bars, or PGTK parity.
-
-`TOOLBAR_MODEL` header layout:
-
-| Offset | Size | Field | Rule |
-|---:|---:|---|---|
-| 0 | 2 | schema | `1` |
-| 2 | 1 | flags | zero |
-| 3 | 1 | reserved | zero |
-| 4 | 4 | frame id | nonzero; equals envelope/frame header |
-| 8 | 4 | frame generation | nonzero; equals active frame |
-| 12 | 4 | toolbar id | nonzero |
-| 16 | 4 | toolbar generation | nonzero |
-| 20 | 4 | item count | `1..16` |
-| 24 | 16 | reserved | zero |
-
-Each `TOOLBAR_MODEL` item is exactly 164 bytes:
-
-| Offset | Size | Field | Rule |
-|---:|---:|---|---|
-| 0 | 4 | item id | nonzero; unique in model |
-| 4 | 4 | icon image id | paired with generation; forbidden on separator/space |
-| 8 | 4 | icon image generation | paired with id |
-| 12 | 1 | kind | separator/button/toggle/space |
-| 13 | 1 | flags | known flags only; state/kind consistency enforced |
-| 14 | 1 | label length | bounded/UTF-8; separator/space require zero |
-| 15 | 1 | help length | bounded/UTF-8; separator/space require zero |
-| 16 | 1 | key length | bounded/UTF-8; separator/space require zero |
-| 17 | 3 | reserved | zero |
-| 20 | 64 | label | zero tail; no embedded NUL/control bytes |
-| 84 | 64 | help | zero tail; no embedded NUL/control bytes |
-| 148 | 16 | key | zero tail; no embedded NUL/control bytes |
-
-`TOOLBAR_CLICK` layout:
-
-| Offset | Size | Field | Rule |
-|---:|---:|---|---|
-| 0 | 2 | schema | `1` |
-| 2 | 1 | phase | press `1` / release `2` |
-| 3 | 1 | reserved | zero |
-| 4 | 4 | toolbar id | nonzero |
-| 8 | 4 | toolbar generation | nonzero |
-| 12 | 4 | item id | nonzero |
-| 16 | 8 | window id | nonzero |
-| 24 | 4 | frame generation | nonzero |
-| 28 | 1 | click count | `1..8` |
-| 29 | 1 | button | `1..5` |
-| 30 | 2 | modifiers | opaque bounded modifier bits |
-| 32 | 4 | x | nonnegative |
-| 36 | 4 | y | nonnegative |
-| 40 | 8 | reserved | zero |
-
-#### `TOOLBAR_PATCH` v1 (implemented bounded adapter contract)
-
-`TOOLBAR_PATCH = 0x0911` is an authoritative incremental tool-bar update.  Its
-44-byte header carries schema, active frame id/generation, toolbar id, expected
-and strictly newer toolbar generation, operation count, and reserved bytes.
-Each of 1..16 operations is exactly 168 bytes: an `upsert` or `delete` kind plus
-the same fixed toolbar item body used by `TOOLBAR_MODEL`.  Delete descriptors
-must be canonical (`button` kind, zero flags/metadata/icon references).
-
-Operations apply in wire order against a bounded working set.  An upsert
-replaces an existing item id or appends within the 16-item limit; a delete
-requires the item to exist and removes it.  After all operations the complete
-model is revalidated, copied into Scene ownership, and swapped atomically with a
-strictly newer generation.  This does not provide dedicated move semantics,
-icon rendering, overflow/menus, keyboard access, hit testing, native tool bars,
-or PGTK parity.
-
-`TOOLBAR_PATCH` header layout:
-
-| Offset | Size | Field | Rule |
-|---:|---:|---|---|
-| 0 | 2 | schema | `1` |
-| 2 | 1 | flags | zero |
-| 3 | 1 | reserved | zero |
-| 4 | 4 | frame id | nonzero; equals envelope and live model |
-| 8 | 4 | frame generation | nonzero; equals live model |
-| 12 | 4 | toolbar id | nonzero; equals live model |
-| 16 | 4 | expected toolbar generation | nonzero; equals live model |
-| 20 | 4 | new toolbar generation | strictly newer |
-| 24 | 4 | operation count | `1..16` |
-| 28 | 16 | reserved | zero |
-
-Each `TOOLBAR_PATCH` operation is exactly 168 bytes:
-
-| Offset | Size | Field | Rule |
-|---:|---:|---|---|
-| 0 | 1 | operation | upsert `1` / delete `2` |
-| 1 | 3 | reserved | zero |
-| 4 | 4 | item id | nonzero |
-| 8 | 4 | icon image id | item rules; zero on delete |
-| 12 | 4 | icon image generation | item rules; zero on delete |
-| 16 | 1 | item kind | item rules; delete requires button |
-| 17 | 1 | item flags | item rules; delete requires zero |
-| 18 | 1 | label length | item rules; delete requires zero |
-| 19 | 1 | help length | item rules; delete requires zero |
-| 20 | 1 | key length | item rules; delete requires zero |
-| 21 | 3 | reserved | zero |
-| 24 | 64 | label | item rules; fully zero on delete |
-| 88 | 64 | help | item rules; fully zero on delete |
-| 152 | 16 | key | item rules; fully zero on delete |
-
-#### `DIALOG_OPEN` / `UPDATE` / `CLOSE` / `RESULT` v1 (implemented bounded adapter contracts)
-
-`DIALOG_OPEN = 0x0920` and `DIALOG_UPDATE = 0x0921` carry an exact 304-byte
-bounded model for message, prompt, or confirm dialogs.  The model has strict
-schema/reserved rules, nonzero dialog/generation/window/frame identity,
-nonnegative owner-relative geometry bounded by the owner, UTF-8 title/text,
-modal flag, and a nonempty kind-specific known-button mask.  Updates must match
-the dialog id and strictly advance its generation.  `DIALOG_CLOSE = 0x0922` is
-an exact 28-byte action/escape/replaced/shutdown intent and must match the live
-dialog identity exactly.  `DIALOG_RESULT = 0x0923` is an exact 160-byte reverse
-intent carrying a known or custom button plus optional bounded UTF-8 text.
-
-Scene deletion, resync, and teardown clear the owned dialog.  SDL renders a
-diagnostic box and ASCII debug text.  Results require negotiated
-`widget.dialog_result_v1` and use ordered acknowledged DeliveryJournal/EPXL
-traffic.  This slice does not implement native dialogs, file/color/font dialogs,
-progress or error policy, SDL hit testing, input fields, Emacs callback
-dispatch, accessibility, or PGTK dialog parity.
-
-#### `MENU_HOVER` v1 (implemented bounded reverse intent)
-
-`MENU_HOVER = 0x0906` is an exact 40-byte frontend-to-core intent.  Layout:
-schema (`u16=1`), phase, reserved, nonzero menu id/generation, item id, owner
-window, frame generation, owner-relative pointer coordinates, and four reserved
-bytes.  Phase is `enter`, `move`, or `leave`.  Enter and move require a
-nonzero item id and nonnegative coordinates; leave requires zero item id and
-zero coordinates.
-
-| Offset | Size | Field | Rule |
-|---:|---:|---|---|
-| 0 | 2 | schema | `1` |
-| 2 | 1 | phase | `enter=1`, `move=2`, or `leave=3` |
-| 3 | 1 | reserved | `0` |
-| 4 | 4 | menu ID | nonzero |
-| 8 | 4 | menu generation | nonzero |
-| 12 | 4 | item ID | nonzero for enter/move; zero for leave |
-| 16 | 8 | owner window ID | nonzero |
-| 24 | 4 | frame generation | nonzero |
-| 28 | 4 | x | owner-relative `i32`; nonnegative for enter/move, zero for leave |
-| 32 | 4 | y | owner-relative `i32`; nonnegative for enter/move, zero for leave |
-| 36 | 4 | reserved tail | all zero |
-
-The frontend emits hover intents only after `widget.menu_hover_v1` is negotiated,
-in ordered acknowledged DeliveryJournal traffic.  This contract validates and
-transports bounded hover facts only.  It does not implement SDL menu hit testing,
-submenu auto-open policy, keyboard navigation, tooltip scheduling, Emacs menu
-bar highlighting, command execution, native menus, or PGTK parity.
-
-#### `TOOLTIP_SHOW` / `MOVE` / `HIDE` v1 (implemented bounded adapter contract)
-
-`TOOLTIP_SHOW = 0x0930` is an exact 164-byte little-endian record: schema
-(`u16=1`), zero flags/reserved, nonzero tooltip id and generation, nonzero
-window id and active-frame generation, nonnegative owner-relative origin, a
-nonzero box up to 16,384 pixels per axis, UTF-8 length, two reserved bytes, and
-at most 120 strict UTF-8 bytes with the unused tail zero-filled.
-`TOOLTIP_MOVE = 0x0931` is an exact 40-byte placement record carrying the same
-live identity and frame/window context.  `TOOLTIP_HIDE = 0x0932` is an exact
-16-byte identity record.
-
-The envelope, frame header, payload frame generation, and live owner must agree.
-`SHOW` upserts one active tooltip; an equal/stale generation is rejected.  Move
-must name the exact live tooltip and keep its declared box inside the owner.
-Hide removes the exact live generation.  Window deletion, frame destruction or
-resync, and authoritative `FRAME_UPDATE` clear the active tooltip.  SDL draws
-the bounded box and ASCII debug text; Unicode text is validated and retained but
-is not a shaped-text or platform-tooltip contract.  Delay, dismissal policy,
-platform positioning, hit testing, accessibility, and PGTK tooltip parity remain
-pending.
+All integers are little-endian.  All payloads begin with `u16 schema=1`;
+reserved bytes are zero on transmit and decode.  Coordinates are nonnegative
+owner-relative values, IDs are nonzero, and IDs are adapter-side protocol
+identities rather than Emacs terminal handles.  These are transport codecs;
+SDL mapping, Scene/core application, platform ownership, and PGTK parity are
+not claimed.
+
+##### `TOUCH_EVENT = 0x0604`
+
+Header, 20 bytes:
+
+* `u16 schema @0`, `u8 phase @2`, `u8 contact_count @3`
+* `u32 nonzero frame_id @4`, `u32 nonzero sdl_window_id @8`
+* `u64 timestamp_ns @12`
+
+Phases are begin=1, update=2, end=3, cancel=4.  Follow with 1..8 contacts.
+Each contact is 16 bytes: `u16 nonzero contact_id @0`, `u16 reserved=0 @2`,
+`i32 x @4`, `i32 y @8`, `u16 pressure_milli @12` (0..1000), and
+`u16 major_radius @14`.  Contact IDs must be unique.
+
+##### `GESTURE_EVENT = 0x0605`
+
+Exact 36 bytes:
+
+* `u16 schema @0`, `u8 kind @2`, `u8 phase @3`
+* `u32 nonzero frame_id @4`, `u32 nonzero sdl_window_id @8`
+* `i32 x @12`, `i32 y @16`, `i32 pan_x @20`, `i32 pan_y @24`
+* `u32 nonzero scale_milli_percent @28`, `i32 rotation_milli_degrees @32`
+
+Kinds are pan=1, pinch=2, rotate=3, long_press=4.  Phases match touch phases.
+Long press requires scale 1000 milli-percent, zero rotation, and zero pan.
+
+##### `MONITOR_EVENT = 0x0608`
+
+Exact 36 bytes:
+
+* `u16 schema @0`, `u8 kind @2`, `u8 reserved=0 @3`
+* `u32 nonzero monitor_id @4`, `i32 x @8`, `i32 y @12`
+* `i32 positive width @16`, `i32 positive height @20`
+* `u32 nonzero scale_milli_percent @24`, `u32 refresh_milli_hz @28`
+* `u8 flags @32`: bit 0 primary, bit 1 current, bits 2..7 zero
+* 3 reserved bytes at 33
+
+Kinds are added=1, removed=2, geometry_changed=3, primary_changed=4,
+current_changed=5.
+
+##### `DPI_EVENT = 0x0609`
+
+Exact 28 bytes: `u16 schema`, `u16 reserved=0` at 2, `u32 nonzero frame_id @4`,
+`u32 nonzero sdl_window_id @8`, `u32 nonzero scale_milli_percent @12`,
+`u32 nonzero dpi_x_milli @16`, `u32 nonzero dpi_y_milli @20`, and 4 reserved
+bytes at 24.
+
+##### `THEME_EVENT = 0x060a`
+
+Exact 16 bytes: `u16 schema`, `u8 appearance @2`, `u8 contrast @3`,
+`u8 accessibility flags @4`, 3 reserved at 5, `u8[4] accent_rgba @8`, and 4
+reserved at 12.  Appearance values are unknown=0, light=1, dark=2, system=3.
+Flags are reduced_motion=1, reduced_transparency=2, high_contrast=4; all other
+bits are invalid.
+
+##### `INPUT_DEVICE_EVENT = 0x060b`
+
+Exact 16 bytes: `u16 schema`, `u8 kind @2`, `u8 action @3`,
+`u32 nonzero device_id @4`, `u32 capability_mask @8`, and 4 reserved at 12.
+Kinds are keyboard=1, mouse=2, touchpad=3, touch=4, pen=5, gamepad=6.
+Actions are added=1, removed=2, changed=3.  Added requires nonzero capabilities.
+
+##### `INPUT_BATCH = 0x060c`
+
+Bounded ordered framing envelope.  Header is 8 bytes: `u16 schema`,
+`u16 reserved=0`, `u16 nonzero item_count` (1..16), and `u16 reserved=0`.
+Each item is `u16 kind`, `u16 byte_length` (1..512), then bytes.  The sum of
+item byte lengths is at most 4096 and excludes the four item-framing bytes.
+`kind` must be an assigned input-class message ID and must not be
+`INPUT_BATCH`; nested payload decoding/application is intentionally outside
+this framing codec.
 
 ## 19. Diagnostic messages
 

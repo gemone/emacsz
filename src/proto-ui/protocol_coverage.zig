@@ -121,9 +121,9 @@ const ranges = [_]Range{
     .{ .low = 0x0510, .high = 0x0512, .status = .implemented_codec, .domain = .resource, .family = "resource-policy-snapshot", .note = "request, eviction, and atomic concrete snapshot codecs" },
     .{ .low = 0x0513, .high = 0x0516, .status = .implemented_codec, .domain = .resource, .family = "atlas-lifecycle", .note = "bounded atlas define/page update/glyph add/invalidate codecs and Scene state" },
     .{ .low = 0x0600, .high = 0x0603, .status = .implemented_codec, .domain = .input, .family = "key-text-pointer-wheel", .note = "bounded codecs plus SDL/EPXL delivery paths" },
-    .{ .low = 0x0604, .high = 0x0605, .status = .planned, .domain = .input, .family = "touch-gesture", .note = "touch and gesture codecs pending" },
+    .{ .low = 0x0604, .high = 0x0605, .status = .implemented_codec, .domain = .input, .family = "touch-gesture", .note = "bounded multi-contact touch and pan/pinch/rotate/long-press gesture codecs; SDL/backend application pending" },
     .{ .low = 0x0606, .high = 0x0607, .status = .implemented_codec, .domain = .input, .family = "platform-focus-window", .note = "strict focus/window intent codecs and smoke" },
-    .{ .low = 0x0608, .high = 0x060c, .status = .planned, .domain = .input, .family = "extended-platform", .note = "extended platform input intents pending" },
+    .{ .low = 0x0608, .high = 0x060c, .status = .implemented_codec, .domain = .input, .family = "extended-platform", .note = "bounded monitor/DPI/theme/device and ordered input batch codecs; platform dispatch and core application pending" },
     .{ .low = 0x0700, .high = 0x0706, .status = .implemented_codec, .domain = .ime, .family = "ime-core-control", .note = "bounded attach/detach/focus/cursor/allowed-input/surrounding/reset codecs and Scene owner validation; platform backend pending" },
     .{ .low = 0x0710, .high = 0x0719, .status = .implemented_codec, .domain = .ime, .family = "ime-reverse-reports", .note = "bounded attached/detached/preedit/commit/surrounding-request/delete/candidate/cancel wire codecs; platform backend and core application pending" },
     .{ .low = 0x0800, .high = 0x0805, .status = .implemented_codec, .domain = .selection, .family = "selection-transfer", .note = "bounded owner, request, data, loss, and error codecs with printable non-space ASCII targets; Scene/platform dispatch pending" },
@@ -228,7 +228,8 @@ pub fn validateState() ?[]const u8 {
     if (counts.total != counts.implemented_codec + counts.partial +
         counts.planned + counts.reserved_diagnostic) return "coverage counters do not sum";
     if (counts.implemented_codec == 0) return "no implemented codecs recorded";
-    if (counts.planned == 0) return "coverage dishonestly omits planned IDs";
+    // Zero planned IDs is valid once every assigned concrete codec exists.
+    // Partial and diagnostic/reserved states remain independently counted.
     return null;
 }
 
@@ -311,9 +312,9 @@ test "implemented and planned protocol coverage remain honest" {
     const dnd_enter = entryFor(0x0820) catch unreachable;
     try std.testing.expectEqual(Status.implemented_codec, dnd_enter.status);
     const counts = counters();
-    try std.testing.expectEqual(@as(usize, 154), counts.implemented_codec);
+    try std.testing.expectEqual(@as(usize, 161), counts.implemented_codec);
     try std.testing.expectEqual(@as(usize, 3), counts.partial);
-    try std.testing.expectEqual(@as(usize, 7), counts.planned);
+    try std.testing.expectEqual(@as(usize, 0), counts.planned);
     try std.testing.expectError(error.UnknownMessageId, entryFor(0xffff));
 }
 

@@ -208,6 +208,13 @@ pub const Message = struct {
     pub const trace_begin: u16 = 0x0a07;
     pub const trace_end: u16 = 0x0a08;
     pub const replay_marker: u16 = 0x0a09;
+    pub const touch_event: u16 = 0x0604;
+    pub const gesture_event: u16 = 0x0605;
+    pub const monitor_event: u16 = 0x0608;
+    pub const dpi_event: u16 = 0x0609;
+    pub const theme_event: u16 = 0x060a;
+    pub const input_device_event: u16 = 0x060b;
+    pub const input_batch: u16 = 0x060c;
     pub const extension: u16 = 0xf000;
     pub const invalid: u16 = 0xffff;
 };
@@ -10575,4 +10582,733 @@ test "diagnostic variable decoders reject malformed length and text boundaries" 
     try std.testing.expectError(Error.InvalidTable, decodeInputLatency(bytes.items[0 .. bytes.items.len - 1]));
     try bytes.append(a, 0);
     try std.testing.expectError(Error.InvalidTable, decodeInputLatency(bytes.items));
+}
+
+pub const TouchPhase = enum(u8) {
+    begin = 1,
+    update = 2,
+    end = 3,
+    cancel = 4,
+};
+
+pub const max_touch_contacts: usize = 8;
+
+pub const TouchContact = struct {
+    id: u16,
+    x: i32,
+    y: i32,
+    pressure_milli: u16 = 1000,
+    major_radius: u16 = 0,
+
+    pub fn eql(self: TouchContact, other: TouchContact) bool {
+        return std.meta.eql(self, other);
+    }
+};
+
+pub const touch_contact_size: usize = 16;
+pub const TouchEvent = struct {
+    schema: u16 = 1,
+    phase: TouchPhase,
+    frame_id: u32,
+    sdl_window_id: u32,
+    timestamp_ns: u64,
+    contacts: []const TouchContact,
+};
+pub const touch_event_header_size: usize = 20;
+
+fn validateDiagReservedBytes(data: []const u8, ranges: []const [2]usize) Error!void {
+    for (ranges) |range| for (data[range[0]..range[1]]) |byte| if (byte != 0) return Error.InvalidMessage;
+}
+
+fn validateTouchContacts(contacts: []const TouchContact) Error!void {
+    if (contacts.len == 0 or contacts.len > max_touch_contacts) return Error.InvalidMessage;
+    for (contacts, 0..) |contact, index| {
+        if (contact.id == 0 or contact.x < 0 or contact.y < 0 or contact.pressure_milli > 1000)
+            return Error.InvalidMessage;
+        for (contacts[0..index]) |prior| {
+            if (prior.id == contact.id) return Error.InvalidMessage;
+        }
+    }
+}
+
+pub fn validateTouchEvent(payload: TouchEvent) Error!void {
+    if (payload.schema != 1 or payload.frame_id == 0 or payload.sdl_window_id == 0)
+        return Error.InvalidMessage;
+    try validateTouchContacts(payload.contacts);
+}
+
+pub fn encodeTouchEvent(a: std.mem.Allocator, payload: TouchEvent, out: *std.ArrayList(u8)) !void {
+    try validateTouchEvent(payload);
+    var header: [touch_event_header_size]u8 = @splat(0);
+    std.mem.writeInt(u16, header[0..2], payload.schema, .little);
+    header[2] = @intFromEnum(payload.phase);
+    header[3] = @intCast(payload.contacts.len);
+    std.mem.writeInt(u32, header[4..8], payload.frame_id, .little);
+    std.mem.writeInt(u32, header[8..12], payload.sdl_window_id, .little);
+    std.mem.writeInt(u64, header[12..20], payload.timestamp_ns, .little);
+    try out.appendSlice(a, &header);
+    for (payload.contacts) |contact| {
+        var b: [touch_contact_size]u8 = @splat(0);
+        std.mem.writeInt(u16, b[0..2], contact.id, .little);
+        std.mem.writeInt(i32, b[4..8], contact.x, .little);
+        std.mem.writeInt(i32, b[8..12], contact.y, .little);
+        std.mem.writeInt(u16, b[12..14], contact.pressure_milli, .little);
+        std.mem.writeInt(u16, b[14..16], contact.major_radius, .little);
+        try out.appendSlice(a, &b);
+    }
+}
+
+pub fn decodeTouchEvent(a: std.mem.Allocator, data: []const u8) (Error || std.mem.Allocator.Error)!TouchEvent {
+    if (data.len < touch_event_header_size) return Error.InvalidTable;
+    const count = data[3];
+    if (count == 0 or count > max_touch_contacts or
+        data.len != touch_event_header_size + @as(usize, count) * touch_contact_size)
+        return Error.InvalidTable;
+    var contacts: std.ArrayList(TouchContact) = .empty;
+    errdefer contacts.deinit(a);
+    var offset: usize = touch_event_header_size;
+    while (offset < data.len) : (offset += touch_contact_size) {
+        const b = data[offset..][0..touch_contact_size];
+        if (b[2] != 0 or b[3] != 0) return Error.InvalidReserved;
+        try contacts.append(a, .{
+            .id = std.mem.readInt(u16, b[0..2], .little),
+            .x = @bitCast(std.mem.readInt(u32, b[4..8], .little)),
+            .y = @bitCast(std.mem.readInt(u32, b[8..12], .little)),
+            .pressure_milli = std.mem.readInt(u16, b[12..14], .little),
+            .major_radius = std.mem.readInt(u16, b[14..16], .little),
+        });
+    }
+    const payload: TouchEvent = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .phase = switch (data[2]) {
+            1 => .begin,
+            2 => .update,
+            3 => .end,
+            4 => .cancel,
+            else => return Error.InvalidMessage,
+        },
+        .frame_id = std.mem.readInt(u32, data[4..8], .little),
+        .sdl_window_id = std.mem.readInt(u32, data[8..12], .little),
+        .timestamp_ns = std.mem.readInt(u64, data[12..20], .little),
+        .contacts = try contacts.toOwnedSlice(a),
+    };
+    errdefer a.free(payload.contacts);
+    try validateTouchEvent(payload);
+    return payload;
+}
+
+pub fn freeTouchEvent(a: std.mem.Allocator, payload: *TouchEvent) void {
+    a.free(payload.contacts);
+    payload.contacts = &.{};
+}
+
+pub const GestureKind = enum(u8) {
+    pan = 1,
+    pinch = 2,
+    rotate = 3,
+    long_press = 4,
+};
+
+pub const GesturePhase = enum(u8) {
+    begin = 1,
+    update = 2,
+    end = 3,
+    cancel = 4,
+};
+
+pub const GestureEvent = struct {
+    schema: u16 = 1,
+    kind: GestureKind,
+    phase: GesturePhase,
+    frame_id: u32,
+    sdl_window_id: u32,
+    x: i32,
+    y: i32,
+    pan_x: i32,
+    pan_y: i32,
+    scale_milli_percent: u32 = 1000,
+    rotation_milli_degrees: i32 = 0,
+};
+
+pub const gesture_event_size: usize = 36;
+
+pub fn encodeGestureEvent(a: std.mem.Allocator, payload: GestureEvent, out: *std.ArrayList(u8)) !void {
+    try validateGestureEvent(payload);
+    var b: [gesture_event_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = @intFromEnum(payload.kind);
+    b[3] = @intFromEnum(payload.phase);
+    std.mem.writeInt(u32, b[4..8], payload.frame_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.sdl_window_id, .little);
+    std.mem.writeInt(i32, b[12..16], payload.x, .little);
+    std.mem.writeInt(i32, b[16..20], payload.y, .little);
+    std.mem.writeInt(i32, b[20..24], payload.pan_x, .little);
+    std.mem.writeInt(i32, b[24..28], payload.pan_y, .little);
+    std.mem.writeInt(u32, b[28..32], payload.scale_milli_percent, .little);
+    std.mem.writeInt(i32, b[32..36], payload.rotation_milli_degrees, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeGestureEvent(data: []const u8) Error!GestureEvent {
+    if (data.len != gesture_event_size) return Error.InvalidTable;
+    const payload: GestureEvent = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .kind = switch (data[2]) {
+            1 => .pan,
+            2 => .pinch,
+            3 => .rotate,
+            4 => .long_press,
+            else => return Error.InvalidMessage,
+        },
+        .phase = switch (data[3]) {
+            1 => .begin,
+            2 => .update,
+            3 => .end,
+            4 => .cancel,
+            else => return Error.InvalidMessage,
+        },
+        .frame_id = std.mem.readInt(u32, data[4..8], .little),
+        .sdl_window_id = std.mem.readInt(u32, data[8..12], .little),
+        .x = @bitCast(std.mem.readInt(u32, data[12..16], .little)),
+        .y = @bitCast(std.mem.readInt(u32, data[16..20], .little)),
+        .pan_x = @bitCast(std.mem.readInt(u32, data[20..24], .little)),
+        .pan_y = @bitCast(std.mem.readInt(u32, data[24..28], .little)),
+        .scale_milli_percent = std.mem.readInt(u32, data[28..32], .little),
+        .rotation_milli_degrees = @bitCast(std.mem.readInt(u32, data[32..36], .little)),
+    };
+    try validateGestureEvent(payload);
+    return payload;
+}
+
+fn validateGestureEvent(payload: GestureEvent) Error!void {
+    if (payload.schema != 1 or payload.frame_id == 0 or payload.sdl_window_id == 0 or
+        payload.x < 0 or payload.y < 0 or payload.scale_milli_percent == 0)
+        return Error.InvalidMessage;
+    if (payload.kind == .long_press and (payload.scale_milli_percent != 1000 or
+        payload.rotation_milli_degrees != 0 or payload.pan_x != 0 or payload.pan_y != 0))
+        return Error.InvalidMessage;
+}
+
+pub const MonitorChangeKind = enum(u8) {
+    added = 1,
+    removed = 2,
+    geometry_changed = 3,
+    primary_changed = 4,
+    current_changed = 5,
+};
+
+pub const MonitorEvent = struct {
+    schema: u16 = 1,
+    kind: MonitorChangeKind,
+    monitor_id: u32,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    scale_milli_percent: u32 = 1000,
+    refresh_milli_hz: u32 = 0,
+    primary: bool,
+    current: bool,
+};
+
+pub const monitor_event_size: usize = 36;
+
+pub fn encodeMonitorEvent(a: std.mem.Allocator, payload: MonitorEvent, out: *std.ArrayList(u8)) !void {
+    try validateMonitorEvent(payload);
+    var b: [monitor_event_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = @intFromEnum(payload.kind);
+    std.mem.writeInt(u32, b[4..8], payload.monitor_id, .little);
+    std.mem.writeInt(i32, b[8..12], payload.x, .little);
+    std.mem.writeInt(i32, b[12..16], payload.y, .little);
+    std.mem.writeInt(i32, b[16..20], payload.width, .little);
+    std.mem.writeInt(i32, b[20..24], payload.height, .little);
+    std.mem.writeInt(u32, b[24..28], payload.scale_milli_percent, .little);
+    std.mem.writeInt(u32, b[28..32], payload.refresh_milli_hz, .little);
+    b[32] = @as(u8, @intFromBool(payload.primary)) | (@as(u8, @intFromBool(payload.current)) << 1);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeMonitorEvent(data: []const u8) Error!MonitorEvent {
+    if (data.len != monitor_event_size) return Error.InvalidTable;
+    if (data[3] != 0 or !std.mem.allEqual(u8, data[33..36], 0)) return Error.InvalidReserved;
+    const flags = data[32];
+    if (flags & ~@as(u8, 3) != 0) return Error.InvalidMessage;
+    const payload: MonitorEvent = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .kind = switch (data[2]) {
+            1 => .added,
+            2 => .removed,
+            3 => .geometry_changed,
+            4 => .primary_changed,
+            5 => .current_changed,
+            else => return Error.InvalidMessage,
+        },
+        .monitor_id = std.mem.readInt(u32, data[4..8], .little),
+        .x = @bitCast(std.mem.readInt(u32, data[8..12], .little)),
+        .y = @bitCast(std.mem.readInt(u32, data[12..16], .little)),
+        .width = @bitCast(std.mem.readInt(u32, data[16..20], .little)),
+        .height = @bitCast(std.mem.readInt(u32, data[20..24], .little)),
+        .scale_milli_percent = std.mem.readInt(u32, data[24..28], .little),
+        .refresh_milli_hz = std.mem.readInt(u32, data[28..32], .little),
+        .primary = flags & 1 != 0,
+        .current = flags & 2 != 0,
+    };
+    try validateMonitorEvent(payload);
+    return payload;
+}
+
+fn validateMonitorEvent(payload: MonitorEvent) Error!void {
+    if (payload.schema != 1 or payload.monitor_id == 0 or
+        payload.width <= 0 or payload.height <= 0 or payload.scale_milli_percent == 0)
+        return Error.InvalidMessage;
+}
+
+pub const DpiEvent = struct {
+    schema: u16 = 1,
+    frame_id: u32,
+    sdl_window_id: u32,
+    scale_milli_percent: u32 = 1000,
+    dpi_x_milli: u32 = 96000,
+    dpi_y_milli: u32 = 96000,
+};
+
+pub const dpi_event_size: usize = 28;
+
+pub fn encodeDpiEvent(a: std.mem.Allocator, payload: DpiEvent, out: *std.ArrayList(u8)) !void {
+    try validateDpiEvent(payload);
+    var b: [dpi_event_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    std.mem.writeInt(u32, b[4..8], payload.frame_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.sdl_window_id, .little);
+    std.mem.writeInt(u32, b[12..16], payload.scale_milli_percent, .little);
+    std.mem.writeInt(u32, b[16..20], payload.dpi_x_milli, .little);
+    std.mem.writeInt(u32, b[20..24], payload.dpi_y_milli, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeDpiEvent(data: []const u8) Error!DpiEvent {
+    if (data.len != dpi_event_size) return Error.InvalidTable;
+    if (!std.mem.allEqual(u8, data[2..4], 0) or !std.mem.allEqual(u8, data[24..28], 0)) return Error.InvalidReserved;
+    const payload: DpiEvent = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .frame_id = std.mem.readInt(u32, data[4..8], .little),
+        .sdl_window_id = std.mem.readInt(u32, data[8..12], .little),
+        .scale_milli_percent = std.mem.readInt(u32, data[12..16], .little),
+        .dpi_x_milli = std.mem.readInt(u32, data[16..20], .little),
+        .dpi_y_milli = std.mem.readInt(u32, data[20..24], .little),
+    };
+    try validateDpiEvent(payload);
+    return payload;
+}
+
+fn validateDpiEvent(payload: DpiEvent) Error!void {
+    if (payload.schema != 1 or payload.frame_id == 0 or payload.sdl_window_id == 0 or
+        payload.scale_milli_percent == 0 or payload.dpi_x_milli == 0 or payload.dpi_y_milli == 0)
+        return Error.InvalidMessage;
+}
+
+pub const ThemeAppearance = enum(u8) {
+    unknown = 0,
+    light = 1,
+    dark = 2,
+    system = 3,
+};
+
+pub const ThemeFlags = struct {
+    pub const reduced_motion: u8 = 1;
+    pub const reduced_transparency: u8 = 2;
+    pub const high_contrast: u8 = 4;
+    pub const valid_mask: u8 = reduced_motion | reduced_transparency | high_contrast;
+};
+
+pub const ThemeEvent = struct {
+    schema: u16 = 1,
+    appearance: ThemeAppearance,
+    contrast: u8 = 0,
+    flags: u8 = 0,
+    accent_rgba: [4]u8 = @splat(255),
+};
+
+pub const theme_event_size: usize = 16;
+
+pub fn encodeThemeEvent(a: std.mem.Allocator, payload: ThemeEvent, out: *std.ArrayList(u8)) !void {
+    try validateThemeEvent(payload);
+    var b: [theme_event_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = @intFromEnum(payload.appearance);
+    b[3] = payload.contrast;
+    b[4] = payload.flags;
+    @memcpy(b[8..12], &payload.accent_rgba);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeThemeEvent(data: []const u8) Error!ThemeEvent {
+    if (data.len != theme_event_size) return Error.InvalidTable;
+    if (!std.mem.allEqual(u8, data[5..8], 0) or !std.mem.allEqual(u8, data[12..16], 0)) return Error.InvalidReserved;
+    const payload: ThemeEvent = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .appearance = switch (data[2]) {
+            0 => .unknown,
+            1 => .light,
+            2 => .dark,
+            3 => .system,
+            else => return Error.InvalidMessage,
+        },
+        .contrast = data[3],
+        .flags = data[4],
+        .accent_rgba = data[8..12][0..4].*,
+    };
+    try validateThemeEvent(payload);
+    return payload;
+}
+
+fn validateThemeEvent(payload: ThemeEvent) Error!void {
+    if (payload.schema != 1 or payload.flags & ~ThemeFlags.valid_mask != 0 or
+        !std.mem.allEqual(u8, payload.accent_rgba[0..0], 0))
+        return Error.InvalidMessage;
+}
+
+pub const InputDeviceKind = enum(u8) {
+    keyboard = 1,
+    mouse = 2,
+    touchpad = 3,
+    touch = 4,
+    pen = 5,
+    gamepad = 6,
+};
+
+pub const InputDeviceAction = enum(u8) {
+    added = 1,
+    removed = 2,
+    changed = 3,
+};
+
+pub const InputDeviceEvent = struct {
+    schema: u16 = 1,
+    kind: InputDeviceKind,
+    action: InputDeviceAction,
+    device_id: u32,
+    capability_mask: u32 = 0,
+};
+
+pub const input_device_event_size: usize = 16;
+
+pub fn encodeInputDeviceEvent(a: std.mem.Allocator, payload: InputDeviceEvent, out: *std.ArrayList(u8)) !void {
+    try validateInputDeviceEvent(payload);
+    var b: [input_device_event_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = @intFromEnum(payload.kind);
+    b[3] = @intFromEnum(payload.action);
+    std.mem.writeInt(u32, b[4..8], payload.device_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.capability_mask, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeInputDeviceEvent(data: []const u8) Error!InputDeviceEvent {
+    if (data.len != input_device_event_size) return Error.InvalidTable;
+    if (!std.mem.allEqual(u8, data[12..16], 0)) return Error.InvalidReserved;
+    const payload: InputDeviceEvent = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .kind = switch (data[2]) {
+            1 => .keyboard,
+            2 => .mouse,
+            3 => .touchpad,
+            4 => .touch,
+            5 => .pen,
+            6 => .gamepad,
+            else => return Error.InvalidMessage,
+        },
+        .action = switch (data[3]) {
+            1 => .added,
+            2 => .removed,
+            3 => .changed,
+            else => return Error.InvalidMessage,
+        },
+        .device_id = std.mem.readInt(u32, data[4..8], .little),
+        .capability_mask = std.mem.readInt(u32, data[8..12], .little),
+    };
+    try validateInputDeviceEvent(payload);
+    return payload;
+}
+
+fn validateInputDeviceEvent(payload: InputDeviceEvent) Error!void {
+    if (payload.schema != 1 or payload.device_id == 0) return Error.InvalidMessage;
+    if (payload.action == .added and payload.capability_mask == 0) return Error.InvalidMessage;
+}
+
+pub const InputBatchItem = struct {
+    kind: u16,
+    bytes: []const u8,
+};
+
+pub const InputBatch = struct {
+    schema: u16 = 1,
+    reserved: u16 = 0,
+    items: []const InputBatchItem,
+};
+
+pub const input_batch_header_size: usize = 8;
+pub const max_input_batch_items: usize = 16;
+pub const max_input_batch_item_len: usize = 512;
+pub const max_input_batch_bytes: usize = 4096;
+
+pub fn encodeInputBatch(a: std.mem.Allocator, payload: InputBatch, out: *std.ArrayList(u8)) !void {
+    try validateInputBatch(payload);
+    var header: [input_batch_header_size]u8 = @splat(0);
+    std.mem.writeInt(u16, header[0..2], payload.schema, .little);
+    std.mem.writeInt(u16, header[2..4], payload.reserved, .little);
+    std.mem.writeInt(u16, header[4..6], @intCast(payload.items.len), .little);
+    try out.appendSlice(a, &header);
+    for (payload.items) |item| {
+        try putU16(out, a, item.kind);
+        try putU16(out, a, @intCast(item.bytes.len));
+        try out.appendSlice(a, item.bytes);
+    }
+}
+
+pub fn decodeInputBatch(a: std.mem.Allocator, data: []const u8) (Error || std.mem.Allocator.Error)!InputBatch {
+    if (data.len < input_batch_header_size) return Error.InvalidTable;
+    if (std.mem.readInt(u16, data[0..2], .little) != 1 or
+        !std.mem.allEqual(u8, data[2..4], 0) or !std.mem.allEqual(u8, data[6..8], 0))
+        return Error.InvalidMessage;
+    const count = std.mem.readInt(u16, data[4..6], .little);
+    if (count == 0 or count > max_input_batch_items) return Error.InvalidMessage;
+    var reader = Reader{ .data = data };
+    reader.offset = input_batch_header_size;
+    var items: std.ArrayList(InputBatchItem) = .empty;
+    errdefer items.deinit(a);
+    while (reader.offset < data.len) {
+        if (items.items.len >= max_input_batch_items) return Error.InvalidMessage;
+        const kind = reader.readU16() catch return Error.InvalidTable;
+        const length = reader.readU16() catch return Error.InvalidTable;
+        const bytes = reader.bytes(length) catch return Error.InvalidTable;
+        if (kind == 0 or kind == Message.input_batch or !knownMessage(kind) or
+            messageClass(kind) != .input or length == 0 or length > max_input_batch_item_len)
+            return Error.InvalidMessage;
+        try items.append(a, .{ .kind = kind, .bytes = bytes });
+    }
+    if (items.items.len != count) return Error.InvalidMessage;
+    const owned = try items.toOwnedSlice(a);
+    errdefer a.free(owned);
+    try validateInputBatch(.{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .reserved = std.mem.readInt(u16, data[2..4], .little),
+        .items = owned,
+    });
+    return .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .reserved = std.mem.readInt(u16, data[2..4], .little),
+        .items = owned,
+    };
+}
+
+pub fn freeInputBatch(a: std.mem.Allocator, payload: *InputBatch) void {
+    a.free(payload.items);
+    payload.items = &.{};
+}
+
+fn validateInputBatch(payload: InputBatch) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or payload.items.len == 0 or
+        payload.items.len > max_input_batch_items) return Error.InvalidMessage;
+    var total: usize = 0;
+    for (payload.items) |item| {
+        if (item.kind == 0 or item.kind == Message.input_batch or !knownMessage(item.kind) or
+            messageClass(item.kind) != .input or item.bytes.len == 0 or
+            item.bytes.len > max_input_batch_item_len)
+            return Error.InvalidMessage;
+        total += item.bytes.len;
+    }
+    if (total > max_input_batch_bytes) return Error.InvalidMessage;
+}
+
+test "touch and gesture codecs round trip and reject malformed state" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    const contacts = [_]TouchContact{
+        .{ .id = 1, .x = 10, .y = 20, .pressure_milli = 500 },
+        .{ .id = 2, .x = 30, .y = 40, .pressure_milli = 1000 },
+    };
+    const touch: TouchEvent = .{ .phase = .update, .frame_id = 7, .sdl_window_id = 8, .timestamp_ns = 9, .contacts = contacts[0..2] };
+    try encodeTouchEvent(a, touch, &bytes);
+    var decoded_touch = try decodeTouchEvent(a, bytes.items);
+    try std.testing.expectEqualSlices(TouchContact, touch.contacts, decoded_touch.contacts);
+    freeTouchEvent(a, &decoded_touch);
+    try std.testing.expectError(Error.InvalidTable, decodeTouchEvent(a, bytes.items[0 .. bytes.items.len - 1]));
+    bytes.clearRetainingCapacity();
+
+    try std.testing.expectError(Error.InvalidMessage, encodeTouchEvent(a, .{ .phase = .begin, .frame_id = 7, .sdl_window_id = 8, .timestamp_ns = 0, .contacts = &.{.{ .id = 1, .x = 0, .y = 0, .pressure_milli = 1001 }} }, &bytes));
+    bytes.clearRetainingCapacity();
+
+    const gesture: GestureEvent = .{ .kind = .pan, .phase = .update, .frame_id = 7, .sdl_window_id = 8, .x = 1, .y = 2, .pan_x = -3, .pan_y = 4 };
+    try encodeGestureEvent(a, gesture, &bytes);
+    try std.testing.expectEqual(gesture, try decodeGestureEvent(bytes.items));
+    try std.testing.expectError(Error.InvalidTable, decodeGestureEvent(bytes.items[0 .. bytes.items.len - 1]));
+}
+
+test "monitor dpi theme device and batch codecs reject malformed state" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    const monitor: MonitorEvent = .{ .kind = .added, .monitor_id = 1, .x = 0, .y = 0, .width = 1920, .height = 1080, .primary = true, .current = true };
+    try encodeMonitorEvent(a, monitor, &bytes);
+    try std.testing.expectEqual(monitor, try decodeMonitorEvent(bytes.items));
+    bytes.items[33] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeMonitorEvent(bytes.items));
+    bytes.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidMessage, encodeMonitorEvent(a, .{ .kind = .added, .monitor_id = 0, .x = 0, .y = 0, .width = 1, .height = 1, .primary = false, .current = false }, &bytes));
+
+    const dpi: DpiEvent = .{ .frame_id = 7, .sdl_window_id = 8, .scale_milli_percent = 1500, .dpi_x_milli = 144000, .dpi_y_milli = 144000 };
+    try encodeDpiEvent(a, dpi, &bytes);
+    try std.testing.expectEqual(dpi, try decodeDpiEvent(bytes.items));
+    bytes.items[24] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeDpiEvent(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const theme: ThemeEvent = .{ .appearance = .dark, .contrast = 80, .flags = ThemeFlags.high_contrast, .accent_rgba = .{ 1, 2, 3, 4 } };
+    try encodeThemeEvent(a, theme, &bytes);
+    try std.testing.expectEqual(theme, try decodeThemeEvent(bytes.items));
+    bytes.items[4] = 0x80;
+    try std.testing.expectError(Error.InvalidMessage, decodeThemeEvent(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const device: InputDeviceEvent = .{ .kind = .touch, .action = .added, .device_id = 9, .capability_mask = 1 };
+    try encodeInputDeviceEvent(a, device, &bytes);
+    try std.testing.expectEqual(device, try decodeInputDeviceEvent(bytes.items));
+    bytes.items[12] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeInputDeviceEvent(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const batch: InputBatch = .{ .items = &.{
+        .{ .kind = Message.key_event, .bytes = "key-payload" },
+        .{ .kind = Message.text_input, .bytes = "text" },
+    } };
+    try encodeInputBatch(a, batch, &bytes);
+    var decoded_batch = try decodeInputBatch(a, bytes.items);
+    try std.testing.expectEqual(batch.items.len, decoded_batch.items.len);
+    try std.testing.expectEqualStrings(batch.items[0].bytes, decoded_batch.items[0].bytes);
+    freeInputBatch(a, &decoded_batch);
+    try std.testing.expectError(Error.InvalidTable, decodeInputBatch(a, bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeInputBatch(a, bytes.items));
+    bytes.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidMessage, encodeInputBatch(a, .{ .items = &.{} }, &bytes));
+}
+
+test "extended input decoders enforce bounds ownership and framing" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    const contact = [_]TouchContact{.{ .id = 1, .x = 1, .y = 2 }};
+    const touch: TouchEvent = .{ .phase = .begin, .frame_id = 1, .sdl_window_id = 2, .timestamp_ns = 3, .contacts = contact[0..1] };
+
+    try encodeTouchEvent(a, touch, &bytes);
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeTouchEvent(a, bytes.items));
+    bytes.items[0] = 1;
+    bytes.items[2] = 5;
+    try std.testing.expectError(Error.InvalidMessage, decodeTouchEvent(a, bytes.items));
+    bytes.items[2] = 1;
+    const invalid_contacts = [_]TouchEvent{
+        .{ .phase = .begin, .frame_id = 0, .sdl_window_id = 1, .timestamp_ns = 0, .contacts = contact[0..1] },
+        .{ .phase = .begin, .frame_id = 1, .sdl_window_id = 1, .timestamp_ns = 0, .contacts = &[_]TouchContact{.{ .id = 0, .x = 0, .y = 0 }} },
+        .{ .phase = .begin, .frame_id = 1, .sdl_window_id = 1, .timestamp_ns = 0, .contacts = &[_]TouchContact{.{ .id = 1, .x = -1, .y = 0 }} },
+        .{ .phase = .begin, .frame_id = 1, .sdl_window_id = 1, .timestamp_ns = 0, .contacts = &[_]TouchContact{ .{ .id = 1, .x = 0, .y = 0 }, .{ .id = 1, .x = 1, .y = 1 } } },
+        .{ .phase = .begin, .frame_id = 1, .sdl_window_id = 1, .timestamp_ns = 0, .contacts = &[_]TouchContact{.{ .id = 1, .x = 0, .y = 0, .pressure_milli = 1001 }} },
+    };
+    for (invalid_contacts) |payload| {
+        try std.testing.expectError(Error.InvalidMessage, encodeTouchEvent(a, payload, &bytes));
+        bytes.clearRetainingCapacity();
+    }
+    try encodeTouchEvent(a, touch, &bytes);
+    bytes.items[22] = 1;
+    try std.testing.expectError(Error.InvalidReserved, decodeTouchEvent(a, bytes.items));
+    try std.testing.expectError(Error.InvalidTable, decodeTouchEvent(a, bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeTouchEvent(a, bytes.items));
+    bytes.clearRetainingCapacity();
+
+    // Exercise every allocation boundary for TouchEvent decode ownership.
+    try encodeTouchEvent(a, touch, &bytes);
+    var induced_failures: usize = 0;
+    for (0..8) |fail_index| {
+        var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = fail_index });
+        _ = &failing;
+        const owner = failing.allocator();
+        if (decodeTouchEvent(owner, bytes.items)) |mut| {
+            var owned = mut;
+            if (failing.has_induced_failure) induced_failures += 1;
+            freeTouchEvent(owner, &owned);
+        } else |_| {
+            induced_failures += 1;
+        }
+    }
+    try std.testing.expect(induced_failures > 0);
+    bytes.clearRetainingCapacity();
+
+    var max_contacts: [max_touch_contacts]TouchContact = undefined;
+    for (&max_contacts, 0..) |*touch_contact, index| {
+        touch_contact.* = .{ .id = @intCast(index + 1), .x = @intCast(index), .y = @intCast(index) };
+    }
+    try encodeTouchEvent(a, .{ .phase = .update, .frame_id = 1, .sdl_window_id = 1, .timestamp_ns = 0, .contacts = max_contacts[0..8] }, &bytes);
+    var decoded_max_touch = try decodeTouchEvent(a, bytes.items);
+    try std.testing.expectEqual(@as(usize, 8), decoded_max_touch.contacts.len);
+    freeTouchEvent(a, &decoded_max_touch);
+    bytes.clearRetainingCapacity();
+    var nine_contacts: [max_touch_contacts + 1]TouchContact = undefined;
+    for (&nine_contacts) |*touch_contact| touch_contact.* = .{ .id = 1, .x = 0, .y = 0 };
+    try std.testing.expectError(Error.InvalidMessage, encodeTouchEvent(a, .{ .phase = .begin, .frame_id = 1, .sdl_window_id = 1, .timestamp_ns = 0, .contacts = nine_contacts[0..9] }, &bytes));
+
+    const gesture: GestureEvent = .{ .kind = .pinch, .phase = .update, .frame_id = 1, .sdl_window_id = 1, .x = 0, .y = 0, .pan_x = 0, .pan_y = 0, .scale_milli_percent = 1500 };
+    try encodeGestureEvent(a, gesture, &bytes);
+    try std.testing.expectEqual(gesture, try decodeGestureEvent(bytes.items));
+    for ([_]usize{ 0, 2, 3, 4, 8 }) |offset| {
+        const saved = bytes.items[offset];
+        bytes.items[offset] = 0;
+        try std.testing.expectError(Error.InvalidMessage, decodeGestureEvent(bytes.items));
+        bytes.items[offset] = saved;
+    }
+    try std.testing.expectError(Error.InvalidTable, decodeGestureEvent(bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeGestureEvent(bytes.items));
+    bytes.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidMessage, encodeGestureEvent(a, .{ .kind = .long_press, .phase = .begin, .frame_id = 1, .sdl_window_id = 1, .x = 0, .y = 0, .scale_milli_percent = 2000, .rotation_milli_degrees = 1, .pan_x = 1, .pan_y = 1 }, &bytes));
+
+    // INPUT_BATCH boundaries: max item length, too-long item, declared-count
+    // mismatch, unknown/non-input kind, header reserved, truncation, trailing.
+    var max_items: [max_input_batch_items]InputBatchItem = undefined;
+    for (&max_items) |*batch_item| {
+        const payload_size: usize = 256;
+        batch_item.* = .{ .kind = Message.key_event, .bytes = &[_]u8{0} ** payload_size };
+    }
+    try encodeInputBatch(a, .{ .items = max_items[0..16] }, &bytes);
+    var owned_batch = try decodeInputBatch(a, bytes.items);
+    freeInputBatch(a, &owned_batch);
+    bytes.clearRetainingCapacity();
+    const long_item = InputBatchItem{ .kind = Message.key_event, .bytes = &[_]u8{0} ** (max_input_batch_item_len + 1) };
+    try std.testing.expectError(Error.InvalidMessage, encodeInputBatch(a, .{ .items = &.{long_item} }, &bytes));
+    try encodeInputBatch(a, .{ .items = &.{ .{ .kind = Message.key_event, .bytes = "x" }, .{ .kind = Message.text_input, .bytes = "y" } } }, &bytes);
+    bytes.items[7] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeInputBatch(a, bytes.items));
+    bytes.items[7] = 0;
+    std.mem.writeInt(u16, bytes.items[4..6], 3, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeInputBatch(a, bytes.items));
+    bytes.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidMessage, encodeInputBatch(a, .{ .items = &.{.{ .kind = 0, .bytes = "x" }} }, &bytes));
+    try std.testing.expectError(Error.InvalidMessage, encodeInputBatch(a, .{ .items = &.{.{ .kind = Message.input_batch, .bytes = "x" }} }, &bytes));
+    try std.testing.expectError(Error.InvalidMessage, encodeInputBatch(a, .{ .items = &.{.{ .kind = 0xffff, .bytes = "x" }} }, &bytes));
+
+    // Every allocation failure during batch ownership transfer must be
+    // observable and leak-free.
+    try encodeInputBatch(a, .{ .items = &.{ .{ .kind = Message.key_event, .bytes = "x" }, .{ .kind = Message.text_input, .bytes = "y" } } }, &bytes);
+    for (0..8) |fail_index| {
+        var failing = std.testing.FailingAllocator.init(a, .{ .fail_index = fail_index });
+        if (decodeInputBatch(failing.allocator(), bytes.items)) |mut| {
+            var failed_batch = mut;
+            freeInputBatch(a, &failed_batch);
+        } else |_| {}
+    }
+    bytes.clearRetainingCapacity();
 }
