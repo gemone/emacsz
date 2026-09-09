@@ -36,6 +36,9 @@ W10a adds adapter-owned SDL renderer negotiation: the frontend reports the actua
 |---|---|---|
 | Manual SDL3 session | Authenticated EPXL publisher, real Emacs process, and manually closable SDL window via `sdl3-emacs-interactive` | Bounded public-facts bridge; not `output_proto` or a complete Emacs UI |
 | Title facts | Bounded public Emacs title facts publish through `STRING_DEFINE` plus `FRAME_TITLE` and apply to the SDL window | No complete frame-parameter ownership, renaming, icon title, runtime registration, or PGTK parity |
+| Selection state | Bounded Scene state validates primary ownership and request/data/error transfer records | No platform selection ownership, target negotiation, clipboard/PRIMARY exchange, or Emacs/core transfer |
+| Monitor changes | Real SDL display/scale changes refresh frontend-local `FRAME_MONITOR` state via `sdl3-monitor-change-smoke` | No EUP event streaming, redisplay adaptation, or Emacs frame migration |
+| System theme | Negotiated `THEME_EVENT` EPXL transport and Emacs recording of delivered dark/light appearance via `sdl3-theme-event-smoke` | No complete theme refresh, accessibility preferences, face remapping, or PGTK parity |
 | Input | Bounded Unicode text, pointer sessions, vertical/horizontal line wheel, Ctrl/Alt motion commands, and ACK/recovery evidence | No general keymap execution, full IME, redisplay-owned input feedback, or complete pointer parity |
 | IME state | Scene state for bounded preedit, selected candidate metadata, and commit reports; bounded ASCII SDL diagnostics where implemented | No platform IME backend, core buffer application, full candidate lists, Unicode diagnostic rendering, or complete multibyte input |
 | R7/R8 gate | Fail-closed reviewer packet, contract, unselected host adapter, blocked activation, and R8 readiness evidence | No host approval, adapter linkage, terminal registration, runtime activation, or PGTK fallback |
