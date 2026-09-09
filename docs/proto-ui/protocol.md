@@ -2725,6 +2725,23 @@ may publish an active cursor. The facts profile projects at most one cursor per
 live window, bounded to the window's projected rows and columns. Scene text is
 bounded UTF-8, while the SDL debug renderer draws only its ASCII subset.
 
+Facts mode lines use extension section `0x8003` (`WINDOW_MODE_LINE_V1`).  Each
+record is a 30-byte header—`u64 window_id`, four window-relative `i32` values
+`x/y/width/height`, `u16 flags`, and `u32 UTF-8 length`—followed by the UTF-8
+payload.  A record is in bounds only when `x/y` are nonnegative, `width/height` are
+positive, `x+width` fits its owner, and `y+height` fits its owner.  A payload
+is 1..120 valid UTF-8 bytes. Window IDs are unique, at most 16 records are
+accepted in the facts profile, exactly one record must set flag bit zero to
+designate the selected/active mode line, and all other flags are invalid.  The
+Mode-line publication is all-or-nothing: when the selected window's mode line is
+unavailable, empty, oversized, or otherwise rejected, the publisher emits no
+mode-line section records rather than publishing inactive observations alone.
+The
+batch public-fact publishers omit this field when the public mode-line format is
+unavailable or empty rather than synthesizing placeholder text.  The diagnostic renderer draws the bar
+and its ASCII subset; this public observation is not redisplay-owned mode-line
+semantics, full item/face interaction, or complete mode-line parity.
+
 The facts profile defines a deliberately bounded `WHEEL_EVENT` subset for
 `0x0603`: `u8 unit` (`1=line`), `u8 source` (`1=wheel`), `u8 modifiers`
 (`0=none`), `i8 x` (`0` in this profile), `i8 y` (`-8..8`, excluding zero),

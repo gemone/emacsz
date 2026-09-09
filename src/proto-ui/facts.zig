@@ -81,6 +81,8 @@ pub const WindowContent = struct {
     id: u32,
     text: TextLines,
     viewport: ViewportFacts,
+    mode_line: ?[]const u8 = null,
+    mode_line_height: i32 = 0,
     cursor: ?CursorFacts = null,
     cursor_active: bool = false,
 
@@ -88,11 +90,16 @@ pub const WindowContent = struct {
         return left.id == right.id and left.text.eql(right.text) and
             std.meta.eql(left.viewport, right.viewport) and
             std.meta.eql(left.cursor, right.cursor) and
-            left.cursor_active == right.cursor_active;
+            left.cursor_active == right.cursor_active and
+            ((left.mode_line == null and right.mode_line == null) or
+                (left.mode_line != null and right.mode_line != null and
+                    std.mem.eql(u8, left.mode_line.?, right.mode_line.?))) and
+            left.mode_line_height == right.mode_line_height;
     }
 
     pub fn deinit(self: *WindowContent, gpa: std.mem.Allocator) void {
         self.text.deinit(gpa);
+        if (self.mode_line) |line| gpa.free(line);
     }
 };
 
@@ -134,6 +141,7 @@ pub const Error = std.json.ParseError(std.json.Scanner) || error{
     InvalidWindowFacts,
     InvalidWindowContent,
     InvalidViewportFacts,
+    InvalidModeLineFacts,
 };
 
 const SnapshotWire = struct {
@@ -157,6 +165,8 @@ const WindowStateWire = struct {
     window_visible_lines: i32 = 0,
     cursor: ?CursorFacts = null,
     cursor_active: bool = false,
+    mode_line: ?[]const u8 = null,
+    mode_line_height: i32 = 0,
 };
 
 fn cursorFitsVertical(cursor: CursorFacts, window_height: i32) bool {
@@ -212,12 +222,20 @@ fn parseWindowContents(gpa: std.mem.Allocator, states: []const WindowStateWire, 
             if (!fact.selected and state.cursor_active) return error.InvalidCursorFacts;
             if (state.cursor_active) active_count += 1;
         }
+        if (state.mode_line != null or state.mode_line_height != 0) {
+            if (state.mode_line == null or state.mode_line_height <= 0 or
+                state.mode_line_height > fact.height or
+                !frontend.validBoundedUtf8Text(state.mode_line.?, max_text_columns))
+                return error.InvalidModeLineFacts;
+        }
         contents[index] = .{
             .id = state.id,
             .text = try parseWindowText(gpa, state.lines),
             .viewport = viewport,
             .cursor = state.cursor,
             .cursor_active = state.cursor_active,
+            .mode_line = if (state.mode_line) |line| try gpa.dupe(u8, line) else null,
+            .mode_line_height = state.mode_line_height,
         };
         initialized = index + 1;
     }
@@ -498,9 +516,11 @@ test "projects bounded states for every window" {
         \\  ],
         \\  "window_states":[
         \\    {"id":101,"lines":["left"],"window_start_line":1,"window_visible_lines":1,
-        \\     "cursor":{"line":1,"column":1},"cursor_active":false},
+        \\     "cursor":{"line":1,"column":1},"cursor_active":false,
+        \\     "mode_line":"Left","mode_line_height":2},
         \\    {"id":102,"lines":["right"],"window_start_line":1,"window_visible_lines":1,
-        \\     "cursor":{"line":1,"column":2},"cursor_active":true}
+        \\     "cursor":{"line":1,"column":2},"cursor_active":true,
+        \\     "mode_line":"Right","mode_line_height":2}
         \\  ],
         \\  "text":["right"],
         \\  "window_start_line":1,"window_visible_lines":1
@@ -538,6 +558,9 @@ test "projects bounded states for every window" {
     try std.testing.expect(!scene.cursors[0].active);
     try std.testing.expectEqual(@as(u64, 102), scene.cursor.?.window_id);
     try std.testing.expect(scene.cursor.?.active);
+    try std.testing.expectEqual(@as(usize, 2), scene.mode_line_count);
+    try std.testing.expectEqualStrings("Left", scene.mode_lines[0].bytes[0..scene.mode_lines[0].len]);
+    try std.testing.expectEqualStrings("Right", scene.mode_lines[1].bytes[0..scene.mode_lines[1].len]);
 
     const duplicate =
         \\{"frame_width":120,"frame_height":40,"window_width":60,"window_height":20,
@@ -594,6 +617,48 @@ test "projects bounded states for every window" {
         \\ "text":["a","b","c"],"window_start_line":1,"window_visible_lines":3}
     ;
     try std.testing.expectError(error.InvalidCursorFacts, parseSnapshot(a, short_window_cursor));
+}
+
+test "mode-line projection is all-or-nothing with selected mode line" {
+    const a = std.testing.allocator;
+    const json =
+        \\{
+        \\  "frame_width":120,"frame_height":40,"window_width":60,"window_height":20,
+        \\  "identity":"process_lifetime",
+        \\  "windows":[
+        \\    {"id":101,"index":0,"x":0,"y":0,"width":60,"height":20,"selected":false},
+        \\    {"id":102,"index":1,"x":60,"y":0,"width":60,"height":20,"selected":true}
+        \\  ],
+        \\  "window_states":[
+        \\    {"id":101,"lines":["left"],"window_start_line":1,"window_visible_lines":1,
+        \\     "mode_line":"Left","mode_line_height":2},
+        \\    {"id":102,"lines":["right"],"window_start_line":1,"window_visible_lines":1}
+        \\  ],
+        \\  "text":["right"],
+        \\  "window_start_line":1,"window_visible_lines":1
+        \\}
+    ;
+    var snapshot = try parseSnapshot(a, json);
+    defer snapshot.deinit(a);
+    var scene = frontend.Scene.init(a);
+    defer scene.deinit();
+    var messages: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (messages.items) |message| a.free(message);
+        messages.deinit(a);
+    }
+    try appendWireSnapshotWindows(
+        a,
+        snapshot.facts,
+        snapshot.windows,
+        snapshot.contents,
+        snapshot.text.lines,
+        snapshot.cursor,
+        snapshot.viewport,
+        &scene,
+        &messages,
+    );
+    try std.testing.expectEqual(@as(usize, 0), scene.mode_line_count);
 }
 
 test "real window snapshot rejects malformed identities" {
@@ -883,12 +948,20 @@ pub fn appendWireSnapshotWindows(
 
     var row_bytes: std.ArrayList(u8) = .empty;
     defer row_bytes.deinit(gpa);
+    var mode_line_bytes: std.ArrayList(u8) = .empty;
+    defer mode_line_bytes.deinit(gpa);
     if (!viewport.valid()) return error.InvalidViewportFacts;
     const fallback_content: WindowContent = .{
         .id = selected.id,
         .text = .{ .lines = @constCast(text), .owner = &.{} },
         .viewport = viewport,
     };
+    var publish_mode_lines = false;
+    for (contents) |content| {
+        if (content.id == selected.id and content.mode_line != null and
+            content.mode_line_height > 0)
+            publish_mode_lines = true;
+    }
     for (effective_windows) |window| {
         var content = fallback_content;
         var found = false;
@@ -918,6 +991,21 @@ pub fn appendWireSnapshotWindows(
                 .baseline = @min(16, row_height),
                 .visible_height = row_height,
             }, &row_bytes);
+        }
+        const published_mode_line = if (publish_mode_lines) content.mode_line else null;
+        if (published_mode_line) |line| {
+            if (content.mode_line_height <= 0 or content.mode_line_height > window.height)
+                return error.InvalidModeLineFacts;
+            if (line.len > max_text_columns) return error.InvalidModeLineFacts;
+            try frontend.encodeModeLineV1(gpa, .{
+                .window_id = window.id,
+                .x = 0,
+                .y = window.height - content.mode_line_height,
+                .width = window.width,
+                .height = content.mode_line_height,
+                .flags = if (window.selected) frontend.mode_line_active else 0,
+                .line = line,
+            }, &mode_line_bytes);
         }
     }
     const selected_row_count: i32 = 15;
@@ -1031,6 +1119,7 @@ pub fn appendWireSnapshotWindows(
         .{ .kind = protocol.SectionKind.cursors, .records = cursor_bytes.items },
         .{ .kind = protocol.SectionKind.extension_min + 1, .records = &wire_viewport_bytes },
         .{ .kind = protocol.SectionKind.extension_min + 2, .records = text_bytes.items },
+        .{ .kind = protocol.SectionKind.extension_min + 3, .records = mode_line_bytes.items },
         .{ .kind = protocol.SectionKind.damage, .records = damage_bytes.items },
         .{ .kind = protocol.SectionKind.present_hint, .records = present_bytes.items },
     };

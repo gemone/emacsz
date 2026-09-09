@@ -308,6 +308,7 @@ pub const SceneDamageObservation = struct {
     cursor_hash: u64 = 0,
     cursor_count: usize = 0,
     text_hash: [32]u8,
+    mode_line_hash: u64 = 0,
     text_line_count: usize,
     structure_hash: [32]u8,
     structure_object_count: usize,
@@ -355,8 +356,15 @@ pub const FrameGate = struct {
             const structure_changed = !std.mem.eql(u8, &old.structure_hash, &observation.structure_hash) or
                 old.structure_object_count != observation.structure_object_count;
             const aggregate_changed = !std.mem.eql(u8, &old.text_hash, &observation.text_hash) or
-                old.text_line_count != observation.text_line_count;
+                old.text_line_count != observation.text_line_count or
+                old.mode_line_hash != observation.mode_line_hash;
             if (viewport_changed or structure_changed)
+                return .{
+                    .kind = .viewport,
+                    .old_cursor = old.cursor,
+                    .new_cursor = observation.cursor,
+                };
+            if (old.mode_line_hash != observation.mode_line_hash)
                 return .{
                     .kind = .viewport,
                     .old_cursor = old.cursor,
@@ -402,6 +410,13 @@ pub const FrameGate = struct {
                     .clip = clip,
                 };
             }
+            const mode_line_changed = old.mode_line_hash != observation.mode_line_hash;
+            if (mode_line_changed)
+                return .{
+                    .kind = .viewport,
+                    .old_cursor = old.cursor,
+                    .new_cursor = observation.cursor,
+                };
             const text_clip = textDamageClip(old, observation, observation.frame_width, observation.frame_height);
             if (aggregate_changed and text_clip == null)
                 return .{
@@ -1482,6 +1497,60 @@ test "multi-cursor damage falls back when a non-selected cursor changes" {
         .structure_object_count = second.structure_object_count,
     };
     try std.testing.expectEqual(DamageKind.viewport, gate.observeScene(third).kind);
+}
+
+test "mode-line flag changes invalidate damage" {
+    var gate: FrameGate = .{};
+    const base: SceneDamageObservation = .{
+        .viewport_start_line = 1,
+        .viewport_line_count = 1,
+        .cursor = null,
+        .text_hash = [_]u8{7} ** 32,
+        .text_line_count = 0,
+        .structure_hash = [_]u8{7} ** 32,
+        .structure_object_count = 0,
+    };
+    var first = base;
+    first.mode_line_hash = 1;
+    var second = base;
+    second.mode_line_hash = 2;
+    _ = gate.observeScene(first);
+    try std.testing.expectEqual(DamageKind.viewport, gate.observeScene(second).kind);
+
+    var unchanged_gate: FrameGate = .{};
+    var same = base;
+    same.mode_line_hash = 3;
+    _ = unchanged_gate.observeScene(same);
+    try std.testing.expectEqual(DamageKind.none, unchanged_gate.observeScene(same).kind);
+}
+
+test "combined text and mode-line damage uses full-frame fallback" {
+    var gate: FrameGate = .{};
+    const first: SceneDamageObservation = .{
+        .frame_width = 120,
+        .frame_height = 80,
+        .viewport_start_line = 1,
+        .viewport_line_count = 1,
+        .cursor = .{ .window_id = 1, .owner_x = 0, .owner_y = 0, .x = 0, .y = 0, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true },
+        .text_hash = [_]u8{1} ** 32,
+        .mode_line_hash = 1,
+        .text_line_count = 1,
+        .structure_hash = [_]u8{1} ** 32,
+        .structure_object_count = 1,
+        .text_lines = blk: {
+            var lines = [_]TextLineObservation{.{}} ** max_clipped_text_lines;
+            lines[0] = .{ .window_id = 1, .row_index = 0, .hash = 1, .rect = .{ .x = 0, .y = 0, .width = 20, .height = 8 } };
+            break :blk lines;
+        },
+        .bounded_text_line_count = 1,
+    };
+    var second = first;
+    second.text_hash = [_]u8{2} ** 32;
+    second.mode_line_hash = 2;
+    second.cursor = .{ .window_id = 1, .owner_x = 0, .owner_y = 0, .x = 16, .y = 8, .width = 2, .height = 8, .kind = 1, .visible = true, .active = true };
+    second.text_lines[0].hash = 2;
+    _ = gate.observeScene(first);
+    try std.testing.expectEqual(DamageKind.viewport, gate.observeScene(second).kind);
 }
 
 test "frame counters record cursor clipped and fallback frames" {

@@ -267,7 +267,7 @@ Priorities:
 | Fringe bitmaps | P1 | Degraded | `FRINGE_BITMAP_DEFINE`/`DELETE` v1 restore bounded monochrome resources and SDL expands validated bits; color/alpha bitmaps, authoring semantics, and draggable fringe semantics pending |
 | Window divider | P1 | Degraded | `DIVIDER_UPDATE` v1 validates orientation/bounds/generation and SDL renders fixed-color divider; draggable/resize semantics pending |
 | Vertical border | P1 | Pending | W12/W16 PGTK parity gate not met |
-| Mode line | P0 | Pending | W12/W16 PGTK parity gate not met |
+| Mode line | P0 | Degraded | Bounded public `WINDOW_MODE_LINE_V1` observation and diagnostic SDL bar; item models, faces, mouse interaction, redisplay ownership, and PGTK parity pending |
 | Header line | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Tab line | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Tab bar | P1 | Pending | W12/W16 PGTK parity gate not met |
