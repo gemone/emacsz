@@ -2832,6 +2832,28 @@ pub const ImeReset = struct {
     reason: u8 = 0,
 };
 
+pub const ImeAllowedInputFlags = struct {
+    pub const text: u32 = 1 << 0;
+    pub const multiline: u32 = 1 << 1;
+    pub const surrounding_text: u32 = 1 << 2;
+    pub const delete_surrounding: u32 = 1 << 3;
+    pub const known: u32 = text | multiline | surrounding_text | delete_surrounding;
+};
+
+pub const ImeAllowedInput = struct {
+    context_id: u64,
+    window_id: u64,
+    flags: u32 = 0,
+};
+
+pub const ImeSurroundingText = struct {
+    context_id: u64,
+    window_id: u64,
+    cursor_offset: u32,
+    selected_length: u32,
+    bytes: []const u8,
+};
+
 pub const ImeIdentity = struct { context_id: u64, window_id: u64 };
 
 fn decodeImeIdentity(bytes: []const u8) Error!ImeIdentity {
@@ -2923,6 +2945,52 @@ pub fn decodeImeReset(bytes: []const u8) Error!ImeReset {
     if (bytes.len != 20 or bytes[16] != 0 or bytes[17] != 0 or bytes[18] != 0 or bytes[19] != 0)
         return Error.InvalidTable;
     return .{ .context_id = identity.context_id, .window_id = identity.window_id, .reason = bytes[16] };
+}
+
+pub fn encodeImeAllowedInput(a: std.mem.Allocator, request: ImeAllowedInput, out: *std.ArrayList(u8)) !void {
+    if (request.flags & ~ImeAllowedInputFlags.known != 0) return Error.InvalidTable;
+    try encodeImeIdentity(a, request.context_id, request.window_id, out);
+    try putU32(out, a, request.flags);
+}
+
+pub fn decodeImeAllowedInput(bytes: []const u8) Error!ImeAllowedInput {
+    const identity = try decodeImeIdentity(bytes);
+    if (bytes.len != 20) return Error.InvalidTable;
+    const flags = std.mem.readInt(u32, bytes[16..20], .little);
+    if (flags & ~ImeAllowedInputFlags.known != 0) return Error.InvalidTable;
+    return .{ .context_id = identity.context_id, .window_id = identity.window_id, .flags = flags };
+}
+
+pub fn encodeImeSurroundingText(a: std.mem.Allocator, request: ImeSurroundingText, out: *std.ArrayList(u8)) !void {
+    if (!validBoundedUtf8Line(request.bytes, max_text_columns)) return Error.InvalidTable;
+    if (request.selected_length > request.cursor_offset or
+        request.cursor_offset > request.bytes.len)
+        return Error.InvalidTable;
+    try encodeImeIdentity(a, request.context_id, request.window_id, out);
+    try putU32(out, a, request.cursor_offset);
+    try putU32(out, a, request.selected_length);
+    try putU32(out, a, @intCast(request.bytes.len));
+    try out.appendSlice(a, request.bytes);
+}
+
+pub fn decodeImeSurroundingText(bytes: []const u8) Error!ImeSurroundingText {
+    const identity = try decodeImeIdentity(bytes);
+    if (bytes.len < 28) return Error.InvalidTable;
+    const length = std.mem.readInt(u32, bytes[24..28], .little);
+    if (bytes.len != 28 + length) return Error.InvalidTable;
+    const payload = bytes[28..];
+    if (!validBoundedUtf8Line(payload, max_text_columns)) return Error.InvalidTable;
+    const cursor_offset = std.mem.readInt(u32, bytes[16..20], .little);
+    const selected_length = std.mem.readInt(u32, bytes[20..24], .little);
+    if (selected_length > cursor_offset or cursor_offset > payload.len)
+        return Error.InvalidTable;
+    return .{
+        .context_id = identity.context_id,
+        .window_id = identity.window_id,
+        .cursor_offset = cursor_offset,
+        .selected_length = selected_length,
+        .bytes = payload,
+    };
 }
 
 pub fn encodeTextInput(a: std.mem.Allocator, input: TextInput, out: *std.ArrayList(u8)) !void {
@@ -3082,6 +3150,19 @@ pub const ImeContext = struct {
     cursor_y: i32 = 0,
     cursor_width: i32 = 0,
     cursor_height: i32 = 0,
+    allowed_input: u32 = 0,
+    surrounding_bytes: [121]u8 = undefined,
+    surrounding_len: u16 = 0,
+    surrounding_cursor_offset: u32 = 0,
+    surrounding_selected_length: u32 = 0,
+    has_surrounding: bool = false,
+
+    pub fn clearSurrounding(self: *ImeContext) void {
+        self.surrounding_len = 0;
+        self.surrounding_cursor_offset = 0;
+        self.surrounding_selected_length = 0;
+        self.has_surrounding = false;
+    }
 };
 
 pub const Scene = struct {
@@ -3375,6 +3456,8 @@ pub const Scene = struct {
             protocol.Message.ime_detach => try self.applyImeDetach(payload),
             protocol.Message.ime_focus => try self.applyImeFocus(payload),
             protocol.Message.ime_cursor_rect => try self.applyImeCursorRect(payload),
+            protocol.Message.ime_allowed_input => try self.applyImeAllowedInput(payload),
+            protocol.Message.ime_surrounding_text => try self.applyImeSurroundingText(payload),
             protocol.Message.ime_reset => try self.applyImeReset(payload),
             else => self.stats.control_messages += 1,
         }
@@ -4859,12 +4942,44 @@ pub const Scene = struct {
         self.stats.control_messages += 1;
     }
 
+    fn applyImeAllowedInput(self: *Scene, payload: protocol.Payload) Error!void {
+        const request = try decodeImeAllowedInput(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id) return Error.InvalidMessage;
+        const context = self.findImeContext(request.context_id) orelse return Error.InvalidMessage;
+        if (context.window_id != request.window_id) return Error.InvalidMessage;
+        context.allowed_input = request.flags;
+        if (request.flags & ImeAllowedInputFlags.surrounding_text == 0)
+            context.clearSurrounding();
+        self.stats.control_messages += 1;
+    }
+
+    fn applyImeSurroundingText(self: *Scene, payload: protocol.Payload) Error!void {
+        const request = try decodeImeSurroundingText(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id) return Error.InvalidMessage;
+        const context = self.findImeContext(request.context_id) orelse return Error.InvalidMessage;
+        if (context.window_id != request.window_id) return Error.InvalidMessage;
+        if (context.allowed_input & ImeAllowedInputFlags.surrounding_text == 0)
+            return Error.InvalidMessage;
+        var storage: [121]u8 = undefined;
+        @memcpy(storage[0..request.bytes.len], request.bytes);
+        context.surrounding_bytes = storage;
+        context.surrounding_len = @intCast(request.bytes.len);
+        context.surrounding_cursor_offset = request.cursor_offset;
+        context.surrounding_selected_length = request.selected_length;
+        context.has_surrounding = true;
+        self.stats.control_messages += 1;
+    }
+
     fn applyImeReset(self: *Scene, payload: protocol.Payload) Error!void {
         const request = try decodeImeReset(payload.bytes);
         const frame = self.frame orelse return Error.FrameNotActive;
         if (frame.frame_id != payload.envelope.frame_id) return Error.InvalidMessage;
         const context = self.findImeContext(request.context_id) orelse return Error.InvalidMessage;
         if (context.window_id != request.window_id) return Error.InvalidMessage;
+        context.allowed_input = 0;
+        context.clearSurrounding();
         context.focused = false;
         context.cursor_x = 0;
         context.cursor_y = 0;
@@ -6712,6 +6827,148 @@ test "ime cursor clears when a window patch makes it stale" {
     defer a.free(patch);
     try scene.apply(patch);
     try std.testing.expectEqual(@as(i32, 0), scene.ime_contexts[0].cursor_width);
+}
+
+test "ime allowed input and surrounding text validate wire and state" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeImeAttach(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    const attach = try windowLifecycleMessage(a, protocol.Message.ime_attach, 3, 7, payload.items);
+    defer a.free(attach);
+    try scene.apply(attach);
+
+    const flags = ImeAllowedInputFlags.text | ImeAllowedInputFlags.surrounding_text | ImeAllowedInputFlags.delete_surrounding;
+    payload.clearRetainingCapacity();
+    try encodeImeAllowedInput(a, .{ .context_id = 11, .window_id = 100, .flags = flags }, &payload);
+    try std.testing.expectEqual(@as(usize, 20), payload.items.len);
+    const allowed = try windowLifecycleMessage(a, protocol.Message.ime_allowed_input, 4, 7, payload.items);
+    defer a.free(allowed);
+    try scene.apply(allowed);
+    try std.testing.expectEqual(flags, scene.ime_contexts[0].allowed_input);
+
+    payload.clearRetainingCapacity();
+    try encodeImeSurroundingText(a, .{ .context_id = 11, .window_id = 100, .cursor_offset = 6, .selected_length = 4, .bytes = "abroad" }, &payload);
+    try std.testing.expectEqual(@as(usize, 34), payload.items.len);
+    const decoded = try decodeImeSurroundingText(payload.items);
+    try std.testing.expectEqual(@as(u32, 6), decoded.cursor_offset);
+    try std.testing.expectEqual(@as(u32, 4), decoded.selected_length);
+    try std.testing.expectEqualStrings("abroad", decoded.bytes);
+    const surrounding = try windowLifecycleMessage(a, protocol.Message.ime_surrounding_text, 5, 7, payload.items);
+    defer a.free(surrounding);
+    try scene.apply(surrounding);
+    try std.testing.expect(scene.ime_contexts[0].has_surrounding);
+    try std.testing.expectEqualStrings("abroad", scene.ime_contexts[0].surrounding_bytes[0..scene.ime_contexts[0].surrounding_len]);
+
+    // Empty surrounding text is valid; it clears the selected range.
+    payload.clearRetainingCapacity();
+    try encodeImeSurroundingText(a, .{ .context_id = 11, .window_id = 100, .cursor_offset = 0, .selected_length = 0, .bytes = "" }, &payload);
+    const empty_surrounding = try windowLifecycleMessage(a, protocol.Message.ime_surrounding_text, 6, 7, payload.items);
+    defer a.free(empty_surrounding);
+    try scene.apply(empty_surrounding);
+    try std.testing.expect(scene.ime_contexts[0].has_surrounding);
+    try std.testing.expectEqual(@as(u32, 0), scene.ime_contexts[0].surrounding_selected_length);
+
+    // Disabling surrounding support invalidates retained surrounding state.
+    payload.clearRetainingCapacity();
+    try encodeImeAllowedInput(a, .{ .context_id = 11, .window_id = 100, .flags = ImeAllowedInputFlags.text }, &payload);
+    const disable_surrounding = try windowLifecycleMessage(a, protocol.Message.ime_allowed_input, 7, 7, payload.items);
+    defer a.free(disable_surrounding);
+    try scene.apply(disable_surrounding);
+    try std.testing.expect(!scene.ime_contexts[0].has_surrounding);
+    payload.clearRetainingCapacity();
+    try encodeImeSurroundingText(a, .{ .context_id = 11, .window_id = 100, .cursor_offset = 1, .selected_length = 0, .bytes = "A" }, &payload);
+    const rejected_surrounding = try windowLifecycleMessage(a, protocol.Message.ime_surrounding_text, 8, 7, payload.items);
+    defer a.free(rejected_surrounding);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(rejected_surrounding));
+    try std.testing.expect(!scene.ime_contexts[0].has_surrounding);
+
+    // Bad selection bounds and unsupported policy bits are rejected.
+    payload.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidTable, encodeImeSurroundingText(a, .{ .context_id = 11, .window_id = 100, .cursor_offset = 1, .selected_length = 2, .bytes = "A" }, &payload));
+    payload.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidTable, encodeImeAllowedInput(a, .{ .context_id = 11, .window_id = 100, .flags = 0x8000 }, &payload));
+
+    // ALLOWED_INPUT decodes only exact 20-byte payloads.
+    payload.clearRetainingCapacity();
+    try encodeImeAllowedInput(a, .{ .context_id = 11, .window_id = 100, .flags = flags }, &payload);
+    try std.testing.expectError(Error.InvalidTable, decodeImeAllowedInput(payload.items[0..18]));
+    var allowed_trailing: [21]u8 = undefined;
+    @memcpy(allowed_trailing[0..payload.items.len], payload.items);
+    allowed_trailing[20] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeImeAllowedInput(allowed_trailing[0..]));
+
+    payload.items[16..20].* = @bitCast(@as(u32, 0x8000));
+    try std.testing.expectError(Error.InvalidTable, decodeImeAllowedInput(payload.items));
+    payload.items[16..20].* = @bitCast(@as(u32, flags));
+
+    // SURROUNDING_TEXT accepts the 120-byte maximum, then rejects 121 bytes.
+    payload.clearRetainingCapacity();
+    var max_text: [120]u8 = @splat('a');
+    try encodeImeSurroundingText(a, .{ .context_id = 11, .window_id = 100, .cursor_offset = 120, .selected_length = 0, .bytes = max_text[0..] }, &payload);
+    try std.testing.expectEqual(@as(u32, 120), (try decodeImeSurroundingText(payload.items)).cursor_offset);
+    payload.clearRetainingCapacity();
+    var long_text: [121]u8 = @splat('a');
+    try std.testing.expectError(Error.InvalidTable, encodeImeSurroundingText(a, .{ .context_id = 11, .window_id = 100, .cursor_offset = 121, .selected_length = 0, .bytes = long_text[0..] }, &payload));
+
+    // Decode rejects short/trailing variable forms and unsafe/malformed bytes.
+    payload.clearRetainingCapacity();
+    try encodeImeSurroundingText(a, .{ .context_id = 11, .window_id = 100, .cursor_offset = 1, .selected_length = 0, .bytes = "A" }, &payload);
+    try std.testing.expectError(Error.InvalidTable, decodeImeSurroundingText(payload.items[0..26]));
+    var surrounding_trailing: [29]u8 = undefined;
+    @memcpy(surrounding_trailing[0..payload.items.len], payload.items);
+    surrounding_trailing[28] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeImeSurroundingText(surrounding_trailing[0..]));
+
+    payload.items[28] = 0x7f;
+    try std.testing.expectError(Error.InvalidTable, decodeImeSurroundingText(payload.items));
+    payload.items[28] = 0xff;
+    try std.testing.expectError(Error.InvalidTable, decodeImeSurroundingText(payload.items));
+    payload.items[28] = 0xc2;
+    payload.append(a, 0x81) catch unreachable;
+    std.mem.writeInt(u32, payload.items[24..28], 2, .little);
+    try std.testing.expectError(Error.InvalidTable, decodeImeSurroundingText(payload.items));
+
+    // Decode validates cursor/selection as end-biased bounds.
+    payload.clearRetainingCapacity();
+    try encodeImeSurroundingText(a, .{ .context_id = 11, .window_id = 100, .cursor_offset = 1, .selected_length = 0, .bytes = "A" }, &payload);
+    std.mem.writeInt(u32, payload.items[20..24], 2, .little);
+    try std.testing.expectError(Error.InvalidTable, decodeImeSurroundingText(payload.items));
+    std.mem.writeInt(u32, payload.items[20..24], 0, .little);
+    std.mem.writeInt(u32, payload.items[16..20], 2, .little);
+    try std.testing.expectError(Error.InvalidTable, decodeImeSurroundingText(payload.items));
+
+    // RESET clears policy and all retained surrounding fields.
+    payload.clearRetainingCapacity();
+    try encodeImeAllowedInput(a, .{ .context_id = 11, .window_id = 100, .flags = flags }, &payload);
+    const reenable = try windowLifecycleMessage(a, protocol.Message.ime_allowed_input, 8, 7, payload.items);
+    defer a.free(reenable);
+    try scene.apply(reenable);
+    payload.clearRetainingCapacity();
+    try encodeImeSurroundingText(a, .{ .context_id = 11, .window_id = 100, .cursor_offset = 1, .selected_length = 0, .bytes = "A" }, &payload);
+    const repopulate = try windowLifecycleMessage(a, protocol.Message.ime_surrounding_text, 9, 7, payload.items);
+    defer a.free(repopulate);
+    try scene.apply(repopulate);
+    payload.clearRetainingCapacity();
+    try encodeImeReset(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    const reset = try windowLifecycleMessage(a, protocol.Message.ime_reset, 10, 7, payload.items);
+    defer a.free(reset);
+    try scene.apply(reset);
+    try std.testing.expectEqual(@as(u32, 0), scene.ime_contexts[0].allowed_input);
+    try std.testing.expect(!scene.ime_contexts[0].has_surrounding);
+    try std.testing.expectEqual(@as(u16, 0), scene.ime_contexts[0].surrounding_len);
+    try std.testing.expectEqual(@as(u32, 0), scene.ime_contexts[0].surrounding_cursor_offset);
+    try std.testing.expectEqual(@as(u32, 0), scene.ime_contexts[0].surrounding_selected_length);
+    try std.testing.expectEqual(@as(usize, 1), scene.ime_context_count);
 }
 
 test "damage rects have a bounded variable wire form" {

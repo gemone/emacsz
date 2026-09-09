@@ -2753,8 +2753,9 @@ text/height observations rendered as diagnostic bars; they are not mode/header/
 tab item models, face-accurate lines, mouse targets, redisplay-owned capture, or
 PGTK parity.
 
-Bounded IME context lifecycle is implemented for `IME_ATTACH`, `DETACH`,
-`FOCUS`, `CURSOR_RECT`, and `RESET`.  Every payload starts at offset 0 with
+Bounded IME context lifecycle and policy are implemented for `IME_ATTACH`,
+`DETACH`, `FOCUS`, `CURSOR_RECT`, `ALLOWED_INPUT`, `SURROUNDING_TEXT`, and
+`RESET`.  Every payload starts at offset 0 with
 nonzero `u64 context_id` then nonzero `u64 window_id`.  Exact forms are:
 
 * `ATTACH` (20 bytes): `u32 flags = 0` at offset 16.
@@ -2762,6 +2763,13 @@ nonzero `u64 context_id` then nonzero `u64 window_id`.  Exact forms are:
 * `FOCUS` (20 bytes): `u8 focused = 0|1` at offset 16 and three zero bytes.
 * `CURSOR_RECT` (32 bytes): four window-relative `i32` values at offsets 16,
   20, 24, and 28; cursor width and height must be positive.
+* `ALLOWED_INPUT` (20 bytes): `u32 flags` at offset 16.  Bits are text (0),
+  multiline (1), surrounding text (2), and delete surrounding (3); unknown bits
+  are invalid.
+* `SURROUNDING_TEXT` (variable): `u32 cursor_offset`, `u32 selected_length`,
+  `u32 byte_length` at offsets 16, 20, and 24, followed by UTF-8 bytes.  The
+  cursor is the end of the selected range, so `selected_length <= cursor_offset
+  <= byte_length`; `byte_length` is bounded to 0..120 and rejects C0/C1 controls and DEL.
 * `RESET` (20 bytes): `u8 reason = 0` at offset 16 and three zero bytes.
 
 Scene accepts a context only for a live window in the active frame, rejects
@@ -2769,8 +2777,11 @@ duplicate contexts or a second context on a window, keeps at most four
 contexts, validates cursor containment, and requires all later operations to
 name the same window.  An authoritative `FRAME_UPDATE` reconciles contexts
 against its replacement window set: contexts without live owners are removed,
-and retained cursors that no longer fit are cleared.  `RESET` clears focus and
-cursor geometry while retaining the attachment.  Deleting the owner removes its
+and retained cursors that no longer fit are cleared.  `ALLOWED_INPUT` replaces the bounded policy mask; clearing surrounding-text
+support also clears retained surrounding state.  `SURROUNDING_TEXT` requires
+that policy bit and atomically replaces retained text, cursor, and selection.
+`RESET` clears policy, surrounding state, focus, and cursor geometry while
+retaining the attachment.  Deleting the owner removes its
 context.  This is control-plane
 preparation only: there is no platform IME backend, composition state, commit
 application, candidate UI, surrounding-text query, or full multibyte-input
