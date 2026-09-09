@@ -347,7 +347,7 @@ Priorities:
 | DND files | P2 | Pending | W12/W16 PGTK parity gate not met |
 | DND images | P2 | Pending | W12/W16 PGTK parity gate not met |
 | DND copy/move/link | P2 | Pending | W12/W16 PGTK parity gate not met |
-| System theme event | P2 | Pending | W12/W16 PGTK parity gate not met |
+| System theme event | P2 | Degraded | SDL system theme captured through negotiated `THEME_EVENT` EPXL transport; Emacs publisher records delivered dark/light appearance and no complete face/theme refresh is claimed |
 | System font preference | P2 | Pending | W12/W16 PGTK parity gate not met |
 | App icon | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Taskbar state | P2 | Pending | W12/W16 PGTK parity gate not met |
@@ -524,7 +524,7 @@ parity.
 | Base Emacs compatibility | Existing-buffer health gate for version, text/undo, narrowing, properties, faces, windows, scroll/recenter, buffer locals, optional real PGTK frame lifecycle, and a seven-scenario deterministic TTY/PGTK semantic matrix | Proto-frame compatibility and full PGTK parity | `proto-ui-compat` (opt-in); `compatibility.pgtk_base_gate` and `compatibility.backend_semantic_matrix` are degraded and non-negotiable |
 | Disabled/default isolation | Bounded marker audit of inherited C/Header/Lisp files and generated `src/config.h`; explicit owned-root/build-output exclusion; deterministic machine-readable fail-closed JSON | Runtime host registration, real `output_proto` enablement, and proto-frame compatibility | `proto-ui-isolation-audit`; `isolation.disabled_default_gate` is degraded and non-negotiable |
 
-The status audit contains 120 PGTK capability rows: 29 Degraded, 91 Pending,
+The status audit contains 120 PGTK capability rows: 30 Degraded, 90 Pending,
 0 Blocked, and 0 fully Implemented. A Degraded row always identifies both the
 verified bounded subset and the parity gap that remains.
 

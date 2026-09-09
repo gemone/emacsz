@@ -22,6 +22,7 @@ const runtime_host = proto_ui.runtime_host;
 const SDL_INIT_VIDEO: c_uint = 0x0000_0020;
 const SDL_WINDOW_RESIZABLE: c_ulonglong = 0x0000_0020;
 const SDL_EVENT_QUIT: c_uint = 0x100;
+const SDL_EVENT_SYSTEM_THEME_CHANGED: c_uint = 0x14f;
 const SDL_EVENT_RENDER_TARGETS_RESET: c_uint = 0x2000;
 const SDL_EVENT_RENDER_DEVICE_RESET: c_uint = 0x2001;
 const SDL_EVENT_RENDER_DEVICE_LOST: c_uint = 0x2002;
@@ -60,6 +61,11 @@ const SDL_WINDOW_FULLSCREEN: SDLWindowFlags = 0x01;
 const SDL_WINDOW_MAXIMIZED: SDLWindowFlags = 0x80;
 const SDL_WINDOW_ALWAYS_ON_TOP: SDLWindowFlags = 0x10000;
 const SDL_DisplayID = c_uint;
+const SDL_SystemTheme = c_uint;
+const SDL_SYSTEM_THEME_UNKNOWN: SDL_SystemTheme = 0;
+const SDL_SYSTEM_THEME_LIGHT: SDL_SystemTheme = 1;
+const SDL_SYSTEM_THEME_DARK: SDL_SystemTheme = 2;
+extern fn SDL_GetSystemTheme() SDL_SystemTheme;
 
 extern fn SDL_Init(flags: SDLInitFlags) bool;
 extern fn SDL_Quit() void;
@@ -408,6 +414,7 @@ const Config = struct {
     manual_emacs_session: bool = false,
     interactive_synthetic: bool = false,
     title_smoke: bool = false,
+    synthetic_theme_event: bool = false,
     synthetic_monitor_change: bool = false,
     force_frontend_failure: bool = false,
     synthetic_pointer: bool = false,
@@ -627,6 +634,7 @@ fn writeTranslatedEvent(
         // Platform observation is EPXL-only by design; there is no inherited
         // Emacs core fallback and no local mutation.
         .focus => {},
+        .theme => {},
         .window => {},
         // Reverse scroll intents are EPXL-only and require negotiated capability.
         .scroll => {},
@@ -1651,6 +1659,10 @@ fn sendDeliveryEvent(
             try protocol.encodeFocusEvent(gpa, focus, &payload);
             break :blk protocol.Message.focus_event;
         },
+        .theme => |theme| blk: {
+            try protocol.encodeThemeEvent(gpa, theme, &payload);
+            break :blk protocol.Message.theme_event;
+        },
         .window => |request| blk: {
             try protocol.encodeWindowRequest(gpa, request, &payload);
             break :blk protocol.Message.window_request;
@@ -1867,6 +1879,7 @@ fn awaitFrameAck(
                 const is_pointer_v2 = is_pointer and input_policy.isPointerEventV2(payload.bytes);
                 const is_wheel = payload.envelope.message_type == protocol.Message.wheel_event;
                 const is_focus = payload.envelope.message_type == protocol.Message.focus_event;
+                const is_theme = payload.envelope.message_type == protocol.Message.theme_event;
                 const is_window = payload.envelope.message_type == protocol.Message.window_request;
                 const is_scroll_request = payload.envelope.message_type == protocol.Message.scroll_request;
                 const is_scrollbar_event = payload.envelope.message_type == protocol.Message.scrollbar_event;
@@ -1890,6 +1903,7 @@ fn awaitFrameAck(
                         (is_pointer and !is_pointer_v2 and capabilities.contains(.input_pointer_bounded))) or
                     (is_wheel and capabilities.contains(.input_wheel_line)) or
                     (is_focus and capabilities.contains(.platform_focus_window_events)) or
+                    (is_theme and capabilities.contains(.platform_theme_events)) or
                     (is_window and capabilities.contains(.platform_focus_window_events)) or
                     (is_scroll_request and capabilities.contains(.window_scroll_request_v1)) or
                     (is_scrollbar_event and capabilities.contains(.window_scrollbar_event_v1)) or
@@ -2055,6 +2069,15 @@ fn awaitFrameAck(
                     );
                     defer gpa.free(value);
                     try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "menu-hover", value);
+                } else if (is_theme) {
+                    const event = try protocol.decodeThemeEvent(payload.bytes);
+                    const value = try std.fmt.allocPrint(
+                        gpa,
+                        "{{\"appearance\":\"{s}\",\"contrast\":{d},\"flags\":{d},\"execution\":\"observed\"}}",
+                        .{ @tagName(event.appearance), event.contrast, event.flags },
+                    );
+                    defer gpa.free(value);
+                    try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "theme", value);
                 } else if (is_window) {
                     const event = try protocol.decodeWindowRequest(payload.bytes);
                     const value = try std.fmt.allocPrint(
@@ -5358,6 +5381,7 @@ fn inputEventAllowed(capabilities: capability.Set, event: input_policy.Translate
         .pointer_v2 => capabilities.contains(.input_pointer_v2),
         .wheel => capabilities.contains(.input_wheel_line),
         .focus => capabilities.contains(.platform_focus_window_events),
+        .theme => capabilities.contains(.platform_theme_events),
         .window => capabilities.contains(.platform_focus_window_events),
         .scroll => capabilities.contains(.window_scroll_request_v1),
         .scrollbar_event => capabilities.contains(.window_scrollbar_event_v1),
@@ -5424,6 +5448,7 @@ fn syncDeliveryCapabilities(delivery: *input_policy.DeliveryJournal, capabilitie
     delivery.key_v2_negotiated = capabilities.contains(.input_key_full_v2);
     delivery.pointer_v2_negotiated = capabilities.contains(.input_pointer_v2);
     delivery.platform_negotiated = capabilities.contains(.platform_focus_window_events);
+    delivery.theme_negotiated = capabilities.contains(.platform_theme_events);
 }
 
 fn usePointerV2(capabilities: capability.Set, config: *const Config) bool {
@@ -5642,6 +5667,18 @@ fn pollEpxlInteractiveInput(
             => {
                 if (scene.frame_header != null)
                     monitor_refresh_needed.* = true;
+            },
+            SDL_EVENT_SYSTEM_THEME_CHANGED => {
+                const raw_theme = SDL_GetSystemTheme();
+                const appearance: protocol.ThemeAppearance = switch (raw_theme) {
+                    SDL_SYSTEM_THEME_LIGHT => .light,
+                    SDL_SYSTEM_THEME_DARK => .dark,
+                    else => .unknown,
+                };
+                if (try delivery.pushThemeIfNegotiated(
+                    capabilities.contains(.platform_theme_events),
+                    .{ .appearance = appearance },
+                )) dirty.* = true;
             },
             SDL_EVENT_RENDER_TARGETS_RESET, SDL_EVENT_RENDER_DEVICE_RESET, SDL_EVENT_RENDER_DEVICE_LOST => {
                 destroyRetainedFrame(retained);
@@ -6031,6 +6068,7 @@ fn runEpxlInteractiveFrontend(
     errdefer scene.deinit();
     var scrollbar_event_delivered = false;
     var title_applied = false;
+    var theme_event_delivered = false;
     try live.writeControl(&writer.interface, .{ .kind = .resync_request, .sequence = 1 });
     try writer.interface.flush();
     const begin = try readControlExact(&reader);
@@ -6094,6 +6132,11 @@ fn runEpxlInteractiveFrontend(
         // same input translation path as an operator typing in the window.
         var synthetic = textEvent("XY");
         if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
+    }
+    if (config.synthetic_theme_event) {
+        var theme_changed: SDL_Event = std.mem.zeroes(SDL_Event);
+        theme_changed.type = SDL_EVENT_SYSTEM_THEME_CHANGED;
+        if (!SDL_PushEvent(&theme_changed)) return sdlFail("SDL_PushEvent");
     }
 
     var expected_monitor_id: SDL_DisplayID = 0;
@@ -6210,6 +6253,7 @@ fn runEpxlInteractiveFrontend(
                         horizontal_wheel_ticks_delivered += @abs(wheel.x);
                     },
                     .scrollbar_event => scrollbar_event_delivered = true,
+                    .theme => theme_event_delivered = true,
                     else => {},
                 }
             }
@@ -6329,6 +6373,21 @@ fn runEpxlInteractiveFrontend(
     if (config.synthetic_wheel and !config.synthetic_viewport and
         horizontal_wheel_ticks_delivered < 2)
         return error.HorizontalWheelScrollNotApplied;
+    if (config.synthetic_theme_event and !theme_event_delivered)
+        return error.ThemeEventNotDelivered;
+    if (config.synthetic_theme_event) {
+        const raw_theme = SDL_GetSystemTheme();
+        const appearance_name: []const u8 = switch (raw_theme) {
+            SDL_SYSTEM_THEME_LIGHT => "light",
+            SDL_SYSTEM_THEME_DARK => "dark",
+            else => "unknown",
+        };
+        std.debug.print(
+            "sdl3-theme-event-smoke: {{\"kind\":\"sdl3-theme-event-smoke\",\"appearance\":\"{s}\",\"verification\":\"negotiated-delivery\",\"publisher\":\"observation-only\",\"result\":\"pass\"}}\n",
+            .{appearance_name},
+        );
+    }
+
     if (config.title_smoke) {
         const expected_title = "Emacs Proto-UI Title";
         if (!title_applied or scene.title == null or
@@ -7974,6 +8033,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.interactive_publisher = true;
             config.interactive_synthetic = true;
             config.synthetic_monitor_change = true;
+        } else if (std.mem.eql(u8, arg, "--emacs-theme-event-smoke")) {
+            config.mode = .emacs_epxl_interactive;
+            config.interactive_publisher = true;
+            config.interactive_synthetic = true;
+            config.synthetic_theme_event = true;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-edit-smoke")) {
             config.mode = .emacs_epxl_edit;
             config.auto_key = .backspace;

@@ -29,6 +29,7 @@
 (require 'json)
 
 (defvar proto-ui--bounded-selection nil)
+(defvar proto-ui--theme-observed nil)
 
 (defconst proto-ui--module-path (getenv "PROTO_UI_MODULE_PATH"))
 (defconst proto-ui--local-compat
@@ -331,6 +332,14 @@
         (set-window-point window (point))
         (redisplay)))))
 
+(defun proto-ui--theme-action (value)
+  (let* ((event (condition-case nil
+                    (json-parse-string value :object-type 'plist)
+                  (error nil)))
+         (appearance (plist-get event :appearance)))
+    (when (member appearance '("dark" "light"))
+      (setq proto-ui--theme-observed appearance))))
+
 (defun proto-ui--wheel-action (value)
   (let ((wheel (split-string value " " t)))
     (when (= (length wheel) 2)
@@ -369,6 +378,8 @@
         (proto-ui--key-v2-action value))
        ((and (>= (length action) 2) (string= kind "text"))
         (proto-ui--insert-action value))
+       ((and (= (length action) 3) (string= kind "theme"))
+        (proto-ui--theme-action value))
        ((and (= (length action) 3) (string= kind "wheel"))
         (proto-ui--wheel-action value))
        ((and (= (length action) 3) (string= kind "pointer-v2"))

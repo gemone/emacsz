@@ -1695,7 +1695,10 @@ Exact 16 bytes: `u16 schema`, `u8 appearance @2`, `u8 contrast @3`,
 `u8 accessibility flags @4`, 3 reserved at 5, `u8[4] accent_rgba @8`, and 4
 reserved at 12.  Appearance values are unknown=0, light=1, dark=2, system=3.
 Flags are reduced_motion=1, reduced_transparency=2, high_contrast=4; all other
-bits are invalid.
+bits are invalid.  In the authenticated EPXL diagnostic profile, the SDL
+frontend captures this event and forwards it only after
+`platform.theme_events` is negotiated; the Emacs-owned publisher currently
+records dark/light appearance when delivered and does not claim a complete theme refresh.
 
 ##### `INPUT_DEVICE_EVENT = 0x060b`
 

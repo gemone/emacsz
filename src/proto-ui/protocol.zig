@@ -10966,7 +10966,7 @@ pub fn decodeThemeEvent(data: []const u8) Error!ThemeEvent {
     return payload;
 }
 
-fn validateThemeEvent(payload: ThemeEvent) Error!void {
+pub fn validateThemeEvent(payload: ThemeEvent) Error!void {
     if (payload.schema != 1 or payload.flags & ~ThemeFlags.valid_mask != 0 or
         !std.mem.allEqual(u8, payload.accent_rgba[0..0], 0))
         return Error.InvalidMessage;

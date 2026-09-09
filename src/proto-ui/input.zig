@@ -556,6 +556,7 @@ pub const TranslatedEvent = union(enum) {
     pointer_v2: PointerEventV2,
     wheel: frontend.WheelInput,
     focus: protocol.FocusEvent,
+    theme: protocol.ThemeEvent,
     window: protocol.WindowRequest,
     scroll: protocol.ScrollRequest,
     scrollbar_event: protocol.ScrollRequest,
@@ -622,6 +623,13 @@ pub const Queue = struct {
         protocol.validateFocusEvent(event) catch return error.InvalidFocusEvent;
         if (self.length == queue_capacity) return error.InputQueueFull;
         self.items[self.length] = .{ .focus = event };
+        self.length += 1;
+    }
+
+    pub fn pushTheme(self: *Queue, event: protocol.ThemeEvent) !void {
+        protocol.validateThemeEvent(event) catch return error.InvalidThemeEvent;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .theme = event };
         self.length += 1;
     }
 
@@ -728,6 +736,7 @@ pub const DeliveryJournal = struct {
     key_v2_negotiated: bool = false,
     pointer_v2_negotiated: bool = false,
     platform_negotiated: bool = false,
+    theme_negotiated: bool = false,
     scroll_request_negotiated: bool = false,
     scrollbar_event_negotiated: bool = false,
     menu_result_negotiated: bool = false,
@@ -831,6 +840,12 @@ pub const DeliveryJournal = struct {
         try self.queue.pushFocus(event);
     }
 
+    pub fn pushTheme(self: *DeliveryJournal, event: protocol.ThemeEvent) !void {
+        if (!self.theme_negotiated) return error.ThemeCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushTheme(event);
+    }
+
     pub fn pushWindow(self: *DeliveryJournal, event: protocol.WindowRequest) !void {
         if (!self.platform_negotiated) return error.PlatformCapabilityNotNegotiated;
         if (self.pointer_active) return error.PointerSessionActive;
@@ -889,6 +904,18 @@ pub const DeliveryJournal = struct {
             error.PointerSessionActive,
             error.InputQueueFull,
             error.InvalidFocusEvent,
+            => return false,
+        };
+        return true;
+    }
+
+    pub fn pushThemeIfNegotiated(self: *DeliveryJournal, effective: bool, event: protocol.ThemeEvent) !bool {
+        if (!effective or !self.theme_negotiated) return false;
+        self.pushTheme(event) catch |err| switch (err) {
+            error.ThemeCapabilityNotNegotiated,
+            error.PointerSessionActive,
+            error.InputQueueFull,
+            error.InvalidThemeEvent,
             => return false,
         };
         return true;
@@ -1059,6 +1086,16 @@ test "copy shortcut requires pressed non-repeat Ctrl+C" {
     try std.testing.expect(!isCopyShortcut(6, true, true, 0x40));
     try std.testing.expect(!isCopyShortcut(6, true, false, 0));
     try std.testing.expect(!isCopyShortcut(6, true, false, 0xc1));
+}
+
+test "theme transfer is capability gated" {
+    var journal: DeliveryJournal = .{};
+    try std.testing.expectError(error.ThemeCapabilityNotNegotiated, journal.pushTheme(.{ .appearance = .dark }));
+    journal.theme_negotiated = true;
+    try journal.pushTheme(.{ .appearance = .dark });
+    const sent = (try journal.take()).?;
+    try std.testing.expectEqual(protocol.ThemeAppearance.dark, sent.event.theme.appearance);
+    if (!journal.acknowledge(sent.sequence)) return error.InvalidSequence;
 }
 
 test "validates bounded clipboard copy payload" {

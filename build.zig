@@ -1994,6 +1994,29 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_monitor_change_step.dependOn(&run_sdl3_monitor_change.step);
 
+        const run_sdl3_theme_event = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-theme-event-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=4000",
+        });
+        run_sdl3_theme_event.setCwd(b.path("."));
+        run_sdl3_theme_event.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_theme_event.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_theme_event.step.dependOn(step);
+        const sdl3_theme_event_step = b.step(
+            "sdl3-theme-event-smoke",
+            "Capture the SDL system theme and deliver it through EPXL",
+        );
+        sdl3_theme_event_step.dependOn(&run_sdl3_theme_event.step);
+
         const run_sdl3_epxl_edit = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/proto-ui-sdl3",
             "--emacs-epxl-edit-smoke",
