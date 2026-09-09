@@ -2071,18 +2071,37 @@ pending.
 
 ## 19. Diagnostic messages
 
-| ID | Name | Direction | Payload |
-|---|---|---|---|
-| `0x0a00` | `PERF_STATS` | C/F | Counters/histograms |
-| `0x0a01` | `FRAME_TIME` | F→C | Present timing |
-| `0x0a02` | `BANDWIDTH_STATS` | C/F | Bytes/messages |
-| `0x0a03` | `RESOURCE_STATS` | C/F | Cache/evictions |
-| `0x0a04` | `DAMAGE_STATS` | C/F | Damage/coalescing |
-| `0x0a05` | `INPUT_LATENCY` | F→C | Event timing |
-| `0x0a06` | `DESYNC_REPORT` | C/F | Divergence details |
-| `0x0a07` | `TRACE_BEGIN` | C/F | Trace marker |
-| `0x0a08` | `TRACE_END` | C/F | Trace marker |
-| `0x0a09` | `REPLAY_MARKER` | C/F | Replay checkpoint |
+### 19.0 Bounded diagnostics v1
+
+All integers are little-endian.  Every diagnostic payload starts with
+`u16 schema=1` at offset 0.  Reserved bytes are zero on transmit and decode.
+Diagnostic messages may originate on either side except `FRAME_TIME` and
+`INPUT_LATENCY`, which are frontend reports.  They are telemetry only:
+receiving a diagnostic codec must not mutate Emacs or frontend scene state.
+
+Fixed payload layouts:
+
+| ID | Exact layout |
+|---|---|
+| `0x0a00 PERF_STATS` | `u16 schema`, `u16 reserved=0` at 2; `u64 frame_count @4`, `update_count @12`, `presented_count @20`, `dropped_count @28`, `input_count @36`, `resync_count @44`, `error_count @52`; total 60 |
+| `0x0a01 FRAME_TIME` | `u16 schema`, `u16 reserved=0` at 2, `u32 nonzero frame_id @4`, `u64 nonzero present_sequence @8`, `u64 scheduled_ns @16`, `submit_ns @24`, `present_ns @32`, `u8 dropped` (`0`/`1`) at 40, 3 reserved at 41; total 44. Timestamps allow zero but must satisfy scheduled <= submit <= present |
+| `0x0a02 BANDWIDTH_STATS` | `u16 schema`, `u16 reserved=0` at 2; `u64 bytes_sent @4`, `bytes_received @12`, `messages_sent @20`, `messages_received @28`; total 36 |
+| `0x0a03 RESOURCE_STATS` | `u16 schema`, `u16 reserved=0` at 2; `u64 live_resources @4`, `cached_bytes @12`, `evictions @20`, `requests @28`; total 36 |
+| `0x0a04 DAMAGE_STATS` | `u16 schema`, `u16 reserved=0` at 2; `u64 emitted_rects @4`, `merged_rects @12`, `affected_pixels @20`, `coalesced_updates @28`; total 36 |
+| `0x0a05 INPUT_LATENCY` | `u16 schema`, `u16 reserved=0` at 2, `u64 nonzero input_sequence @4`, `u64 capture_ns @12`, `deliver_ns @20`, `apply_ns @28`, `u32 queue_depth @36`; total 40 with no trailing reserved bytes. Timestamps may be zero but must satisfy capture <= deliver <= apply |
+
+Variable payloads have a fixed header followed by a `u16 byte_length` and exact
+UTF-8 bytes.  The maximum byte length is 120.
+
+| ID | Exact layout |
+|---|---|
+| `0x0a06 DESYNC_REPORT` | `u16 schema`, `u16 reserved=0` at 2, `u8 reason @4` (`1` sequence gap, `2` stale generation, `3` resource mismatch, `4` state digest mismatch), 3 reserved at 5, `u64 expected_sequence @8`, `u64 actual_sequence @16`, `u16 detail_length @24`, detail at 26 |
+| `0x0a07 TRACE_BEGIN` / `0x0a08 TRACE_END` | Shared layout: `u16 schema`, `u16 reserved=0` at 2, `u64 nonzero trace_id @4`, `u64 timestamp_ns @12`, `u16 name_length @20` (`1..120`), name at 22 |
+| `0x0a09 REPLAY_MARKER` | `u16 schema`, `u16 reserved=0` at 2, `u64 nonzero checkpoint_id @4`, `u64 nonzero sequence @12`, `u16 label_length @20` (`0..120`), label at 22 |
+
+Diagnostic detail, trace names, and replay labels are bounded UTF-8 metadata.
+They do not alter sequencing, request recovery by themselves, replace the
+deterministic recovery differential, or imply a complete telemetry backend.
 
 ## 20. State machine
 

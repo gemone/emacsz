@@ -198,6 +198,16 @@ pub const Message = struct {
     pub const dnd_cancel: u16 = 0x0824;
     pub const dnd_reply: u16 = 0x0825;
     pub const dnd_data: u16 = 0x0826;
+    pub const perf_stats: u16 = 0x0a00;
+    pub const frame_time: u16 = 0x0a01;
+    pub const bandwidth_stats: u16 = 0x0a02;
+    pub const resource_stats: u16 = 0x0a03;
+    pub const damage_stats: u16 = 0x0a04;
+    pub const input_latency: u16 = 0x0a05;
+    pub const desync_report: u16 = 0x0a06;
+    pub const trace_begin: u16 = 0x0a07;
+    pub const trace_end: u16 = 0x0a08;
+    pub const replay_marker: u16 = 0x0a09;
     pub const extension: u16 = 0xf000;
     pub const invalid: u16 = 0xffff;
 };
@@ -9827,4 +9837,742 @@ test "dnd decoders enforce reserved fields and trust boundaries" {
     std.mem.writeInt(u32, bytes.items[4..8], 0, .little);
     try std.testing.expectError(Error.InvalidMessage, decodeDndData(bytes.items));
     try std.testing.expectError(Error.InvalidTable, decodeDndData(bytes.items[0 .. bytes.items.len - 1]));
+}
+
+pub const diag_schema: u16 = 1;
+pub const max_diag_detail_len: usize = 120;
+
+fn validateDiagReserved(data: []const u8, ranges: []const [2]usize) Error!void {
+    for (ranges) |range| {
+        for (data[range[0]..range[1]]) |byte| {
+            if (byte != 0) return Error.InvalidMessage;
+        }
+    }
+}
+
+pub const PerfStats = struct {
+    schema: u16 = diag_schema,
+    frame_count: u64,
+    update_count: u64,
+    presented_count: u64,
+    dropped_count: u64,
+    input_count: u64,
+    resync_count: u64,
+    error_count: u64,
+};
+
+pub const perf_stats_size: usize = 60;
+
+pub fn encodePerfStats(a: std.mem.Allocator, payload: PerfStats, out: *std.ArrayList(u8)) !void {
+    try validatePerfStats(payload);
+    var b: [perf_stats_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    inline for (.{ "frame_count", "update_count", "presented_count", "dropped_count", "input_count", "resync_count", "error_count" }, 0..) |field, index| {
+        const offset = 4 + index * 8;
+        std.mem.writeInt(u64, b[offset .. offset + 8], @field(payload, field), .little);
+    }
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodePerfStats(data: []const u8) Error!PerfStats {
+    if (data.len != perf_stats_size) return Error.InvalidTable;
+    try validateDiagReserved(data, &.{.{ 2, 4 }});
+    const payload: PerfStats = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .frame_count = std.mem.readInt(u64, data[4..12], .little),
+        .update_count = std.mem.readInt(u64, data[12..20], .little),
+        .presented_count = std.mem.readInt(u64, data[20..28], .little),
+        .dropped_count = std.mem.readInt(u64, data[28..36], .little),
+        .input_count = std.mem.readInt(u64, data[36..44], .little),
+        .resync_count = std.mem.readInt(u64, data[44..52], .little),
+        .error_count = std.mem.readInt(u64, data[52..60], .little),
+    };
+    try validatePerfStats(payload);
+    return payload;
+}
+
+fn validatePerfStats(payload: PerfStats) Error!void {
+    if (payload.schema != diag_schema) return Error.InvalidMessage;
+}
+
+pub const FrameTime = struct {
+    schema: u16 = diag_schema,
+    frame_id: u32,
+    present_sequence: u64,
+    scheduled_ns: u64,
+    submit_ns: u64,
+    present_ns: u64,
+    dropped: bool,
+};
+
+pub const frame_time_size: usize = 44;
+
+pub fn encodeFrameTime(a: std.mem.Allocator, payload: FrameTime, out: *std.ArrayList(u8)) !void {
+    try validateFrameTime(payload);
+    var b: [frame_time_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    std.mem.writeInt(u32, b[4..8], payload.frame_id, .little);
+    std.mem.writeInt(u64, b[8..16], payload.present_sequence, .little);
+    std.mem.writeInt(u64, b[16..24], payload.scheduled_ns, .little);
+    std.mem.writeInt(u64, b[24..32], payload.submit_ns, .little);
+    std.mem.writeInt(u64, b[32..40], payload.present_ns, .little);
+    b[40] = @intFromBool(payload.dropped);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeFrameTime(data: []const u8) Error!FrameTime {
+    if (data.len != frame_time_size) return Error.InvalidTable;
+    try validateDiagReserved(data, &.{ .{ 2, 4 }, .{ 41, 44 } });
+    const payload: FrameTime = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .frame_id = std.mem.readInt(u32, data[4..8], .little),
+        .present_sequence = std.mem.readInt(u64, data[8..16], .little),
+        .scheduled_ns = std.mem.readInt(u64, data[16..24], .little),
+        .submit_ns = std.mem.readInt(u64, data[24..32], .little),
+        .present_ns = std.mem.readInt(u64, data[32..40], .little),
+        .dropped = switch (data[40]) {
+            0 => false,
+            1 => true,
+            else => return Error.InvalidMessage,
+        },
+    };
+    try validateFrameTime(payload);
+    return payload;
+}
+
+fn validateFrameTime(payload: FrameTime) Error!void {
+    if (payload.schema != diag_schema or payload.frame_id == 0 or payload.present_sequence == 0 or
+        payload.scheduled_ns > payload.submit_ns or payload.submit_ns > payload.present_ns)
+        return Error.InvalidMessage;
+}
+
+pub const BandwidthStats = struct {
+    schema: u16 = diag_schema,
+    bytes_sent: u64,
+    bytes_received: u64,
+    messages_sent: u64,
+    messages_received: u64,
+};
+
+pub const bandwidth_stats_size: usize = 36;
+
+pub fn encodeBandwidthStats(a: std.mem.Allocator, payload: BandwidthStats, out: *std.ArrayList(u8)) !void {
+    try validateDiagSchema(payload.schema);
+    var b: [bandwidth_stats_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    inline for (.{ "bytes_sent", "bytes_received", "messages_sent", "messages_received" }, 0..) |field, index| {
+        const offset = 4 + index * 8;
+        std.mem.writeInt(u64, b[offset .. offset + 8], @field(payload, field), .little);
+    }
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeBandwidthStats(data: []const u8) Error!BandwidthStats {
+    if (data.len != bandwidth_stats_size) return Error.InvalidTable;
+    try validateDiagReserved(data, &.{.{ 2, 4 }});
+    const payload: BandwidthStats = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .bytes_sent = std.mem.readInt(u64, data[4..12], .little),
+        .bytes_received = std.mem.readInt(u64, data[12..20], .little),
+        .messages_sent = std.mem.readInt(u64, data[20..28], .little),
+        .messages_received = std.mem.readInt(u64, data[28..36], .little),
+    };
+    try validateDiagSchema(payload.schema);
+    return payload;
+}
+
+pub const ResourceStats = struct {
+    schema: u16 = diag_schema,
+    live_resources: u64,
+    cached_bytes: u64,
+    evictions: u64,
+    requests: u64,
+};
+
+pub const resource_stats_size: usize = 36;
+
+pub fn encodeResourceStats(a: std.mem.Allocator, payload: ResourceStats, out: *std.ArrayList(u8)) !void {
+    try validateDiagSchema(payload.schema);
+    var b: [resource_stats_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    inline for (.{ "live_resources", "cached_bytes", "evictions", "requests" }, 0..) |field, index| {
+        const offset = 4 + index * 8;
+        std.mem.writeInt(u64, b[offset .. offset + 8], @field(payload, field), .little);
+    }
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeResourceStats(data: []const u8) Error!ResourceStats {
+    if (data.len != resource_stats_size) return Error.InvalidTable;
+    try validateDiagReserved(data, &.{.{ 2, 4 }});
+    const payload: ResourceStats = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .live_resources = std.mem.readInt(u64, data[4..12], .little),
+        .cached_bytes = std.mem.readInt(u64, data[12..20], .little),
+        .evictions = std.mem.readInt(u64, data[20..28], .little),
+        .requests = std.mem.readInt(u64, data[28..36], .little),
+    };
+    try validateDiagSchema(payload.schema);
+    return payload;
+}
+
+pub const DamageStats = struct {
+    schema: u16 = diag_schema,
+    emitted_rects: u64,
+    merged_rects: u64,
+    affected_pixels: u64,
+    coalesced_updates: u64,
+};
+
+pub const damage_stats_size: usize = 36;
+
+pub fn encodeDamageStats(a: std.mem.Allocator, payload: DamageStats, out: *std.ArrayList(u8)) !void {
+    try validateDiagSchema(payload.schema);
+    var b: [damage_stats_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    inline for (.{ "emitted_rects", "merged_rects", "affected_pixels", "coalesced_updates" }, 0..) |field, index| {
+        const offset = 4 + index * 8;
+        std.mem.writeInt(u64, b[offset .. offset + 8], @field(payload, field), .little);
+    }
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeDamageStats(data: []const u8) Error!DamageStats {
+    if (data.len != damage_stats_size) return Error.InvalidTable;
+    try validateDiagReserved(data, &.{.{ 2, 4 }});
+    const payload: DamageStats = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .emitted_rects = std.mem.readInt(u64, data[4..12], .little),
+        .merged_rects = std.mem.readInt(u64, data[12..20], .little),
+        .affected_pixels = std.mem.readInt(u64, data[20..28], .little),
+        .coalesced_updates = std.mem.readInt(u64, data[28..36], .little),
+    };
+    try validateDiagSchema(payload.schema);
+    return payload;
+}
+
+pub const InputLatency = struct {
+    schema: u16 = diag_schema,
+    input_sequence: u64,
+    capture_ns: u64,
+    deliver_ns: u64,
+    apply_ns: u64,
+    queue_depth: u32,
+};
+
+pub const input_latency_size: usize = 40;
+
+pub fn encodeInputLatency(a: std.mem.Allocator, payload: InputLatency, out: *std.ArrayList(u8)) !void {
+    try validateInputLatency(payload);
+    var b: [input_latency_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    std.mem.writeInt(u64, b[4..12], payload.input_sequence, .little);
+    std.mem.writeInt(u64, b[12..20], payload.capture_ns, .little);
+    std.mem.writeInt(u64, b[20..28], payload.deliver_ns, .little);
+    std.mem.writeInt(u64, b[28..36], payload.apply_ns, .little);
+    std.mem.writeInt(u32, b[36..40], payload.queue_depth, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeInputLatency(data: []const u8) Error!InputLatency {
+    if (data.len != input_latency_size) return Error.InvalidTable;
+    try validateDiagReserved(data, &.{.{ 2, 4 }});
+    const payload: InputLatency = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .input_sequence = std.mem.readInt(u64, data[4..12], .little),
+        .capture_ns = std.mem.readInt(u64, data[12..20], .little),
+        .deliver_ns = std.mem.readInt(u64, data[20..28], .little),
+        .apply_ns = std.mem.readInt(u64, data[28..36], .little),
+        .queue_depth = std.mem.readInt(u32, data[36..40], .little),
+    };
+    try validateInputLatency(payload);
+    return payload;
+}
+
+fn validateInputLatency(payload: InputLatency) Error!void {
+    if (payload.schema != diag_schema or payload.input_sequence == 0 or
+        payload.capture_ns > payload.deliver_ns or payload.deliver_ns > payload.apply_ns)
+        return Error.InvalidMessage;
+}
+
+pub const DesyncReason = enum(u8) {
+    sequence_gap = 1,
+    stale_generation = 2,
+    resource_mismatch = 3,
+    state_digest_mismatch = 4,
+};
+
+pub const DesyncReport = struct {
+    schema: u16 = diag_schema,
+    reason: DesyncReason,
+    expected_sequence: u64,
+    actual_sequence: u64,
+    detail: []const u8,
+};
+
+pub const desync_report_header_size: usize = 24;
+
+pub fn encodeDesyncReport(a: std.mem.Allocator, payload: DesyncReport, out: *std.ArrayList(u8)) !void {
+    try validateDesyncReport(payload);
+    var header: [desync_report_header_size]u8 = @splat(0);
+    std.mem.writeInt(u16, header[0..2], payload.schema, .little);
+    header[4] = @intFromEnum(payload.reason);
+    std.mem.writeInt(u64, header[8..16], payload.expected_sequence, .little);
+    std.mem.writeInt(u64, header[16..24], payload.actual_sequence, .little);
+    try out.appendSlice(a, &header);
+    try putU16(out, a, @intCast(payload.detail.len));
+    try out.appendSlice(a, payload.detail);
+}
+
+pub fn decodeDesyncReport(data: []const u8) Error!DesyncReport {
+    if (data.len < desync_report_header_size + 2) return Error.InvalidTable;
+    try validateDiagReserved(data, &.{ .{ 2, 4 }, .{ 5, 8 } });
+    const detail_len = std.mem.readInt(u16, data[24..26], .little);
+    if (detail_len > max_diag_detail_len or
+        data.len != desync_report_header_size + 2 + @as(usize, detail_len)) return Error.InvalidTable;
+    const payload: DesyncReport = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .reason = switch (data[4]) {
+            1 => .sequence_gap,
+            2 => .stale_generation,
+            3 => .resource_mismatch,
+            4 => .state_digest_mismatch,
+            else => return Error.InvalidMessage,
+        },
+        .expected_sequence = std.mem.readInt(u64, data[8..16], .little),
+        .actual_sequence = std.mem.readInt(u64, data[16..24], .little),
+        .detail = data[26..][0..detail_len],
+    };
+    try validateDesyncReport(payload);
+    return payload;
+}
+
+fn validateDesyncReport(payload: DesyncReport) Error!void {
+    if (payload.schema != diag_schema or payload.detail.len > max_diag_detail_len)
+        return Error.InvalidMessage;
+    if (!std.unicode.utf8ValidateSlice(payload.detail)) return Error.InvalidUtf8;
+}
+
+pub const TraceMarker = struct {
+    schema: u16 = diag_schema,
+    trace_id: u64,
+    timestamp_ns: u64,
+    name: []const u8,
+};
+
+pub const trace_marker_header_size: usize = 20;
+
+pub fn encodeTraceMarker(a: std.mem.Allocator, payload: TraceMarker, out: *std.ArrayList(u8)) !void {
+    try validateTraceMarker(payload);
+    var header: [trace_marker_header_size]u8 = @splat(0);
+    std.mem.writeInt(u16, header[0..2], payload.schema, .little);
+    std.mem.writeInt(u64, header[4..12], payload.trace_id, .little);
+    std.mem.writeInt(u64, header[12..20], payload.timestamp_ns, .little);
+    try out.appendSlice(a, &header);
+    try putU16(out, a, @intCast(payload.name.len));
+    try out.appendSlice(a, payload.name);
+}
+
+pub fn decodeTraceMarker(data: []const u8) Error!TraceMarker {
+    if (data.len < trace_marker_header_size + 2) return Error.InvalidTable;
+    try validateDiagReserved(data, &.{.{ 2, 4 }});
+    const name_len = std.mem.readInt(u16, data[20..22], .little);
+    if (name_len == 0 or name_len > max_diag_detail_len or
+        data.len != trace_marker_header_size + 2 + @as(usize, name_len)) return Error.InvalidTable;
+    const payload: TraceMarker = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .trace_id = std.mem.readInt(u64, data[4..12], .little),
+        .timestamp_ns = std.mem.readInt(u64, data[12..20], .little),
+        .name = data[22..][0..name_len],
+    };
+    try validateTraceMarker(payload);
+    return payload;
+}
+
+fn validateTraceMarker(payload: TraceMarker) Error!void {
+    if (payload.schema != diag_schema or payload.trace_id == 0 or payload.name.len == 0 or
+        payload.name.len > max_diag_detail_len) return Error.InvalidMessage;
+    if (!std.unicode.utf8ValidateSlice(payload.name)) return Error.InvalidUtf8;
+}
+
+pub const ReplayMarker = struct {
+    schema: u16 = diag_schema,
+    checkpoint_id: u64,
+    sequence: u64,
+    label: []const u8,
+};
+
+pub const replay_marker_header_size: usize = 20;
+
+pub fn encodeReplayMarker(a: std.mem.Allocator, payload: ReplayMarker, out: *std.ArrayList(u8)) !void {
+    try validateReplayMarker(payload);
+    var header: [replay_marker_header_size]u8 = @splat(0);
+    std.mem.writeInt(u16, header[0..2], payload.schema, .little);
+    std.mem.writeInt(u64, header[4..12], payload.checkpoint_id, .little);
+    std.mem.writeInt(u64, header[12..20], payload.sequence, .little);
+    try out.appendSlice(a, &header);
+    try putU16(out, a, @intCast(payload.label.len));
+    try out.appendSlice(a, payload.label);
+}
+
+pub fn decodeReplayMarker(data: []const u8) Error!ReplayMarker {
+    if (data.len < replay_marker_header_size + 2) return Error.InvalidTable;
+    try validateDiagReserved(data, &.{.{ 2, 4 }});
+    const label_len = std.mem.readInt(u16, data[20..22], .little);
+    if (label_len > max_diag_detail_len or
+        data.len != replay_marker_header_size + 2 + @as(usize, label_len)) return Error.InvalidTable;
+    const payload: ReplayMarker = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .checkpoint_id = std.mem.readInt(u64, data[4..12], .little),
+        .sequence = std.mem.readInt(u64, data[12..20], .little),
+        .label = data[22..][0..label_len],
+    };
+    try validateReplayMarker(payload);
+    return payload;
+}
+
+fn validateReplayMarker(payload: ReplayMarker) Error!void {
+    if (payload.schema != diag_schema or payload.checkpoint_id == 0 or payload.sequence == 0 or
+        payload.label.len > max_diag_detail_len) return Error.InvalidMessage;
+    if (!std.unicode.utf8ValidateSlice(payload.label)) return Error.InvalidUtf8;
+}
+
+fn validateDiagSchema(schema: u16) Error!void {
+    if (schema != diag_schema) return Error.InvalidMessage;
+}
+
+test "diagnostic stats codecs round trip and reject invalid schemas" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    const perf: PerfStats = .{ .frame_count = 1, .update_count = 2, .presented_count = 3, .dropped_count = 4, .input_count = 5, .resync_count = 6, .error_count = 7 };
+    try encodePerfStats(a, perf, &bytes);
+    try std.testing.expectEqual(perf, try decodePerfStats(bytes.items));
+    try std.testing.expectEqual(perf_stats_size, bytes.items.len);
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodePerfStats(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const bandwidth: BandwidthStats = .{ .bytes_sent = 1, .bytes_received = 2, .messages_sent = 3, .messages_received = 4 };
+    try encodeBandwidthStats(a, bandwidth, &bytes);
+    try std.testing.expectEqual(bandwidth, try decodeBandwidthStats(bytes.items));
+    try std.testing.expectEqual(bandwidth_stats_size, bytes.items.len);
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeBandwidthStats(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const resources: ResourceStats = .{ .live_resources = 1, .cached_bytes = 2, .evictions = 3, .requests = 4 };
+    try encodeResourceStats(a, resources, &bytes);
+    try std.testing.expectEqual(resources, try decodeResourceStats(bytes.items));
+    try std.testing.expectEqual(resource_stats_size, bytes.items.len);
+    bytes.clearRetainingCapacity();
+
+    const damage: DamageStats = .{ .emitted_rects = 1, .merged_rects = 2, .affected_pixels = 3, .coalesced_updates = 4 };
+    try encodeDamageStats(a, damage, &bytes);
+    try std.testing.expectEqual(damage, try decodeDamageStats(bytes.items));
+    try std.testing.expectEqual(damage_stats_size, bytes.items.len);
+    bytes.clearRetainingCapacity();
+}
+
+test "diagnostic timing and marker codecs validate bounds and ordering" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    const frame: FrameTime = .{ .frame_id = 7, .present_sequence = 1, .scheduled_ns = 10, .submit_ns = 20, .present_ns = 30, .dropped = false };
+    try encodeFrameTime(a, frame, &bytes);
+    try std.testing.expectEqual(frame, try decodeFrameTime(bytes.items));
+    try std.testing.expectEqual(frame_time_size, bytes.items.len);
+    bytes.items[40] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameTime(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const latency: InputLatency = .{ .input_sequence = 1, .capture_ns = 1, .deliver_ns = 2, .apply_ns = 3, .queue_depth = 0 };
+    try encodeInputLatency(a, latency, &bytes);
+    try std.testing.expectEqual(latency, try decodeInputLatency(bytes.items));
+    try std.testing.expectEqual(input_latency_size, bytes.items.len);
+    try std.testing.expectError(Error.InvalidMessage, encodeInputLatency(a, .{ .input_sequence = 0, .capture_ns = 0, .deliver_ns = 0, .apply_ns = 0, .queue_depth = 0 }, &bytes));
+    try std.testing.expectError(Error.InvalidMessage, encodeInputLatency(a, .{ .input_sequence = 1, .capture_ns = 2, .deliver_ns = 1, .apply_ns = 3, .queue_depth = 0 }, &bytes));
+    try std.testing.expectError(Error.InvalidMessage, encodeInputLatency(a, .{ .input_sequence = 1, .capture_ns = 0, .deliver_ns = 3, .apply_ns = 2, .queue_depth = 0 }, &bytes));
+    bytes.clearRetainingCapacity();
+
+    const desync: DesyncReport = .{ .reason = .sequence_gap, .expected_sequence = 8, .actual_sequence = 10, .detail = "gap" };
+    try encodeDesyncReport(a, desync, &bytes);
+    const decoded_desync = try decodeDesyncReport(bytes.items);
+    try std.testing.expectEqual(desync.reason, decoded_desync.reason);
+    try std.testing.expectEqualStrings(desync.detail, decoded_desync.detail);
+    try std.testing.expectError(Error.InvalidTable, decodeDesyncReport(bytes.items[0 .. bytes.items.len - 1]));
+    bytes.clearRetainingCapacity();
+
+    const trace: TraceMarker = .{ .trace_id = 9, .timestamp_ns = 20, .name = "render" };
+    try encodeTraceMarker(a, trace, &bytes);
+    const decoded_trace = try decodeTraceMarker(bytes.items);
+    try std.testing.expectEqual(trace.trace_id, decoded_trace.trace_id);
+    try std.testing.expectEqualStrings(trace.name, decoded_trace.name);
+    bytes.clearRetainingCapacity();
+
+    const replay: ReplayMarker = .{ .checkpoint_id = 11, .sequence = 12, .label = "before-input" };
+    try encodeReplayMarker(a, replay, &bytes);
+    const decoded_replay = try decodeReplayMarker(bytes.items);
+    try std.testing.expectEqual(replay.checkpoint_id, decoded_replay.checkpoint_id);
+    try std.testing.expectEqualStrings(replay.label, decoded_replay.label);
+    try std.testing.expectError(Error.InvalidTable, decodeReplayMarker(bytes.items[0 .. bytes.items.len - 1]));
+}
+
+test "diagnostic decoders enforce exact reserved bounds and ownership" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    // Fixed payloads: reject invalid schema, every reserved range, truncation,
+    // and trailing bytes.
+    const perf: PerfStats = .{ .frame_count = 1, .update_count = 2, .presented_count = 3, .dropped_count = 4, .input_count = 5, .resync_count = 6, .error_count = 7 };
+    try encodePerfStats(a, perf, &bytes);
+    bytes.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodePerfStats(bytes.items));
+    bytes.items[2] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodePerfStats(bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodePerfStats(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const frame: FrameTime = .{ .frame_id = 1, .present_sequence = 1, .scheduled_ns = 1, .submit_ns = 2, .present_ns = 3, .dropped = false };
+    try encodeFrameTime(a, frame, &bytes);
+    const frame_reserved = [_]usize{ 2, 41, 42, 43 };
+    for (frame_reserved) |offset| {
+        const saved = bytes.items[offset];
+        bytes.items[offset] = 1;
+        try std.testing.expectError(Error.InvalidMessage, decodeFrameTime(bytes.items));
+        bytes.items[offset] = saved;
+    }
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameTime(bytes.items));
+    bytes.items[0] = 1;
+    std.mem.writeInt(u32, bytes.items[4..8], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameTime(bytes.items));
+    std.mem.writeInt(u32, bytes.items[4..8], 1, .little);
+    std.mem.writeInt(u64, bytes.items[8..16], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameTime(bytes.items));
+    std.mem.writeInt(u64, bytes.items[8..16], 1, .little);
+    std.mem.writeInt(u64, bytes.items[16..24], 4, .little);
+    std.mem.writeInt(u64, bytes.items[24..32], 3, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeFrameTime(bytes.items));
+    try std.testing.expectError(Error.InvalidTable, decodeFrameTime(bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeFrameTime(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const bandwidth: BandwidthStats = .{ .bytes_sent = 1, .bytes_received = 2, .messages_sent = 3, .messages_received = 4 };
+    try encodeBandwidthStats(a, bandwidth, &bytes);
+    try std.testing.expectError(Error.InvalidMessage, decodeBandwidthStats(blk: {
+        bytes.items[2] = 1;
+        break :blk bytes.items;
+    }));
+    bytes.items[2] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeBandwidthStats(bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeBandwidthStats(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const resources: ResourceStats = .{ .live_resources = 1, .cached_bytes = 2, .evictions = 3, .requests = 4 };
+    try encodeResourceStats(a, resources, &bytes);
+    try std.testing.expectError(Error.InvalidMessage, decodeResourceStats(blk: {
+        bytes.items[2] = 1;
+        break :blk bytes.items;
+    }));
+    bytes.items[2] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeResourceStats(bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeResourceStats(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const damage: DamageStats = .{ .emitted_rects = 1, .merged_rects = 2, .affected_pixels = 3, .coalesced_updates = 4 };
+    try encodeDamageStats(a, damage, &bytes);
+    try std.testing.expectError(Error.InvalidMessage, decodeDamageStats(blk: {
+        bytes.items[2] = 1;
+        break :blk bytes.items;
+    }));
+    bytes.items[2] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeDamageStats(bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeDamageStats(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    // Variable payloads: maximum, empty, invalid UTF-8, invalid reason, and
+    // reserved-byte handling.  Slices borrow the input without truncation.
+    const detail_120 = [_]u8{'a'} ** max_diag_detail_len;
+    const invalid_detail_121 = [_]u8{'a'} ** (max_diag_detail_len + 1);
+    try encodeDesyncReport(a, .{ .reason = .sequence_gap, .expected_sequence = 1, .actual_sequence = 2, .detail = &detail_120 }, &bytes);
+    try std.testing.expectEqual(@as(usize, desync_report_header_size + 2 + 120), bytes.items.len);
+    bytes.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeDesyncReport(bytes.items));
+    bytes.items[2] = 0;
+    bytes.items[5] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeDesyncReport(bytes.items));
+    bytes.items[5] = 0;
+    bytes.items[4] = 5;
+    try std.testing.expectError(Error.InvalidMessage, decodeDesyncReport(bytes.items));
+    bytes.items[4] = 1;
+    std.mem.writeInt(u16, bytes.items[24..26], 121, .little);
+    try std.testing.expectError(Error.InvalidTable, decodeDesyncReport(bytes.items));
+    bytes.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidMessage, encodeDesyncReport(a, .{ .reason = .sequence_gap, .expected_sequence = 1, .actual_sequence = 2, .detail = &invalid_detail_121 }, &bytes));
+    try std.testing.expectError(Error.InvalidUtf8, encodeDesyncReport(a, .{ .reason = .sequence_gap, .expected_sequence = 1, .actual_sequence = 2, .detail = &[_]u8{0xff} }, &bytes));
+    try encodeDesyncReport(a, .{ .reason = .sequence_gap, .expected_sequence = 1, .actual_sequence = 2, .detail = "" }, &bytes);
+    const source = try a.dupe(u8, bytes.items);
+    defer a.free(source);
+    const borrowed = try decodeDesyncReport(source);
+    try std.testing.expectEqualStrings("", borrowed.detail);
+    try std.testing.expectEqual(@as(usize, 0), borrowed.detail.len);
+    try std.testing.expectEqual(source[26..].ptr, borrowed.detail.ptr);
+    try std.testing.expectEqualSlices(u8, source, source);
+    bytes.clearRetainingCapacity();
+
+    const name_120 = [_]u8{'n'} ** max_diag_detail_len;
+    try encodeTraceMarker(a, .{ .trace_id = 1, .timestamp_ns = 0, .name = &name_120 }, &bytes);
+    try std.testing.expectEqual(@as(usize, trace_marker_header_size + 2 + 120), bytes.items.len);
+    bytes.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeTraceMarker(bytes.items));
+    bytes.items[2] = 0;
+    std.mem.writeInt(u16, bytes.items[20..22], 121, .little);
+    try std.testing.expectError(Error.InvalidTable, decodeTraceMarker(bytes.items));
+    bytes.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidMessage, encodeTraceMarker(a, .{ .trace_id = 1, .timestamp_ns = 0, .name = "" }, &bytes));
+    try std.testing.expectError(Error.InvalidUtf8, encodeTraceMarker(a, .{ .trace_id = 1, .timestamp_ns = 0, .name = &[_]u8{0xff} }, &bytes));
+
+    const label_120 = [_]u8{'l'} ** max_diag_detail_len;
+    try encodeReplayMarker(a, .{ .checkpoint_id = 1, .sequence = 1, .label = &label_120 }, &bytes);
+    try std.testing.expectEqual(@as(usize, replay_marker_header_size + 2 + 120), bytes.items.len);
+    bytes.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeReplayMarker(bytes.items));
+    bytes.items[2] = 0;
+    std.mem.writeInt(u16, bytes.items[20..22], 121, .little);
+    try std.testing.expectError(Error.InvalidTable, decodeReplayMarker(bytes.items));
+    bytes.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidUtf8, encodeReplayMarker(a, .{ .checkpoint_id = 1, .sequence = 1, .label = &[_]u8{0xff} }, &bytes));
+}
+
+test "diagnostic variable decoders reject malformed length and text boundaries" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    // DESYNC: fixed-minimum, zero-length detail, invalid reason/schema, exact
+    // maximum boundary, invalid UTF-8, truncation, and trailing bytes.
+    try encodeDesyncReport(a, .{ .reason = .sequence_gap, .expected_sequence = 1, .actual_sequence = 2, .detail = "x" }, &bytes);
+    for ([_]usize{ 24, 25 }) |length| {
+        try std.testing.expectError(Error.InvalidTable, decodeDesyncReport(bytes.items[0..length]));
+    }
+    try std.testing.expectError(Error.InvalidTable, decodeDesyncReport(bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeDesyncReport(bytes.items));
+    _ = bytes.pop();
+    bytes.items[4] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeDesyncReport(bytes.items));
+    bytes.items[4] = 5;
+    try std.testing.expectError(Error.InvalidMessage, decodeDesyncReport(bytes.items));
+    bytes.items[4] = 1;
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeDesyncReport(bytes.items));
+    bytes.items[0] = 1;
+    bytes.clearRetainingCapacity();
+    try encodeDesyncReport(a, .{ .reason = .sequence_gap, .expected_sequence = 1, .actual_sequence = 2, .detail = "" }, &bytes);
+    try std.testing.expectEqual(@as(usize, desync_report_header_size + 2), bytes.items.len);
+    try std.testing.expectEqual(@as(usize, 0), (try decodeDesyncReport(bytes.items)).detail.len);
+    try bytes.append(a, 0xff);
+    std.mem.writeInt(u16, bytes.items[24..26], 1, .little);
+    try std.testing.expectError(Error.InvalidUtf8, decodeDesyncReport(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const detail_120 = [_]u8{'a'} ** max_diag_detail_len;
+    try encodeDesyncReport(a, .{ .reason = .sequence_gap, .expected_sequence = 1, .actual_sequence = 2, .detail = &detail_120 }, &bytes);
+    try std.testing.expectEqual(detail_120.len, (try decodeDesyncReport(bytes.items)).detail.len);
+    bytes.clearRetainingCapacity();
+    const detail_121 = [_]u8{'a'} ** (max_diag_detail_len + 1);
+    try std.testing.expectError(Error.InvalidMessage, encodeDesyncReport(a, .{ .reason = .sequence_gap, .expected_sequence = 1, .actual_sequence = 2, .detail = &detail_121 }, &bytes));
+
+    // Shared trace-marker boundary: length-only payload, empty name, invalid
+    // schema/ID/UTF-8, truncation, trailing bytes, and the 120-byte maximum.
+    try encodeTraceMarker(a, .{ .trace_id = 1, .timestamp_ns = 0, .name = "x" }, &bytes);
+    for ([_]usize{ 20, 21 }) |length| {
+        try std.testing.expectError(Error.InvalidTable, decodeTraceMarker(bytes.items[0..length]));
+    }
+    try std.testing.expectError(Error.InvalidTable, decodeTraceMarker(bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeTraceMarker(bytes.items));
+    _ = bytes.pop();
+    try std.testing.expectError(Error.InvalidMessage, encodeTraceMarker(a, .{ .trace_id = 1, .timestamp_ns = 0, .name = "" }, &bytes));
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeTraceMarker(bytes.items));
+    bytes.items[0] = 1;
+    std.mem.writeInt(u64, bytes.items[4..12], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeTraceMarker(bytes.items));
+    std.mem.writeInt(u64, bytes.items[4..12], 1, .little);
+    bytes.items[22] = 0xff;
+    try std.testing.expectError(Error.InvalidUtf8, decodeTraceMarker(bytes.items));
+    bytes.items[22] = 'x';
+    bytes.clearRetainingCapacity();
+    try encodeTraceMarker(a, .{ .trace_id = 1, .timestamp_ns = 0, .name = &detail_120 }, &bytes);
+    try std.testing.expectEqual(@as(usize, 120), (try decodeTraceMarker(bytes.items)).name.len);
+    bytes.clearRetainingCapacity();
+    const name_121 = [_]u8{'n'} ** (max_diag_detail_len + 1);
+    try std.testing.expectError(Error.InvalidMessage, encodeTraceMarker(a, .{ .trace_id = 1, .timestamp_ns = 0, .name = &name_121 }, &bytes));
+
+    // REPLAY_MARKER: length-only payload, zero identity/sequence, empty label,
+    // invalid schema/UTF-8, malformed length, truncation, trailing bytes, and
+    // the 120-byte maximum.
+    try encodeReplayMarker(a, .{ .checkpoint_id = 1, .sequence = 1, .label = "x" }, &bytes);
+    for ([_]usize{ 20, 21 }) |length| {
+        try std.testing.expectError(Error.InvalidTable, decodeReplayMarker(bytes.items[0..length]));
+    }
+    try std.testing.expectError(Error.InvalidTable, decodeReplayMarker(bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeReplayMarker(bytes.items));
+    _ = bytes.pop();
+    std.mem.writeInt(u16, bytes.items[20..22], 0, .little);
+    bytes.shrinkRetainingCapacity(22);
+    try std.testing.expectEqual(@as(usize, 0), (try decodeReplayMarker(bytes.items)).label.len);
+    std.mem.writeInt(u16, bytes.items[20..22], 1, .little);
+    try bytes.append(a, 0xff);
+    bytes.items[0] = 2;
+    try std.testing.expectError(Error.InvalidMessage, decodeReplayMarker(bytes.items));
+    bytes.items[0] = 1;
+    std.mem.writeInt(u64, bytes.items[4..12], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeReplayMarker(bytes.items));
+    std.mem.writeInt(u64, bytes.items[4..12], 1, .little);
+    std.mem.writeInt(u64, bytes.items[12..20], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeReplayMarker(bytes.items));
+    std.mem.writeInt(u64, bytes.items[12..20], 1, .little);
+    try std.testing.expectError(Error.InvalidUtf8, decodeReplayMarker(bytes.items));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeReplayMarker(bytes.items));
+    _ = bytes.pop();
+    bytes.clearRetainingCapacity();
+    try encodeReplayMarker(a, .{ .checkpoint_id = 1, .sequence = 1, .label = &detail_120 }, &bytes);
+    try std.testing.expectEqual(@as(usize, 120), (try decodeReplayMarker(bytes.items)).label.len);
+    bytes.clearRetainingCapacity();
+    const label_121 = [_]u8{'l'} ** (max_diag_detail_len + 1);
+    try std.testing.expectError(Error.InvalidMessage, encodeReplayMarker(a, .{ .checkpoint_id = 1, .sequence = 1, .label = &label_121 }, &bytes));
+
+    // INPUT_LATENCY decoders reject zero sequence, nonzero reserved, ordering
+    // violations, and exact truncation/trailing forms.
+    const input: InputLatency = .{ .input_sequence = 1, .capture_ns = 0, .deliver_ns = 0, .apply_ns = 0, .queue_depth = 0 };
+    try encodeInputLatency(a, input, &bytes);
+    bytes.items[2] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeInputLatency(bytes.items));
+    bytes.items[2] = 0;
+    std.mem.writeInt(u64, bytes.items[4..12], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeInputLatency(bytes.items));
+    std.mem.writeInt(u64, bytes.items[4..12], 1, .little);
+    std.mem.writeInt(u64, bytes.items[12..20], 2, .little);
+    std.mem.writeInt(u64, bytes.items[20..28], 1, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeInputLatency(bytes.items));
+    std.mem.writeInt(u64, bytes.items[20..28], 3, .little);
+    std.mem.writeInt(u64, bytes.items[28..36], 2, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeInputLatency(bytes.items));
+    std.mem.writeInt(u64, bytes.items[28..36], 3, .little);
+    try std.testing.expectError(Error.InvalidTable, decodeInputLatency(bytes.items[0 .. bytes.items.len - 1]));
+    try bytes.append(a, 0);
+    try std.testing.expectError(Error.InvalidTable, decodeInputLatency(bytes.items));
 }

@@ -144,7 +144,7 @@ const ranges = [_]Range{
     .{ .low = 0x0933, .high = 0x093f, .status = .planned, .domain = .widget, .family = "tooltip-extension", .note = "remaining tooltip positioning, dismissal, input, and accessibility policies pending" },
     .{ .low = 0x0940, .high = 0x0940, .status = .implemented_codec, .domain = .widget, .family = "scrollbar-state", .note = "dedicated authoritative vertical scrollbar state alias over the bounded 48-byte codec with Scene owner/upsert and SDL thumb render; horizontal state pending" },
     .{ .low = 0x0941, .high = 0x0941, .status = .implemented_codec, .domain = .widget, .family = "scrollbar-event", .note = "dedicated bounded absolute/relative event alias over the 40-byte scroll-request codec with negotiated DeliveryJournal and EPXL admission; core dispatch pending" },
-    .{ .low = 0x0a00, .high = 0x0a09, .status = .planned, .domain = .diagnostic, .family = "diagnostics", .note = "performance/trace/replay diagnostic payloads pending" },
+    .{ .low = 0x0a00, .high = 0x0a09, .status = .implemented_codec, .domain = .diagnostic, .family = "diagnostics", .note = "bounded performance, timing, bandwidth, resource, damage, latency, desync, trace, and replay codecs; producer/consumer integration pending" },
 };
 
 fn rangeFor(id: u16) ?Range {
@@ -311,9 +311,9 @@ test "implemented and planned protocol coverage remain honest" {
     const dnd_enter = entryFor(0x0820) catch unreachable;
     try std.testing.expectEqual(Status.implemented_codec, dnd_enter.status);
     const counts = counters();
-    try std.testing.expectEqual(@as(usize, 144), counts.implemented_codec);
+    try std.testing.expectEqual(@as(usize, 154), counts.implemented_codec);
     try std.testing.expectEqual(@as(usize, 3), counts.partial);
-    try std.testing.expectEqual(@as(usize, 17), counts.planned);
+    try std.testing.expectEqual(@as(usize, 7), counts.planned);
     try std.testing.expectError(error.UnknownMessageId, entryFor(0xffff));
 }
 
