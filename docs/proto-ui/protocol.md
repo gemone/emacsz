@@ -1655,6 +1655,36 @@ core-side application is claimed.
 
 Selection kinds are `PRIMARY`, `SECONDARY`, and `CLIPBOARD`. Required text targets include UTF-8 text; image and rich-text targets are optional and negotiated.
 
+#### Bounded selection and clipboard transfer v1
+
+`SELECTION_OWNER_SET` and `CLIPBOARD_SET` share one payload.  The 12-byte
+header is `u16 schema=1`, `u8 kind`, `u8 flags`, `u32 nonzero generation`, and
+`u32 offer_count`.  Flag bit 1 requests platform export and bit 2 requests loss
+notification; all other bits are reserved.  Each offer is `u8 target_length`,
+`u16 priority`, and 1..64 printable non-space ASCII target bytes.  There are
+1..8 unique targets.
+
+`SELECTION_OWNER_CLEAR` and `CLIPBOARD_CLEAR` are 8 bytes: `u32 nonzero
+generation`, `u8 kind`, and 3 reserved zero bytes.  `SELECTION_LOST` is
+16 bytes: `u16 schema=1`, `u8 kind`, `u8 reason`, `u32 nonzero generation`,
+and `u64 request_id` (zero for an asynchronous external loss).  Loss reasons are
+replacement, platform shutdown, and owner cancellation.
+
+`SELECTION_REQUEST` and `CLIPBOARD_GET` use a 16-byte header (`u16 schema=1`,
+`u8 kind`, `u8 reserved`, `u64 nonzero request_id`, `u32 nonzero generation`)
+followed by `u16 target_length` and 1..64 printable non-space ASCII target
+bytes.  `SELECTION_DATA` and `CLIPBOARD_DATA` use a 20-byte header with the same
+identity fields plus `u32 byte_length`, followed by 1..4096 payload bytes in one
+complete EUP message.  v1 targets deliberately exclude spaces so that they
+remain bounded MIME-like tokens; parameterized MIME values with spaces remain
+future work.  Clipboard-form IDs (`0x0810`, `0x0811`, `0x0812`, and `0x0813`)
+must carry `CLIPBOARD`; the codec wrappers reject PRIMARY and SECONDARY forms.  `SELECTION_ERROR` uses a 16-byte header with kind and
+reason, followed by `u16 message_length` and 0..120 UTF-8 bytes; reasons are
+unsupported target, conversion failure, timeout, and cancellation.
+
+These are bounded wire codecs only.  Scene admission, platform ownership, core
+dispatch, rich MIME conversion, incremental transfer, and DND remain pending.
+
 ## 18. Widget messages
 
 ### Menu

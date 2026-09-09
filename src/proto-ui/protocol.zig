@@ -181,6 +181,16 @@ pub const Message = struct {
     pub const scroll_request: u16 = 0x0309;
     pub const scrollbar_state: u16 = 0x0940;
     pub const scrollbar_event: u16 = 0x0941;
+    pub const selection_owner_set: u16 = 0x0800;
+    pub const selection_owner_clear: u16 = 0x0801;
+    pub const selection_lost: u16 = 0x0802;
+    pub const selection_request: u16 = 0x0803;
+    pub const selection_data: u16 = 0x0804;
+    pub const selection_error: u16 = 0x0805;
+    pub const clipboard_set: u16 = 0x0810;
+    pub const clipboard_get: u16 = 0x0811;
+    pub const clipboard_data: u16 = 0x0812;
+    pub const clipboard_clear: u16 = 0x0813;
     pub const extension: u16 = 0xf000;
     pub const invalid: u16 = 0xffff;
 };
@@ -8589,4 +8599,661 @@ test "dialog codecs enforce bounded model and result identities" {
     try std.testing.expectError(Error.InvalidMessage, decodeDialogResult(bytes.items));
     bytes.items[32] = 'u';
     try std.testing.expectError(Error.InvalidTable, decodeDialogResult(bytes.items[0 .. bytes.items.len - 1]));
+}
+
+pub const SelectionKind = enum(u8) {
+    primary = 1,
+    secondary = 2,
+    clipboard = 3,
+};
+
+pub const SelectionOwnerFlags = struct {
+    pub const export_to_platform: u8 = 1;
+    pub const notify_on_loss: u8 = 2;
+    pub const valid_mask: u8 = export_to_platform | notify_on_loss;
+};
+
+pub const SelectionOffer = struct {
+    target: []const u8,
+    priority: u16,
+
+    pub fn eql(self: SelectionOffer, other: SelectionOffer) bool {
+        return self.priority == other.priority and std.mem.eql(u8, self.target, other.target);
+    }
+};
+
+pub const max_selection_offers: usize = 8;
+pub const max_selection_target_len: usize = 64;
+pub const max_selection_data_len: usize = 4096;
+pub const max_selection_error_len: usize = 120;
+
+pub const SelectionOwnerSet = struct {
+    schema: u16 = 1,
+    kind: SelectionKind,
+    flags: u8 = 0,
+    generation: u32,
+    offers: []const SelectionOffer,
+};
+
+pub const selection_owner_set_header_size: usize = 12;
+
+fn validSelectionTarget(target: []const u8) bool {
+    if (target.len == 0 or target.len > max_selection_target_len) return false;
+    for (target) |byte| {
+        if (byte <= 0x20 or byte >= 0x7f) return false;
+    }
+    return true;
+}
+
+fn validateSelectionOffers(offers: []const SelectionOffer) Error!void {
+    if (offers.len == 0 or offers.len > max_selection_offers) return Error.InvalidMessage;
+    for (offers, 0..) |offer, index| {
+        if (!validSelectionTarget(offer.target)) return Error.InvalidMessage;
+        for (offers[0..index]) |prior| {
+            if (std.mem.eql(u8, prior.target, offer.target)) return Error.InvalidMessage;
+        }
+    }
+}
+
+pub fn validateSelectionOwnerSet(payload: SelectionOwnerSet) Error!void {
+    if (payload.schema != 1 or
+        payload.flags & ~SelectionOwnerFlags.valid_mask != 0 or
+        payload.generation == 0) return Error.InvalidMessage;
+    try validateSelectionOffers(payload.offers);
+}
+
+pub fn encodeSelectionOwnerSet(
+    a: std.mem.Allocator,
+    payload: SelectionOwnerSet,
+    out: *std.ArrayList(u8),
+) !void {
+    try validateSelectionOwnerSet(payload);
+    var header: [selection_owner_set_header_size]u8 = @splat(0);
+    std.mem.writeInt(u16, header[0..2], payload.schema, .little);
+    header[2] = @intFromEnum(payload.kind);
+    header[3] = payload.flags;
+    std.mem.writeInt(u32, header[4..8], payload.generation, .little);
+    std.mem.writeInt(u32, header[8..12], @intCast(payload.offers.len), .little);
+    try out.appendSlice(a, &header);
+    for (payload.offers) |offer| {
+        try out.append(a, @intCast(offer.target.len));
+        try putU16(out, a, offer.priority);
+        try out.appendSlice(a, offer.target);
+    }
+}
+
+pub fn decodeSelectionOwnerSet(
+    a: std.mem.Allocator,
+    data: []const u8,
+) (Error || std.mem.Allocator.Error)!SelectionOwnerSet {
+    if (data.len < selection_owner_set_header_size) return Error.InvalidTable;
+    const count = std.mem.readInt(u32, data[8..12], .little);
+    if (count == 0 or count > max_selection_offers) return Error.InvalidMessage;
+    const schema = std.mem.readInt(u16, data[0..2], .little);
+    if (schema != 1 or data[3] & ~SelectionOwnerFlags.valid_mask != 0 or
+        std.mem.readInt(u32, data[4..8], .little) == 0) return Error.InvalidMessage;
+    const kind: SelectionKind = switch (data[2]) {
+        1 => .primary,
+        2 => .secondary,
+        3 => .clipboard,
+        else => return Error.InvalidMessage,
+    };
+    var reader = Reader{ .data = data };
+    reader.offset = selection_owner_set_header_size;
+    var offers: std.ArrayList(SelectionOffer) = .empty;
+    errdefer offers.deinit(a);
+    while (reader.offset < data.len) {
+        if (offers.items.len == max_selection_offers) return Error.InvalidMessage;
+        const target_len = reader.readByte() catch return Error.InvalidTable;
+        if (target_len == 0 or target_len > max_selection_target_len) return Error.InvalidMessage;
+        const priority = reader.readU16() catch return Error.InvalidTable;
+        const target = reader.bytes(target_len) catch return Error.InvalidTable;
+        if (!validSelectionTarget(target)) return Error.InvalidMessage;
+        try offers.append(a, .{ .target = target, .priority = priority });
+    }
+    if (offers.items.len != count) return Error.InvalidMessage;
+    const payload: SelectionOwnerSet = .{
+        .schema = schema,
+        .kind = kind,
+        .flags = data[3],
+        .generation = std.mem.readInt(u32, data[4..8], .little),
+        .offers = try offers.toOwnedSlice(a),
+    };
+    try validateSelectionOwnerSet(payload);
+    return payload;
+}
+
+pub fn freeSelectionOwnerSet(a: std.mem.Allocator, payload: *SelectionOwnerSet) void {
+    a.free(payload.offers);
+    payload.offers = &.{};
+}
+
+pub fn encodeClipboardSet(
+    a: std.mem.Allocator,
+    payload: SelectionOwnerSet,
+    out: *std.ArrayList(u8),
+) !void {
+    if (payload.kind != .clipboard) return Error.InvalidMessage;
+    try encodeSelectionOwnerSet(a, payload, out);
+}
+
+pub fn decodeClipboardSet(
+    a: std.mem.Allocator,
+    data: []const u8,
+) (Error || std.mem.Allocator.Error)!SelectionOwnerSet {
+    var payload = try decodeSelectionOwnerSet(a, data);
+    if (payload.kind != .clipboard) {
+        freeSelectionOwnerSet(a, &payload);
+        return Error.InvalidMessage;
+    }
+    return payload;
+}
+
+pub fn encodeClipboardGet(a: std.mem.Allocator, payload: SelectionRequest, out: *std.ArrayList(u8)) !void {
+    if (payload.kind != .clipboard) return Error.InvalidMessage;
+    try encodeSelectionRequest(a, payload, out);
+}
+
+pub fn decodeClipboardGet(data: []const u8) Error!SelectionRequest {
+    const payload = try decodeSelectionRequest(data);
+    if (payload.kind != .clipboard) return Error.InvalidMessage;
+    return payload;
+}
+
+pub fn encodeClipboardData(a: std.mem.Allocator, payload: SelectionData, out: *std.ArrayList(u8)) !void {
+    if (payload.kind != .clipboard) return Error.InvalidMessage;
+    try encodeSelectionData(a, payload, out);
+}
+
+pub fn decodeClipboardData(data: []const u8) Error!SelectionData {
+    const payload = try decodeSelectionData(data);
+    if (payload.kind != .clipboard) return Error.InvalidMessage;
+    return payload;
+}
+
+pub fn encodeClipboardClear(a: std.mem.Allocator, payload: SelectionClear, out: *std.ArrayList(u8)) !void {
+    if (payload.kind != .clipboard) return Error.InvalidMessage;
+    try encodeSelectionClear(a, payload, out);
+}
+
+pub fn decodeClipboardClear(data: []const u8) Error!SelectionClear {
+    const payload = try decodeSelectionClear(data);
+    if (payload.kind != .clipboard) return Error.InvalidMessage;
+    return payload;
+}
+
+pub const SelectionClear = struct {
+    generation: u32,
+    kind: SelectionKind,
+    reserved: [3]u8 = @splat(0),
+};
+
+pub const selection_clear_size: usize = 8;
+
+pub fn encodeSelectionClear(a: std.mem.Allocator, payload: SelectionClear, out: *std.ArrayList(u8)) !void {
+    if (payload.generation == 0 or payload.reserved[0] != 0 or
+        payload.reserved[1] != 0 or payload.reserved[2] != 0) return Error.InvalidMessage;
+    var b: [selection_clear_size]u8 = @splat(0);
+    std.mem.writeInt(u32, b[0..4], payload.generation, .little);
+    b[4] = @intFromEnum(payload.kind);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeSelectionClear(data: []const u8) Error!SelectionClear {
+    if (data.len != selection_clear_size) return Error.InvalidTable;
+    const payload: SelectionClear = .{
+        .generation = std.mem.readInt(u32, data[0..4], .little),
+        .kind = switch (data[4]) {
+            1 => .primary,
+            2 => .secondary,
+            3 => .clipboard,
+            else => return Error.InvalidMessage,
+        },
+        .reserved = data[5..8][0..3].*,
+    };
+    if (payload.generation == 0 or payload.reserved[0] != 0 or
+        payload.reserved[1] != 0 or payload.reserved[2] != 0) return Error.InvalidMessage;
+    return payload;
+}
+
+pub const SelectionLossReason = enum(u8) {
+    replacement = 1,
+    platform_shutdown = 2,
+    owner_cancelled = 3,
+};
+
+pub const SelectionLost = struct {
+    schema: u16 = 1,
+    kind: SelectionKind,
+    reason: SelectionLossReason,
+    generation: u32,
+    request_id: u64 = 0,
+};
+
+pub const selection_lost_size: usize = 16;
+
+pub fn encodeSelectionLost(a: std.mem.Allocator, payload: SelectionLost, out: *std.ArrayList(u8)) !void {
+    try validateSelectionLost(payload);
+    var b: [selection_lost_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = @intFromEnum(payload.kind);
+    b[3] = @intFromEnum(payload.reason);
+    std.mem.writeInt(u32, b[4..8], payload.generation, .little);
+    std.mem.writeInt(u64, b[8..16], payload.request_id, .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeSelectionLost(data: []const u8) Error!SelectionLost {
+    if (data.len != selection_lost_size) return Error.InvalidTable;
+    const payload: SelectionLost = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .kind = switch (data[2]) {
+            1 => .primary,
+            2 => .secondary,
+            3 => .clipboard,
+            else => return Error.InvalidMessage,
+        },
+        .reason = switch (data[3]) {
+            1 => .replacement,
+            2 => .platform_shutdown,
+            3 => .owner_cancelled,
+            else => return Error.InvalidMessage,
+        },
+        .generation = std.mem.readInt(u32, data[4..8], .little),
+        .request_id = std.mem.readInt(u64, data[8..16], .little),
+    };
+    try validateSelectionLost(payload);
+    return payload;
+}
+
+fn validateSelectionLost(payload: SelectionLost) Error!void {
+    if (payload.schema != 1 or payload.generation == 0) return Error.InvalidMessage;
+}
+
+pub const SelectionRequest = struct {
+    schema: u16 = 1,
+    kind: SelectionKind,
+    reserved: u8 = 0,
+    request_id: u64,
+    generation: u32,
+    target: []const u8,
+};
+
+pub const selection_request_header_size: usize = 16;
+
+pub fn encodeSelectionRequest(
+    a: std.mem.Allocator,
+    payload: SelectionRequest,
+    out: *std.ArrayList(u8),
+) !void {
+    try validateSelectionRequest(payload);
+    var header: [16]u8 = @splat(0);
+    std.mem.writeInt(u16, header[0..2], payload.schema, .little);
+    header[2] = @intFromEnum(payload.kind);
+    header[3] = payload.reserved;
+    std.mem.writeInt(u64, header[4..12], payload.request_id, .little);
+    std.mem.writeInt(u32, header[12..16], payload.generation, .little);
+    try out.appendSlice(a, &header);
+    try putU16(out, a, @intCast(payload.target.len));
+    try out.appendSlice(a, payload.target);
+}
+
+pub fn decodeSelectionRequest(data: []const u8) Error!SelectionRequest {
+    if (data.len < selection_request_header_size) return Error.InvalidTable;
+    const target_len = std.mem.readInt(u16, data[16..18], .little);
+    if (data.len != selection_request_header_size + 2 + @as(usize, target_len)) return Error.InvalidTable;
+    const target = data[18..][0..target_len];
+    const payload: SelectionRequest = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .kind = switch (data[2]) {
+            1 => .primary,
+            2 => .secondary,
+            3 => .clipboard,
+            else => return Error.InvalidMessage,
+        },
+        .reserved = data[3],
+        .request_id = std.mem.readInt(u64, data[4..12], .little),
+        .generation = std.mem.readInt(u32, data[12..16], .little),
+        .target = target,
+    };
+    try validateSelectionRequest(payload);
+    return payload;
+}
+
+fn validateSelectionRequest(payload: SelectionRequest) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or payload.request_id == 0 or
+        payload.generation == 0 or !validSelectionTarget(payload.target)) return Error.InvalidMessage;
+}
+
+pub const SelectionData = struct {
+    schema: u16 = 1,
+    kind: SelectionKind,
+    reserved: u8 = 0,
+    request_id: u64,
+    generation: u32,
+    bytes: []const u8,
+};
+
+pub const selection_data_header_size: usize = 20;
+
+pub fn encodeSelectionData(
+    a: std.mem.Allocator,
+    payload: SelectionData,
+    out: *std.ArrayList(u8),
+) !void {
+    try validateSelectionData(payload);
+    var header: [selection_data_header_size]u8 = @splat(0);
+    std.mem.writeInt(u16, header[0..2], payload.schema, .little);
+    header[2] = @intFromEnum(payload.kind);
+    header[3] = payload.reserved;
+    std.mem.writeInt(u64, header[4..12], payload.request_id, .little);
+    std.mem.writeInt(u32, header[12..16], payload.generation, .little);
+    std.mem.writeInt(u32, header[16..20], @intCast(payload.bytes.len), .little);
+    try out.appendSlice(a, &header);
+    try out.appendSlice(a, payload.bytes);
+}
+
+pub fn decodeSelectionData(data: []const u8) Error!SelectionData {
+    if (data.len < selection_data_header_size) return Error.InvalidTable;
+    const generation = std.mem.readInt(u32, data[12..16], .little);
+    const byte_len = std.mem.readInt(u32, data[16..20], .little);
+    if (byte_len == 0 or byte_len > max_selection_data_len or
+        data.len != selection_data_header_size + @as(usize, byte_len)) return Error.InvalidTable;
+    const payload: SelectionData = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .kind = switch (data[2]) {
+            1 => .primary,
+            2 => .secondary,
+            3 => .clipboard,
+            else => return Error.InvalidMessage,
+        },
+        .reserved = data[3],
+        .request_id = std.mem.readInt(u64, data[4..12], .little),
+        .generation = generation,
+        .bytes = data[selection_data_header_size..][0..byte_len],
+    };
+    try validateSelectionData(payload);
+    return payload;
+}
+
+fn validateSelectionData(payload: SelectionData) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or payload.request_id == 0 or
+        payload.generation == 0 or payload.bytes.len == 0 or
+        payload.bytes.len > max_selection_data_len) return Error.InvalidMessage;
+}
+
+pub const SelectionErrorReason = enum(u8) {
+    unsupported_target = 1,
+    conversion_failed = 2,
+    timeout = 3,
+    cancelled = 4,
+};
+
+pub const SelectionError = struct {
+    schema: u16 = 1,
+    kind: SelectionKind,
+    reason: SelectionErrorReason,
+    request_id: u64,
+    generation: u32,
+    message: []const u8,
+};
+
+pub const selection_error_header_size: usize = 16;
+
+pub fn encodeSelectionError(
+    a: std.mem.Allocator,
+    payload: SelectionError,
+    out: *std.ArrayList(u8),
+) !void {
+    try validateSelectionError(payload);
+    var header: [selection_error_header_size]u8 = @splat(0);
+    std.mem.writeInt(u16, header[0..2], payload.schema, .little);
+    header[2] = @intFromEnum(payload.kind);
+    header[3] = @intFromEnum(payload.reason);
+    std.mem.writeInt(u64, header[4..12], payload.request_id, .little);
+    std.mem.writeInt(u32, header[12..16], payload.generation, .little);
+    try out.appendSlice(a, &header);
+    try putU16(out, a, @intCast(payload.message.len));
+    try out.appendSlice(a, payload.message);
+}
+
+pub fn decodeSelectionError(data: []const u8) Error!SelectionError {
+    if (data.len < selection_error_header_size) return Error.InvalidTable;
+    const message_len = std.mem.readInt(u16, data[16..18], .little);
+    if (message_len > max_selection_error_len or
+        data.len != selection_error_header_size + 2 + @as(usize, message_len)) return Error.InvalidTable;
+    const payload: SelectionError = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .kind = switch (data[2]) {
+            1 => .primary,
+            2 => .secondary,
+            3 => .clipboard,
+            else => return Error.InvalidMessage,
+        },
+        .reason = switch (data[3]) {
+            1 => .unsupported_target,
+            2 => .conversion_failed,
+            3 => .timeout,
+            4 => .cancelled,
+            else => return Error.InvalidMessage,
+        },
+        .request_id = std.mem.readInt(u64, data[4..12], .little),
+        .generation = std.mem.readInt(u32, data[12..16], .little),
+        .message = data[18..][0..message_len],
+    };
+    try validateSelectionError(payload);
+    return payload;
+}
+
+fn validateSelectionError(payload: SelectionError) Error!void {
+    if (payload.schema != 1 or payload.request_id == 0 or payload.generation == 0 or
+        payload.message.len > max_selection_error_len) return Error.InvalidMessage;
+    if (!std.unicode.utf8ValidateSlice(payload.message)) return Error.InvalidUtf8;
+}
+
+test "selection owner and clipboard request/data/error codecs round trip" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+    const offers = [_]SelectionOffer{
+        .{ .target = "UTF8_STRING", .priority = 1 },
+        .{ .target = "image/png", .priority = 2 },
+    };
+    const owner: SelectionOwnerSet = .{
+        .kind = .clipboard,
+        .flags = SelectionOwnerFlags.export_to_platform | SelectionOwnerFlags.notify_on_loss,
+        .generation = 7,
+        .offers = &offers,
+    };
+    try encodeSelectionOwnerSet(a, owner, &bytes);
+    var decoded_owner = try decodeSelectionOwnerSet(a, bytes.items);
+    defer freeSelectionOwnerSet(a, &decoded_owner);
+    try std.testing.expectEqual(owner.schema, decoded_owner.schema);
+    try std.testing.expectEqual(owner.kind, decoded_owner.kind);
+    try std.testing.expectEqual(owner.flags, decoded_owner.flags);
+    try std.testing.expectEqual(owner.generation, decoded_owner.generation);
+    try std.testing.expectEqual(owner.offers.len, decoded_owner.offers.len);
+    for (owner.offers, decoded_owner.offers) |expected, actual| try std.testing.expect(expected.eql(actual));
+    try std.testing.expectError(Error.InvalidTable, decodeSelectionOwnerSet(a, bytes.items[0 .. bytes.items.len - 1]));
+
+    bytes.clearRetainingCapacity();
+    const clear: SelectionClear = .{ .generation = 7, .kind = .primary };
+    try encodeSelectionClear(a, clear, &bytes);
+    try std.testing.expectEqual(selection_clear_size, bytes.items.len);
+    try std.testing.expectEqual(clear, try decodeSelectionClear(bytes.items));
+    bytes.items[4] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeSelectionClear(bytes.items));
+    bytes.items[4] = @intFromEnum(SelectionKind.primary);
+
+    bytes.clearRetainingCapacity();
+    const lost: SelectionLost = .{ .kind = .primary, .reason = .replacement, .generation = 7 };
+    try encodeSelectionLost(a, lost, &bytes);
+    try std.testing.expectEqual(selection_lost_size, bytes.items.len);
+    try std.testing.expectEqual(lost, try decodeSelectionLost(bytes.items));
+    bytes.items[3] = 0;
+    try std.testing.expectError(Error.InvalidMessage, decodeSelectionLost(bytes.items));
+    bytes.items[3] = @intFromEnum(SelectionLossReason.replacement);
+
+    bytes.clearRetainingCapacity();
+    const request: SelectionRequest = .{
+        .request_id = 91,
+        .generation = 7,
+        .kind = .clipboard,
+        .target = "UTF8_STRING",
+    };
+    try encodeSelectionRequest(a, request, &bytes);
+    const decoded_request = try decodeSelectionRequest(bytes.items);
+    try std.testing.expectEqual(request.request_id, decoded_request.request_id);
+    try std.testing.expectEqual(request.generation, decoded_request.generation);
+    try std.testing.expectEqual(request.kind, decoded_request.kind);
+    try std.testing.expectEqualStrings(request.target, decoded_request.target);
+    try std.testing.expectError(Error.InvalidTable, decodeSelectionRequest(bytes.items[0 .. bytes.items.len - 1]));
+
+    bytes.clearRetainingCapacity();
+    const data: SelectionData = .{
+        .request_id = 91,
+        .generation = 7,
+        .kind = .clipboard,
+        .bytes = "clipboard",
+    };
+    try encodeSelectionData(a, data, &bytes);
+    const decoded_data = try decodeSelectionData(bytes.items);
+    try std.testing.expectEqual(data.request_id, decoded_data.request_id);
+    try std.testing.expectEqual(data.generation, decoded_data.generation);
+    try std.testing.expectEqual(data.kind, decoded_data.kind);
+    try std.testing.expectEqual(data.bytes.len, decoded_data.bytes.len);
+    try std.testing.expectEqualStrings(data.bytes, decoded_data.bytes);
+    try std.testing.expectError(Error.InvalidTable, decodeSelectionData(bytes.items[0 .. bytes.items.len - 1]));
+
+    bytes.clearRetainingCapacity();
+    const error_payload: SelectionError = .{
+        .request_id = 91,
+        .generation = 7,
+        .kind = .clipboard,
+        .reason = .unsupported_target,
+        .message = "unsupported",
+    };
+    try encodeSelectionError(a, error_payload, &bytes);
+    const decoded_error = try decodeSelectionError(bytes.items);
+    try std.testing.expectEqual(error_payload.request_id, decoded_error.request_id);
+    try std.testing.expectEqual(error_payload.generation, decoded_error.generation);
+    try std.testing.expectEqual(error_payload.kind, decoded_error.kind);
+    try std.testing.expectEqual(error_payload.reason, decoded_error.reason);
+    try std.testing.expectEqualStrings(error_payload.message, decoded_error.message);
+    try std.testing.expectError(Error.InvalidTable, decodeSelectionError(bytes.items[0 .. bytes.items.len - 1]));
+}
+
+test "selection transfer codecs enforce bounded trust boundaries" {
+    const a = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(a);
+
+    // Targets are printable, non-space ASCII and no longer than 64 bytes.
+    var long_target: [65]u8 = undefined;
+    @memset(&long_target, 'a');
+    const bad_target_offers = [_]SelectionOffer{.{ .target = &long_target, .priority = 1 }};
+    try std.testing.expectError(Error.InvalidMessage, encodeSelectionOwnerSet(a, .{
+        .kind = .primary,
+        .generation = 1,
+        .offers = &bad_target_offers,
+    }, &bytes));
+
+    var max_target: [64]u8 = undefined;
+    @memset(&max_target, 'a');
+    max_target[31] = 'b';
+    const max_target_offers = [_]SelectionOffer{
+        .{ .target = max_target[0..32], .priority = 1 },
+        .{ .target = max_target[32..], .priority = 2 },
+    };
+    try encodeSelectionOwnerSet(a, .{ .kind = .primary, .generation = 1, .offers = &max_target_offers }, &bytes);
+    var decoded = try decodeSelectionOwnerSet(a, bytes.items);
+    freeSelectionOwnerSet(a, &decoded);
+    bytes.clearRetainingCapacity();
+
+    const duplicate_offers = [_]SelectionOffer{
+        .{ .target = "same", .priority = 1 },
+        .{ .target = "same", .priority = 2 },
+    };
+    try std.testing.expectError(Error.InvalidMessage, encodeSelectionOwnerSet(a, .{ .kind = .primary, .generation = 1, .offers = &duplicate_offers }, &bytes));
+
+    const space_offers = [_]SelectionOffer{.{ .target = "has space", .priority = 1 }};
+    try std.testing.expectError(Error.InvalidMessage, encodeSelectionOwnerSet(a, .{ .kind = .primary, .generation = 1, .offers = &space_offers }, &bytes));
+
+    var all_offers: [max_selection_offers]SelectionOffer = undefined;
+    var names: [max_selection_offers][3]u8 = undefined;
+    for (&all_offers, 0..) |*offer, index| {
+        names[index][0] = 'a';
+        names[index][1] = '-';
+        names[index][2] = 'a' + @as(u8, @intCast(index));
+        offer.* = .{ .target = &names[index], .priority = @intCast(index + 1) };
+    }
+    try encodeSelectionOwnerSet(a, .{ .kind = .primary, .generation = 1, .offers = &all_offers }, &bytes);
+    decoded = try decodeSelectionOwnerSet(a, bytes.items);
+    freeSelectionOwnerSet(a, &decoded);
+    bytes.clearRetainingCapacity();
+
+    var nine_offers: [max_selection_offers + 1]SelectionOffer = undefined;
+    for (&nine_offers) |*offer| offer.* = .{ .target = "x", .priority = 1 };
+    try std.testing.expectError(Error.InvalidMessage, encodeSelectionOwnerSet(a, .{ .kind = .primary, .generation = 1, .offers = &nine_offers }, &bytes));
+
+    const invalid_owners = [_]SelectionOwnerSet{
+        .{ .kind = .primary, .schema = 2, .generation = 1, .offers = max_target_offers[0..1] },
+        .{ .kind = .primary, .flags = 0x80, .generation = 1, .offers = max_target_offers[0..1] },
+        .{ .kind = .primary, .generation = 0, .offers = max_target_offers[0..1] },
+    };
+    for (invalid_owners) |payload| {
+        try std.testing.expectError(Error.InvalidMessage, encodeSelectionOwnerSet(a, payload, &bytes));
+    }
+
+    // Clipboard-form wrappers cannot transport PRIMARY/SECONDARY payloads.
+    const primary_owner: SelectionOwnerSet = .{ .kind = .primary, .generation = 7, .offers = max_target_offers[0..1] };
+    try std.testing.expectError(Error.InvalidMessage, encodeClipboardSet(a, primary_owner, &bytes));
+    try encodeSelectionOwnerSet(a, primary_owner, &bytes);
+    try std.testing.expectError(Error.InvalidMessage, decodeClipboardSet(a, bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const clipboard_owner: SelectionOwnerSet = .{ .kind = .clipboard, .generation = 7, .offers = max_target_offers[0..1] };
+    try encodeClipboardSet(a, clipboard_owner, &bytes);
+    decoded = try decodeClipboardSet(a, bytes.items);
+    freeSelectionOwnerSet(a, &decoded);
+    bytes.clearRetainingCapacity();
+
+    const primary_request: SelectionRequest = .{ .request_id = 1, .generation = 1, .kind = .primary, .target = "UTF8_STRING" };
+    try std.testing.expectError(Error.InvalidMessage, encodeClipboardGet(a, primary_request, &bytes));
+    try encodeSelectionRequest(a, primary_request, &bytes);
+    try std.testing.expectError(Error.InvalidMessage, decodeClipboardGet(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const primary_data: SelectionData = .{ .request_id = 1, .generation = 1, .kind = .primary, .bytes = "x" };
+    try std.testing.expectError(Error.InvalidMessage, encodeClipboardData(a, primary_data, &bytes));
+    try encodeSelectionData(a, primary_data, &bytes);
+    try std.testing.expectError(Error.InvalidMessage, decodeClipboardData(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    const primary_clear: SelectionClear = .{ .generation = 1, .kind = .primary };
+    try std.testing.expectError(Error.InvalidMessage, encodeClipboardClear(a, primary_clear, &bytes));
+    try encodeSelectionClear(a, primary_clear, &bytes);
+    try std.testing.expectError(Error.InvalidMessage, decodeClipboardClear(bytes.items));
+    bytes.clearRetainingCapacity();
+
+    // Complete data is capped at 4096 bytes with no incremental continuation.
+    const max_data = try a.alloc(u8, max_selection_data_len);
+    defer a.free(max_data);
+    @memset(max_data, 'x');
+    try encodeSelectionData(a, .{ .request_id = 1, .generation = 1, .kind = .clipboard, .bytes = max_data }, &bytes);
+    try std.testing.expectError(Error.InvalidTable, decodeSelectionData(bytes.items[0 .. bytes.items.len - 1]));
+    bytes.clearRetainingCapacity();
+    const oversized_data = try a.alloc(u8, max_selection_data_len + 1);
+    defer a.free(oversized_data);
+    @memset(oversized_data, 'x');
+    try std.testing.expectError(Error.InvalidMessage, encodeSelectionData(a, .{ .request_id = 1, .generation = 1, .kind = .clipboard, .bytes = oversized_data }, &bytes));
+
+    // Error text is bounded UTF-8.
+    const max_message = [_]u8{'a'} ** max_selection_error_len;
+    try encodeSelectionError(a, .{ .request_id = 1, .generation = 1, .kind = .clipboard, .reason = .timeout, .message = &max_message }, &bytes);
+    try std.testing.expectError(Error.InvalidTable, decodeSelectionError(bytes.items[0 .. bytes.items.len - 1]));
+    bytes.clearRetainingCapacity();
+    const oversized_message = [_]u8{'a'} ** (max_selection_error_len + 1);
+    try std.testing.expectError(Error.InvalidMessage, encodeSelectionError(a, .{ .request_id = 1, .generation = 1, .kind = .clipboard, .reason = .timeout, .message = &oversized_message }, &bytes));
+    try std.testing.expectError(Error.InvalidUtf8, encodeSelectionError(a, .{ .request_id = 1, .generation = 1, .kind = .clipboard, .reason = .timeout, .message = &[_]u8{0xff} }, &bytes));
 }
