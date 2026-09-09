@@ -2709,10 +2709,11 @@ zero IDs, and reserved trailing bytes are invalid. `0x8000` remains a
 single-window legacy migration section: it is accepted only when the update has
 exactly one window and its records are assigned to that window. A
 `FRAME_UPDATE` may contain at most one text section (`0x8000` or `0x8002`), not
-both. The facts publisher currently emits only `0x8002`; non-selected observed
-windows still have geometry and diagnostic outlines but no published rows or
-text. Scene text is bounded UTF-8, while the SDL debug renderer draws only its
-ASCII subset.
+both. The facts publisher emits `0x8002`; for each live window it carries up to
+eight visible rows bounded to 120 UTF-8 bytes per line. A missing or empty
+state list is a legacy fallback and projects text only on the selected window.
+Only the selected window has an EUP cursor. Scene text is bounded UTF-8, while
+the SDL debug renderer draws only its ASCII subset.
 
 The facts profile defines a deliberately bounded `WHEEL_EVENT` subset for
 `0x0603`: `u8 unit` (`1=line`), `u8 source` (`1=wheel`), `u8 modifiers`
