@@ -238,6 +238,12 @@ fn windowFacts(
         return null;
     }
     if (env.should_quit.?(env)) return null;
+    const frame_live = call1(env, "frame-live-p", args[0]) orelse return null;
+    if (pending(env)) return null;
+    if (env.is_not_nil.?(env, frame_live) == false) {
+        signalError(env, "Proto-UI window facts require a live frame");
+        return null;
+    }
     if (!ensureWindowRegistry(env)) return null;
 
     const selected = call1(env, "frame-selected-window", args[0]) orelse return null;
@@ -406,6 +412,32 @@ fn frameFacts(
     return env.make_string.?(env, text.ptr, @intCast(text.len));
 }
 
+fn windowId(
+    maybe_env: ?*emacs.struct_emacs_env_32,
+    nargs: c_long,
+    args: [*c]emacs.emacs_value,
+    data: ?*anyopaque,
+) callconv(.c) emacs.emacs_value {
+    _ = data;
+    const env = maybe_env orelse return null;
+    if (pending(env)) return null;
+    if (nargs != 1) {
+        signalError(env, "Wrong number of arguments: proto-ui-window-id, 1");
+        return null;
+    }
+    if (env.should_quit.?(env)) return null;
+    const live = call1(env, "window-live-p", args[0]) orelse return null;
+    if (pending(env)) return null;
+    if (env.is_not_nil.?(env, live) == false) {
+        signalError(env, "Proto-UI window identity requires a live window");
+        return null;
+    }
+    if (!ensureWindowRegistry(env)) return null;
+    const id = stableWindowId(env, args[0]) orelse return null;
+    if (pending(env)) return null;
+    return env.make_integer.?(env, @intCast(id));
+}
+
 export fn emacs_module_init(runtime: *emacs.struct_emacs_runtime) c_int {
     if (runtime.size < @sizeOf(emacs.struct_emacs_runtime)) return 1;
     if (runtime.get_environment == null) return 2;
@@ -455,6 +487,19 @@ export fn emacs_module_init(runtime: *emacs.struct_emacs_runtime) c_int {
     var window_facts_args = [_]emacs.emacs_value{ window_facts_symbol, window_facts_value };
     _ = env.*.funcall.?(env, window_facts_defalias, 2, &window_facts_args);
     if (env.*.non_local_exit_check.?(env) != 0) return 17;
+    const window_id_value = env.*.make_function.?(
+        env,
+        1,
+        1,
+        windowId,
+        "Return the adapter-owned process-lifetime ID for WINDOW, which must be live.",
+        null,
+    ) orelse return 18;
+    const window_id_symbol = env.*.intern.?(env, "proto-ui-window-id") orelse return 19;
+    const window_id_defalias = env.*.intern.?(env, "defalias") orelse return 20;
+    var window_id_args = [_]emacs.emacs_value{ window_id_symbol, window_id_value };
+    _ = env.*.funcall.?(env, window_id_defalias, 2, &window_id_args);
+    if (env.*.non_local_exit_check.?(env) != 0) return 21;
     return 0;
 }
 
