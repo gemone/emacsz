@@ -1594,13 +1594,13 @@ Units are pixel, line, or page. Sources include wheel, touchpad, gesture, and sc
 
 | ID | Name | Direction | Payload |
 |---|---|---|---|
-| `0x0700` | `IME_ATTACH` | C→F | Context and policies |
-| `0x0701` | `IME_DETACH` | C→F | Context ID |
-| `0x0702` | `IME_FOCUS` | C→F | Focus state |
-| `0x0703` | `IME_CURSOR_RECT` | C→F | Candidate/preedit rectangle |
+| `0x0700` | `IME_ATTACH` | C→F | Context and policies (bounded v1) |
+| `0x0701` | `IME_DETACH` | C→F | Context identity (bounded v1) |
+| `0x0702` | `IME_FOCUS` | C→F | Focus state (bounded v1) |
+| `0x0703` | `IME_CURSOR_RECT` | C→F | Candidate/preedit rectangle (bounded v1) |
 | `0x0704` | `IME_ALLOWED_INPUT` | C→F | Input policy |
 | `0x0705` | `IME_SURROUNDING_TEXT` | C→F | Text and selected range |
-| `0x0706` | `IME_RESET` | C→F | Reason |
+| `0x0706` | `IME_RESET` | C→F | Reason (bounded v1) |
 | `0x0710` | `IME_ATTACHED` | F→C | Platform details |
 | `0x0711` | `IME_DETACHED` | F→C | Context ID |
 | `0x0712` | `IME_PREEDIT_START` | F→C | Context ID |
@@ -2752,6 +2752,29 @@ carry 1..120 valid UTF-8 bytes excluding C0/C1 controls and DEL.  These are publ
 text/height observations rendered as diagnostic bars; they are not mode/header/
 tab item models, face-accurate lines, mouse targets, redisplay-owned capture, or
 PGTK parity.
+
+Bounded IME context lifecycle is implemented for `IME_ATTACH`, `DETACH`,
+`FOCUS`, `CURSOR_RECT`, and `RESET`.  Every payload starts at offset 0 with
+nonzero `u64 context_id` then nonzero `u64 window_id`.  Exact forms are:
+
+* `ATTACH` (20 bytes): `u32 flags = 0` at offset 16.
+* `DETACH` (16 bytes): identity only.
+* `FOCUS` (20 bytes): `u8 focused = 0|1` at offset 16 and three zero bytes.
+* `CURSOR_RECT` (32 bytes): four window-relative `i32` values at offsets 16,
+  20, 24, and 28; cursor width and height must be positive.
+* `RESET` (20 bytes): `u8 reason = 0` at offset 16 and three zero bytes.
+
+Scene accepts a context only for a live window in the active frame, rejects
+duplicate contexts or a second context on a window, keeps at most four
+contexts, validates cursor containment, and requires all later operations to
+name the same window.  An authoritative `FRAME_UPDATE` reconciles contexts
+against its replacement window set: contexts without live owners are removed,
+and retained cursors that no longer fit are cleared.  `RESET` clears focus and
+cursor geometry while retaining the attachment.  Deleting the owner removes its
+context.  This is control-plane
+preparation only: there is no platform IME backend, composition state, commit
+application, candidate UI, surrounding-text query, or full multibyte-input
+claim.
 
 The facts profile defines a deliberately bounded `WHEEL_EVENT` subset for
 `0x0603`: `u8 unit` (`1=line`), `u8 source` (`1=wheel`), `u8 modifiers`

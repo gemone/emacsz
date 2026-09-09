@@ -309,7 +309,8 @@ Priorities:
 |---|---|---|---|
 | Keyboard events | P0 | Degraded | Printable ASCII insert, backspace, arrows, copy, paste; no keymap commands |
 | Modifier state | P0 | Degraded | Ctrl+C and Ctrl+V only; general modifier sets rejected |
-| Multibyte input | P0 | Pending | W12/W16 PGTK parity gate not met |
+| Multibyte input | P0 | Pending | No IME composition/commit path; bounded context lifecycle wire validation only |
+| IME context lifecycle | P1 | Degraded | `IME_ATTACH`/`DETACH`/`FOCUS`/`CURSOR_RECT`/`RESET` codecs and Scene owner validation; platform backend, composition, commit, and candidates pending |
 | Dead keys | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Mouse motion | P0 | Degraded | Bounded hover/drag admission; negotiated v2 preserves the exact button mask |
 | Mouse buttons | P0 | Degraded | Bounded left plus negotiated strict left/middle/right/X1/X2 v2 intents |

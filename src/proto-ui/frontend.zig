@@ -2797,6 +2797,134 @@ pub fn decodeModeLineV1(bytes: []const u8) Error!ModeLineWire {
     };
 }
 
+pub const max_ime_contexts: usize = 4;
+pub const ime_context_flags: u32 = 0;
+
+pub const ImeAttach = struct {
+    context_id: u64,
+    window_id: u64,
+    flags: u32 = 0,
+};
+
+pub const ImeDetach = struct {
+    context_id: u64,
+    window_id: u64,
+};
+
+pub const ImeFocus = struct {
+    context_id: u64,
+    window_id: u64,
+    focused: bool,
+};
+
+pub const ImeCursorRect = struct {
+    context_id: u64,
+    window_id: u64,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+};
+
+pub const ImeReset = struct {
+    context_id: u64,
+    window_id: u64,
+    reason: u8 = 0,
+};
+
+pub const ImeIdentity = struct { context_id: u64, window_id: u64 };
+
+fn decodeImeIdentity(bytes: []const u8) Error!ImeIdentity {
+    if (bytes.len < 16) return Error.InvalidTable;
+    const identity: ImeIdentity = .{
+        .context_id = std.mem.readInt(u64, bytes[0..8], .little),
+        .window_id = std.mem.readInt(u64, bytes[8..16], .little),
+    };
+    if (identity.context_id == 0 or identity.window_id == 0) return Error.InvalidTable;
+    return identity;
+}
+
+fn encodeImeIdentity(a: std.mem.Allocator, context_id: u64, window_id: u64, out: *std.ArrayList(u8)) !void {
+    if (context_id == 0 or window_id == 0) return Error.InvalidTable;
+    try putU64(out, a, context_id);
+    try putU64(out, a, window_id);
+}
+
+pub fn encodeImeAttach(a: std.mem.Allocator, request: ImeAttach, out: *std.ArrayList(u8)) !void {
+    if (request.flags != ime_context_flags) return Error.InvalidTable;
+    try encodeImeIdentity(a, request.context_id, request.window_id, out);
+    try putU32(out, a, request.flags);
+}
+
+pub fn decodeImeAttach(bytes: []const u8) Error!ImeAttach {
+    const identity = try decodeImeIdentity(bytes);
+    if (bytes.len != 20) return Error.InvalidTable;
+    const flags = std.mem.readInt(u32, bytes[16..20], .little);
+    if (flags != ime_context_flags) return Error.InvalidTable;
+    return .{ .context_id = identity.context_id, .window_id = identity.window_id, .flags = flags };
+}
+
+pub fn encodeImeDetach(a: std.mem.Allocator, request: ImeDetach, out: *std.ArrayList(u8)) !void {
+    try encodeImeIdentity(a, request.context_id, request.window_id, out);
+}
+
+pub fn decodeImeDetach(bytes: []const u8) Error!ImeDetach {
+    const identity = try decodeImeIdentity(bytes);
+    if (bytes.len != 16) return Error.InvalidTable;
+    return .{ .context_id = identity.context_id, .window_id = identity.window_id };
+}
+
+pub fn encodeImeFocus(a: std.mem.Allocator, request: ImeFocus, out: *std.ArrayList(u8)) !void {
+    try encodeImeIdentity(a, request.context_id, request.window_id, out);
+    try out.append(a, @intFromBool(request.focused));
+    try out.appendNTimes(a, 0, 3);
+}
+
+pub fn decodeImeFocus(bytes: []const u8) Error!ImeFocus {
+    const identity = try decodeImeIdentity(bytes);
+    if (bytes.len != 20 or bytes[16] > 1 or bytes[17] != 0 or bytes[18] != 0 or bytes[19] != 0)
+        return Error.InvalidTable;
+    return .{ .context_id = identity.context_id, .window_id = identity.window_id, .focused = bytes[16] == 1 };
+}
+
+pub fn encodeImeCursorRect(a: std.mem.Allocator, rect: ImeCursorRect, out: *std.ArrayList(u8)) !void {
+    if (rect.width <= 0 or rect.height <= 0) return Error.InvalidTable;
+    try encodeImeIdentity(a, rect.context_id, rect.window_id, out);
+    inline for (.{ rect.x, rect.y, rect.width, rect.height }) |value| {
+        try putI32(out, a, value);
+    }
+}
+
+pub fn decodeImeCursorRect(bytes: []const u8) Error!ImeCursorRect {
+    const identity = try decodeImeIdentity(bytes);
+    if (bytes.len != 32) return Error.InvalidTable;
+    const width: i32 = @bitCast(std.mem.readInt(u32, bytes[24..28], .little));
+    const height: i32 = @bitCast(std.mem.readInt(u32, bytes[28..32], .little));
+    if (width <= 0 or height <= 0) return Error.InvalidTable;
+    return .{
+        .context_id = identity.context_id,
+        .window_id = identity.window_id,
+        .x = @bitCast(std.mem.readInt(u32, bytes[16..20], .little)),
+        .y = @bitCast(std.mem.readInt(u32, bytes[20..24], .little)),
+        .width = width,
+        .height = height,
+    };
+}
+
+pub fn encodeImeReset(a: std.mem.Allocator, request: ImeReset, out: *std.ArrayList(u8)) !void {
+    if (request.reason != 0) return Error.InvalidTable;
+    try encodeImeIdentity(a, request.context_id, request.window_id, out);
+    try out.append(a, request.reason);
+    try out.appendNTimes(a, 0, 3);
+}
+
+pub fn decodeImeReset(bytes: []const u8) Error!ImeReset {
+    const identity = try decodeImeIdentity(bytes);
+    if (bytes.len != 20 or bytes[16] != 0 or bytes[17] != 0 or bytes[18] != 0 or bytes[19] != 0)
+        return Error.InvalidTable;
+    return .{ .context_id = identity.context_id, .window_id = identity.window_id, .reason = bytes[16] };
+}
+
 pub fn encodeTextInput(a: std.mem.Allocator, input: TextInput, out: *std.ArrayList(u8)) !void {
     if (!validBoundedUtf8Text(input.text, max_text_columns)) return Error.InvalidTable;
     try putU32(out, a, @intCast(input.text.len));
@@ -2945,6 +3073,17 @@ fn decodeResourceDeclaration(bytes: []const u8) Error!ResourceDeclaration {
     return .{ .kind = kind, .id = id, .generation = generation, .status = .live };
 }
 
+pub const ImeContext = struct {
+    context_id: u64,
+    window_id: u64,
+    frame_id: u32,
+    focused: bool = false,
+    cursor_x: i32 = 0,
+    cursor_y: i32 = 0,
+    cursor_width: i32 = 0,
+    cursor_height: i32 = 0,
+};
+
 pub const Scene = struct {
     allocator: std.mem.Allocator,
     session_id: ?u64 = null,
@@ -2984,6 +3123,8 @@ pub const Scene = struct {
     text: std.ArrayList(TextLine) = .empty,
     mode_lines: [max_mode_lines]ModeLine = undefined,
     mode_line_count: usize = 0,
+    ime_contexts: [max_ime_contexts]ImeContext = undefined,
+    ime_context_count: usize = 0,
     aux_lines: [max_aux_lines]ModeLine = undefined,
     aux_line_count: usize = 0,
     title: ?[:0]u8 = null,
@@ -3074,6 +3215,7 @@ pub const Scene = struct {
         self.frame_header = null;
         self.cursor = null;
         self.cursor_count = 0;
+        self.ime_context_count = 0;
         self.present = null;
         self.flush = null;
         self.render_hint = null;
@@ -3229,6 +3371,11 @@ pub const Scene = struct {
             },
             protocol.Message.atlas_glyph_add => try self.atlases.applyGlyphAdd(try protocol.decodeAtlasGlyphAdd(payload.bytes)),
             protocol.Message.atlas_invalidate => try self.atlases.applyInvalidate(try protocol.decodeAtlasInvalidate(payload.bytes)),
+            protocol.Message.ime_attach => try self.applyImeAttach(payload),
+            protocol.Message.ime_detach => try self.applyImeDetach(payload),
+            protocol.Message.ime_focus => try self.applyImeFocus(payload),
+            protocol.Message.ime_cursor_rect => try self.applyImeCursorRect(payload),
+            protocol.Message.ime_reset => try self.applyImeReset(payload),
             else => self.stats.control_messages += 1,
         }
         self.next_sequence = next_sequence;
@@ -3280,6 +3427,7 @@ pub const Scene = struct {
         self.text = .empty;
         self.mode_line_count = 0;
         self.aux_line_count = 0;
+        self.ime_context_count = 0;
         self.frame_header = null;
         self.cursor = null;
         self.present = null;
@@ -3803,6 +3951,13 @@ pub const Scene = struct {
         if (self.dialog) |dialog| {
             if (dialog.window_id == window_id) self.dialog = null;
         }
+        var ime_index: usize = 0;
+        while (ime_index < self.ime_context_count) {
+            if (self.ime_contexts[ime_index].window_id == window_id) {
+                self.ime_contexts[ime_index] = self.ime_contexts[self.ime_context_count - 1];
+                self.ime_context_count -= 1;
+            } else ime_index += 1;
+        }
         self.stats.control_messages += 1;
     }
 
@@ -3894,6 +4049,18 @@ pub const Scene = struct {
             }
             break :blk self.cursors[0];
         };
+        for (self.ime_contexts[0..self.ime_context_count]) |*context| {
+            if (context.window_id == updated.id) {
+                if (!inside(context.cursor_x, context.cursor_width, updated.width) or
+                    !inside(context.cursor_y, context.cursor_height, updated.height))
+                {
+                    context.cursor_x = 0;
+                    context.cursor_y = 0;
+                    context.cursor_width = 0;
+                    context.cursor_height = 0;
+                }
+            }
+        }
         self.windows.items[window_index] = updated;
         for (self.window_geometries.items) |*geometry| {
             if (geometry.window_id == updated.id and !windowGeometryFits(updated, geometry.*)) {
@@ -4622,6 +4789,112 @@ pub const Scene = struct {
         self.stats.control_messages += 1;
     }
 
+    fn findImeContext(self: *Scene, context_id: u64) ?*ImeContext {
+        for (self.ime_contexts[0..self.ime_context_count]) |*context| {
+            if (context.context_id == context_id) return context;
+        }
+        return null;
+    }
+
+    fn applyImeAttach(self: *Scene, payload: protocol.Payload) Error!void {
+        const request = try decodeImeAttach(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id) return Error.InvalidMessage;
+        _ = findWindow(self.windows.items, request.window_id) orelse
+            return Error.InvalidMessage;
+        if (self.findImeContext(request.context_id) != null) return Error.DuplicateResource;
+        for (self.ime_contexts[0..self.ime_context_count]) |context| {
+            if (context.window_id == request.window_id) return Error.InvalidMessage;
+        }
+        if (self.ime_context_count == max_ime_contexts) return Error.Unsupported;
+        self.ime_contexts[self.ime_context_count] = .{
+            .context_id = request.context_id,
+            .window_id = request.window_id,
+            .frame_id = frame.frame_id,
+        };
+        self.ime_context_count += 1;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyImeDetach(self: *Scene, payload: protocol.Payload) Error!void {
+        const request = try decodeImeDetach(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id) return Error.InvalidMessage;
+        for (self.ime_contexts[0..self.ime_context_count], 0..) |context, index| {
+            if (context.context_id == request.context_id) {
+                if (context.window_id != request.window_id) return Error.InvalidMessage;
+                self.ime_contexts[index] = self.ime_contexts[self.ime_context_count - 1];
+                self.ime_context_count -= 1;
+                self.stats.control_messages += 1;
+                return;
+            }
+        }
+        return Error.InvalidMessage;
+    }
+
+    fn applyImeFocus(self: *Scene, payload: protocol.Payload) Error!void {
+        const request = try decodeImeFocus(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id) return Error.InvalidMessage;
+        const context = self.findImeContext(request.context_id) orelse return Error.InvalidMessage;
+        if (context.window_id != request.window_id) return Error.InvalidMessage;
+        context.focused = request.focused;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyImeCursorRect(self: *Scene, payload: protocol.Payload) Error!void {
+        const rect = try decodeImeCursorRect(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id) return Error.InvalidMessage;
+        const context = self.findImeContext(rect.context_id) orelse return Error.InvalidMessage;
+        const owner = findWindow(self.windows.items, rect.window_id) orelse return Error.InvalidMessage;
+        if (context.window_id != rect.window_id) return Error.InvalidMessage;
+        if (!inside(rect.x, rect.width, owner.width) or
+            !inside(rect.y, rect.height, owner.height))
+            return Error.InvalidMessage;
+        context.cursor_x = rect.x;
+        context.cursor_y = rect.y;
+        context.cursor_width = rect.width;
+        context.cursor_height = rect.height;
+        self.stats.control_messages += 1;
+    }
+
+    fn applyImeReset(self: *Scene, payload: protocol.Payload) Error!void {
+        const request = try decodeImeReset(payload.bytes);
+        const frame = self.frame orelse return Error.FrameNotActive;
+        if (frame.frame_id != payload.envelope.frame_id) return Error.InvalidMessage;
+        const context = self.findImeContext(request.context_id) orelse return Error.InvalidMessage;
+        if (context.window_id != request.window_id) return Error.InvalidMessage;
+        context.focused = false;
+        context.cursor_x = 0;
+        context.cursor_y = 0;
+        context.cursor_width = 0;
+        context.cursor_height = 0;
+        self.stats.control_messages += 1;
+    }
+
+    fn reconcileImeContexts(self: *Scene, windows: []const Window) void {
+        var index: usize = 0;
+        while (index < self.ime_context_count) {
+            const context = &self.ime_contexts[index];
+            const owner = findWindow(windows, context.window_id) orelse {
+                self.ime_contexts[index] = self.ime_contexts[self.ime_context_count - 1];
+                self.ime_context_count -= 1;
+                continue;
+            };
+            if ((context.cursor_width != 0 or context.cursor_height != 0) and
+                (!inside(context.cursor_x, context.cursor_width, owner.width) or
+                    !inside(context.cursor_y, context.cursor_height, owner.height)))
+            {
+                context.cursor_x = 0;
+                context.cursor_y = 0;
+                context.cursor_width = 0;
+                context.cursor_height = 0;
+            }
+            index += 1;
+        }
+    }
+
     fn applyFrameCreate(self: *Scene, envelope: protocol.Envelope, bytes: []const u8) Error!void {
         if (bytes.len != 8) return Error.InvalidMessage;
         const frame_id = std.mem.readInt(u32, bytes[0..4], .little);
@@ -5037,6 +5310,7 @@ pub const Scene = struct {
         self.mode_line_count = mode_line_count;
         self.aux_lines = aux_lines;
         self.aux_line_count = aux_line_count;
+        self.reconcileImeContexts(windows.items);
         self.clear_areas.clearRetainingCapacity();
         self.scroll_runs.clearRetainingCapacity();
         self.dividers.clearRetainingCapacity();
@@ -6099,6 +6373,345 @@ test "window aux line codec rejects malformed and unsafe payloads" {
     try std.testing.expectError(Error.InvalidTable, encodeWindowAuxLineV1(a, c1_start, &bytes));
     const c1_end: ModeLineWire = .{ .window_id = 100, .x = 0, .y = 0, .width = 80, .height = 4, .flags = aux_line_header, .line = "A\u{9f}" };
     try std.testing.expectError(Error.InvalidTable, encodeWindowAuxLineV1(a, c1_end, &bytes));
+}
+
+test "ime context lifecycle validates owner and exact state" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+    try std.testing.expectEqual(@as(usize, 0), scene.ime_context_count);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeImeAttach(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    const attach = try windowLifecycleMessage(a, protocol.Message.ime_attach, 3, 7, payload.items);
+    defer a.free(attach);
+    try scene.apply(attach);
+    try std.testing.expectEqual(@as(usize, 1), scene.ime_context_count);
+    try std.testing.expectEqual(@as(u64, 11), scene.ime_contexts[0].context_id);
+
+    payload.clearRetainingCapacity();
+    try encodeImeFocus(a, .{ .context_id = 11, .window_id = 100, .focused = true }, &payload);
+    const focus = try windowLifecycleMessage(a, protocol.Message.ime_focus, 4, 7, payload.items);
+    defer a.free(focus);
+    try scene.apply(focus);
+    try std.testing.expect(scene.ime_contexts[0].focused);
+
+    payload.clearRetainingCapacity();
+    try encodeImeCursorRect(a, .{ .context_id = 11, .window_id = 100, .x = 8, .y = 8, .width = 4, .height = 8 }, &payload);
+    const cursor = try windowLifecycleMessage(a, protocol.Message.ime_cursor_rect, 5, 7, payload.items);
+    defer a.free(cursor);
+    try scene.apply(cursor);
+    try std.testing.expectEqual(@as(i32, 8), scene.ime_contexts[0].cursor_x);
+
+    payload.clearRetainingCapacity();
+    try encodeImeReset(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    const reset = try windowLifecycleMessage(a, protocol.Message.ime_reset, 6, 7, payload.items);
+    defer a.free(reset);
+    try scene.apply(reset);
+
+    payload.clearRetainingCapacity();
+    try encodeImeDetach(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    const detach = try windowLifecycleMessage(a, protocol.Message.ime_detach, 7, 7, payload.items);
+    defer a.free(detach);
+    try scene.apply(detach);
+    try std.testing.expectEqual(@as(usize, 0), scene.ime_context_count);
+}
+
+test "ime context codecs reject malformed values" {
+    const a = std.testing.allocator;
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+
+    try std.testing.expectError(Error.InvalidTable, encodeImeAttach(a, .{ .context_id = 0, .window_id = 100 }, &payload));
+    payload.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidTable, encodeImeAttach(a, .{ .context_id = 11, .window_id = 100, .flags = 1 }, &payload));
+    try std.testing.expectError(Error.InvalidTable, decodeImeAttach(payload.items));
+
+    payload.clearRetainingCapacity();
+    try encodeImeFocus(a, .{ .context_id = 11, .window_id = 100, .focused = true }, &payload);
+    payload.items[16] = 2;
+    try std.testing.expectError(Error.InvalidTable, decodeImeFocus(payload.items));
+
+    payload.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidTable, encodeImeCursorRect(a, .{ .context_id = 11, .window_id = 100, .x = 0, .y = 0, .width = 0, .height = 8 }, &payload));
+
+    payload.clearRetainingCapacity();
+    try std.testing.expectError(Error.InvalidTable, encodeImeReset(a, .{ .context_id = 11, .window_id = 100, .reason = 1 }, &payload));
+}
+
+test "ime reset clears state and deleted window removes context" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+    const second = try windowCreateMessage(a, 3, 7, .{ .window_id = 101, .parent_window_id = 0, .x = 0, .y = 0, .width = 40, .height = 40, .flags = 2, .default_face_id = 0, .depth = 0 });
+    defer a.free(second);
+    try scene.apply(second);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeImeAttach(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    const attach = try windowLifecycleMessage(a, protocol.Message.ime_attach, 4, 7, payload.items);
+    defer a.free(attach);
+    try scene.apply(attach);
+
+    payload.clearRetainingCapacity();
+    try encodeImeAttach(a, .{ .context_id = 12, .window_id = 101 }, &payload);
+    const attach_second = try windowLifecycleMessage(a, protocol.Message.ime_attach, 5, 7, payload.items);
+    defer a.free(attach_second);
+    try scene.apply(attach_second);
+
+    payload.clearRetainingCapacity();
+    try encodeImeFocus(a, .{ .context_id = 11, .window_id = 100, .focused = true }, &payload);
+    const focus = try windowLifecycleMessage(a, protocol.Message.ime_focus, 6, 7, payload.items);
+    defer a.free(focus);
+    try scene.apply(focus);
+    payload.clearRetainingCapacity();
+    try encodeImeCursorRect(a, .{ .context_id = 11, .window_id = 100, .x = 2, .y = 2, .width = 4, .height = 8 }, &payload);
+    const cursor = try windowLifecycleMessage(a, protocol.Message.ime_cursor_rect, 7, 7, payload.items);
+    defer a.free(cursor);
+    try scene.apply(cursor);
+
+    payload.clearRetainingCapacity();
+    try encodeImeReset(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    const reset = try windowLifecycleMessage(a, protocol.Message.ime_reset, 8, 7, payload.items);
+    defer a.free(reset);
+    try scene.apply(reset);
+    try std.testing.expect(!scene.ime_contexts[0].focused);
+    try std.testing.expectEqual(@as(i32, 0), scene.ime_contexts[0].cursor_width);
+
+    const delete = try windowDeleteMessage(a, 9, 7, 101);
+    defer a.free(delete);
+    try scene.apply(delete);
+    try std.testing.expectEqual(@as(usize, 1), scene.ime_context_count);
+    try std.testing.expectEqual(@as(u64, 11), scene.ime_contexts[0].context_id);
+    payload.clearRetainingCapacity();
+    try encodeImeFocus(a, .{ .context_id = 12, .window_id = 101, .focused = true }, &payload);
+    const stale_focus = try windowLifecycleMessage(a, protocol.Message.ime_focus, 10, 7, payload.items);
+    defer a.free(stale_focus);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(stale_focus));
+}
+
+test "ime wire payloads have exact layouts and bounded lifecycle" {
+    const a = std.testing.allocator;
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+
+    try encodeImeAttach(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    try std.testing.expectEqual(@as(usize, 20), payload.items.len);
+    try std.testing.expectEqual(@as(u64, 11), std.mem.readInt(u64, payload.items[0..8], .little));
+    try std.testing.expectEqual(@as(u64, 100), std.mem.readInt(u64, payload.items[8..16], .little));
+    try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, payload.items[16..20], .little));
+
+    payload.clearRetainingCapacity();
+    try encodeImeDetach(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    try std.testing.expectEqual(@as(usize, 16), payload.items.len);
+
+    payload.clearRetainingCapacity();
+    try encodeImeFocus(a, .{ .context_id = 11, .window_id = 100, .focused = true }, &payload);
+    try std.testing.expectEqual(@as(usize, 20), payload.items.len);
+    try std.testing.expectEqual(@as(u8, 1), payload.items[16]);
+    try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0 }, payload.items[17..20]);
+
+    payload.clearRetainingCapacity();
+    try encodeImeCursorRect(a, .{ .context_id = 11, .window_id = 100, .x = 2, .y = 3, .width = 4, .height = 5 }, &payload);
+    try std.testing.expectEqual(@as(usize, 32), payload.items.len);
+    try std.testing.expectEqual(@as(i32, 2), @as(i32, @bitCast(std.mem.readInt(u32, payload.items[16..20], .little))));
+    try std.testing.expectEqual(@as(i32, 3), @as(i32, @bitCast(std.mem.readInt(u32, payload.items[20..24], .little))));
+    try std.testing.expectEqual(@as(i32, 4), @as(i32, @bitCast(std.mem.readInt(u32, payload.items[24..28], .little))));
+    try std.testing.expectEqual(@as(i32, 5), @as(i32, @bitCast(std.mem.readInt(u32, payload.items[28..32], .little))));
+
+    payload.clearRetainingCapacity();
+    try encodeImeReset(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    try std.testing.expectEqual(@as(usize, 20), payload.items.len);
+    try std.testing.expectEqual(@as(u8, 0), payload.items[16]);
+
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var context_payload: std.ArrayList(u8) = .empty;
+    defer context_payload.deinit(a);
+    try encodeImeAttach(a, .{ .context_id = 11, .window_id = 100 }, &context_payload);
+    const attach = try windowLifecycleMessage(a, protocol.Message.ime_attach, 3, 7, context_payload.items);
+    defer a.free(attach);
+    try scene.apply(attach);
+    const duplicate_attach = try windowLifecycleMessage(a, protocol.Message.ime_attach, 4, 7, payload.items);
+    defer a.free(duplicate_attach);
+    try std.testing.expectError(Error.DuplicateResource, scene.apply(duplicate_attach));
+
+    payload.clearRetainingCapacity();
+    try encodeImeAttach(a, .{ .context_id = 12, .window_id = 100 }, &payload);
+    const same_window = try windowLifecycleMessage(a, protocol.Message.ime_attach, 4, 7, payload.items);
+    defer a.free(same_window);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(same_window));
+
+    payload.clearRetainingCapacity();
+    try encodeImeFocus(a, .{ .context_id = 11, .window_id = 101, .focused = true }, &payload);
+    const wrong_owner = try windowLifecycleMessage(a, protocol.Message.ime_focus, 4, 7, payload.items);
+    defer a.free(wrong_owner);
+    try std.testing.expectError(Error.InvalidMessage, scene.apply(wrong_owner));
+
+    // Four contexts are accepted; a fifth context/window is rejected.
+    var extra_payload: std.ArrayList(u8) = .empty;
+    defer extra_payload.deinit(a);
+    const created_windows = [_]u64{ 101, 102, 103, 104 };
+    for (created_windows, 0..) |window_id, index| {
+        const create_sequence = scene.next_sequence.?;
+        const create_window = try windowCreateMessage(a, create_sequence, 7, .{
+            .window_id = window_id,
+            .parent_window_id = 0,
+            .x = 0,
+            .y = 0,
+            .width = 40,
+            .height = 40,
+            .flags = 2,
+            .default_face_id = 0,
+            .depth = 0,
+        });
+        defer a.free(create_window);
+        try scene.apply(create_window);
+        extra_payload.clearRetainingCapacity();
+        try encodeImeAttach(a, .{ .context_id = 20 + @as(u64, @intCast(index)), .window_id = window_id }, &extra_payload);
+        const attach_sequence = scene.next_sequence.?;
+        const attach_extra = try windowLifecycleMessage(a, protocol.Message.ime_attach, attach_sequence, 7, extra_payload.items);
+        defer a.free(attach_extra);
+        if (index < 3) {
+            try scene.apply(attach_extra);
+        } else {
+            try std.testing.expectEqual(@as(usize, 4), scene.ime_context_count);
+            try std.testing.expectError(Error.Unsupported, scene.apply(attach_extra));
+        }
+    }
+    scene.resetForResync();
+    try std.testing.expectEqual(@as(usize, 0), scene.ime_context_count);
+}
+
+test "ime contexts reconcile authoritative window replacement" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+    const second = try windowCreateMessage(a, 3, 7, .{ .window_id = 101, .parent_window_id = 0, .x = 0, .y = 0, .width = 40, .height = 40, .flags = 2, .default_face_id = 0, .depth = 0 });
+    defer a.free(second);
+    try scene.apply(second);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeImeAttach(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    const attach = try windowLifecycleMessage(a, protocol.Message.ime_attach, 4, 7, payload.items);
+    defer a.free(attach);
+    try scene.apply(attach);
+    payload.clearRetainingCapacity();
+    try encodeImeAttach(a, .{ .context_id = 12, .window_id = 101 }, &payload);
+    const attach_second = try windowLifecycleMessage(a, protocol.Message.ime_attach, 5, 7, payload.items);
+    defer a.free(attach_second);
+    try scene.apply(attach_second);
+    payload.clearRetainingCapacity();
+    try encodeImeCursorRect(a, .{ .context_id = 11, .window_id = 100, .x = 70, .y = 2, .width = 4, .height = 8 }, &payload);
+    const cursor = try windowLifecycleMessage(a, protocol.Message.ime_cursor_rect, 6, 7, payload.items);
+    defer a.free(cursor);
+    try scene.apply(cursor);
+    try std.testing.expectEqual(@as(i32, 4), scene.ime_contexts[0].cursor_width);
+
+    const narrow_header: protocol.FrameUpdateHeader = .{
+        .frame_id = 7,
+        .frame_generation = 1,
+        .sequence = 7,
+        .redisplay_generation = 2,
+        .logical_x = 0,
+        .logical_y = 0,
+        .logical_width = 20,
+        .logical_height = 60,
+        .physical_x = 0,
+        .physical_y = 0,
+        .physical_width = 20,
+        .physical_height = 60,
+        .scale = 1,
+        .dpi_x = 96,
+        .dpi_y = 96,
+        .damage_mode = 2,
+        .update_cause = 1,
+        .coalesced_count = 0,
+        .timestamp_ns = 7,
+    };
+    var narrow_windows: std.ArrayList(u8) = .empty;
+    defer narrow_windows.deinit(a);
+    var narrow_rows: std.ArrayList(u8) = .empty;
+    defer narrow_rows.deinit(a);
+    var narrow_damage: std.ArrayList(u8) = .empty;
+    defer narrow_damage.deinit(a);
+    try encodeWindow(a, .{ .id = 100, .frame_id = 7, .x = 0, .y = 0, .width = 20, .height = 60 }, &narrow_windows);
+    try encodeRow(a, .{ .window_id = 100, .index = 0, .flags = 0, .x = 0, .y = 0, .width = 20, .height = 10, .ascent = 7, .descent = 3, .baseline = 7, .visible_height = 10 }, &narrow_rows);
+    try encodeRect(a, .{ .x = 0, .y = 0, .width = 20, .height = 60 }, &narrow_damage);
+    const narrow_sections = [_]protocol.Section{
+        .{ .kind = protocol.SectionKind.windows, .records = narrow_windows.items },
+        .{ .kind = protocol.SectionKind.rows, .records = narrow_rows.items },
+        .{ .kind = protocol.SectionKind.damage, .records = narrow_damage.items },
+    };
+    var narrow_payload: std.ArrayList(u8) = .empty;
+    defer narrow_payload.deinit(a);
+    try protocol.encodeFrameUpdate(a, .{ .header = narrow_header, .sections = &narrow_sections }, &narrow_payload);
+    const replacement = try windowLifecycleMessage(a, protocol.Message.frame_update, 7, 7, narrow_payload.items);
+    defer a.free(replacement);
+    try scene.apply(replacement);
+    try std.testing.expectEqual(@as(usize, 1), scene.ime_context_count);
+    try std.testing.expectEqual(@as(u64, 11), scene.ime_contexts[0].context_id);
+    try std.testing.expectEqual(@as(i32, 0), scene.ime_contexts[0].cursor_width);
+}
+
+test "ime cursor clears when a window patch makes it stale" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try encodeImeAttach(a, .{ .context_id = 11, .window_id = 100 }, &payload);
+    const attach = try windowLifecycleMessage(a, protocol.Message.ime_attach, 3, 7, payload.items);
+    defer a.free(attach);
+    try scene.apply(attach);
+    payload.clearRetainingCapacity();
+    try encodeImeCursorRect(a, .{ .context_id = 11, .window_id = 100, .x = 74, .y = 2, .width = 4, .height = 8 }, &payload);
+    const cursor = try windowLifecycleMessage(a, protocol.Message.ime_cursor_rect, 4, 7, payload.items);
+    defer a.free(cursor);
+    try scene.apply(cursor);
+
+    var patch_payload: std.ArrayList(u8) = .empty;
+    defer patch_payload.deinit(a);
+    try protocol.encodeWindowPatch(a, .{ .flags = protocol.WindowPatchFlags.width, .frame_id = 7, .frame_generation = 1, .window_id = 100, .width = 40 }, &patch_payload);
+    const patch = try windowLifecycleMessage(a, protocol.Message.window_patch, 5, 7, patch_payload.items);
+    defer a.free(patch);
+    try scene.apply(patch);
+    try std.testing.expectEqual(@as(i32, 0), scene.ime_contexts[0].cursor_width);
 }
 
 test "damage rects have a bounded variable wire form" {
