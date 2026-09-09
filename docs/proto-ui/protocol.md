@@ -1601,18 +1601,35 @@ Units are pixel, line, or page. Sources include wheel, touchpad, gesture, and sc
 | `0x0704` | `IME_ALLOWED_INPUT` | C→F | Input policy |
 | `0x0705` | `IME_SURROUNDING_TEXT` | C→F | Text and selected range |
 | `0x0706` | `IME_RESET` | C→F | Reason (bounded v1) |
-| `0x0710` | `IME_ATTACHED` | F→C | Platform details |
-| `0x0711` | `IME_DETACHED` | F→C | Context ID |
-| `0x0712` | `IME_PREEDIT_START` | F→C | Context ID |
-| `0x0713` | `IME_PREEDIT_UPDATE` | F→C | Styled preedit segments |
-| `0x0714` | `IME_PREEDIT_END` | F→C | Context ID |
-| `0x0715` | `IME_COMMIT` | F→C | Committed text |
-| `0x0716` | `IME_REQUEST_SURROUNDING` | F→C | Request ID |
-| `0x0717` | `IME_DELETE_SURROUNDING` | F→C | Offset/length |
-| `0x0718` | `IME_CANDIDATE_UPDATE` | F→C | Candidate state/geometry |
-| `0x0719` | `IME_CANCEL` | F→C | Context ID |
+| `0x0710` | `IME_ATTACHED` | F→C | Platform details (bounded v1) |
+| `0x0711` | `IME_DETACHED` | F→C | Context and reserved zero reason (bounded v1) |
+| `0x0712` | `IME_PREEDIT_START` | F→C | Context ID (bounded v1) |
+| `0x0713` | `IME_PREEDIT_UPDATE` | F→C | One unstyled preedit segment (bounded v1) |
+| `0x0714` | `IME_PREEDIT_END` | F→C | Context ID (bounded v1) |
+| `0x0715` | `IME_COMMIT` | F→C | Committed text (bounded v1) |
+| `0x0716` | `IME_REQUEST_SURROUNDING` | F→C | Context and request ID (bounded v1) |
+| `0x0717` | `IME_DELETE_SURROUNDING` | F→C | Offset and length (bounded v1) |
+| `0x0718` | `IME_CANDIDATE_UPDATE` | F→C | Selected label, state, and geometry (bounded v1) |
+| `0x0719` | `IME_CANCEL` | F→C | Context ID (bounded v1) |
 
-Preedit segments include text, selection range, underline/highlight style, and conversion target.
+All reverse payloads are little-endian.  `ATTACHED` is 16 bytes (`u64 context`,
+`u8 platform=1`, three zero bytes, `u32 flags=0`).  `DETACHED` is 12 bytes
+(`u64 context`, `u8 reason=0`, three zero bytes); only this reserved zero reason
+is valid.  `PREEDIT_START`, `PREEDIT_END`, and `CANCEL` are exactly 8 bytes and
+contain only a nonzero context ID.  `PREEDIT_UPDATE` is `u64 context`, `u32
+cursor`, `u32 selected_length`, `u32 byte_length`, and UTF-8 bytes; text is
+0..120 bytes, excludes C0/C1/DEL, and `selected_length <= cursor <=
+byte_length`.  `COMMIT` is `u64 context`, `u32 byte_length`, and 1..120 UTF-8
+bytes excluding C0/C1/DEL.  `REQUEST_SURROUNDING` is 16 bytes with nonzero
+`u64 context` and `u64 request_id`.  `DELETE_SURROUNDING` is 16 bytes with
+`u64 context`, `i32 offset`, and `u32 length`; length is 1..120, offset is
+-120..120, and a before-cursor deletion cannot cross offset zero.
+`CANDIDATE_UPDATE` is `u64 context`, four `u32` state values, four `i32`
+cursor-rectangle values, a `u32` label length, and label bytes; it allows up to
+64 candidates, 16 pages, a positive cursor rectangle, and one 0..120-byte
+label.  The full styled preedit/conversion-target and full candidate-list model
+remains pending.  These are wire codecs only: no platform IME backend or
+core-side application is claimed.
 
 ## 17. Selection, clipboard, and DND messages
 

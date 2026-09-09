@@ -311,7 +311,8 @@ Priorities:
 | Modifier state | P0 | Degraded | Ctrl+C and Ctrl+V only; general modifier sets rejected |
 | Multibyte input | P0 | Pending | No IME composition/commit path; bounded context lifecycle wire validation only |
 | IME context lifecycle | P1 | Degraded | `IME_ATTACH`/`DETACH`/`FOCUS`/`CURSOR_RECT`/`ALLOWED_INPUT`/`SURROUNDING_TEXT`/`RESET` codecs and Scene owner validation; platform backend, composition, commit, and candidates pending |
-| IME policy and surrounding state | P1 | Degraded | Bounded policy mask and 120-byte surrounding-text snapshot in Scene; reverse commit/preedit, platform backend, and Emacs application pending |
+| IME policy and surrounding state | P1 | Degraded | Bounded policy mask and 120-byte surrounding-text snapshot in Scene; platform backend and Emacs application pending |
+| IME reverse wire reports | P1 | Degraded | Bounded attached/detached/preedit/commit/surrounding/delete/candidate/cancel wire codecs; no platform backend, rendering, or core application |
 | Dead keys | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Mouse motion | P0 | Degraded | Bounded hover/drag admission; negotiated v2 preserves the exact button mask |
 | Mouse buttons | P0 | Degraded | Bounded left plus negotiated strict left/middle/right/X1/X2 v2 intents |

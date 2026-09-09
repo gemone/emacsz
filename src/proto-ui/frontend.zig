@@ -2993,6 +2993,276 @@ pub fn decodeImeSurroundingText(bytes: []const u8) Error!ImeSurroundingText {
     };
 }
 
+pub const ImePlatform = enum(u8) {
+    none = 0,
+    basic = 1,
+};
+
+pub const ImeAttached = struct {
+    context_id: u64,
+    platform: ImePlatform = .none,
+    flags: u32 = 0,
+};
+
+pub const ImeDetached = struct {
+    context_id: u64,
+    reason: u8 = 0,
+};
+
+pub const ImePreeditUpdate = struct {
+    context_id: u64,
+    cursor_offset: u32,
+    selected_length: u32,
+    bytes: []const u8,
+};
+
+pub const ImeCommit = struct {
+    context_id: u64,
+    bytes: []const u8,
+};
+
+pub const ImeRequestSurrounding = struct {
+    context_id: u64,
+    request_id: u64,
+};
+
+pub const ImeDeleteSurrounding = struct {
+    context_id: u64,
+    offset: i32,
+    length: u32,
+};
+
+pub const max_ime_candidates: u32 = 64;
+pub const max_ime_candidate_pages: u32 = 16;
+
+pub const ImeCandidateUpdate = struct {
+    context_id: u64,
+    selected_index: u32,
+    candidate_count: u32,
+    page_index: u32,
+    page_count: u32,
+    cursor_x: i32,
+    cursor_y: i32,
+    cursor_width: i32,
+    cursor_height: i32,
+    selected_label: []const u8,
+
+    pub fn valid(self: ImeCandidateUpdate) bool {
+        if (self.candidate_count > max_ime_candidates or
+            self.page_count == 0 or self.page_count > max_ime_candidate_pages or
+            self.page_index >= self.page_count) return false;
+        if (self.candidate_count == 0) {
+            if (self.selected_index != 0 or self.selected_label.len != 0) return false;
+        } else {
+            if (self.selected_index >= self.candidate_count or
+                self.selected_label.len == 0 or
+                self.selected_label.len > max_text_columns) return false;
+        }
+        return self.cursor_width > 0 and self.cursor_height > 0;
+    }
+};
+
+fn encodeImeContextId(a: std.mem.Allocator, context_id: u64, out: *std.ArrayList(u8)) !void {
+    if (context_id == 0) return Error.InvalidTable;
+    try putU64(out, a, context_id);
+}
+
+fn decodeImeContextId(bytes: []const u8) Error!u64 {
+    if (bytes.len < 8) return Error.InvalidTable;
+    const context_id = std.mem.readInt(u64, bytes[0..8], .little);
+    if (context_id == 0) return Error.InvalidTable;
+    return context_id;
+}
+
+pub fn encodeImeAttached(a: std.mem.Allocator, payload: ImeAttached, out: *std.ArrayList(u8)) !void {
+    if (payload.flags != 0 or payload.platform == .none) return Error.InvalidTable;
+    try encodeImeContextId(a, payload.context_id, out);
+    try out.append(a, @intFromEnum(payload.platform));
+    try out.appendNTimes(a, 0, 3);
+    try putU32(out, a, payload.flags);
+}
+
+pub fn decodeImeAttached(bytes: []const u8) Error!ImeAttached {
+    const context_id = try decodeImeContextId(bytes);
+    if (bytes.len != 16) return Error.InvalidTable;
+    const platform: ImePlatform = switch (bytes[8]) {
+        0 => .none,
+        1 => .basic,
+        else => return Error.InvalidTable,
+    };
+    if (platform == .none or bytes[9] != 0 or bytes[10] != 0 or bytes[11] != 0)
+        return Error.InvalidTable;
+    const flags = std.mem.readInt(u32, bytes[12..16], .little);
+    if (flags != 0) return Error.InvalidTable;
+    return .{ .context_id = context_id, .platform = platform, .flags = flags };
+}
+
+pub fn encodeImeDetached(a: std.mem.Allocator, payload: ImeDetached, out: *std.ArrayList(u8)) !void {
+    if (payload.reason != 0) return Error.InvalidTable;
+    try encodeImeContextId(a, payload.context_id, out);
+    try out.append(a, payload.reason);
+    try out.appendNTimes(a, 0, 3);
+}
+
+pub fn decodeImeDetached(bytes: []const u8) Error!ImeDetached {
+    const context_id = try decodeImeContextId(bytes);
+    if (bytes.len != 12 or bytes[8] != 0 or bytes[9] != 0 or bytes[10] != 0 or bytes[11] != 0)
+        return Error.InvalidTable;
+    return .{ .context_id = context_id, .reason = bytes[8] };
+}
+
+pub fn encodeImePreeditStart(a: std.mem.Allocator, context_id: u64, out: *std.ArrayList(u8)) !void {
+    try encodeImeContextId(a, context_id, out);
+}
+
+pub fn decodeImePreeditStart(bytes: []const u8) Error!u64 {
+    const context_id = try decodeImeContextId(bytes);
+    if (bytes.len != 8) return Error.InvalidTable;
+    return context_id;
+}
+
+pub fn encodeImePreeditUpdate(a: std.mem.Allocator, payload: ImePreeditUpdate, out: *std.ArrayList(u8)) !void {
+    if (!validBoundedUtf8Line(payload.bytes, max_text_columns)) return Error.InvalidTable;
+    if (payload.selected_length > payload.cursor_offset or payload.cursor_offset > payload.bytes.len)
+        return Error.InvalidTable;
+    try encodeImeContextId(a, payload.context_id, out);
+    try putU32(out, a, payload.cursor_offset);
+    try putU32(out, a, payload.selected_length);
+    try putU32(out, a, @intCast(payload.bytes.len));
+    try out.appendSlice(a, payload.bytes);
+}
+
+pub fn decodeImePreeditUpdate(bytes: []const u8) Error!ImePreeditUpdate {
+    const context_id = try decodeImeContextId(bytes);
+    if (bytes.len < 20) return Error.InvalidTable;
+    const cursor_offset = std.mem.readInt(u32, bytes[8..12], .little);
+    const selected_length = std.mem.readInt(u32, bytes[12..16], .little);
+    const length = std.mem.readInt(u32, bytes[16..20], .little);
+    if (bytes.len != 20 + length) return Error.InvalidTable;
+    const text = bytes[20..];
+    if (!validBoundedUtf8Line(text, max_text_columns)) return Error.InvalidTable;
+    if (selected_length > cursor_offset or cursor_offset > text.len) return Error.InvalidTable;
+    return .{ .context_id = context_id, .cursor_offset = cursor_offset, .selected_length = selected_length, .bytes = text };
+}
+
+pub fn encodeImePreeditEnd(a: std.mem.Allocator, context_id: u64, out: *std.ArrayList(u8)) !void {
+    try encodeImeContextId(a, context_id, out);
+}
+
+pub fn decodeImePreeditEnd(bytes: []const u8) Error!u64 {
+    const context_id = try decodeImeContextId(bytes);
+    if (bytes.len != 8) return Error.InvalidTable;
+    return context_id;
+}
+
+pub fn encodeImeCommit(a: std.mem.Allocator, payload: ImeCommit, out: *std.ArrayList(u8)) !void {
+    if (!validBoundedUtf8Text(payload.bytes, max_text_columns)) return Error.InvalidTable;
+    try encodeImeContextId(a, payload.context_id, out);
+    try putU32(out, a, @intCast(payload.bytes.len));
+    try out.appendSlice(a, payload.bytes);
+}
+
+pub fn decodeImeCommit(bytes: []const u8) Error!ImeCommit {
+    const context_id = try decodeImeContextId(bytes);
+    if (bytes.len < 12) return Error.InvalidTable;
+    const length = std.mem.readInt(u32, bytes[8..12], .little);
+    if (bytes.len != 12 + length) return Error.InvalidTable;
+    const text = bytes[12..];
+    if (!validBoundedUtf8Text(text, max_text_columns)) return Error.InvalidTable;
+    return .{ .context_id = context_id, .bytes = text };
+}
+
+pub fn encodeImeRequestSurrounding(a: std.mem.Allocator, payload: ImeRequestSurrounding, out: *std.ArrayList(u8)) !void {
+    if (payload.request_id == 0) return Error.InvalidTable;
+    try encodeImeContextId(a, payload.context_id, out);
+    try putU64(out, a, payload.request_id);
+}
+
+pub fn decodeImeRequestSurrounding(bytes: []const u8) Error!ImeRequestSurrounding {
+    const context_id = try decodeImeContextId(bytes);
+    if (bytes.len != 16) return Error.InvalidTable;
+    const request_id = std.mem.readInt(u64, bytes[8..16], .little);
+    if (request_id == 0) return Error.InvalidTable;
+    return .{ .context_id = context_id, .request_id = request_id };
+}
+
+pub fn encodeImeDeleteSurrounding(a: std.mem.Allocator, payload: ImeDeleteSurrounding, out: *std.ArrayList(u8)) !void {
+    if (payload.length == 0 or payload.length > max_text_columns or
+        payload.offset < -@as(i32, @intCast(max_text_columns)) or
+        payload.offset > max_text_columns) return Error.InvalidTable;
+    if (payload.offset < 0 and payload.length > @as(u32, @intCast(-payload.offset))) return Error.InvalidTable;
+    try encodeImeContextId(a, payload.context_id, out);
+    try putI32(out, a, payload.offset);
+    try putU32(out, a, payload.length);
+}
+
+pub fn decodeImeDeleteSurrounding(bytes: []const u8) Error!ImeDeleteSurrounding {
+    const context_id = try decodeImeContextId(bytes);
+    if (bytes.len != 16) return Error.InvalidTable;
+    const offset: i32 = @bitCast(std.mem.readInt(u32, bytes[8..12], .little));
+    const length = std.mem.readInt(u32, bytes[12..16], .little);
+    if (length == 0 or length > max_text_columns or
+        offset < -@as(i32, @intCast(max_text_columns)) or offset > max_text_columns)
+        return Error.InvalidTable;
+    if (offset < 0 and length > @as(u32, @intCast(-offset))) return Error.InvalidTable;
+    return .{ .context_id = context_id, .offset = offset, .length = length };
+}
+
+pub fn encodeImeCandidateUpdate(a: std.mem.Allocator, payload: ImeCandidateUpdate, out: *std.ArrayList(u8)) !void {
+    if (!payload.valid()) return Error.InvalidTable;
+    if (!validBoundedUtf8Line(payload.selected_label, max_text_columns)) return Error.InvalidTable;
+    try encodeImeContextId(a, payload.context_id, out);
+    inline for (.{ payload.selected_index, payload.candidate_count, payload.page_index, payload.page_count }) |value| {
+        try putU32(out, a, value);
+    }
+    inline for (.{ payload.cursor_x, payload.cursor_y, payload.cursor_width, payload.cursor_height }) |value| {
+        try putI32(out, a, value);
+    }
+    try putU32(out, a, @intCast(payload.selected_label.len));
+    try out.appendSlice(a, payload.selected_label);
+}
+
+pub fn decodeImeCandidateUpdate(bytes: []const u8) Error!ImeCandidateUpdate {
+    const context_id = try decodeImeContextId(bytes);
+    if (bytes.len < 44) return Error.InvalidTable;
+    var values: [4]u32 = undefined;
+    inline for (0..4) |index| {
+        values[index] = std.mem.readInt(u32, bytes[8 + index * 4 ..][0..4], .little);
+    }
+    var rects: [4]i32 = undefined;
+    inline for (0..4) |index| {
+        rects[index] = @bitCast(std.mem.readInt(u32, bytes[24 + index * 4 ..][0..4], .little));
+    }
+    const length = std.mem.readInt(u32, bytes[40..44], .little);
+    if (bytes.len != 44 + length) return Error.InvalidTable;
+    const label = bytes[44..];
+    if (!validBoundedUtf8Line(label, max_text_columns)) return Error.InvalidTable;
+    const payload: ImeCandidateUpdate = .{
+        .context_id = context_id,
+        .selected_index = values[0],
+        .candidate_count = values[1],
+        .page_index = values[2],
+        .page_count = values[3],
+        .cursor_x = rects[0],
+        .cursor_y = rects[1],
+        .cursor_width = rects[2],
+        .cursor_height = rects[3],
+        .selected_label = label,
+    };
+    if (!payload.valid()) return Error.InvalidTable;
+    return payload;
+}
+
+pub fn encodeImeCancel(a: std.mem.Allocator, context_id: u64, out: *std.ArrayList(u8)) !void {
+    try encodeImeContextId(a, context_id, out);
+}
+
+pub fn decodeImeCancel(bytes: []const u8) Error!u64 {
+    const context_id = try decodeImeContextId(bytes);
+    if (bytes.len != 8) return Error.InvalidTable;
+    return context_id;
+}
+
 pub fn encodeTextInput(a: std.mem.Allocator, input: TextInput, out: *std.ArrayList(u8)) !void {
     if (!validBoundedUtf8Text(input.text, max_text_columns)) return Error.InvalidTable;
     try putU32(out, a, @intCast(input.text.len));
@@ -6969,6 +7239,92 @@ test "ime allowed input and surrounding text validate wire and state" {
     try std.testing.expectEqual(@as(u32, 0), scene.ime_contexts[0].surrounding_cursor_offset);
     try std.testing.expectEqual(@as(u32, 0), scene.ime_contexts[0].surrounding_selected_length);
     try std.testing.expectEqual(@as(usize, 1), scene.ime_context_count);
+}
+
+test "ime reverse codecs round trip and reject invalid bounded state" {
+    const a = std.testing.allocator;
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+
+    try encodeImeAttached(a, .{ .context_id = 11, .platform = .basic }, &payload);
+    try std.testing.expectEqual(@as(usize, 16), payload.items.len);
+    const attached = try decodeImeAttached(payload.items);
+    try std.testing.expectEqual(ImePlatform.basic, attached.platform);
+    for (9..12) |offset| {
+        payload.items[offset] = 1;
+        try std.testing.expectError(Error.InvalidTable, decodeImeAttached(payload.items));
+        payload.items[offset] = 0;
+    }
+    payload.items[8] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeImeAttached(payload.items));
+
+    payload.clearRetainingCapacity();
+    try encodeImeDetached(a, .{ .context_id = 11 }, &payload);
+    try std.testing.expectEqual(@as(usize, 12), payload.items.len);
+    payload.items[8] = 1;
+    try std.testing.expectError(Error.InvalidTable, decodeImeDetached(payload.items));
+
+    payload.clearRetainingCapacity();
+    try encodeImePreeditUpdate(a, .{ .context_id = 11, .cursor_offset = 3, .selected_length = 1, .bytes = "abcd" }, &payload);
+    try std.testing.expectEqual(@as(usize, 24), payload.items.len);
+    const preedit = try decodeImePreeditUpdate(payload.items);
+    try std.testing.expectEqual(@as(u32, 1), preedit.selected_length);
+    try std.testing.expectEqualStrings("abcd", preedit.bytes);
+    payload.items[19] = 0xff;
+    try std.testing.expectError(Error.InvalidTable, decodeImePreeditUpdate(payload.items));
+
+    payload.clearRetainingCapacity();
+    try encodeImeCommit(a, .{ .context_id = 11, .bytes = "汉" }, &payload);
+    try std.testing.expectEqual(@as(usize, 15), payload.items.len);
+    const commit = try decodeImeCommit(payload.items);
+    try std.testing.expectEqualStrings("汉", commit.bytes);
+    payload.items[12] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeImeCommit(payload.items));
+
+    payload.clearRetainingCapacity();
+    try encodeImeRequestSurrounding(a, .{ .context_id = 11, .request_id = 77 }, &payload);
+    try std.testing.expectEqual(@as(usize, 16), payload.items.len);
+    try std.testing.expectEqual(@as(u64, 77), (try decodeImeRequestSurrounding(payload.items)).request_id);
+    payload.items[8] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeImeRequestSurrounding(payload.items));
+
+    payload.clearRetainingCapacity();
+    try encodeImeDeleteSurrounding(a, .{ .context_id = 11, .offset = -2, .length = 2 }, &payload);
+    try std.testing.expectEqual(@as(usize, 16), payload.items.len);
+    try std.testing.expectEqual(@as(i32, -2), (try decodeImeDeleteSurrounding(payload.items)).offset);
+    payload.items[12] = 3;
+    try std.testing.expectError(Error.InvalidTable, decodeImeDeleteSurrounding(payload.items));
+
+    payload.clearRetainingCapacity();
+    try encodeImeCandidateUpdate(a, .{ .context_id = 11, .selected_index = 1, .candidate_count = 3, .page_index = 0, .page_count = 2, .cursor_x = 8, .cursor_y = 8, .cursor_width = 40, .cursor_height = 16, .selected_label = "乙" }, &payload);
+    var candidate = try decodeImeCandidateUpdate(payload.items);
+    try std.testing.expectEqual(@as(u32, 1), candidate.selected_index);
+    try std.testing.expectEqualStrings("乙", candidate.selected_label);
+    candidate.candidate_count = 0;
+    try std.testing.expectError(Error.InvalidTable, encodeImeCandidateUpdate(a, candidate, &payload));
+
+    payload.clearRetainingCapacity();
+    try encodeImeCancel(a, 11, &payload);
+    try std.testing.expectEqual(@as(u64, 11), try decodeImeCancel(payload.items));
+    payload.items[0] = 0;
+    try std.testing.expectError(Error.InvalidTable, decodeImeCancel(payload.items));
+
+    payload.clearRetainingCapacity();
+    try encodeImePreeditStart(a, 11, &payload);
+    try std.testing.expectEqual(@as(u64, 11), try decodeImePreeditStart(payload.items));
+    payload.clearRetainingCapacity();
+    try encodeImePreeditEnd(a, 11, &payload);
+    try std.testing.expectEqual(@as(u64, 11), try decodeImePreeditEnd(payload.items));
+    payload.append(a, 0) catch unreachable;
+    try std.testing.expectError(Error.InvalidTable, decodeImePreeditEnd(payload.items));
+    payload.clearRetainingCapacity();
+    try encodeImeCancel(a, 11, &payload);
+    payload.append(a, 0) catch unreachable;
+    try std.testing.expectError(Error.InvalidTable, decodeImeCancel(payload.items));
+    payload.clearRetainingCapacity();
+    try encodeImePreeditStart(a, 11, &payload);
+    payload.append(a, 0) catch unreachable;
+    try std.testing.expectError(Error.InvalidTable, decodeImePreeditStart(payload.items));
 }
 
 test "damage rects have a bounded variable wire form" {
