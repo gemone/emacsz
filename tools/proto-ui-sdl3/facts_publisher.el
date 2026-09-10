@@ -33,6 +33,7 @@
 (defvar proto-ui--theme-observed nil)
 (defvar proto-ui--monitor-observed nil)
 (defvar proto-ui--dpi-observed nil)
+(defvar proto-ui--window-resize-observed nil)
 
 (defconst proto-ui--module-path (getenv "PROTO_UI_MODULE_PATH"))
 (defconst proto-ui--local-compat
@@ -369,6 +370,35 @@
                (> (plist-get event :scale) 0))
       (setq proto-ui--dpi-observed event))))
 
+(defun proto-ui--window-action (value)
+  (let* ((event (condition-case nil
+                  (proto-ui--json-plist value)
+                (error nil)))
+         (request (plist-get event :request))
+         (frame (selected-frame))
+         (window (selected-window)))
+    (when (and (string= request "resize") (frame-live-p frame)
+               (numberp (plist-get event :width))
+               (numberp (plist-get event :height))
+               (> (plist-get event :width) 0)
+               (> (plist-get event :height) 0)
+               (<= (plist-get event :width) 16384)
+               (<= (plist-get event :height) 16384))
+      (condition-case err
+          (let ((frame-resize-pixelwise t))
+            (set-frame-size frame
+                            (plist-get event :width)
+                            (plist-get event :height)
+                            t)
+            (with-current-buffer (window-buffer window)
+              (goto-char (point-min))
+              (unless (looking-at-p "ResizeApplied")
+                (insert "ResizeApplied "))
+              (set-window-point window (point)))
+            (setq proto-ui--window-resize-observed event)
+            (redisplay frame))
+        (error nil)))))
+
 (defun proto-ui--wheel-action (value)
   (let ((wheel (split-string value " " t)))
     (when (= (length wheel) 2)
@@ -415,6 +445,8 @@
         (proto-ui--dpi-action value))
        ((and (= (length action) 3) (string= kind "platform-focus"))
         (proto-ui--focus-action value))
+       ((and (= (length action) 3) (string= kind "platform-window"))
+        (proto-ui--window-action value))
        ((and (= (length action) 3) (string= kind "wheel"))
         (proto-ui--wheel-action value))
        ((and (= (length action) 3) (string= kind "pointer-v2"))

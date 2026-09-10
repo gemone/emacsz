@@ -2693,7 +2693,9 @@ events are translated by the SDL frontend only when `platform.focus_window_event
 is effective. They use the ordinary one-in-flight EPXL reverse-input sequence
 and ACK discipline. The bounded Emacs publisher records gained/lost focus as a
 public focused fact for one frame and calls public frame selection on gain; OS
-focus control and multi-frame selection parity remain pending. The window-request
+focus control and multi-frame selection parity remain pending. For resize, the
+owned publisher may call public `set-frame-size`; exact geometry remains host/WM
+dependent. Other window requests remain observed only, and the window-request
 smoke intentionally does not destroy Emacs in response to a synthetic close request.
 
 #### Security and limits

@@ -326,7 +326,7 @@ Priorities:
 | Pen | EXP | Pending | W12/W16 PGTK parity gate not met |
 | Gestures | EXP | Pending | W12/W16 PGTK parity gate not met |
 | Focus enter/leave | P0 | Degraded | Negotiated strict FOCUS_EVENT observation with one-frame Emacs focused-fact round trip (`sdl3-focus-roundtrip-smoke`); no OS focus control or multi-frame parity |
-| Window requests | P1 | Degraded | Negotiated strict close/resize/move/fullscreen/maximize/minimize/restore intents; no host contract or runtime mutation (`sdl3-focus-window-smoke`) |
+| Window requests | P1 | Degraded | Negotiated close/resize/move/fullscreen/maximize/minimize/restore intents; bounded resize applies through public `set-frame-size` (`sdl3-window-resize-roundtrip-smoke`); other requests, host contract, exact WM geometry, and multi-frame parity remain pending |
 | IME activation | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Preedit | P1 | Degraded | EUP start/update/end Scene state with bounded UTF-8 text, cursor offset, selected length, and bounded ASCII SDL overlay; platform input, Unicode/font rendering, and PGTK parity pending |
 | Commit | P1 | Degraded | `IME_COMMIT` stores bounded UTF-8 committed text and clears active preedit/candidates in Scene; no platform IME hook or core buffer application |
