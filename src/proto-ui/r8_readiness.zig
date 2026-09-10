@@ -1,8 +1,9 @@
 //! Source-authoritative R8 entry-readiness policy.
 //!
 //! R8 means a real terminal and frame, not another fake-host or public-fact
-//! fixture.  R7 is approved and the adapter is selected, but the source remains
-//! blocked without linkage/registration and cannot enable runtime.
+//! fixture.  R7 is approved and the adapter is selected.  Opt-in target-specific
+//! linkage can advance the linkage requirement, but registration remains a
+//! separate mandatory condition, so R8 entry always stays blocked in this slice.
 
 const std = @import("std");
 const host_contract = @import("host_contract.zig");
@@ -37,6 +38,11 @@ pub const requirements = [_]Requirement{
         .name = "adapter.linked_without_inherited_source_edits",
         .status = .pending,
         .evidence = "Candidate artifact, ABI/table inventory hash, and planned injection point are pinned by r8_adapter_linkage.json; an R7-approved Emacs link remains required",
+    },
+    .{
+        .name = "adapter.registered_without_inherited_source_edits",
+        .status = .pending,
+        .evidence = "No Emacs terminal registration exists; a linked adapter must remain uncalled and unregistered",
     },
     .{
         .name = "static_isolation",
@@ -78,8 +84,22 @@ pub const Error = error{
     InvalidR8Readiness,
 };
 
-pub fn entryReady() bool {
-    for (requirements) |requirement| {
+pub fn requirementsFor(runtime_linking: bool) [requirements.len]Requirement {
+    var result = requirements;
+    result[1] = if (!runtime_linking) .{
+        .name = "adapter.linked_without_inherited_source_edits",
+        .status = .pending,
+        .evidence = "Candidate artifact, ABI/table inventory hash, and planned injection point are pinned by r8_adapter_linkage.json; an R7-approved Emacs link remains required",
+    } else .{
+        .name = "adapter.linked_without_inherited_source_edits",
+        .status = .implemented,
+        .evidence = "The selected adapter-owned static candidate is forced into the native Linux glibc temacs link graph and verified in the linked ELF",
+    };
+    return result;
+}
+
+pub fn entryReadyFor(runtime_linking: bool) bool {
+    for (requirementsFor(runtime_linking)) |requirement| {
         if (requirement.required and requirement.status != .implemented) return false;
     }
     return host_contract.decision.status == .approved and
@@ -88,12 +108,20 @@ pub fn entryReady() bool {
         host_adapter.current.activation_allowed;
 }
 
+pub fn entryReady() bool {
+    return entryReadyFor(false);
+}
+
 pub fn validateState() ?[]const u8 {
+    return validateLinkedState(false);
+}
+
+pub fn validateLinkedState(runtime_linking: bool) ?[]const u8 {
     if (readiness_schema_version != 1) return "unsupported readiness schema";
     if (host_adapter.candidate_input.candidate.inherited_source_paths_modified.len != 0)
         return "invalid inherited-source audit";
     if (host_adapter.validateState()) |problem| return problem;
-    if (entryReady()) return "R8 entry unexpectedly ready";
+    if (entryReadyFor(runtime_linking)) return "R8 entry unexpectedly ready";
     if (entry_status != .blocked) return "entry status is not blocked";
     if (!std.mem.eql(u8, reason_code, blocked_reason_code)) return "entry reason changed";
     if (activation_allowed or runtime_available or default_enabled) return "blocked entry allows runtime";
@@ -102,6 +130,7 @@ pub fn validateState() ?[]const u8 {
     const expected_names = [_][]const u8{
         "r7.reviewed_decision",
         "adapter.linked_without_inherited_source_edits",
+        "adapter.registered_without_inherited_source_edits",
         "static_isolation",
         "callback_conformance",
         "process_crash_containment",
@@ -109,7 +138,8 @@ pub fn validateState() ?[]const u8 {
         "rollback_and_disable",
     };
     if (requirements.len != expected_names.len) return "readiness requirement count changed";
-    for (requirements, 0..) |requirement, index| {
+    const linked_requirements = requirementsFor(runtime_linking);
+    for (linked_requirements, 0..) |requirement, index| {
         if (!std.mem.eql(u8, requirement.name, expected_names[index])) return "readiness requirement changed";
         if (!requirement.required) return "readiness requirement became optional";
         if (requirement.evidence.len == 0) return "readiness evidence is empty";
@@ -143,7 +173,17 @@ pub const tracked_inherited_source_edits: []const []const u8 = &.{};
 
 /// Emits canonical compact JSON: deterministic across hosts and runs.
 pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
-    if (validateState() != null) return Error.InvalidR8Readiness;
+    return writeLinkedManifest(gpa, out, false);
+}
+
+pub fn writeLinkedManifest(
+    gpa: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    runtime_linking: bool,
+) !void {
+    if (validateLinkedState(runtime_linking) != null) return Error.InvalidR8Readiness;
+    const linked_requirements = requirementsFor(runtime_linking);
+    const linked_adapter_state = adapter_linkage.linkedState(runtime_linking);
     try out.appendSlice(gpa, "{\"manifest_version\":");
     try out.print(gpa, "{d}", .{manifest_version});
     try out.appendSlice(gpa, ",\"kind\":\"proto-ui-r8-entry-readiness\",");
@@ -157,7 +197,8 @@ pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
     try runtime.appendJsonStringPublic(gpa, out, reason_code);
     try out.appendSlice(gpa, ",\"r7_decision\":\"");
     try out.appendSlice(gpa, @tagName(host_contract.decision.status));
-    try out.appendSlice(gpa, "\",\"default_enabled\":");
+    try out.print(gpa, "\",\"runtime_linking\":{}", .{runtime_linking});
+    try out.appendSlice(gpa, ",\"default_enabled\":");
     try out.print(gpa, "{}", .{default_enabled});
     try out.appendSlice(gpa, ",\"activation_allowed\":");
     try out.print(gpa, "{}", .{activation_allowed});
@@ -166,14 +207,20 @@ pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
     try out.appendSlice(gpa, ",\"tracked_inherited_source_edits\":");
     try runtime.appendJsonStringArrayPublic(gpa, out, tracked_inherited_source_edits);
     try out.appendSlice(gpa, ",\"adapter_linkage\":{\"status\":");
-    try runtime.appendJsonStringPublic(gpa, out, adapter_linkage.status);
+    try runtime.appendJsonStringPublic(gpa, out, linked_adapter_state.status);
+    try out.appendSlice(gpa, ",\"linked_target\":");
+    try runtime.appendJsonStringPublic(gpa, out, if (runtime_linking) adapter_linkage.linked_target else "");
     try out.appendSlice(gpa, ",\"artifact_id\":");
-    try runtime.appendJsonStringPublic(gpa, out, adapter_linkage.artifact_id);
+    try runtime.appendJsonStringPublic(
+        gpa,
+        out,
+        if (runtime_linking) adapter_linkage.target_artifact_id else adapter_linkage.artifact_id,
+    );
     try out.appendSlice(gpa, ",\"abi_table_sha256\":");
     const abi_hash = adapter_linkage.abiTableHash();
     try runtime.appendJsonStringPublic(gpa, out, &abi_hash);
     try out.appendSlice(gpa, "},\"requirements\":[");
-    for (requirements, 0..) |requirement, index| {
+    for (linked_requirements, 0..) |requirement, index| {
         if (index != 0) try out.append(gpa, ',');
         try out.appendSlice(gpa, "{\"name\":");
         try runtime.appendJsonStringPublic(gpa, out, requirement.name);
@@ -205,19 +252,31 @@ test "R8 entry remains blocked without linkage or registration" {
     try std.testing.expectEqual(@as(usize, 0), tracked_inherited_source_edits.len);
 }
 
+test "R8 entry remains blocked after opt-in adapter linkage" {
+    try std.testing.expectEqual(@as(?[]const u8, null), validateLinkedState(true));
+    const linked_requirements = requirementsFor(true);
+    try std.testing.expectEqual(Status.implemented, linked_requirements[1].status);
+    try std.testing.expectEqual(Status.pending, linked_requirements[2].status);
+    try std.testing.expect(!entryReadyFor(true));
+    try std.testing.expectEqual(EntryStatus.blocked, entry_status);
+    try std.testing.expect(!activation_allowed);
+    try std.testing.expect(!runtime_available);
+}
+
 test "R8 readiness JSON is deterministic and bounded" {
     const gpa = std.testing.allocator;
     var first: std.ArrayList(u8) = .empty;
     defer first.deinit(gpa);
     var second: std.ArrayList(u8) = .empty;
     defer second.deinit(gpa);
-    try writeManifest(gpa, &first);
-    try writeManifest(gpa, &second);
+    try writeLinkedManifest(gpa, &first, true);
+    try writeLinkedManifest(gpa, &second, true);
     try std.testing.expectEqualSlices(u8, first.items, second.items);
     try std.testing.expect(first.items.len < 16 * 1024);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"entry_status\":\"blocked\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"r7_decision\":\"approved\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"activation_allowed\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"status\":\"linked_not_registered\"") != null);
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, first.items, .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("blocked", parsed.value.object.get("entry_status").?.string);

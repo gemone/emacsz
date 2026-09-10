@@ -1,8 +1,9 @@
 //! Source-authoritative provenance for the candidate R8 adapter linkage.
 //!
-//! This module names the adapter-owned shared-library artifact and pins the
-//! exact PureRuntimeHostV1 ABI/table inventory after R7 approval.  The selected
-//! adapter remains unlinked; it does not register a terminal or enable runtime.
+//! The default state names the adapter-owned host-audit artifact and pins the
+//! exact PureRuntimeHostV1 ABI/table inventory.  The opt-in native Linux glibc
+//! state may be linked-not-registered: the candidate is present in the temacs
+//! link graph, but nothing calls it, registers a terminal, or enables runtime.
 
 const std = @import("std");
 const host_adapter = @import("host_adapter.zig");
@@ -15,6 +16,10 @@ pub const linkage_schema_version: u32 = 1;
 pub const authoritative_source = "src/proto-ui/r8_adapter_linkage.zig";
 pub const artifact_id = "proto-ui-runtime-host-adapter";
 pub const injection_point = "build.zig:proto-ui-runtime-host-adapter";
+pub const target_artifact_id = "proto-ui-runtime-host-adapter-target";
+pub const target_injection_point = "build.zig:temacs";
+pub const linked_symbol = "proto_ui_runtime_host_adapter_abi_version";
+pub const linked_target = "native-linux-gnu";
 pub const prepared_not_linked_reason_code = runtime.reason_code;
 pub const status = "prepared_not_linked";
 pub const inherited_source_paths_modified = host_adapter.candidate_input.candidate.inherited_source_paths_modified;
@@ -67,25 +72,80 @@ pub fn abiTableHash() [64]u8 {
 }
 
 pub fn validateState() ?[]const u8 {
+    return validateLinkedState(false);
+}
+
+pub const LinkedState = struct {
+    status: []const u8,
+    reason_code: []const u8,
+    artifact_kind: []const u8,
+    injection_state: []const u8,
+    selected: bool,
+    registered: bool,
+    runtime_available: bool,
+    linked_into_emacs: bool,
+};
+
+pub fn linkedState(runtime_linking: bool) LinkedState {
+    return if (!runtime_linking) .{
+        .status = status,
+        .reason_code = prepared_not_linked_reason_code,
+        .artifact_kind = "shared_library",
+        .injection_state = "planned",
+        .selected = selected,
+        .registered = registered,
+        .runtime_available = runtime_available,
+        .linked_into_emacs = linked_into_emacs,
+    } else .{
+        .status = "linked_not_registered",
+        .reason_code = "r8_registration_missing",
+        .artifact_kind = "static_library",
+        .injection_state = "linked_not_registered",
+        .selected = true,
+        .registered = false,
+        .runtime_available = false,
+        .linked_into_emacs = true,
+    };
+}
+
+pub fn validateLinkedState(runtime_linking: bool) ?[]const u8 {
     if (linkage_schema_version != 1) return "unsupported linkage schema";
     if (host_contract.validateState()) |problem| return problem;
     if (host_contract.decision.status != .approved) return "linkage requires approved R7";
     if (host_adapter.current.status != .selected) return "candidate adapter is not selected";
     if (!host_adapter.current.selected) return "candidate selection flag is absent";
-    if (host_adapter.current.linked_into_emacs) return "candidate adapter is linked";
     if (inherited_source_paths_modified.len != 0) return "candidate linkage claims inherited-source edits";
     if (runtime_host.abi_version != 1) return "unsupported runtime host ABI";
     if (table_size == 0 or group_count != 5 or operation_count != 27)
         return "runtime host table inventory changed";
-    if (!std.mem.eql(u8, status, "prepared_not_linked"))
-        return "candidate linkage is not prepared-not-linked";
-    if (registered or runtime_available or linked_into_emacs)
-        return "candidate linkage claims activation";
+
+    const state = linkedState(runtime_linking);
+    if (!std.mem.eql(u8, state.status, if (runtime_linking) "linked_not_registered" else "prepared_not_linked"))
+        return "candidate linkage state is inconsistent";
+    if (!state.selected or state.registered or state.runtime_available)
+        return "candidate linkage claims registration or runtime";
+    if (state.linked_into_emacs != runtime_linking)
+        return "candidate linkage state disagrees with the requested link graph";
+    if (!std.mem.eql(u8, state.artifact_kind, if (runtime_linking) "static_library" else "shared_library"))
+        return "candidate artifact kind disagrees with linkage state";
+    if (!std.mem.eql(u8, state.injection_state, if (runtime_linking) "linked_not_registered" else "planned"))
+        return "candidate injection state disagrees with linkage state";
+    if (!std.mem.eql(u8, state.reason_code, if (runtime_linking) "r8_registration_missing" else runtime.reason_code))
+        return "candidate linkage reason is inconsistent";
     return null;
 }
 
 pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
-    if (validateState() != null) return Error.InvalidAdapterLinkage;
+    return writeLinkedManifest(gpa, out, false);
+}
+
+pub fn writeLinkedManifest(
+    gpa: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    runtime_linking: bool,
+) !void {
+    const state = linkedState(runtime_linking);
+    if (validateLinkedState(runtime_linking) != null) return Error.InvalidAdapterLinkage;
     const hash = abiTableHash();
     try out.appendSlice(gpa, "{\"manifest_version\":1,");
     try out.print(gpa, "\"linkage_schema_version\":{d},", .{linkage_schema_version});
@@ -95,19 +155,28 @@ pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
     try out.appendSlice(gpa, ",\"candidate_id\":");
     try runtime.appendJsonStringPublic(gpa, out, host_adapter.candidate_input.candidate.id);
     try out.appendSlice(gpa, ",\"status\":");
-    try runtime.appendJsonStringPublic(gpa, out, status);
-    try out.print(gpa, ",\"selected\":{},\"registered\":{},\"runtime_available\":{},\"reason_code\":", .{
-        selected,
-        registered,
-        runtime_available,
+    try runtime.appendJsonStringPublic(gpa, out, state.status);
+    try out.print(gpa, ",\"runtime_linking\":{},\"selected\":{},\"registered\":{},\"runtime_available\":{},\"reason_code\":", .{
+        runtime_linking,
+        state.selected,
+        state.registered,
+        state.runtime_available,
     });
-    try runtime.appendJsonStringPublic(gpa, out, prepared_not_linked_reason_code);
+    try runtime.appendJsonStringPublic(gpa, out, state.reason_code);
+    const build_artifact_id = if (runtime_linking) target_artifact_id else artifact_id;
+    const build_injection_point = if (runtime_linking) target_injection_point else injection_point;
     try out.appendSlice(gpa, ",\"artifact\":{\"build_artifact_id\":");
-    try runtime.appendJsonStringPublic(gpa, out, artifact_id);
-    try out.print(gpa, ",\"kind\":\"shared_library\",\"linked_into_emacs\":{}}}", .{linked_into_emacs});
+    try runtime.appendJsonStringPublic(gpa, out, build_artifact_id);
+    try out.appendSlice(gpa, ",\"kind\":");
+    try runtime.appendJsonStringPublic(gpa, out, state.artifact_kind);
+    try out.print(gpa, ",\"linked_into_emacs\":{}}}", .{state.linked_into_emacs});
+    try out.appendSlice(gpa, ",\"linked_target\":");
+    try runtime.appendJsonStringPublic(gpa, out, if (runtime_linking) linked_target else "");
     try out.appendSlice(gpa, ",\"build_injection\":{\"point\":");
-    try runtime.appendJsonStringPublic(gpa, out, injection_point);
-    try out.appendSlice(gpa, ",\"default\":false,\"state\":\"planned\"}");
+    try runtime.appendJsonStringPublic(gpa, out, build_injection_point);
+    try out.print(gpa, ",\"default\":false,\"state\":", .{});
+    try runtime.appendJsonStringPublic(gpa, out, state.injection_state);
+    try out.appendSlice(gpa, "}");
     try out.appendSlice(gpa, ",\"abi\":{\"version\":");
     try out.print(gpa, "{d}", .{runtime_host.abi_version});
     try out.appendSlice(gpa, ",\"table_size\":");
@@ -132,6 +201,24 @@ test "selected adapter linkage remains prepared and fail closed" {
     try std.testing.expectEqual(@as(usize, 27), operation_count);
     try std.testing.expectEqual(@as(usize, 5), group_count);
     try std.testing.expectEqual(@as(usize, 64), table_size);
+}
+
+test "opt-in adapter linkage is linked but still not registered" {
+    try std.testing.expectEqual(@as(?[]const u8, null), validateLinkedState(true));
+    const state = linkedState(true);
+    try std.testing.expectEqualStrings("linked_not_registered", state.status);
+    try std.testing.expectEqualStrings("r8_registration_missing", state.reason_code);
+    try std.testing.expect(state.linked_into_emacs);
+    try std.testing.expect(!state.registered);
+    try std.testing.expect(!state.runtime_available);
+    const gpa = std.testing.allocator;
+    var manifest: std.ArrayList(u8) = .empty;
+    defer manifest.deinit(gpa);
+    try writeLinkedManifest(gpa, &manifest, true);
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, manifest.items, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings(target_artifact_id, parsed.value.object.get("artifact").?.object.get("build_artifact_id").?.string);
+    try std.testing.expectEqualStrings(target_injection_point, parsed.value.object.get("build_injection").?.object.get("point").?.string);
 }
 
 test "adapter linkage ABI hash is stable and bounded" {

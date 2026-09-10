@@ -1,8 +1,9 @@
 //! Candidate R8 runtime-host adapter artifact.
 //!
-//! This shared library validates a caller-supplied PureRuntimeHostV1 table and
-//! deliberately refuses adapter creation while R7 remains pending.  It is not
-//! linked into GNU Emacs and cannot register a terminal or enable Proto-UI.
+//! This candidate library validates a caller-supplied PureRuntimeHostV1 table
+//! and deliberately refuses adapter creation.  It has no load-time initializer;
+//! when explicitly linked into temacs, inherited Emacs never calls it.  It also
+//! cannot register a terminal or enable Proto-UI runtime.
 
 const runtime_host = @import("runtime_host.zig");
 
@@ -22,9 +23,9 @@ export fn proto_ui_runtime_host_adapter_validate(
 }
 
 export fn proto_ui_runtime_host_adapter_create() c_int {
-    // Adapter creation is the R7/R8 activation boundary.  Remain fail closed
-    // until a reviewed host registration contract explicitly selects this
-    // candidate and supplies an Emacs-side linkage point.
+    // Adapter creation is the R8 activation boundary.  Remain fail closed until
+    // a reviewed registration path explicitly calls this candidate; linkage
+    // alone must never activate it.
     return 2;
 }
 

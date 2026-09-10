@@ -43,7 +43,7 @@ W10a adds adapter-owned SDL renderer negotiation: the frontend reports the actua
 | System theme | Negotiated `THEME_EVENT` EPXL transport and Emacs recording of delivered dark/light appearance via `sdl3-theme-event-smoke` | No complete theme refresh, accessibility preferences, face remapping, or PGTK parity |
 | Input | Bounded Unicode text, pointer sessions, vertical/horizontal line wheel, single-key commands, exact `C-x 1/2/3/o` window lifecycle commands, and ACK/recovery evidence | No general keymap execution, full IME, redisplay-owned input feedback, or complete pointer parity |
 | IME state | Scene state for bounded preedit, selected candidate metadata, and commit reports; bounded ASCII SDL diagnostics where implemented | No platform IME backend, core buffer application, full candidate lists, Unicode diagnostic rendering, or complete multibyte input |
-| R7/R8 gate | Fail-closed reviewer packet, contract, unselected host adapter, blocked activation, R8 readiness, and a fail-closed host-audit candidate adapter artifact with pinned ABI/table linkage provenance | No host approval, Emacs adapter linkage, terminal registration, runtime activation, or PGTK fallback |
+| R7/R8 gate | Fail-closed reviewer packet, contract, selected host adapter, blocked activation, state-aware R8 readiness, fail-closed host-audit adapter, and opt-in native-glibc target link audit with pinned ABI/table provenance | Default builds remain unlinked; linked state is `linked_not_registered`, with no call, registration, runtime activation, `output_proto`, or PGTK fallback |
 | Performance | ReleaseFast adapter hot-path JSON and an opt-in SDL3 full-draw/unchanged-skip renderer benchmark with nearest-rank latency and FPS counters | Adapter/renderer baseline only; host-dependent CPU timing, no end-to-end, real redisplay, PGTK comparison, GPU timestamps, or production GPU-tier proof |
 
 W12c adds the first real-frame lifecycle bridge smoke: an isolated PGTK Emacs
@@ -161,13 +161,15 @@ through the host dynamic loader. R5 adds bounded host-frame to EUP-frame
 identity/state/delete mapping, and R6 adds deterministic atomic
 window/row/cursor/damage capture batches with replay byte-stability evidence.
 R7 adds a source-authoritative, machine-checkable host-registration decision
-contract. Its current decision is pending, so runtime registration and a real
-`output_proto` frame remain explicitly unavailable.
+contract.  Its policy decision is approved for candidate selection only, while
+runtime registration and a real `output_proto` frame remain explicitly
+unavailable.
 
-The R7 reviewer packet packages the proposal, policy contract, unselected host
+The R7 reviewer packet packages the proposal, policy contract, selected host
 adapter, blocked activation plan, and R8 readiness into one deterministic
-SHA-256 provenance audit.  It remains pending/fail-closed; packet review never
-activates the runtime by itself.
+SHA-256 provenance audit.  It remains fail-closed.  R8 can link the selected
+static candidate only on a native Linux glibc target under an explicit option;
+the audited state is `linked_not_registered`, never activation.
 
 W14-a adds an opt-in, adapter-only hot-path benchmark in ReleaseFast. It
 measures five memory-transport scenarios with deterministic 960x600 fixtures, reports
@@ -240,8 +242,9 @@ P15 terminal-service preparation adds an adapter-owned orchestrator for
 `PureRuntimeHostV1` terminal create/activate/drain/delete callbacks and the
 existing no-reuse terminal registry.  Fake-host tests cover activation, safe
 drain retry after host deletion failure, and rollback-pending cleanup.  This
-remains fail-closed preparation; R7 approval is recorded, but adapter linkage
-and a real Emacs terminal remain absent.
+remains fail-closed preparation.  R7 approval is recorded and a real Emacs
+terminal remains absent.  The adapter candidate can be linked only by the
+explicit native-glibc R8 option, and linked is not activated.
 `zig build -Dproto-ui=true proto-ui-terminal-service` runs the deterministic
 fake-host evidence gate and reports `emacs_registered=false` plus
 `runtime_available=false`.
@@ -359,7 +362,9 @@ attachment remains pending.
 P41 R7-readiness audit synchronizes the fail-closed runtime contract with the
 full redisplay callback inventory and records resource/shaped-run capture as
 implemented adapter prerequisites.  The R7 decision is approved for policy and
-candidate selection only; linkage and registration remain absent.
+candidate selection only; registration remains absent, while linkage is
+available only as the explicitly gated native-glibc `linked_not_registered`
+audit.
 
 P42 mouse-highlight preparation adds `WINDOW_MOUSE_HIGHLIGHT` v1 as a bounded,
 visible face rectangle.  The Scene validates active frame/header identity, owner

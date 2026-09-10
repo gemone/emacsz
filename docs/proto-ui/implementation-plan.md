@@ -89,8 +89,8 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P15-prep terminal runtime service | Implemented `proto-ui-terminal-service` for fake-host create/activate/drain/delete orchestration with no-reuse registry IDs, drain retry, rollback-pending cleanup, and strict identity validation; no Emacs terminal linkage/registration |
 | P16-prep host adapter selection | Implemented the versioned pure-SDL3 `output_proto` candidate as selected by the approved, metadata-complete R7 decision; machine-readable gate records no activation, linkage, registration, or runtime |
 | P17-prep runtime activation contract | Implemented a selection-gated controller plus explicit activation/rollback sequences; current gate is blocked without linkage/registration; no registration or runtime |
-| P21-prep R8 entry readiness | Implemented a machine-readable blocked-entry manifest with seven readiness requirements, inherited-source audit, rollback-order audit, and opt-in negative launch gate |
-| P22-prep R8 adapter linkage | Implemented a fail-closed host-audit candidate shared library, exported-ABI probe, canonical ABI/table inventory hash, build artifact provenance, planned opt-in injection point, and selected-but-unlinked R8 linkage gate |
+| P21-prep R8 entry readiness | Implemented a machine-readable blocked-entry manifest with eight readiness requirements, state-aware linkage/registration evidence, inherited-source audit, rollback-order audit, and opt-in negative launch gate |
+| P22-prep R8 adapter linkage | Implemented a fail-closed host-audit candidate shared library, exported-ABI probe, canonical ABI/table inventory hash, build artifact provenance, planned default injection, opt-in target-specific static temacs linkage, deterministic ELF symbol audit, and `linked_not_registered` state |
 | P18-prep explicit damage array | Implemented bounded `DAMAGE_RECTS` codec, atomic Scene replacement, bridge emission, union clipping, clipped retained-target present, and command-culling counters with smoke evidence; redisplay-owned incremental damage pending |
 | P19-prep clear-area render control | Implemented a 40-byte face-colored `CLEAR_AREA` v1 codec with bounded Scene table, active-frame/window bounds, live-face validation, and SDL render evidence; not redisplay capture |
 | P20-prep scroll-copy execution | Implemented bounded full-width vertical `SCROLL_RUN` v1, Scene band validation, overlap planning, estimated RGBA upload metrics, and scratch-target SDL retained-frame copy execution; redisplay ownership and GPU batching pending |
@@ -176,7 +176,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W12l R7 host-registration decision contract | Approved |
 | W12l-a R7 reviewer packet | Approved; policy-only approval is recorded, without runtime |
 | W12m R8 entry-readiness manifest and negative gate | Approved; R8 entry remains blocked |
-| W12n R8 candidate adapter linkage artifact | Approved; selected host-audit candidate is prepared and fail closed, not linked |
+| W12n-a R8 target-specific adapter link | Approved; native-glibc opt-in link is audited as `linked_not_registered` |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
@@ -3284,26 +3284,35 @@ evaluates Elisp or owns layout.  The source decision is `approved` with reviewer
 Agent`, decision ID `R7:pure-sdl3-output-proto-terminal:2026-09-10`, timestamp
 `2026-09-10T09:49:41Z`, and scope `policy_and_candidate_selection_only`.  The
 runtime manifest remains fail closed with reason
-`runtime_host_linkage_or_registration_missing` because the selected adapter is
-not linked or registered.
+`runtime_host_linkage_or_registration_missing`.  The default build has neither
+linkage nor registration.  The explicit native-glibc link option provides the
+first condition only; registration remains absent, so activation is still
+forbidden.
 
 ##### R8 entry-readiness evidence
 
 R8 readiness is machine-readable in `src/proto-ui/r8_readiness.zig` and
-`zig-out/proto-ui/r8_readiness.json`.  The source records seven required
-conditions, records the approved R7 policy decision, asserts an empty inherited-source
-edit set, keeps activation/runtime/default enablement false, and validates the
-rollback order.  `proto-ui-r8-readiness` accepts the blocked state as a valid
-audit result.  W12n adds `r8_adapter_linkage.zig`, the host-audit candidate
-shared artifact `proto-ui-runtime-host-adapter`, and
-`r8_adapter_linkage.json`, which pin the PureRuntimeHostV1 ABI/table inventory
-and planned opt-in build injection point.  The linkage status is
-`prepared_not_linked`; R8 remains blocked because the selected candidate is not
-linked into Emacs and no terminal is registered through inherited-source-free
-build glue.  The opt-in `-Dr8-entry-gate=true proto-ui-r8-readiness`
-form is
-the negative launch gate: it fails with `r8_host_adapter_linkage_or_registration_missing` until linkage
-and registration make the source ready.
+`zig-out/proto-ui/r8_readiness.json`.  The source records eight required
+conditions: approved R7, target-specific linkage, explicit registration,
+isolation, callback conformance, crash containment, fail-closed runtime, and
+rollback/disable.  It records the approved R7 policy decision, asserts an empty
+inherited-source edit set, keeps activation/runtime/default enablement false,
+and validates the rollback order.  `proto-ui-r8-readiness` accepts the blocked
+state as a valid audit result.
+
+W12n adds `r8_adapter_linkage.zig`, the host-audit candidate shared artifact
+`proto-ui-runtime-host-adapter`, and `r8_adapter_linkage.json`, pinning the
+PureRuntimeHostV1 ABI/table inventory.  Default manifests say
+`prepared_not_linked`.  W12n-a adds the explicit
+`-Dproto-ui-runtime=true` native Linux glibc path: build.zig creates a separate
+target-specific static candidate, links it into temacs, forces the adapter ABI
+symbol so the linker includes the selected archive member, and
+`proto-ui-r8-link` proves that symbol in the resulting ELF.  The state becomes
+`linked_not_registered`; R8 remains blocked because the adapter is never called,
+never initialized at load time, and no `output_proto` terminal is registered.
+The opt-in `-Dr8-entry-gate=true proto-ui-r8-readiness` form is the negative
+launch gate: it fails with `r8_host_adapter_linkage_or_registration_missing`
+until registration and all remaining source conditions are ready.
 
 1. Implement child and tooltip frame protocol.
 2. Implement multi-frame focus isolation.

@@ -38,8 +38,10 @@ The project consequently uses a three-part rule:
    adapter artifacts.
 2. **Keep the runtime option fail closed.**  Until a versioned host extension
    contract supplies the required callbacks, `-Dproto-ui-runtime=true` builds
-   only the adapter and explicitly reports that runtime registration is
-   unavailable.  It must not silently fall back to PGTK or TTY frames.
+   and, on a supported target, links only the adapter candidate.  Runtime-state
+   gates require the ELF link audit and explicitly report that runtime
+   registration is unavailable.  The option must not silently fall back to PGTK
+   or TTY frames.
 3. **Do not scatter edits through inherited core files.**  If upstream-style
    registration is later approved, it must be represented by a reviewed
    integration manifest, a separate Proto-UI-owned C adapter, generated thin
@@ -285,9 +287,9 @@ conformance translation unit are build artifacts outside inherited source; they
 prove the future host adapter shape without attaching one to Emacs.
 P3 preparation adds `PureRuntimeHostV1` in `src/proto-ui/runtime_host.zig`.
 Its five required nested callback groups now have an executable adapter-owned
-ABI, validators, and a fake-host conformance fixture.  This is review and
-integration preparation only; no Emacs host adapter is selected, linked into a
-frame path, or called by terminal registration.
+ABI, validators, and a fake-host conformance fixture.  This is integration
+preparation only: no Emacs host adapter is linked into a frame path or called
+by terminal registration.
 
 R7 is the policy gate.  It must not be bypassed by hidden binary patching,
 symbol interposition, generated replacement of tracked C files, or runtime
@@ -364,14 +366,23 @@ suffix and Windows DLL/import-library forms).  It validates a caller-supplied
 `PureRuntimeHostV1` table, rejects a null table, and refuses adapter creation
 with a fail-closed status.  The build probe verifies the exported ABI version,
 table size, null-table rejection, and blocked creation.
-`zig-out/proto-ui/r8_adapter_linkage.json` records `prepared_not_linked`, the
-build artifact ID, the planned `build.zig:proto-ui-runtime-host-adapter`
-injection point, the ABI version/table size, and a canonical SHA-256 inventory
-of all five callback groups and 27 operations.  It also reports an empty
-inherited-source edit list.  `proto-ui-r8-adapter-linkage` verifies the exact
-manifest and, on the host target, the exported candidate ABI.  It does not
-select a target-specific Emacs candidate, link anything into Emacs, register a
-terminal, or enable runtime.
+`zig-out/proto-ui/r8_adapter_linkage.json` records the build artifact ID,
+injection point, ABI version/table size, and a canonical SHA-256 inventory of
+all five callback groups and 27 operations.  It also reports an empty
+inherited-source edit list.  Default linkage is `prepared_not_linked`;
+`proto-ui-r8-adapter-linkage` verifies the exact manifest and, on the host
+target, the exported candidate ABI.
+
+W12n-a adds a separate, opt-in target-specific path.  On a native Linux glibc
+target only, `-Dproto-ui-runtime=true` builds the adapter source as a static
+candidate, links it into temacs, forces
+`proto_ui_runtime_host_adapter_abi_version`, and runs `proto-ui-r8-link`.
+That gate parses the real ELF and records the symbol plus the adapter artifact
+hash as `linked_not_registered`; runtime-state adapter-linkage and readiness
+gates depend on that audit before they may use the linked state.  This remains
+linkage evidence only: there is no inherited-source call, load-time
+initialization, terminal registration, `output_proto` enablement, runtime
+availability, performance claim, or change to PGTK/TTY.
 
 ### 11.1 First-frame execution slices
 

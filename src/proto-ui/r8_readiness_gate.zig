@@ -26,11 +26,16 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     const manifest_path = args.next() orelse return error.MissingManifestArg;
     var mode: Mode = .blocked;
+    var runtime_linking = false;
     while (args.next()) |argument| {
         if (std.mem.eql(u8, argument, "--expect=blocked")) {
             mode = .blocked;
         } else if (std.mem.eql(u8, argument, "--expect=ready")) {
             mode = .ready;
+        } else if (std.mem.eql(u8, argument, "--runtime-linking=true")) {
+            runtime_linking = true;
+        } else if (std.mem.eql(u8, argument, "--runtime-linking=false")) {
+            runtime_linking = false;
         } else return error.UnknownGateArgument;
     }
 
@@ -38,12 +43,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     defer gpa.free(actual);
     var expected: std.ArrayList(u8) = .empty;
     defer expected.deinit(gpa);
-    try proto_ui.r8_readiness.writeManifest(gpa, &expected);
+    try proto_ui.r8_readiness.writeLinkedManifest(gpa, &expected, runtime_linking);
     if (!std.mem.eql(u8, actual, expected.items)) {
         std.debug.print("r8-readiness gate: artifact mismatch\n", .{});
         return error.InvalidR8ReadinessArtifact;
     }
-    if (proto_ui.r8_readiness.validateState()) |problem| {
+    if (proto_ui.r8_readiness.validateLinkedState(runtime_linking)) |problem| {
         std.debug.print("r8-readiness gate: {s}\n", .{problem});
         return error.InvalidR8ReadinessState;
     }

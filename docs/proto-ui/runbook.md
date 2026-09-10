@@ -150,8 +150,9 @@ another process’s `/tmp/proto-ui-frame-*` directory.
 ## 8. Current completion boundary
 
 Green smoke commands prove only their documented bounded scope.  Candidate R8
-adapter linkage is prepared and audited, but it is not selected, linked into
-Emacs, or able to register a terminal.  The final system requires the W16 gates in
+adapter linkage is state-aware: it is unlinked by default, audited as
+`linked_not_registered` only under explicit native Linux glibc runtime linking,
+and never called or able to register a terminal.  The final system requires the W16 gates in
 [`implementation-plan.md`](implementation-plan.md): an `output_proto` real
 graphic frame, redisplay-owned rendering, full input/platform coverage,
 resource/widget behavior, performance evidence, and unchanged default Emacs

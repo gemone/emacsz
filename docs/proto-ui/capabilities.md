@@ -582,12 +582,14 @@ preparation, not redisplay capture.
 `terminal_service` can also orchestrate fake-host terminal create/activate/
 drain/delete callbacks against the bounded no-reuse registry.  It retries a
 failed drain safely and tracks rollback-pending cleanup.  R7 policy approval is
-recorded, but the adapter is not linked and no Emacs terminal is registered.
+recorded.  The selected adapter is unlinked by default and no Emacs terminal is
+registered; explicit native-glibc linkage remains uncalled.
 `proto-ui-terminal-service` emits machine-readable lifecycle/rollback evidence
 and explicitly reports `emacs_registered=false` and `runtime_available=false`.
 `proto-ui-host-adapter` records the versioned pure-SDL3 `output_proto` candidate
-as selected by the approved, metadata-complete R7 decision.  It remains
-unlinked.  Its policy forbids inherited-source edits, PGTK/TTY runtime fallback,
+as selected by the approved, metadata-complete R7 decision.  The default
+host-audit artifact remains unlinked.  Its policy forbids inherited-source
+edits, PGTK/TTY runtime fallback,
 and frontend Elisp/layout ownership.
 `runtime_activation` defines the approved activation sequence and reverse
 rollback sequence.  The controller is selection-gated and conformance tests can
@@ -603,12 +605,16 @@ decision infrastructure is implemented, and `proto-ui-r7-proposal` emits a
 source-authoritative pure-SDL3 registration proposal with `approved` status and
 scope `policy_and_candidate_selection_only`.  The current fail-closed reason is
 `runtime_host_linkage_or_registration_missing`: no terminal can be registered
-and runtime remains unavailable.  `proto-ui-r8-readiness` records
-the R8 entry as blocked, inventories R7 metadata, adapter linkage, isolation,
+and runtime remains unavailable.  `-Dproto-ui-runtime=true` additionally
+requires a native Linux glibc target, selects a target-specific static adapter
+candidate, forces its ABI symbol into the temacs link, and audits the resulting
+ELF with `proto-ui-r8-link`; the state is only `linked_not_registered`.
+`proto-ui-r8-readiness` records the R8 entry as blocked, inventories R7
+metadata, state-aware adapter linkage, explicit registration, isolation,
 callback conformance, crash containment, fail-closed runtime, and rollback
 requirements, and proves that no inherited source edits are declared.  Its
-opt-in negative gate (`-Dr8-entry-gate=true`) fails while linkage/registration
-are absent.
+opt-in negative gate (`-Dr8-entry-gate=true`) fails while registration is
+missing (and, without runtime linking, linkage also remains missing).
 Current PGTK/SDL diagnostic bridges therefore remain non-final compatibility
 evidence.
 The task split and fail-closed runtime contract are defined in

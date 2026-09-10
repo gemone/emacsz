@@ -14,8 +14,16 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     _ = args.next();
 
     const output_path = args.next() orelse return error.MissingOutputArg;
+    var runtime_linking = false;
+    while (args.next()) |argument| {
+        if (std.mem.eql(u8, argument, "--runtime-linking=true")) {
+            runtime_linking = true;
+        } else if (std.mem.eql(u8, argument, "--runtime-linking=false")) {
+            runtime_linking = false;
+        } else return error.UnknownGenArgument;
+    }
     var manifest: std.ArrayList(u8) = .empty;
     defer manifest.deinit(gpa);
-    try proto_ui.r8_readiness.writeManifest(gpa, &manifest);
+    try proto_ui.r8_readiness.writeLinkedManifest(gpa, &manifest, runtime_linking);
     try cwd.writeFile(io, .{ .sub_path = output_path, .data = manifest.items });
 }

@@ -394,12 +394,23 @@ pub fn build(b: *std.Build) void {
     // integration.
     const enable_proto_ui = b.option(bool, "proto-ui", "Build adapter-only EUP codec/ABI and run conformance plus boundary tests") orelse false;
     const enable_sdl3_frontend = b.option(bool, "sdl3-frontend", "Build independent SDL3 EUP replay/local-live renderer and smoke it") orelse false;
-    // R2 is deliberately fail-closed: this option audits the runtime contract;
-    // it never enables terminal registration or output_proto.
-    const enable_proto_ui_runtime = b.option(bool, "proto-ui-runtime", "Audit the host registration runtime contract; fails closed without -Dproto-ui") orelse false;
+    // R8 remains fail-closed.  On a native Linux glibc target this option also
+    // links the selected adapter candidate, but never calls it or enables
+    // terminal registration/output_proto.
+    const enable_proto_ui_runtime = b.option(bool, "proto-ui-runtime", "Native Linux glibc only: audit runtime and link (never register/call) the adapter; fails closed without -Dproto-ui") orelse false;
     if (enable_proto_ui_runtime and !enable_proto_ui) {
         @panic("runtime_host_linkage_or_registration_missing: -Dproto-ui-runtime=true requires -Dproto-ui=true; runtime remains unavailable");
     }
+    const proto_ui_runtime_link_supported = enable_proto_ui_runtime and
+        target.query.isNative() and
+        target.result.os.tag == .linux and
+        target.result.abi == .gnu;
+    if (enable_proto_ui_runtime and !proto_ui_runtime_link_supported) {
+        @panic("r8_target_link_unavailable: -Dproto-ui-runtime=true requires a native Linux glibc target");
+    }
+    var proto_ui_runtime_adapter_target_lib: ?*std.Build.Step.Compile = null;
+    var proto_ui_r8_adapter_linkage_step: ?*std.Build.Step = null;
+    var proto_ui_r8_readiness_step: ?*std.Build.Step = null;
     // The normal R8 readiness gate accepts a blocked entry.  This opt-in flag
     // flips the same gate into negative mode: it fails until reviewed R7 and
     // every R8 readiness condition are complete.
@@ -952,6 +963,7 @@ pub fn build(b: *std.Build) void {
         const r8_readiness_artifact = run_r8_readiness_gen.addOutputFileArg(
             "r8_readiness.json",
         );
+        run_r8_readiness_gen.addArg(if (proto_ui_runtime_link_supported) "--runtime-linking=true" else "--runtime-linking=false");
         const install_r8_readiness = b.addInstallFile(
             r8_readiness_artifact,
             "proto-ui/r8_readiness.json",
@@ -969,12 +981,14 @@ pub fn build(b: *std.Build) void {
         const run_r8_readiness_gate = b.addRunArtifact(r8_readiness_gate_tool);
         run_r8_readiness_gate.addFileArg(r8_readiness_artifact);
         run_r8_readiness_gate.addArg(if (enable_r8_entry_gate) "--expect=ready" else "--expect=blocked");
+        run_r8_readiness_gate.addArg(if (proto_ui_runtime_link_supported) "--runtime-linking=true" else "--runtime-linking=false");
         run_r8_readiness_gate.step.dependOn(&run_r8_readiness_gen.step);
 
         const r8_readiness_step = b.step(
             "proto-ui-r8-readiness",
             "Audit R8 entry readiness; add -Dr8-entry-gate=true for the negative launch gate",
         );
+        proto_ui_r8_readiness_step = r8_readiness_step;
         r8_readiness_step.dependOn(&run_r8_readiness_gen.step);
         r8_readiness_step.dependOn(&install_r8_readiness.step);
         r8_readiness_step.dependOn(&run_r8_readiness_gate.step);
@@ -1242,10 +1256,9 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&run_runtime_host_abi_conformance.step);
         boundary_step.dependOn(&run_runtime_host_abi_gate.step);
 
-        // R8 candidate linkage: this adapter-owned host-audit artifact
-        // validates a PureRuntimeHostV1 table and refuses creation while R7 is
-        // pending.  It is never linked into GNU Emacs, is intentionally not a
-        // target-specific linkable candidate, and does not enable runtime.
+        // R8 candidate linkage: the host-audit artifact is always built for the
+        // build host.  Only the explicit native-glibc runtime option creates a
+        // separate static target-specific candidate for the temacs link graph.
         const runtime_host_adapter_module = b.createModule(.{
             .target = b.graph.host,
             .optimize = optimize,
@@ -1274,6 +1287,21 @@ pub fn build(b: *std.Build) void {
         runtime_host_adapter_probe_tool.root_module.linkLibrary(runtime_host_adapter_lib);
         const run_runtime_host_adapter_probe = b.addRunArtifact(runtime_host_adapter_probe_tool);
 
+        if (proto_ui_runtime_link_supported) {
+            const target_adapter_module = b.createModule(.{
+                .target = target,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/runtime_host_adapter_lib.zig"),
+            });
+            target_adapter_module.link_libc = true;
+            const target_adapter_lib = b.addLibrary(.{
+                .name = "proto-ui-runtime-host-adapter-target",
+                .root_module = target_adapter_module,
+                .linkage = .static,
+            });
+            proto_ui_runtime_adapter_target_lib = target_adapter_lib;
+        }
+
         const r8_adapter_linkage_gen_tool = b.addExecutable(.{
             .name = "proto-ui-r8-adapter-linkage-gen",
             .root_module = b.createModule(.{
@@ -1287,6 +1315,7 @@ pub fn build(b: *std.Build) void {
         const r8_adapter_linkage_artifact = run_r8_adapter_linkage_gen.addOutputFileArg(
             "r8_adapter_linkage.json",
         );
+        run_r8_adapter_linkage_gen.addArg(if (proto_ui_runtime_link_supported) "--runtime-linking=true" else "--runtime-linking=false");
         const install_r8_adapter_linkage = b.addInstallFile(
             r8_adapter_linkage_artifact,
             "proto-ui/r8_adapter_linkage.json",
@@ -1303,12 +1332,14 @@ pub fn build(b: *std.Build) void {
         r8_adapter_linkage_gate_tool.root_module.addImport("proto_ui", proto_ui_module);
         const run_r8_adapter_linkage_gate = b.addRunArtifact(r8_adapter_linkage_gate_tool);
         run_r8_adapter_linkage_gate.addFileArg(r8_adapter_linkage_artifact);
+        run_r8_adapter_linkage_gate.addArg(if (proto_ui_runtime_link_supported) "--runtime-linking=true" else "--runtime-linking=false");
         run_r8_adapter_linkage_gate.step.dependOn(&run_r8_adapter_linkage_gen.step);
 
         const r8_adapter_linkage_step = b.step(
             "proto-ui-r8-adapter-linkage",
-            "Build and audit the selected but unlinked R8 adapter linkage artifact",
+            "Build and audit the selected R8 adapter linkage artifact for the requested link state",
         );
+        proto_ui_r8_adapter_linkage_step = r8_adapter_linkage_step;
         r8_adapter_linkage_step.dependOn(&install_runtime_host_adapter_lib.step);
         r8_adapter_linkage_step.dependOn(&run_r8_adapter_linkage_gen.step);
         r8_adapter_linkage_step.dependOn(&install_r8_adapter_linkage.step);
@@ -3397,6 +3428,44 @@ pub fn build(b: *std.Build) void {
     // on the same macros).
     if (target.result.abi == .msvc) {
         applyMsvcCrtWarnings(exe.root_module);
+    }
+    // R8 target-specific link selection.  The adapter-owned static candidate is
+    // deliberately unreferenced by inherited Emacs code; the forced ABI symbol
+    // makes the linker include its archive member so the link-audit gate can
+    // verify the real ELF.  There is still no load-time initialization or call.
+    if (proto_ui_runtime_adapter_target_lib) |adapter_lib| {
+        exe.root_module.linkLibrary(adapter_lib);
+        exe.forceUndefinedSymbol("proto_ui_runtime_host_adapter_abi_version");
+
+        const r8_link_audit_tool = b.addExecutable(.{
+            .name = "proto-ui-r8-link-audit",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/r8_link_audit.zig"),
+            }),
+        });
+        const run_r8_link_audit = b.addRunArtifact(r8_link_audit_tool);
+        run_r8_link_audit.addFileArg(exe.getEmittedBin());
+        run_r8_link_audit.addFileArg(adapter_lib.getEmittedBin());
+        const r8_link_audit_artifact = run_r8_link_audit.addOutputFileArg("r8_link_audit.json");
+        run_r8_link_audit.addArg("native-linux-gnu");
+        const install_r8_link_audit = b.addInstallFile(
+            r8_link_audit_artifact,
+            "proto-ui/r8_link_audit.json",
+        );
+
+        const r8_link_step = b.step(
+            "proto-ui-r8-link",
+            "Link the selected adapter candidate into temacs and audit the native ELF",
+        );
+        r8_link_step.dependOn(&run_r8_link_audit.step);
+        r8_link_step.dependOn(&install_r8_link_audit.step);
+
+        // Runtime-state manifests may claim linked_not_registered only after
+        // the real target temacs ELF has passed the symbol audit.
+        proto_ui_r8_adapter_linkage_step.?.dependOn(r8_link_step);
+        proto_ui_r8_readiness_step.?.dependOn(r8_link_step);
     }
     // The 8MB default main-thread stack overflows during deep batch Lisp
     // work in Debug builds (-O0 eval frames are large): the darwin
@@ -6988,7 +7057,8 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true proto-ui-host-adapter - selected but unlinked pure-SDL3 host adapter audit
         \\  zig build -Dproto-ui=true proto-ui-runtime-activation - linkage/registration blocked activation audit
         \\  zig build -Dproto-ui=true proto-ui-runtime-manifest - fail-closed runtime manifest audit
-        \\  zig build -Dproto-ui=true proto-ui-r8-adapter-linkage - selected but unlinked adapter linkage artifact/manifest
+        \\  zig build -Dproto-ui=true proto-ui-r8-adapter-linkage - default selected-but-unlinked adapter linkage audit
+        \\  zig build -Dproto-ui=true -Dproto-ui-runtime=true proto-ui-r8-link - native-glibc static adapter link + linked-ELF audit (not registered)
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module - Emacs dynamic-module seam
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke - verify module seam in batch Emacs
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-frame-fact-smoke - public frame facts on a display
