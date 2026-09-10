@@ -132,7 +132,9 @@
                       :window_start_line 1
                       :window_visible_lines (length lines)
                       :cursor cursor
-                      :cursor_active (eq window (selected-window)))))
+                      :cursor_active (if (eq window (selected-window))
+                                         t
+                                       :json-false))))
     (when mode-line
       (setq state
             (append state
@@ -157,8 +159,12 @@
   (vconcat (mapcar #'proto-ui--window-state (window-list frame))))
 
 (defun proto-ui--json-plist (text)
-  (json-parse-string text :object-type 'plist :array-type 'array
-                     :false-object nil :null-object nil))
+  ;; Native adapter facts are expected to be valid, but a torn or malformed
+  ;; artifact must not kill the publisher loop.  The caller skips this cycle.
+  (condition-case nil
+      (json-parse-string text :object-type 'plist :array-type 'array
+                         :false-object :json-false :null-object :json-null)
+    (error nil)))
 
 (defun proto-ui--insert-action (value)
   (with-current-buffer (window-buffer (selected-window))
@@ -265,15 +271,19 @@
                       (or (and (>= char ?a) (<= char ?z))
                           (and (>= char ?A) (<= char ?Z))
                           (and (>= char ?0) (<= char ?9))
-                          (= char ?-) (= char ?<) (= char ?>)))
+                          (= char ?-) (= char ?<) (= char ?>)
+                          (= char ?\s)))
                 (setq index (1+ index))))
             (when valid-command-key
               (condition-case nil
                   (with-current-buffer (window-buffer (selected-window))
                     (let ((key-sequence (kbd command-key)))
-                      ;; One event only: this bridge must not accept a
-                      ;; multi-key macro even if the source is compromised.
-                      (when (= (length key-sequence) 1)
+                      ;; Accept only the single-key subset or the exact,
+                      ;; whitelisted two-key C-x window commands.
+                      (when (or (= (length key-sequence) 1)
+                                (and (= (length key-sequence) 2)
+                                     (member command-key
+                                             '("C-x 1" "C-x 2" "C-x 3" "C-x o"))))
                         (execute-kbd-macro key-sequence)))
                     (set-window-point (selected-window) (point))
                     (redisplay))
@@ -535,11 +545,12 @@
        ((and (= (length action) 3) (string= kind "wheel"))
         (proto-ui--wheel-action value))
        ((and (= (length action) 3) (string= kind "pointer-v2"))
-        (proto-ui--pointer-v2-action value)))
-      (let ((coding-system-for-write 'utf-8))
-        (with-temp-file (concat proto-ui--input-path ".ack")
-          (insert (nth 0 action))))
-      (delete-file proto-ui--input-path))))
+	(proto-ui--pointer-v2-action value)))
+      (when action
+	(let ((coding-system-for-write 'utf-8))
+	  (with-temp-file (concat proto-ui--input-path ".ack")
+	    (insert (nth 0 action))))
+	(delete-file proto-ui--input-path)))))
 
 (defun proto-ui--publish-facts (frame)
   (let* ((window (selected-window))
@@ -575,8 +586,9 @@
          (title (proto-ui--bounded-title frame))
          (temporary-path (concat proto-ui--facts-path ".tmp"))
          (coding-system-for-write 'utf-8))
-    (let ((wire (list :identity "process_lifetime"
-                      :frame_width (plist-get facts :frame_width)
+    (when (and facts windows)
+      (let ((wire (list :identity "process_lifetime"
+		      :frame_width (plist-get facts :frame_width)
                       :frame_height (plist-get facts :frame_height)
                       :window_width (plist-get facts :window_width)
                       :window_height (plist-get facts :window_height)
@@ -586,11 +598,11 @@
                       :cursor cursor
                       :window_start_line start-line
                       :window_visible_lines (length lines)
-                      :focused (if proto-ui--focus-observed t :false))))
-      (when title (plist-put wire :title title))
-      (with-temp-file temporary-path
-        (insert (json-serialize wire))))
-    (rename-file temporary-path proto-ui--facts-path t)))
+		      :focused (if proto-ui--focus-observed t :json-false))))
+	(when title (plist-put wire :title title))
+	(with-temp-file temporary-path
+	  (insert (json-encode wire))))
+      (rename-file temporary-path proto-ui--facts-path t))))
 
 (module-load proto-ui--module-path)
 

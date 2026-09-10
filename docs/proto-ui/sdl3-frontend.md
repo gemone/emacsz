@@ -365,6 +365,15 @@ set, reduces the parsed sequence to exactly one key event, then calls
 It is not full Emacs keymap, minor-mode, prefix, keyboard-quit, session, or
 IME parity, and it does not activate runtime registration or `output_proto`.
 
+W8h-d adds optional `input.composite_key_command_v1` for exactly four two-key
+window commands: `C-x 1`, `C-x 2`, `C-x 3`, and `C-x o`. The frontend retains
+the `C-x` prefix locally, translates only the next whitelisted press, and emits
+one bounded composite description; it never forwards a bare prefix. Emacs parses
+at most two events, accepts the exact whitelist, and executes it through its
+command interpreter. The split smoke proves two live Emacs windows are observed
+and rendered. This remains bounded command compatibility, not general keymap or
+prefix-sequence support.
+
 W11a implements the first clipboard capture path: Ctrl+V reads SDL clipboard
 text, validates it as a bounded one-line UTF-8 payload, and frees SDL-owned
 text on every path. W11c adds optional `clipboard.text_unicode`; without it,

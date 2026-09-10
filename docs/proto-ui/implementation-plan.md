@@ -2028,10 +2028,9 @@ Implemented:
    Home/End, PageUp/PageDown, Insert/Delete, and F1-F24. Unknown logical
    names, non-ASCII text, lock-only behavior, release, likely text-producing
    shifted/unmodified printable events, and events with `TEXT_INPUT` bytes
-   remain observation-only. The current slice also leaves quit/prefix entry
-   points (`ESC`, `C-g`, `C-]`, `C-u`, `C-x`, `M-x`) observation-only so it
-   cannot enter an interactive prefix sequence while a publisher loop is
-   waiting.
+   remain observation-only. This slice leaves quit/prefix entry points (`ESC`,
+   `C-g`, `C-]`, `C-u`, `C-x`, `M-x`) observation-only so it cannot enter an
+   interactive prefix sequence while a publisher loop is waiting.
 3. Command descriptions fold C/M/s/H modifiers into canonical prefixes,
    cap descriptions at 32 bytes, and base64-encode them in JSON. The Zig side
    does not evaluate Elisp.
@@ -2043,6 +2042,44 @@ Implemented:
    minor-mode, prefix, keyboard-quit, session, IME, and `output_proto`/runtime
    registration parity remain pending. Evidence is `sdl3-key-modifier-smoke`;
    both required smokes fail closed when the capability is absent.
+
+### W8h-d — Bounded `C-x` window commands and split observation (in review)
+
+Goal: exercise a real Emacs window-layout command from the SDL3 bridge without
+forwarding arbitrary prefix sequences or claiming general keymap parity.
+
+1. Add optional `input.composite_key_command_v1`.  It is negotiated only when
+   the effective set also contains `input.key_full_v2` and
+   `input.key_command_v1`.
+2. Recognize `C-x` locally as a pending prefix and translate only the next
+   press if it is one of the closed suffix whitelist `1`, `2`, `3`, or `o`.
+   Emit one bounded canonical description (`C-x 1`, `C-x 2`, `C-x 3`, or
+   `C-x o`); never send a bare `C-x` command to Emacs.
+3. Let Emacs validate the descriptor, parse at most two key events, enforce the
+   same four-command whitelist, and execute it with `execute-kbd-macro`.
+4. Fix the public-facts JSON bridge to preserve non-selected window booleans as
+   JSON `false` and use `json-encode` for adapter-produced false values; parsed
+   native facts and malformed input artifacts fail closed without killing the
+   publisher loop.
+5. Clip the facts fallback row layout and per-window text rows to the emitted
+   window height so a short split window has only positive-height rows that fit
+   its owner.
+6. Add `sdl3-emacs-window-split-smoke`: require both capabilities, send
+   `C-x` then `2`, fail closed unless a subsequent authoritative frame exposes
+   at least two live windows and rows, and render the split scene.
+
+Non-goals: no arbitrary two-key sequences, interactive prefix state, keyboard
+quit, minor-mode or keymap parity, IME, hierarchical redisplay window trees, or
+`output_proto` runtime activation.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-window-split-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-key-modifier-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-key-v2-smoke --summary all
+```
 
 ### W9n — Backward-compatible pointer event v2 transport (approved)
 

@@ -47,6 +47,7 @@ pub const Feature = enum {
     input_key_bounded,
     input_key_full_v2,
     input_key_command_v1,
+    input_composite_key_command_v1,
     input_pointer_bounded,
     input_pointer_v2,
     input_pointer_selection_left,
@@ -178,6 +179,7 @@ pub const Feature = enum {
             .input_key_bounded => "input.key_bounded",
             .input_key_full_v2 => "input.key_full_v2",
             .input_key_command_v1 => "input.key_command_v1",
+            .input_composite_key_command_v1 => "input.composite_key_command_v1",
             .input_pointer_bounded => "input.pointer_bounded",
             .input_pointer_v2 => "input.pointer_v2",
             .input_pointer_selection_left => "input.pointer_selection_left",
@@ -367,6 +369,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .input_key_bounded, .status = .degraded, .evidence = "sdl3-epxl-edit-smoke" },
     .{ .feature = .input_key_full_v2, .status = .degraded, .evidence = "sdl3-epxl-key-v2-smoke" },
     .{ .feature = .input_key_command_v1, .status = .degraded, .evidence = "sdl3-key-modifier-smoke" },
+    .{ .feature = .input_composite_key_command_v1, .status = .degraded, .evidence = "sdl3-emacs-window-split-smoke observes C-x 2 from the exact C-x 1/2/3/o whitelist" },
     .{ .feature = .input_pointer_bounded, .status = .degraded, .evidence = "sdl3-pointer-smoke" },
     .{ .feature = .input_pointer_v2, .status = .degraded, .evidence = "sdl3-pointer-v2-smoke" },
     .{ .feature = .input_pointer_selection_left, .status = .degraded, .evidence = "sdl3-pointer-selection-smoke" },
@@ -572,6 +575,14 @@ pub fn negotiate(backend: Set, frontend: Set) Error!Negotiated {
     // target validation.
     if (!effective.contains(.selection_primary_ownership_v1))
         effective.bits[@intFromEnum(Feature.selection_primary_transfer_v1)] = false;
+    // Command execution uses the KEY_EVENT v2 payload; do not advertise the
+    // execution layer without its transport.
+    if (!effective.contains(.input_key_full_v2))
+        effective.bits[@intFromEnum(Feature.input_key_command_v1)] = false;
+    // Composite commands are an execution upgrade on the authenticated v2 key
+    // transport and the already-bounded single-command path.
+    if (!effective.contains(.input_key_command_v1))
+        effective.bits[@intFromEnum(Feature.input_composite_key_command_v1)] = false;
     for (feature_descriptors) |item| {
         if (item.feature.required() and !effective.contains(item.feature))
             return Error.MissingRequiredCapability;
@@ -848,6 +859,40 @@ test "key command execution remains independently negotiable" {
     const effective = try negotiate(all, transport_only);
     try std.testing.expect(effective.effective.contains(.input_key_full_v2));
     try std.testing.expect(!effective.effective.contains(.input_key_command_v1));
+}
+
+test "key command execution requires key v2 transport" {
+    const all = backendSupported();
+    var no_transport = all;
+    no_transport.bits[@intFromEnum(Feature.input_key_full_v2)] = false;
+    const effective = try negotiate(all, no_transport);
+    try std.testing.expect(!effective.effective.contains(.input_key_command_v1));
+    try std.testing.expect(!effective.effective.contains(.input_composite_key_command_v1));
+}
+
+test "composite command execution remains opt-in beyond single keys" {
+    const all = backendSupported();
+    const negotiated = try negotiate(all, all);
+    try std.testing.expect(negotiated.effective.contains(.input_key_command_v1));
+    try std.testing.expect(negotiated.effective.contains(.input_composite_key_command_v1));
+
+    var single_only = all;
+    single_only.bits[@intFromEnum(Feature.input_composite_key_command_v1)] = false;
+    const effective = try negotiate(all, single_only);
+    try std.testing.expect(effective.effective.contains(.input_key_command_v1));
+    try std.testing.expect(!effective.effective.contains(.input_composite_key_command_v1));
+
+    var transport_only = all;
+    transport_only.bits[@intFromEnum(Feature.input_key_command_v1)] = false;
+    const command_missing = try negotiate(all, transport_only);
+    try std.testing.expect(command_missing.effective.contains(.input_key_full_v2));
+    try std.testing.expect(!command_missing.effective.contains(.input_composite_key_command_v1));
+
+    var no_transport = all;
+    no_transport.bits[@intFromEnum(Feature.input_key_full_v2)] = false;
+    const transport_missing = try negotiate(all, no_transport);
+    try std.testing.expect(!transport_missing.effective.contains(.input_key_full_v2));
+    try std.testing.expect(!transport_missing.effective.contains(.input_composite_key_command_v1));
 }
 
 test "left pointer selection remains optional for v2-only peers" {

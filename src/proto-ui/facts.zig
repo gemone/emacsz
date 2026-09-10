@@ -201,9 +201,17 @@ const WindowStateWire = struct {
 };
 
 fn cursorFitsVertical(cursor: CursorFacts, window_height: i32) bool {
-    const row_height: i64 = @max(1, @divTrunc(window_height, 15));
+    const row_height: i64 = visibleRowHeight(window_height);
     const cursor_height: i64 = @max(2, @min(18, row_height));
     return @as(i64, cursor.line - 1) * row_height + cursor_height <= window_height;
+}
+
+fn visibleRowCount(window_height: i32) i32 {
+    return @min(15, window_height);
+}
+
+fn visibleRowHeight(window_height: i32) i32 {
+    return @max(1, @divTrunc(window_height, visibleRowCount(window_height)));
 }
 
 fn parseWindowText(gpa: std.mem.Allocator, lines: []const []const u8) !TextLines {
@@ -631,6 +639,49 @@ test "projects bounded states for every window" {
     try std.testing.expectEqualStrings("LT", scene.aux_lines[1].bytes[0..scene.aux_lines[1].len]);
     try std.testing.expectEqual(frontend.aux_line_tab, scene.aux_lines[1].flags);
 
+    const short_split =
+        \\{
+        \\  "frame_width":120,"frame_height":40,"window_width":60,"window_height":3,
+        \\  "identity":"process_lifetime",
+        \\  "windows":[
+        \\    {"id":101,"index":0,"x":0,"y":0,"width":60,"height":3,"selected":false},
+        \\    {"id":102,"index":1,"x":60,"y":0,"width":60,"height":3,"selected":true}
+        \\  ],
+        \\  "window_states":[
+        \\    {"id":101,"lines":["left","extra-1","extra-2","extra-3"],"window_start_line":1,"window_visible_lines":4,
+        \\     "cursor":{"line":1,"column":1},"cursor_active":false},
+        \\    {"id":102,"lines":["right","extra-1","extra-2","extra-3"],"window_start_line":1,"window_visible_lines":4,
+        \\     "cursor":{"line":1,"column":1},"cursor_active":true}
+        \\  ],
+        \\  "text":["right"],
+        \\  "window_start_line":1,"window_visible_lines":1
+        \\}
+    ;
+    var short_snapshot = try parseSnapshot(a, short_split);
+    defer short_snapshot.deinit(a);
+    var short_scene = frontend.Scene.init(a);
+    defer short_scene.deinit();
+    var short_messages: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (short_messages.items) |message| a.free(message);
+        short_messages.deinit(a);
+    }
+    try appendWireSnapshotWindows(
+        a,
+        short_snapshot.facts,
+        short_snapshot.windows,
+        short_snapshot.contents,
+        short_snapshot.text.lines,
+        short_snapshot.cursor,
+        short_snapshot.viewport,
+        &short_scene,
+        &short_messages,
+    );
+    try std.testing.expectEqual(@as(usize, 6), short_scene.rows.items.len);
+    try std.testing.expectEqual(@as(i32, 1), short_scene.rows.items[0].height);
+    try std.testing.expectEqual(@as(i32, 1), short_scene.rows.items[5].height);
+    try std.testing.expectEqual(@as(usize, 6), short_scene.text.items.len);
+
     const combined_overflow =
         \\{"frame_width":120,"frame_height":40,"window_width":120,"window_height":20,
         \\ "identity":"process_lifetime",
@@ -906,8 +957,8 @@ pub fn buildScene(gpa: std.mem.Allocator, facts: FrameFacts, snapshot_index: u64
 
     var row_bytes: std.ArrayList(u8) = .empty;
     defer row_bytes.deinit(gpa);
-    const row_count: i32 = 15;
-    const row_height = @max(1, @divTrunc(facts.window_height, row_count));
+    const row_count: i32 = visibleRowCount(facts.window_height);
+    const row_height = visibleRowHeight(facts.window_height);
     var row_index: i32 = 0;
     while (row_index < row_count) : (row_index += 1) {
         try frontend.encodeRow(gpa, .{
@@ -1226,8 +1277,11 @@ pub fn appendWireSnapshotWindows(
                 }
             } else continue;
         }
-        const row_count: i32 = 15;
-        const row_height = @max(1, @divTrunc(window.height, row_count));
+        // Small real windows cannot contain fifteen positive-height rows.
+        // Use one pixel per row below 15 rows, then the normal 15-row
+        // floor-division layout.
+        const row_count: i32 = visibleRowCount(window.height);
+        const row_height = visibleRowHeight(window.height);
         var row_index: i32 = 0;
         while (row_index < row_count) : (row_index += 1) {
             try frontend.encodeRow(gpa, .{
@@ -1284,7 +1338,7 @@ pub fn appendWireSnapshotWindows(
             }
         }
     }
-    const selected_row_count: i32 = 15;
+    const selected_row_count: i32 = visibleRowCount(facts.window_height);
     const wire_viewport: ViewportFacts = .{
         .start_line = viewport.start_line,
         .line_count = @min(viewport.line_count, selected_row_count),
@@ -1308,7 +1362,7 @@ pub fn appendWireSnapshotWindows(
                 }
             } else continue;
         }
-        const row_height = @max(1, @divTrunc(window.height, selected_row_count));
+        const row_height = visibleRowHeight(window.height);
         var wire_cursor: ?CursorFacts = null;
         var wire_cursor_active = false;
         if (found) {
@@ -1380,6 +1434,7 @@ pub fn appendWireSnapshotWindows(
         total_text_lines += content.text.lines.len;
         if (total_text_lines > max_total_text_lines) return error.InvalidWindowContent;
         for (content.text.lines, 0..) |line, index| {
+            if (index >= visibleRowCount(window.height)) break;
             if (line.len > max_text_columns) return error.InvalidTextFacts;
             try frontend.encodeTextLineV2(gpa, .{
                 .window_id = window.id,

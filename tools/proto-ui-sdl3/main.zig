@@ -427,7 +427,7 @@ const SDL_FRect = extern struct {
     h: f32,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_gap, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, emacs_epxl_key_modifier, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, primary_selection, emacs_clipboard_unicode, emacs_primary_selection, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke, emacs_epxl_failure_cleanup };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_gap, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, emacs_epxl_key_modifier, emacs_window_split, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, primary_selection, emacs_clipboard_unicode, emacs_primary_selection, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke, emacs_epxl_failure_cleanup };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -2263,20 +2263,82 @@ fn emacsKeyDescription(
     return try description.toOwnedSlice(gpa);
 }
 
+/// Turns an exact `C-x` prefix followed by one whitelisted base key into one
+/// bounded Emacs command. The prefix event itself is never sent to Emacs, so
+/// the bridge cannot leave an interactive prefix state pending.
+const EmacsKeyCommandTranslator = struct {
+    pending_c_x: bool = false,
+
+    fn reset(self: *EmacsKeyCommandTranslator) void {
+        self.pending_c_x = false;
+    }
+
+    fn suffixByte(event: input_policy.FullKeyEvent) ?u8 {
+        if (event.state != .down or event.text().len != 0 or
+            event.modifiers != 0) return null;
+        const physical = event.physical_key;
+        if (physical >= 4 and physical <= 29) {
+            return @intCast('a' + (physical - 4));
+        }
+        if (physical >= 30 and physical <= 32) {
+            return @intCast('1' + (physical - 30));
+        }
+        return null;
+    }
+
+    fn translate(
+        self: *EmacsKeyCommandTranslator,
+        gpa: std.mem.Allocator,
+        event: input_policy.FullKeyEvent,
+        single_command_allowed: bool,
+        composite_command_allowed: bool,
+    ) !?[]u8 {
+        if (composite_command_allowed and event.state == .down and
+            event.modifiers == input_policy.key_modifier_control and
+            event.logicalKey().len == 1 and std.ascii.toLower(event.logicalKey()[0]) == 'x')
+        {
+            self.pending_c_x = true;
+            return null;
+        }
+        if (self.pending_c_x) {
+            self.pending_c_x = false;
+            const suffix_byte = suffixByte(event) orelse return null;
+            const allowed = suffix_byte == '1' or suffix_byte == '2' or
+                suffix_byte == '3' or suffix_byte == 'o';
+            if (!composite_command_allowed or !allowed)
+                return null;
+            return try std.fmt.allocPrint(gpa, "C-x {c}", .{suffix_byte});
+        }
+
+        const base = try emacsKeyDescription(gpa, event);
+        if (base == null) return null;
+        if (!single_command_allowed) return null;
+        return base;
+    }
+};
+
+var emacs_key_command_translator: EmacsKeyCommandTranslator = .{};
+
 fn writeKeyV2Artifact(
     gpa: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
     sequence: u64,
     event: input_policy.FullKeyEvent,
-    command_execution_allowed: bool,
+    single_command_allowed: bool,
+    composite_command_allowed: bool,
 ) !void {
     const logical = try base64Alloc(gpa, event.logicalKey());
     defer gpa.free(logical);
     const text = try base64Alloc(gpa, event.text());
     defer gpa.free(text);
-    const command_key = if (command_execution_allowed)
-        try emacsKeyDescription(gpa, event)
+    const command_key = if (single_command_allowed or composite_command_allowed)
+        try emacs_key_command_translator.translate(
+            gpa,
+            event,
+            single_command_allowed,
+            composite_command_allowed,
+        )
     else
         null;
     const encoded_key = if (command_key) |key| try base64Alloc(gpa, key) else null;
@@ -2382,6 +2444,10 @@ fn awaitFrameAck(
                     payload.envelope.session_id != expected_session_id or
                     payload.envelope.frame_id != expected_frame_id)
                     return error.ExpectedAck;
+                // Composite-prefix state is deliberately local to the key
+                // stream. Any other reverse-input channel makes a stale C-x
+                // prefix ineligible so a later digit cannot become a command.
+                if (!is_key_v2) emacs_key_command_translator.reset();
                 if (payload.envelope.sequence + 1 == input_sequence.*) {
                     try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = payload.envelope.sequence });
                     try writer.interface.flush();
@@ -2427,6 +2493,7 @@ fn awaitFrameAck(
                         payload.envelope.sequence,
                         full_key.?,
                         capabilities.contains(.input_key_command_v1),
+                        capabilities.contains(.input_composite_key_command_v1),
                     );
                 } else if (is_focus) {
                     const event = try protocol.decodeFocusEvent(payload.bytes);
@@ -5623,6 +5690,7 @@ fn runLiveFrontend(
     if (!connected) return error.LiveEndpointUnavailable;
     defer stream.close(io);
     delivery.beginRetry();
+    emacs_key_command_translator.reset();
 
     var write_buffer: [16 * 1024]u8 = undefined;
     var read_buffer: [16 * 1024]u8 = undefined;
@@ -5700,12 +5768,28 @@ fn runLiveFrontend(
         try delivery.pushKeyV2(input_policy.translateFullKey(5, "b", true, false, input_policy.sdl_kmod_lctrl, 0).?);
     }
 
+    if (config.mode == .emacs_window_split) {
+        if (!negotiated.effective.contains(.input_key_bounded) or
+            !negotiated.effective.contains(.input_key_full_v2) or
+            !negotiated.effective.contains(.input_key_command_v1) or
+            !negotiated.effective.contains(.input_composite_key_command_v1))
+            return error.CompositeCommandCapabilityNotNegotiated;
+        std.debug.print(
+            "sdl3-emacs-window-split-smoke: {{\"kind\":\"sdl3-emacs-window-split-smoke\",\"negotiated\":{{\"input.key_command_v1\":true,\"input.composite_key_command_v1\":true}},\"result\":\"negotiated\"}}\n",
+            .{},
+        );
+        emacs_key_command_translator.reset();
+        try delivery.pushKeyV2(input_policy.translateFullKey(27, "x", true, false, input_policy.sdl_kmod_lctrl, 0).?);
+        try delivery.pushKeyV2(input_policy.translateFullKey(31, "2", true, false, 0, 0).?);
+    }
+
     reserveFrontendInputSequence(delivery);
 
     const use_resync = config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect or
         config.mode == .emacs_epxl_recovery or config.mode == .emacs_epxl_gap or config.mode == .emacs_epxl_input or
         config.mode == .emacs_epxl_unicode_input or config.mode == .emacs_epxl_edit or
-        config.mode == .emacs_epxl_key_v2 or config.mode == .emacs_epxl_key_modifier or config.mode == .emacs_epxl_sequence;
+        config.mode == .emacs_epxl_key_v2 or config.mode == .emacs_epxl_key_modifier or
+        config.mode == .emacs_window_split or config.mode == .emacs_epxl_sequence;
     var scene = frontend.Scene.init(gpa);
     errdefer scene.deinit();
     var frontend_sequence: u64 = frontend_pong_sequence_start;
@@ -9148,6 +9232,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_epxl_sequence;
             config.auto_input = "X";
             config.auto_key = .backspace;
+        } else if (std.mem.eql(u8, arg, "--emacs-window-split-smoke")) {
+            config.mode = .emacs_window_split;
         } else if (std.mem.eql(u8, arg, "--clipboard-smoke")) {
             config.mode = .clipboard;
         } else if (std.mem.eql(u8, arg, "--primary-selection-smoke")) {
@@ -9483,6 +9569,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .emacs_epxl_unicode_input => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_key_v2 => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_key_modifier => try runEmacsEpxlSession(gpa, io, &config, 1),
+        .emacs_window_split => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_edit => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_sequence => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_clipboard_unicode => try runEmacsEpxlSession(gpa, io, &config, 1),
@@ -9531,6 +9618,15 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         return error.UnexpectedFactUpdateCount;
     if (config.mode == .emacs_epxl_key_modifier and scene.stats.frame_updates < 2)
         return error.UnexpectedFactUpdateCount;
+    if (config.mode == .emacs_window_split and scene.stats.frame_updates < 2)
+        return error.UnexpectedFactUpdateCount;
+    if (config.mode == .emacs_window_split and scene.windows.items.len < 2)
+        return error.WindowSplitNotObserved;
+    if (config.mode == .emacs_window_split)
+        std.debug.print(
+            "sdl3-emacs-window-split-smoke: {{\"kind\":\"sdl3-emacs-window-split-smoke\",\"command\":\"C-x 2\",\"windows\":{d},\"rows\":{d},\"frame_updates\":{d},\"result\":\"pass\"}}\n",
+            .{ scene.windows.items.len, scene.rows.items.len, scene.stats.frame_updates },
+        );
 
     if (config.mode == .emacs_epxl_key_modifier) {
         if (scene.cursor == null or scene.cursor.?.x != 32 or scene.cursor.?.y != 0)
