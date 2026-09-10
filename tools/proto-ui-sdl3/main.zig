@@ -1580,11 +1580,54 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
             }, owner_payload.items, &owner_message);
             try scene.apply(owner_message.items);
 
-            const clear_sequence = sequence + 1;
+            const lost_sequence = sequence + 1;
+            var lost_payload: std.ArrayList(u8) = .empty;
+            defer lost_payload.deinit(gpa);
+            try protocol.encodeSelectionLost(gpa, .{
+                .kind = .primary,
+                .reason = .owner_cancelled,
+                .generation = 1,
+            }, &lost_payload);
+            var lost_message: std.ArrayList(u8) = .empty;
+            defer lost_message.deinit(gpa);
+            try protocol.encodeEnvelope(gpa, .{
+                .flags = 0,
+                .message_type = protocol.Message.selection_lost,
+                .sequence = lost_sequence,
+                .ack_sequence = 0,
+                .session_id = capability.session_id,
+                .frame_id = 1,
+                .timestamp_ns = lost_sequence,
+            }, lost_payload.items, &lost_message);
+            try scene.apply(lost_message.items);
+
+            const replacement_sequence = sequence + 2;
+            var replacement_payload: std.ArrayList(u8) = .empty;
+            defer replacement_payload.deinit(gpa);
+            try protocol.encodeSelectionOwnerSet(gpa, .{
+                .kind = .primary,
+                .generation = 2,
+                .flags = protocol.SelectionOwnerFlags.export_to_platform,
+                .offers = offers[0..],
+            }, &replacement_payload);
+            var replacement_message: std.ArrayList(u8) = .empty;
+            defer replacement_message.deinit(gpa);
+            try protocol.encodeEnvelope(gpa, .{
+                .flags = 0,
+                .message_type = protocol.Message.selection_owner_set,
+                .sequence = replacement_sequence,
+                .ack_sequence = 0,
+                .session_id = capability.session_id,
+                .frame_id = 1,
+                .timestamp_ns = replacement_sequence,
+            }, replacement_payload.items, &replacement_message);
+            try scene.apply(replacement_message.items);
+
+            const clear_sequence = sequence + 3;
             var clear_payload: std.ArrayList(u8) = .empty;
             defer clear_payload.deinit(gpa);
             try protocol.encodeSelectionClear(gpa, .{
-                .generation = 1,
+                .generation = 2,
                 .kind = .primary,
             }, &clear_payload);
             var clear_message: std.ArrayList(u8) = .empty;
@@ -1600,7 +1643,7 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
             }, clear_payload.items, &clear_message);
             try scene.apply(clear_message.items);
 
-            const messages = [_]std.ArrayList(u8){ owner_message, clear_message };
+            const messages = [_]std.ArrayList(u8){ owner_message, lost_message, replacement_message, clear_message };
             for (messages) |message| {
                 const envelope = (try protocol.decodeEnvelope(message.items)).envelope;
                 try acks.markSent(envelope.sequence);
@@ -6434,8 +6477,12 @@ fn runEpxlInteractiveFrontend(
     var fullscreen_request_delivered = false;
     var selection_owner_set_seen = false;
     var selection_owner_clear_seen = false;
-    var selection_platform_claimed = false;
-    var selection_platform_released = false;
+    var selection_lost_seen = false;
+    var selection_replacement_seen = false;
+    var initial_platform_claimed = false;
+    var lost_platform_released = false;
+    var replacement_platform_claimed = false;
+    var clear_platform_released = false;
     var selection_transfer_owner_seen = false;
     var selection_transfer_request_seen = false;
     var selection_transfer_data_seen = false;
@@ -6462,7 +6509,8 @@ fn runEpxlInteractiveFrontend(
             },
             .frame => |message| {
                 defer gpa.free(message);
-                const envelope = (try protocol.decodeEnvelope(message)).envelope;
+                const decoded = try protocol.decodeEnvelope(message);
+                const envelope = decoded.envelope;
                 try scene.apply(message);
                 if (config.selection_owner_smoke) {
                     if (envelope.message_type == protocol.Message.selection_owner_set and
@@ -6474,17 +6522,45 @@ fn runEpxlInteractiveFrontend(
                         try setPlatformPrimarySelection("Proto-UI primary");
                         if (!SDL_HasPrimarySelectionText()) return error.PrimarySelectionUnavailable;
                         if (SDL_GetPrimarySelectionText()) |owned| {
-                            selection_platform_claimed =
+                            initial_platform_claimed =
                                 std.mem.eql(u8, std.mem.span(owned), "Proto-UI primary");
                             SDL_free(owned);
                         }
                     }
                     if (envelope.message_type == protocol.Message.selection_owner_clear and
-                        scene.selection_kind == null)
+                        scene.selection_kind == null and
+                        scene.selection_generation == 0)
                     {
                         selection_owner_clear_seen = true;
                         try clearPlatformPrimarySelection();
-                        selection_platform_released = !SDL_HasPrimarySelectionText();
+                        clear_platform_released = !SDL_HasPrimarySelectionText();
+                    }
+                    if (envelope.message_type == protocol.Message.selection_lost and
+                        scene.selection_kind == null and
+                        scene.selection_generation == 0)
+                    {
+                        const lost = try protocol.decodeSelectionLost(decoded.bytes);
+                        if (lost.kind == .primary and lost.generation == 1 and
+                            lost.reason == .owner_cancelled)
+                        {
+                            selection_lost_seen = true;
+                            try clearPlatformPrimarySelection();
+                            lost_platform_released = !SDL_HasPrimarySelectionText();
+                        }
+                    }
+                    if (envelope.message_type == protocol.Message.selection_owner_set and
+                        scene.selection_kind != null and
+                        scene.selection_generation == 2 and
+                        scene.selection_flags & protocol.SelectionOwnerFlags.export_to_platform != 0)
+                    {
+                        selection_replacement_seen = true;
+                        try setPlatformPrimarySelection("Proto-UI replacement");
+                        if (!SDL_HasPrimarySelectionText()) return error.PrimarySelectionUnavailable;
+                        if (SDL_GetPrimarySelectionText()) |owned| {
+                            replacement_platform_claimed =
+                                std.mem.eql(u8, std.mem.span(owned), "Proto-UI replacement");
+                            SDL_free(owned);
+                        }
                     }
                 }
                 if (config.selection_transfer_smoke) {
@@ -6916,10 +6992,12 @@ fn runEpxlInteractiveFrontend(
     }
     if (config.selection_owner_smoke) {
         if (!selection_owner_set_seen or !selection_owner_clear_seen or
-            !selection_platform_claimed or !selection_platform_released)
+            !selection_lost_seen or !selection_replacement_seen or
+            !initial_platform_claimed or !lost_platform_released or
+            !replacement_platform_claimed or !clear_platform_released)
             return error.SelectionOwnershipTransitionNotObserved;
         std.debug.print(
-            "sdl3-selection-owner-smoke: {{\"kind\":\"sdl3-selection-owner-smoke\",\"selection\":\"primary\",\"targets\":[\"UTF8_STRING\",\"STRING\"],\"generation\":1,\"platform_claimed\":true,\"platform_released\":true,\"set_and_clear\":true,\"result\":\"pass\"}}\n",
+            "sdl3-selection-owner-smoke: {{\"kind\":\"sdl3-selection-owner-smoke\",\"selection\":\"primary\",\"targets\":[\"UTF8_STRING\",\"STRING\"],\"generations\":[1,2],\"owner_cancelled\":true,\"replacement\":true,\"initial_claimed\":true,\"lost_released\":true,\"replacement_claimed\":true,\"clear_released\":true,\"result\":\"pass\"}}\n",
             .{},
         );
     }
