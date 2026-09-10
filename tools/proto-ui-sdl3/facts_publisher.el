@@ -289,24 +289,50 @@
                     (redisplay))
                 (error nil)))))))))
 
+(defun proto-ui--pointer-window-at (frame x y)
+  "Return the live FRAME window covering pixel X,Y and its local coordinates."
+  (catch 'proto-ui-window
+    (dolist (window (window-list frame))
+      (let* ((edges (window-pixel-edges window))
+             (left (nth 0 edges))
+             (top (nth 1 edges))
+             (right (nth 2 edges))
+             (bottom (nth 3 edges)))
+        (when (and (numberp left) (numberp top) (numberp right) (numberp bottom)
+                   (>= x left) (< x right) (>= y top) (< y bottom))
+          (throw 'proto-ui-window
+                 (cons window (cons (- x left) (- y top)))))))))
+
 (defun proto-ui--pointer-v2-action (value)
   (let* ((event (condition-case nil
                     (json-parse-string value :object-type 'plist)
-                  (error nil)))
+                   (error nil)))
          (phase (plist-get event :phase))
          (buttons (plist-get event :buttons))
          (x (plist-get event :x))
          (y (plist-get event :y))
          (clicks (plist-get event :clicks))
          (modifiers (plist-get event :modifiers))
-         (window (selected-window))
-         (buffer (window-buffer window)))
-    (when (and (or proto-ui--pointer-generic proto-ui--pointer-selection)
-               (member phase '("press" "drag" "release"))
-               (eql buttons 1) (eql clicks 1) (eql modifiers 0)
-               (numberp x) (numberp y))
+         (frame (selected-frame))
+         (target (and proto-ui--pointer-generic (numberp x) (numberp y)
+                      (proto-ui--pointer-window-at frame x y)))
+         (window (car target))
+         (window-x (if target (car (cdr target)) x))
+         (window-y (if target (cdr (cdr target)) y))
+         (buffer (if window (window-buffer window)
+                   (window-buffer (selected-window))))
+         (left-action-p (and (member phase '("press" "drag" "release"))
+                             (eql buttons 1) (eql clicks 1) (eql modifiers 0))))
+    (when (and window proto-ui--pointer-generic left-action-p target
+               (not (eq window (selected-window))))
+      (select-window window 'norecord))
+    (when (and left-action-p
+               (or (and proto-ui--pointer-generic target)
+                   (and (not proto-ui--pointer-generic)
+                        proto-ui--pointer-selection))
+               (numberp window-x) (numberp window-y))
       (condition-case nil
-          (let ((point (posn-point (posn-at-x-y x y window))))
+          (let ((point (posn-point (posn-at-x-y window-x window-y window))))
             (when point
               (with-current-buffer buffer
                 (goto-char point)
@@ -316,9 +342,9 @@
     (when (and proto-ui--pointer-selection
                (member phase '("press" "drag" "release"))
                (eql buttons 1) (eql clicks 1) (eql modifiers 0)
-               (numberp x) (numberp y))
+               (numberp window-x) (numberp window-y))
       (condition-case nil
-          (let ((point (posn-point (posn-at-x-y x y window))))
+          (let ((point (posn-point (posn-at-x-y window-x window-y window))))
             (when point
               (with-current-buffer buffer
                 (goto-char point)

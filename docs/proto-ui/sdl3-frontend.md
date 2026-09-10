@@ -393,6 +393,14 @@ cursor at column 8 and still renders `Z`. This verifies restore behavior only;
 it does not generalize prefix handling or claim arbitrary window-command
 support.
 
+W8h-g adds window-aware left clicks for the generic pointer path. The Emacs
+publisher performs a bounded pixel hit test over live `window-pixel-edges`,
+selects the clicked window with `norecord`, and converts the point to
+window-local coordinates before `posn-at-x-y`. The smoke splits with `C-x 3`,
+clicks the right window, inserts `Z`, and asserts right-window selection plus
+shared-buffer visibility. This remains bounded pointer compatibility, not a
+general mouse, selection, or keymap model.
+
 W11a implements the first clipboard capture path: Ctrl+V reads SDL clipboard
 text, validates it as a bounded one-line UTF-8 payload, and frees SDL-owned
 text on every path. W11c adds optional `clipboard.text_unicode`; without it,

@@ -315,7 +315,7 @@ Priorities:
 | IME reverse wire reports | P1 | Degraded | Bounded attached/detached/preedit/commit/surrounding/delete/candidate/cancel codecs; Scene preedit/candidate/commit state and bounded ASCII SDL overlays proven, with no platform backend or core commit application |
 | Dead keys | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Mouse motion | P0 | Degraded | Bounded hover/drag admission; negotiated v2 preserves the exact button mask |
-| Mouse buttons | P0 | Degraded | Bounded left plus negotiated strict left/middle/right/X1/X2 v2 intents; diagnostic generic publisher moves point for bounded left v2 press/drag/release |
+| Mouse buttons | P0 | Degraded | Bounded left plus negotiated strict left/middle/right/X1/X2 v2 intents; generic publisher performs frame-relative window hit-testing, selects the clicked Emacs window, and moves point for bounded left v2 press/drag/release; right button, X buttons, advanced selection, and full mouse parity pending |
 | Click count | P1 | Degraded | V2 validates and transports clicks 1..8; execution/selection parity remains pending |
 | Drag events | P1 | Degraded | Ordered bounded left or negotiated v2 exact-mask drag; not selection drag |
 | Left-drag selection | P1 | Degraded | One negotiated smoke subset sets public mark/point and copies at most 120 ASCII bytes (`sdl3-pointer-selection-smoke`); no mouse parity |

@@ -2150,6 +2150,38 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-s
 zig build -Dproto-ui=true proto-ui-boundary --summary all
 ```
 
+### W8h-g — Split-window pointer selection (approved)
+
+Goal: make bounded left-click behavior window-aware in split Emacs frames
+without allowing the frontend to select windows or own pointer semantics.
+
+1. Add a publisher-owned pixel hit test over `window-pixel-edges` for live
+   windows. A bounded left press/drag/release maps frame-relative SDL
+   coordinates to the clicked Emacs window and window-local coordinates.
+2. Select only the clicked live window with `norecord`; never let frontend
+   state directly choose the Emacs window.
+3. Keep the exact accepted input subset: left button, single click, no
+   modifiers, and press/drag/release. Other buttons, modifier combinations,
+   and out-of-frame coordinates remain outside this slice.
+4. Add `sdl3-emacs-window-pointer-select-smoke`: split with `C-x 3`, click the
+   right window, insert bounded ASCII `Z`, and fail closed unless both live
+   windows, right-window selection, cursor column 8, and shared-buffer text are
+   observed.
+
+Non-goals: no general mouse model, right-button support, X-button support,
+modifier combinations, popup menus, drag replacement, arbitrary keymaps, or
+`output_proto` activation.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-window-pointer-select-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-window-navigation-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-v2-smoke --summary all
+zig build -Dproto-ui=true proto-ui-boundary --summary all
+```
+
 ### W9n — Backward-compatible pointer event v2 transport (approved)
 
 Goal: extend the existing bounded `POINTER_EVENT` profile with strict,

@@ -429,7 +429,7 @@ const SDL_FRect = extern struct {
     h: f32,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_gap, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, emacs_epxl_key_modifier, emacs_window_split, emacs_window_navigation, emacs_window_restore, renderer_bench, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, primary_selection, emacs_clipboard_unicode, emacs_primary_selection, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke, emacs_epxl_failure_cleanup };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_gap, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, emacs_epxl_key_modifier, emacs_window_split, emacs_window_navigation, emacs_window_restore, emacs_window_pointer_select, renderer_bench, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, primary_selection, emacs_clipboard_unicode, emacs_primary_selection, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke, emacs_epxl_failure_cleanup };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -5846,6 +5846,40 @@ fn runLiveFrontend(
         try delivery.pushText("Z");
     }
 
+    if (config.mode == .emacs_window_pointer_select) {
+        if (!negotiated.effective.contains(.input_key_bounded) or
+            !negotiated.effective.contains(.input_text_ascii) or
+            !negotiated.effective.contains(.input_key_full_v2) or
+            !negotiated.effective.contains(.input_key_command_v1) or
+            !negotiated.effective.contains(.input_composite_key_command_v1) or
+            !negotiated.effective.contains(.input_pointer_v2))
+            return error.PointerWindowSelectCapabilityNotNegotiated;
+        std.debug.print(
+            "sdl3-emacs-window-pointer-select-smoke: {{\"kind\":\"sdl3-emacs-window-pointer-select-smoke\",\"negotiated\":{{\"input.text_ascii\":true,\"input.key_command_v1\":true,\"input.composite_key_command_v1\":true,\"input.pointer_v2\":true}},\"result\":\"negotiated\"}}\n",
+            .{},
+        );
+        emacs_key_command_translator.reset();
+        try delivery.pushKeyV2(input_policy.translateFullKey(27, "x", true, false, input_policy.sdl_kmod_lctrl, 0).?);
+        try delivery.pushKeyV2(input_policy.translateFullKey(32, "3", true, false, 0, 0).?);
+        try delivery.pushPointerV2(.{
+            .phase = .press,
+            .buttons = input_policy.pointer_button_left,
+            .x = 60,
+            .y = 10,
+            .clicks = 1,
+            .modifiers = 0,
+        });
+        try delivery.pushPointerV2(.{
+            .phase = .release,
+            .buttons = input_policy.pointer_button_left,
+            .x = 60,
+            .y = 10,
+            .clicks = 1,
+            .modifiers = 0,
+        });
+        try delivery.pushText("Z");
+    }
+
     reserveFrontendInputSequence(delivery);
 
     const use_resync = config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect or
@@ -5853,7 +5887,7 @@ fn runLiveFrontend(
         config.mode == .emacs_epxl_unicode_input or config.mode == .emacs_epxl_edit or
         config.mode == .emacs_epxl_key_v2 or config.mode == .emacs_epxl_key_modifier or
         config.mode == .emacs_window_split or config.mode == .emacs_window_navigation or
-        config.mode == .emacs_window_restore or
+        config.mode == .emacs_window_restore or config.mode == .emacs_window_pointer_select or
         config.mode == .emacs_epxl_sequence;
     var scene = frontend.Scene.init(gpa);
     errdefer scene.deinit();
@@ -5946,7 +5980,7 @@ fn runLiveFrontend(
                 // command sequences remain live. Scope the forced pacing change
                 // to this smoke so recovery and interactive modes retain their
                 // existing one-event-per-frame behavior.
-                if (config.mode == .emacs_window_navigation or config.mode == .emacs_window_restore) {
+                if (config.mode == .emacs_window_navigation or config.mode == .emacs_window_restore or config.mode == .emacs_window_pointer_select) {
                     while (delivery.pending == null and delivery.queue.length > 0) {
                         const queued = try sendDeliveryEvent(
                             gpa,
@@ -9534,6 +9568,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_window_navigation;
         } else if (std.mem.eql(u8, arg, "--emacs-window-restore-smoke")) {
             config.mode = .emacs_window_restore;
+        } else if (std.mem.eql(u8, arg, "--emacs-window-pointer-select-smoke")) {
+            config.mode = .emacs_window_pointer_select;
+            config.interactive_publisher = true;
+            config.pointer_generic_publisher = true;
         } else if (std.mem.eql(u8, arg, "--clipboard-smoke")) {
             config.mode = .clipboard;
         } else if (std.mem.eql(u8, arg, "--primary-selection-smoke")) {
@@ -9895,6 +9933,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .emacs_window_split => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_window_navigation => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_window_restore => try runEmacsEpxlSession(gpa, io, &config, 1),
+        .emacs_window_pointer_select => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_edit => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_sequence => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_clipboard_unicode => try runEmacsEpxlSession(gpa, io, &config, 1),
@@ -10000,6 +10039,37 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         std.debug.print(
             "sdl3-emacs-window-restore-smoke: {{\"kind\":\"sdl3-emacs-window-restore-smoke\",\"commands\":\"C-x 3,C-x o,insert Z,C-x 1\",\"windows\":{d},\"selected_window_id\":{d},\"width\":{d},\"cursor_x\":{d},\"result\":\"pass\"}}\n",
             .{ scene.windows.items.len, window.id, window.width, cursor.x },
+        );
+    }
+
+    if (config.mode == .emacs_window_pointer_select) {
+        if (scene.windows.items.len != 2) return error.PointerWindowSelectLayoutNotObserved;
+        var left: ?frontend.Window = null;
+        var right: ?frontend.Window = null;
+        for (scene.windows.items) |window| {
+            if (window.x == 0) {
+                if (left != null) return error.PointerWindowSelectLayoutNotObserved;
+                left = window;
+            } else {
+                if (right != null) return error.PointerWindowSelectLayoutNotObserved;
+                right = window;
+            }
+        }
+        const left_window = left orelse return error.PointerWindowSelectLayoutNotObserved;
+        const right_window = right orelse return error.PointerWindowSelectLayoutNotObserved;
+        if (left_window.width <= 0 or right_window.width <= 0 or right_window.x <= 0 or
+            left_window.y != right_window.y or left_window.height != right_window.height)
+            return error.PointerWindowSelectLayoutNotObserved;
+        const cursor = scene.cursor orelse return error.PointerWindowSelectSelectionNotObserved;
+        if (!cursor.active or cursor.window_id != right_window.id or
+            cursor.x != 8 or cursor.y != 0)
+            return error.PointerWindowSelectSelectionNotObserved;
+        if (!sceneWindowTextStartsWith(&scene, left_window.id, "Z") or
+            !sceneWindowTextStartsWith(&scene, right_window.id, "Z"))
+            return error.PointerWindowSelectTextNotApplied;
+        std.debug.print(
+            "sdl3-emacs-window-pointer-select-smoke: {{\"kind\":\"sdl3-emacs-window-pointer-select-smoke\",\"commands\":\"C-x 3,click right,insert Z\",\"windows\":{d},\"selected_window_id\":{d},\"cursor_x\":{d},\"result\":\"pass\"}}\n",
+            .{ scene.windows.items.len, right_window.id, cursor.x },
         );
     }
 
