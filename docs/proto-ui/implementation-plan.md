@@ -3357,7 +3357,7 @@ Review gates:
 
 Goal: prove the documented performance improvement.
 
-Status: W14-a complete. `proto-ui-bench` is an opt-in, adapter-only
+Status: W14-a and W14-b complete. `proto-ui-bench` is an opt-in, adapter-only
 ReleaseFast baseline that installs `zig-out/proto-ui/benchmark.json`.
 It covers EUP `FRAME_UPDATE` encoding, envelope/payload decode and validation,
 fresh `frontend.Scene.apply`, atomic `CaptureService` encoding, and bounded
@@ -3365,33 +3365,41 @@ memory-sink sending on deterministic 960x600, 30-row fixtures. It reports
 monotonic latency percentiles, throughput, byte volume, allocation counts,
 iteration/warmup counts, build mode, and EUP version as machine-readable JSON.
 It intentionally remains outside `proto-ui-boundary` so timing cannot make the
-compatibility gate flaky. Frame creation, typing, scroll, resize, faces, fonts,
-images, widgets, multi-frame, renderer tiers, and optimization work remain
-W14 follow-up work.
+compatibility gate flaky.  W14-b adds `sdl3-renderer-bench`, a host-side SDL3
+renderer-call benchmark for the real draw list plus `SDL_RenderPresent`: a
+deterministic 960x600 replay scene measures bounded full-draw and unchanged-
+skip CPU wall-clock latency, FPS, commands/frame, and presented/skipped frames.
+It records the selected renderer and build mode and is opt-in; its result only
+proves the run/report, not a host-independent regression threshold.  Frame
+creation, typing, scroll, resize, faces, fonts, images, widgets, multi-frame,
+comprehensive renderer tiers, and optimization work remain W14 follow-up work.
 
 Tasks:
 
 1. Add machine-readable benchmark harness. *(W14-a covers the adapter memory-transport baseline.)*
-2. Benchmark frame creation, typing, scroll, resize, faces, fonts, images, widgets, and multi-frame.
+2. Benchmark frame creation, typing, scroll, resize, faces, fonts, images, widgets, and multi-frame. *(W14-b covers a bounded SDL3 full-draw/unchanged-skip renderer baseline; full backend workloads remain pending.)*
 3. Add allocation counters. *(W14-a records measurable per-operation allocation counts.)*
 4. Add bandwidth counters. *(W14-a records bytes/op and MiB/s for adapter paths.)*
-5. Add latency percentiles. *(W14-a records p50/p95/p99 and mean.)*
+5. Add latency percentiles. *(W14-a records p50/p95/p99 and mean; W14-b reuses nearest-rank summaries for the SDL renderer-call path.)*
 6. Tune damage merging.
 7. Tune glyph atlas.
 8. Tune transport slab reuse.
-9. Compare software, GPU basic, and GPU advanced tiers.
+9. Compare software, GPU basic, and GPU advanced tiers. *(W14-b records the selected tier/name for the real SDL3 path; full tier comparison pending.)*
 
 Acceptance:
 
 ```sh
-zig build -Dproto-ui=true proto-ui-bench --summary all
+zig build -Doptimize=ReleaseFast -Dproto-ui=true proto-ui-bench --summary all
 cat zig-out/proto-ui/benchmark.json
+zig build -Doptimize=ReleaseFast -Dproto-ui=true -Dsdl3-frontend=true sdl3-renderer-bench --summary all
+cat zig-out/proto-ui/sdl3-renderer-benchmark.json
 ```
 
-The W14-a baseline acceptance is the command above; its `result` proves only
-that all requested operations completed and the report values validated. Full
-W14 acceptance additionally requires the remaining workloads to meet
-`performance.md` targets and retain comparative evidence.
+The W14-a baseline acceptance is the first command; W14-b adds the SDL3
+renderer command.  Each `result` proves only that the requested operations
+completed and the report values validated. Full W14 acceptance additionally
+requires the remaining workloads to meet `performance.md` targets and retain
+comparative evidence.
 
 Review gates:
 

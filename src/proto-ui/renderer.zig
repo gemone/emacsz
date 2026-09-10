@@ -737,6 +737,49 @@ pub const DrawStats = struct {
     atlas_glyphs: u64 = 0,
 };
 
+pub const LatencySummary = struct {
+    p50_ns: u64,
+    p95_ns: u64,
+    p99_ns: u64,
+    mean_ns: f64,
+    fps: f64,
+};
+
+/// Percentiles use nearest-rank on a copied, sorted sample. The input is left
+/// unchanged and timing-only data never mutates renderer state.
+pub fn summarizeLatencies(samples: []const u64) !LatencySummary {
+    if (samples.len == 0) return error.EmptyLatencySample;
+    for (samples) |sample| {
+        if (sample == 0) return error.InvalidLatencySample;
+    }
+    const sorted = try std.heap.smp_allocator.dupe(u64, samples);
+    defer std.heap.smp_allocator.free(sorted);
+    std.mem.sort(u64, sorted, {}, std.sort.asc(u64));
+    const percentile = struct {
+        fn value(data: []const u64, percent: u64) u64 {
+            // Nearest rank: ceil(N * percent / 100), converted to a zero-based
+            // index. The @min guard makes p95/p99 exact for N = 1.
+            const index = @min(
+                data.len - 1,
+                (data.len * percent + 99) / 100 - 1,
+            );
+            return data[index];
+        }
+    }.value;
+    var total: u128 = 0;
+    for (sorted) |sample| total += sample;
+    const mean: f64 = @floatFromInt(total);
+    const count: f64 = @floatFromInt(sorted.len);
+    const mean_ns = mean / count;
+    return .{
+        .p50_ns = percentile(sorted, 50),
+        .p95_ns = percentile(sorted, 95),
+        .p99_ns = percentile(sorted, 99),
+        .mean_ns = mean_ns,
+        .fps = if (mean_ns > 0) 1_000_000_000.0 / mean_ns else 0,
+    };
+}
+
 pub const FaceLineStyle = enum(u8) {
     unspecified = 0,
     off = 1,
@@ -1675,4 +1718,19 @@ test "text damage matches window and row, not row alone" {
     const changed = make.observation(1, 3);
     try std.testing.expect(textDamageClip(old, unchanged, 120, 80) == null);
     try std.testing.expect(textDamageClip(old, changed, 120, 80) != null);
+}
+
+test "latency summary uses nearest-rank percentiles" {
+    const summary = try summarizeLatencies(&[_]u64{ 50, 20, 40, 10, 30, 60, 70, 80, 90, 100 });
+    try std.testing.expectEqual(@as(u64, 50), summary.p50_ns);
+    try std.testing.expectEqual(@as(u64, 100), summary.p95_ns);
+    try std.testing.expectEqual(@as(u64, 100), summary.p99_ns);
+    try std.testing.expectEqual(@as(f64, 55), summary.mean_ns);
+    try std.testing.expect(summary.fps > 0);
+    const single = try summarizeLatencies(&[_]u64{7});
+    try std.testing.expectEqual(@as(u64, 7), single.p50_ns);
+    try std.testing.expectEqual(@as(u64, 7), single.p95_ns);
+    try std.testing.expectEqual(@as(u64, 7), single.p99_ns);
+    try std.testing.expectError(error.EmptyLatencySample, summarizeLatencies(&[_]u64{}));
+    try std.testing.expectError(error.InvalidLatencySample, summarizeLatencies(&[_]u64{ 1, 0 }));
 }

@@ -16,11 +16,13 @@ const capability = proto_ui.capability;
 const session_codec = proto_ui.session;
 const transport = proto_ui.transport;
 const live = proto_ui.live;
+const runtime = proto_ui.runtime;
 const runtime_bridge = proto_ui.runtime_bridge;
 const runtime_host = proto_ui.runtime_host;
 
 const SDL_INIT_VIDEO: c_uint = 0x0000_0020;
 const SDL_WINDOW_RESIZABLE: c_ulonglong = 0x0000_0020;
+const SDL_WINDOW_HIDDEN: c_ulonglong = 0x0000_0008;
 const SDL_EVENT_QUIT: c_uint = 0x100;
 const SDL_EVENT_SYSTEM_THEME_CHANGED: c_uint = 0x14f;
 const SDL_EVENT_RENDER_TARGETS_RESET: c_uint = 0x2000;
@@ -427,7 +429,7 @@ const SDL_FRect = extern struct {
     h: f32,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_gap, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, emacs_epxl_key_modifier, emacs_window_split, emacs_window_navigation, emacs_window_restore, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, primary_selection, emacs_clipboard_unicode, emacs_primary_selection, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke, emacs_epxl_failure_cleanup };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_gap, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, emacs_epxl_key_modifier, emacs_window_split, emacs_window_navigation, emacs_window_restore, renderer_bench, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, primary_selection, emacs_clipboard_unicode, emacs_primary_selection, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke, emacs_epxl_failure_cleanup };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -447,6 +449,9 @@ const Config = struct {
     auto_key: ?frontend.KeyAction = null,
     renderer_request: []const u8 = "auto",
     present_mode: []const u8 = "off",
+    benchmark_output: []const u8 = "",
+    benchmark_iterations: u32 = 240,
+    benchmark_warmup: u32 = 16,
     synthetic_interactive: bool = false,
     synthetic_copy: bool = false,
     synthetic_clipboard_unicode: bool = false,
@@ -8650,6 +8655,109 @@ fn buildFactsDrawList(
     }, .{ .r = 0xff, .g = 0xd5, .b = 0x4d });
 }
 
+fn runRendererBench(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    config: *const Config,
+) !void {
+    const wire_messages = try transport.readReplay(gpa, io, config.replay_path);
+    defer transport.freeReplay(gpa, wire_messages);
+    var scene = frontend.Scene.init(gpa);
+    defer scene.deinit();
+    var update_bytes: usize = 0;
+    for (wire_messages) |message| {
+        const envelope = (try protocol.decodeEnvelope(message)).envelope;
+        if (envelope.message_type == protocol.Message.frame_update) update_bytes += message.len;
+        try scene.apply(message);
+    }
+    if (scene.stats.frame_updates == 0 or scene.frame_header == null) return error.NoFrameUpdate;
+
+    if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
+    defer SDL_Quit();
+    const window = SDL_CreateWindow(
+        "Emacs Proto-UI Renderer Benchmark",
+        960,
+        600,
+        SDL_WINDOW_HIDDEN,
+    ) orelse return sdlFail("SDL_CreateWindow");
+    defer SDL_DestroyWindow(window);
+    const selected_renderer = try createRenderer(gpa, window, config.renderer_request, config.present_mode);
+    defer destroyRenderer(selected_renderer);
+
+    var frame_gate: renderer_policy.FrameGate = .{};
+    var counters: renderer_policy.FrameCounters = .{};
+    var draw_list: renderer_policy.DrawList = .{ .allocator = gpa };
+    defer draw_list.deinit();
+
+    const warmup: usize = config.benchmark_warmup;
+    for (0..warmup) |_| {
+        frame_gate.dirty = true;
+        _ = try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &counters, null);
+    }
+
+    const iterations: usize = config.benchmark_iterations;
+    const full_samples = try gpa.alloc(u64, iterations);
+    defer gpa.free(full_samples);
+    const skip_samples = try gpa.alloc(u64, iterations);
+    defer gpa.free(skip_samples);
+    counters = .{};
+    var full_draws: u64 = 0;
+
+    for (0..iterations) |index| {
+        frame_gate.dirty = true;
+        const started = SDL_GetPerformanceCounter();
+        const execution = try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &counters, null);
+        const ended = SDL_GetPerformanceCounter();
+        const elapsed = performanceTicksToNanos(ended - started);
+        full_samples[index] = if (elapsed == 0) 1 else elapsed;
+        full_draws += execution.commands;
+    }
+    for (0..iterations) |index| {
+        frame_gate.dirty = false;
+        const started = SDL_GetPerformanceCounter();
+        _ = try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &counters, null);
+        const ended = SDL_GetPerformanceCounter();
+        const elapsed = performanceTicksToNanos(ended - started);
+        skip_samples[index] = if (elapsed == 0) 1 else elapsed;
+    }
+
+    const full = try renderer_policy.summarizeLatencies(full_samples);
+    const skipped = try renderer_policy.summarizeLatencies(skip_samples);
+    var report: std.ArrayList(u8) = .empty;
+    defer report.deinit(gpa);
+    try report.appendSlice(gpa, "{\"schema_version\":1,\"kind\":\"proto-ui-sdl3-renderer-benchmark\",\"protocol\":{\"name\":\"EUP\",\"version\":\"1.0\"},\"renderer_tier\":");
+    try runtime.appendJsonStringPublic(gpa, &report, @tagName(selected_renderer.tier));
+    try report.appendSlice(gpa, ",\"renderer_name\":");
+    try runtime.appendJsonStringPublic(gpa, &report, selected_renderer.name);
+    try report.appendSlice(gpa, ",\"present_mode\":");
+    try runtime.appendJsonStringPublic(gpa, &report, config.present_mode);
+    try report.appendSlice(gpa, ",\"optimization_mode\":");
+    try runtime.appendJsonStringPublic(gpa, &report, @tagName(@import("builtin").mode));
+    try report.print(gpa, ",\"iterations\":{d},\"warmup\":{d},\"frame_update_bytes\":{d},\"full_draw\":{{\"p50_ns\":{d},\"p95_ns\":{d},\"p99_ns\":{d},\"mean_ns\":{d:.2},\"fps\":{d:.2},\"draw_commands_total\":{d},\"commands_per_frame\":{d:.2}}},\"unchanged_skip\":{{\"p50_ns\":{d},\"p95_ns\":{d},\"p99_ns\":{d},\"mean_ns\":{d:.2},\"fps\":{d:.2}}},\"presented_frames\":{d},\"skipped_frames\":{d},\"result\":\"pass\"}}\n", .{
+        iterations,
+        warmup,
+        update_bytes,
+        full.p50_ns,
+        full.p95_ns,
+        full.p99_ns,
+        full.mean_ns,
+        full.fps,
+        full_draws,
+        @as(f64, @floatFromInt(counters.draw_commands_total)) / @as(f64, @floatFromInt(iterations)),
+        skipped.p50_ns,
+        skipped.p95_ns,
+        skipped.p99_ns,
+        skipped.mean_ns,
+        skipped.fps,
+        counters.presented_frames,
+        counters.skipped_frames,
+    });
+    if (config.benchmark_output.len > 0) {
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = config.benchmark_output, .data = report.items });
+    }
+    std.debug.print("{s}", .{report.items});
+}
+
 fn executeDrawList(
     cache: *FrameTextureCache,
     atlas_cache: ?*AtlasTextureCache,
@@ -9488,14 +9596,30 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .focus_window_translation;
         } else if (std.mem.eql(u8, arg, "--facts")) {
             try setString(gpa, &config.facts_path, args.next() orelse return error.MissingFactsPath);
+        } else if (std.mem.eql(u8, arg, "--renderer-bench")) {
+            config.mode = .renderer_bench;
+        } else if (std.mem.startsWith(u8, arg, "--benchmark-output=")) {
+            try setString(gpa, &config.benchmark_output, arg["--benchmark-output=".len..]);
+        } else if (std.mem.eql(u8, arg, "--benchmark-output")) {
+            try setString(gpa, &config.benchmark_output, args.next() orelse return error.MissingBenchmarkOutput);
+        } else if (std.mem.startsWith(u8, arg, "--benchmark-iterations=")) {
+            config.benchmark_iterations = std.fmt.parseInt(u32, arg["--benchmark-iterations=".len..], 10) catch return error.InvalidBenchmarkIterations;
+        } else if (std.mem.eql(u8, arg, "--benchmark-iterations")) {
+            config.benchmark_iterations = std.fmt.parseInt(u32, args.next() orelse return error.MissingBenchmarkIterations, 10) catch return error.InvalidBenchmarkIterations;
+        } else if (std.mem.startsWith(u8, arg, "--benchmark-warmup=")) {
+            config.benchmark_warmup = std.fmt.parseInt(u32, arg["--benchmark-warmup=".len..], 10) catch return error.InvalidBenchmarkIterations;
+        } else if (std.mem.eql(u8, arg, "--benchmark-warmup")) {
+            config.benchmark_warmup = std.fmt.parseInt(u32, args.next() orelse return error.MissingBenchmarkIterations, 10) catch return error.InvalidBenchmarkIterations;
         } else {
             std.debug.print("sdl3-emacs-smoke: unknown argument {s}\n", .{arg});
             return error.UnknownArgument;
         }
     }
 
-    if ((config.mode == .replay or config.mode == .live) and config.replay_path.len == 0) return error.MissingReplayPath;
+    if ((config.mode == .replay or config.mode == .live or config.mode == .renderer_bench) and config.replay_path.len == 0) return error.MissingReplayPath;
     if (config.auto_quit_ms > 60_000) return error.AutoQuitMsOutOfRange;
+    if (config.benchmark_iterations == 0 or config.benchmark_iterations > 10_000) return error.BenchmarkIterationsOutOfRange;
+    if (config.benchmark_warmup > 10_000) return error.BenchmarkIterationsOutOfRange;
     if (renderer_policy.parseRequest(config.renderer_request) == null) return error.UnknownRendererPolicy;
     if (renderer_policy.parsePresentMode(config.present_mode) == null) return error.UnknownPresentMode;
 
@@ -9520,6 +9644,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     }
     if (config.mode == .runtime_bridge_smoke) {
         try runRuntimeBridgeSmoke(gpa, &config);
+        return;
+    }
+    if (config.mode == .renderer_bench) {
+        try runRendererBench(gpa, io, &config);
         return;
     }
     if (config.mode == .focus_window_translation) {
@@ -9781,6 +9909,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .emacs_epxl_failure_cleanup => unreachable,
         .glyph_run_smoke => unreachable,
         .runtime_bridge_smoke => unreachable,
+        .renderer_bench => unreachable,
         .facts_publisher => unreachable,
     };
     defer scene.deinit();

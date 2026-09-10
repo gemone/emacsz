@@ -370,6 +370,22 @@ future real frame path: frame drops, memory peak, atlas hit rate, and damage
 coverage.  Do not interpret this adapter baseline as PGTK comparison evidence,
 redisplay-owned workload evidence, or end-to-end latency evidence.
 
+W14-b adds the first real SDL3 renderer-call benchmark,
+`zig build -Doptimize=ReleaseFast -Dproto-ui=true -Dsdl3-frontend=true
+sdl3-renderer-bench --summary all`.  The opt-in host-side run applies a
+deterministic ERP1 replay, then runs 16 default warm-up full draws before
+measuring 240 full-draw and 240 unchanged-skip calls on a hidden 960x600 SDL
+window with SDL VSync off; each measured full draw invokes `SDL_RenderPresent`,
+while the unchanged path exercises the fail-fast skip before rendering.
+The installed `zig-out/proto-ui/sdl3-renderer-benchmark.json` records the
+renderer name/tier, present mode, optimization mode, EUP update bytes, nearest-
+rank p50/p95/p99 and mean, CPU wall-clock FPS, full-draw command totals, and
+presented/skipped frames.  Iterations and warm-ups are bounded command-line
+options.  It proves reusable renderer instrumentation and exposes the large gap
+between a dirty full draw and an unchanged gate check.  It is not a typing,
+scroll, end-to-end, GPU-timestamp, PGTK-comparison, or host-independent
+regression claim.
+
 ## 13. Correctness precedence
 
 Optimization must never:

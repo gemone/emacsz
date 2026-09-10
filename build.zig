@@ -1480,6 +1480,28 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_renderer_smoke_step.dependOn(&run_sdl3_renderer_smoke.step);
 
+        const run_sdl3_renderer_bench = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_renderer_bench.addArg("--renderer-bench");
+        run_sdl3_renderer_bench.addArg("--replay");
+        run_sdl3_renderer_bench.addFileArg(replay_file);
+        run_sdl3_renderer_bench.addArg("--renderer=gpu");
+        run_sdl3_renderer_bench.addArg("--present=off");
+        run_sdl3_renderer_bench.addArg("--benchmark-iterations=240");
+        run_sdl3_renderer_bench.addArg("--benchmark-output");
+        const renderer_bench_report = run_sdl3_renderer_bench.addOutputFileArg(
+            "sdl3-renderer-benchmark.json",
+        );
+        const install_renderer_bench_report = b.addInstallFile(
+            renderer_bench_report,
+            "proto-ui/sdl3-renderer-benchmark.json",
+        );
+        const sdl3_renderer_bench_step = b.step(
+            "sdl3-renderer-bench",
+            "Benchmark full draw and unchanged-skip SDL3 presentation in ReleaseFast",
+        );
+        sdl3_renderer_bench_step.dependOn(&run_sdl3_renderer_bench.step);
+        sdl3_renderer_bench_step.dependOn(&install_renderer_bench_report.step);
+
         const run_sdl3_glyph_run_smoke = b.addRunArtifact(sdl3_frontend);
         run_sdl3_glyph_run_smoke.addArg("--glyph-run-smoke");
         run_sdl3_glyph_run_smoke.addArg("--renderer=gpu");
