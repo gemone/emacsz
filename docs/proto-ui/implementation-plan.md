@@ -159,6 +159,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W10d bounded GLYPH_RUN debug fallback | Approved |
 | W10e real-frame public-facts glyph marker | Approved |
 | W10f explicit bounded glyph-run delete | Approved |
+| W10g bounded UTF-8 SDL_ttf presentation | Reviewed |
 | W12a EPXL capability/status manifest | Approved |
 | W12b frame lifecycle/resource generation contract | Approved |
 | W12c real-frame lifecycle bridge smoke | Approved |
@@ -2622,6 +2623,41 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-frame-smoke -
 Status: approved. Three completed review rounds covered codec/security, Scene
 and lifecycle, and renderer/docs/boundary. No inherited Emacs C, H, or Lisp
 source changed.
+
+#### W10g — Bounded UTF-8 SDL_ttf presentation (reviewed)
+
+Goal: make bounded non-ASCII public facts visible in SDL3 instead of silently
+skipping them, while keeping the production glyph atlas/shaping path separate.
+
+1. Add `render.unicode_text_v1` as an optional degraded capability and a
+   renderer `UNICODE_TEXT` draw command with exact UTF-8 validation and the same
+   120-byte text bound as the diagnostic ASCII path.
+2. Build non-ASCII public-fact lines as Unicode draw commands; ASCII lines keep
+   the existing debug renderer and explicit glyph runs keep priority.
+3. Execute Unicode commands with SDL_ttf `TTF_RenderText_Blended`, create a
+   blended SDL texture, honor its intrinsic texture size, and scale from logical
+   scene coordinates to output pixels.
+4. Select a font through `PROTO_UI_FONT`, bound `PROTO_UI_FONT_SIZE` to 8..72,
+   and fall back to a small platform discovery list. Record executed Unicode
+   draw counts separately from ASCII debug-text counters.
+5. Extend the Unicode EPXL smoke to require the capability and fail closed when
+   no font is available or the first full-frame presentation does not execute a
+   Unicode draw.
+
+Non-goals: no HarfBuzz shaping, BiDi reordering, Emacs font metrics, glyph
+atlas integration, fallback chain parity, face/font resources, redisplay
+ownership, inherited Emacs changes, or `output_proto` activation.
+
+Acceptance:
+
+```sh
+zig fmt --check build.zig src/proto-ui/capability.zig src/proto-ui/renderer.zig tools/proto-ui-sdl3/main.zig
+git diff --check
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-unicode-input-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-ui-smoke --summary all
+zig build -Dproto-ui=true proto-ui-boundary --summary all
+```
 
 ### W11 — Desktop integration
 

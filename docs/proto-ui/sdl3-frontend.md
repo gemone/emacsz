@@ -243,6 +243,24 @@ moves `FRAME_DESTROY` after the explicit run teardown.  This does not capture
 redisplay rows or make SDL3 the frame owner; it is not shaped text and does not
 render faces/fonts or register `output_proto`.
 
+W10g adds the first bounded UTF-8 presentation path for public facts text.
+`TEXT_LINE_V2` bytes that fail the ASCII renderer are queued as a separate
+`unicode_text` draw command and rendered by SDL_ttf through
+`TTF_RenderText_Blended`. The SDL3_ttf dependency belongs to this frontend only;
+default non-SDL builds do not gain it. Font selection accepts `PROTO_UI_FONT`
+and a bounded `PROTO_UI_FONT_SIZE` (8..72), then uses a small platform discovery
+list. The draw is bounded to 120 UTF-8 bytes and the smoke fails closed if the
+negotiated `render.unicode_text_v1` capability is absent, no font is available,
+or no Unicode draw is executed. Each executed line creates a temporary
+SDL surface and texture; there is no glyph or texture cache. This proves visible
+UTF-8 transport/presentation only: it does not shape text, use Emacs font
+metrics, implement fallback policy, render glyph runs or faces, or register
+`output_proto`.
+
+Damage culling keeps Unicode commands conservative rather than estimating
+glyph metrics; it never rejects one from an assumed text box, while the SDL
+clip still bounds pixels.
+
 ### 8.4 Images
 
 Image resources become textures. The frontend honors format, stride, alpha mode, color space, scaling filter, mipmap policy, cache policy, and animation timing.

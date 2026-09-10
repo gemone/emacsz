@@ -707,6 +707,7 @@ pub const DrawCommand = union(enum) {
     clear: Color,
     fill: struct { rect: LogicalRect, color: Color },
     text: struct { x: f32, y: f32, color: ?Color = null, bytes: []const u8 },
+    unicode_text: struct { x: f32, y: f32, color: Color, bytes: []const u8 },
     image: struct { rect: LogicalRect, pixels: []const u8, width: u32, height: u32 },
     image_region: struct {
         destination: LogicalRect,
@@ -729,6 +730,7 @@ pub const DrawStats = struct {
     clears: u64 = 0,
     fills: u64 = 0,
     texts: u64 = 0,
+    unicode_texts: u64 = 0,
     images: u64 = 0,
     atlas_glyphs: u64 = 0,
 };
@@ -846,6 +848,10 @@ pub fn drawCommandIntersectsClip(command: DrawCommand, clip: LogicalRect) bool {
             .{ .x = draw.x, .y = draw.y, .width = @floatFromInt(8 * draw.bytes.len), .height = 16 },
             clip,
         ),
+        // Font-backed UTF-8 has no backend-independent measured bounds yet.
+        // Keep it conservative; a false-positive draw is cheaper than dropping
+        // visible text during damage culling.
+        .unicode_text => true,
     };
 }
 
@@ -967,6 +973,22 @@ pub const DrawList = struct {
         try self.commands.append(self.allocator, .{ .text = .{ .x = x, .y = y, .color = color, .bytes = bytes } });
         self.stats.commands += 1;
         self.stats.texts += 1;
+    }
+
+    /// Queue bounded UTF-8 text for a backend with real font support.
+    /// This stays separate from `drawText` so the existing diagnostic ASCII
+    /// renderer cannot silently pretend to support Unicode.
+    pub fn drawUnicodeText(self: *DrawList, x: f32, y: f32, bytes: []const u8, color: Color) !void {
+        if (bytes.len == 0 or bytes.len > 120) return error.InvalidUnicodeText;
+        if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUnicodeText;
+        try self.commands.append(self.allocator, .{ .unicode_text = .{
+            .x = x,
+            .y = y,
+            .color = color,
+            .bytes = bytes,
+        } });
+        self.stats.commands += 1;
+        self.stats.unicode_texts += 1;
     }
 };
 
@@ -1248,6 +1270,26 @@ test "draw list rejects absent oversized and non-ASCII text" {
     try std.testing.expectError(error.InvalidDrawText, list.drawText(0, 0, "CJK 字", null));
     const oversized = "a" ** 121;
     try std.testing.expectError(error.InvalidDrawText, list.drawText(0, 0, oversized[0..], null));
+}
+
+test "unicode draw queue accepts bounded UTF-8 separately from ASCII debug text" {
+    var list: DrawList = .{ .allocator = std.testing.allocator };
+    defer list.deinit();
+    try list.drawUnicodeText(4, 6, "你好 Emacs", .{ .r = 0xf0, .g = 0xf6, .b = 0xff, .a = 255 });
+    try std.testing.expectEqual(@as(u64, 1), list.stats.unicode_texts);
+    try std.testing.expectEqualStrings("你好 Emacs", list.commands.items[0].unicode_text.bytes);
+    try std.testing.expectError(error.InvalidUnicodeText, list.drawUnicodeText(0, 0, "", .{ .r = 0, .g = 0, .b = 0, .a = 255 }));
+    try std.testing.expectError(error.InvalidUnicodeText, list.drawUnicodeText(0, 0, &.{0xff}, .{ .r = 0, .g = 0, .b = 0, .a = 255 }));
+}
+
+test "unicode draws are never culled by an assumed glyph box" {
+    const command: DrawCommand = .{ .unicode_text = .{
+        .x = 100,
+        .y = 100,
+        .color = .{ .r = 0, .g = 0, .b = 0 },
+        .bytes = "字",
+    } };
+    try std.testing.expect(drawCommandIntersectsClip(command, .{ .x = 0, .y = 0, .width = 10, .height = 10 }));
 }
 
 test "cursor-only damage produces a bounded clip rectangle" {

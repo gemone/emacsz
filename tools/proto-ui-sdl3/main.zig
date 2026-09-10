@@ -125,6 +125,8 @@ extern fn SDL_SetTextureScaleMode(texture: *SDL_Texture, scale_mode: SDL_ScaleMo
 extern fn SDL_SetTextureBlendMode(texture: *SDL_Texture, mode: SDL_BlendMode) bool;
 extern fn SDL_UpdateTexture(texture: *SDL_Texture, rect: ?*const SDL_Rect, pixels: *const anyopaque, pitch: c_int) bool;
 extern fn SDL_RenderTexture(renderer: *SDL_Renderer, texture: *SDL_Texture, source: ?*const SDL_FRect, destination: ?*const SDL_FRect) bool;
+extern fn SDL_CreateTextureFromSurface(renderer: *SDL_Renderer, surface: *SDL_Surface) ?*SDL_Texture;
+extern fn SDL_GetTextureSize(texture: *SDL_Texture, width: *f32, height: *f32) bool;
 extern fn SDL_SetRenderTarget(renderer: *SDL_Renderer, texture: ?*SDL_Texture) bool;
 extern fn SDL_PollEvent(event: *SDL_Event) bool;
 extern fn SDL_PushEvent(event: *SDL_Event) bool;
@@ -133,6 +135,14 @@ extern fn SDL_Delay(ms: c_uint) void;
 extern fn SDL_StartTextInput(window: *SDL_Window) bool;
 extern fn SDL_GetKeyName(key: c_uint) ?[*:0]const u8;
 extern fn SDL_GetModState() u16;
+
+const TTF_Font = opaque {};
+const SDL_Color = extern struct { r: u8, g: u8, b: u8, a: u8 };
+extern fn TTF_Init() bool;
+extern fn TTF_Quit() void;
+extern fn TTF_OpenFont(file: [*:0]const u8, point_size: f32) ?*TTF_Font;
+extern fn TTF_CloseFont(font: *TTF_Font) void;
+extern fn TTF_RenderText_Blended(font: *TTF_Font, text: [*]const u8, length: usize, foreground: SDL_Color) ?*SDL_Surface;
 extern fn SDL_SetModState(modifiers: u16) void;
 extern fn SDL_GetClipboardText() [*c]u8;
 extern fn SDL_SetClipboardText(text: [*:0]const u8) bool;
@@ -855,7 +865,7 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
         }
 
         if (snapshot_scene) |*scene| {
-            try presentScene(scene, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
+            _ = try presentScene(scene, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
         } else {
             try presentFacts(latest, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
         }
@@ -2874,7 +2884,7 @@ fn runGlyphRunSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         (run_rendered or !stale_text_rendered))
         return error.GlyphRunDeleteFallbackFailed;
 
-    try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
+    _ = try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
     var quit = false;
     const started = SDL_GetTicks();
     while (!quit and SDL_GetTicks() - started < config.auto_quit_ms) {
@@ -2882,7 +2892,7 @@ fn runGlyphRunSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) quit = true;
         }
-        try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
+        _ = try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
         SDL_Delay(10);
     }
     if (frame_counters.text_commands_total == 0) return error.GlyphRunNotRendered;
@@ -5141,7 +5151,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
                 delivered_text = true;
             }
         }
-        try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
+        _ = try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
         SDL_Delay(10);
     }
     if (!delivered_key or !delivered_text or frame_counters.text_commands_total == 0) {
@@ -5653,10 +5663,11 @@ fn runLiveFrontend(
 
     if (config.mode == .emacs_epxl_unicode_input) {
         if (!negotiated.effective.contains(.input_text_ascii) or
-            !negotiated.effective.contains(.input_text_unicode))
+            !negotiated.effective.contains(.input_text_unicode) or
+            !negotiated.effective.contains(.render_unicode_text_v1))
             return error.TextCapabilityNotNegotiated;
         std.debug.print(
-            "sdl3-epxl-unicode-input-smoke: {{\"kind\":\"sdl3-epxl-unicode-input-smoke\",\"negotiated\":{{\"input.text_ascii\":true,\"input.text_unicode\":true}},\"result\":\"negotiated\"}}\n",
+            "sdl3-epxl-unicode-input-smoke: {{\"kind\":\"sdl3-epxl-unicode-input-smoke\",\"negotiated\":{{\"input.text_ascii\":true,\"input.text_unicode\":true,\"render.unicode_text_v1\":true}},\"result\":\"negotiated\"}}\n",
             .{},
         );
     }
@@ -7161,7 +7172,7 @@ fn runEpxlInteractiveFrontend(
                 null,
             );
         } else {
-            try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
+            _ = try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
         }
     }
 
@@ -7769,20 +7780,21 @@ fn buildSceneDrawList(
         const owner = findSceneWindow(scene, line.window_id) orelse continue;
         if (line.bytes.len == 0) continue;
         if (rowHasGlyphRun(scene, owner.id, row.index)) continue;
-        // The ASCII bitmap path has no text shaping or CJK font fallback.
-        // Unicode is still observed and asserted by the EPXL smoke.
-        if (!input_policy.isAsciiText(line.bytes)) continue;
         const origin = debugTextOrigin(owner, row);
         const text_x: i64 = origin.x;
         const text_y: i64 = origin.y;
         if (text_x < std.math.minInt(i32) or text_x > std.math.maxInt(i32) or
             text_y < std.math.minInt(i32) or text_y > std.math.maxInt(i32)) return error.InvalidTextGeometry;
-        try list.drawText(
-            @floatFromInt(text_x),
-            @floatFromInt(text_y),
-            line.bytes,
-            null,
-        );
+        if (input_policy.isAsciiText(line.bytes)) {
+            try list.drawText(@floatFromInt(text_x), @floatFromInt(text_y), line.bytes, null);
+        } else {
+            try list.drawUnicodeText(
+                @floatFromInt(text_x),
+                @floatFromInt(text_y),
+                line.bytes,
+                .{ .r = 0xe8, .g = 0xee, .b = 0xf8, .a = 255 },
+            );
+        }
     }
 
     for (scene.image_placements[0..scene.image_placement_count]) |placement| {
@@ -8232,6 +8244,88 @@ fn buildSceneDrawList(
     }
 }
 
+const UnicodeTextRenderer = struct {
+    initialized: bool = false,
+    font: ?*TTF_Font = null,
+
+    fn fontPointSize() f32 {
+        const raw = std.c.getenv("PROTO_UI_FONT_SIZE") orelse return 16;
+        const value = std.fmt.parseFloat(f32, std.mem.span(raw)) catch return 16;
+        return if (value >= 8 and value <= 72) value else 16;
+    }
+
+    fn openFont() ?*TTF_Font {
+        if (std.c.getenv("PROTO_UI_FONT")) |configured| {
+            return TTF_OpenFont(configured, fontPointSize());
+        }
+        const candidates = [_][*:0]const u8{
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+            "/System/Library/Fonts/Supplemental/Georgia.ttf",
+            "C:\\Windows\\Fonts\\arial.ttf",
+            "C:\\Windows\\Fonts\\segoeui.ttf",
+        };
+        for (candidates) |path| {
+            if (TTF_OpenFont(path, fontPointSize())) |font| return font;
+        }
+        return null;
+    }
+
+    fn ensure(self: *UnicodeTextRenderer) !void {
+        if (self.font != null) return;
+        if (self.initialized) return error.UnicodeFontUnavailable;
+        if (!TTF_Init()) return sdlFail("TTF_Init");
+        self.initialized = true;
+        self.font = openFont();
+        if (self.font == null) return error.UnicodeFontUnavailable;
+    }
+
+    fn deinit(self: *UnicodeTextRenderer) void {
+        if (self.font) |font| TTF_CloseFont(font);
+        if (self.initialized) TTF_Quit();
+        self.* = .{};
+    }
+
+    fn render(
+        self: *UnicodeTextRenderer,
+        renderer: *SDL_Renderer,
+        x: f32,
+        y: f32,
+        bytes: []const u8,
+        color: renderer_policy.Color,
+        scale_x: f32,
+        scale_y: f32,
+    ) !void {
+        try self.ensure();
+        const font = self.font.?;
+        const surface = TTF_RenderText_Blended(
+            font,
+            bytes.ptr,
+            bytes.len,
+            .{ .r = color.r, .g = color.g, .b = color.b, .a = color.a },
+        ) orelse return sdlFail("TTF_RenderText_Blended");
+        defer SDL_DestroySurface(surface);
+        const texture = SDL_CreateTextureFromSurface(renderer, surface) orelse
+            return sdlFail("SDL_CreateTextureFromSurface");
+        defer SDL_DestroyTexture(texture);
+        if (!SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND)) return sdlFail("SDL_SetTextureBlendMode");
+        var texture_width: f32 = 0;
+        var texture_height: f32 = 0;
+        if (!SDL_GetTextureSize(texture, &texture_width, &texture_height)) return sdlFail("SDL_GetTextureSize");
+        if (texture_width <= 0 or texture_height <= 0) return error.InvalidUnicodeTexture;
+        if (!SDL_RenderTexture(renderer, texture, null, &.{
+            .x = x * scale_x,
+            .y = y * scale_y,
+            .w = texture_width * scale_x,
+            .h = texture_height * scale_y,
+        })) return sdlFail("SDL_RenderTexture");
+    }
+};
+
+var unicode_text_renderer: UnicodeTextRenderer = .{};
+
 fn buildFactsDrawList(
     snapshot: FrameFacts,
     list: *renderer_policy.DrawList,
@@ -8413,6 +8507,19 @@ fn executeDrawList(
                 executed.commands += 1;
                 executed.texts += 1;
             },
+            .unicode_text => |draw| {
+                try unicode_text_renderer.render(
+                    renderer,
+                    draw.x,
+                    draw.y,
+                    draw.bytes,
+                    draw.color,
+                    @as(f32, @floatFromInt(output_width)) / list.logical_width,
+                    @as(f32, @floatFromInt(output_height)) / list.logical_height,
+                );
+                executed.commands += 1;
+                executed.unicode_texts += 1;
+            },
         }
     }
     if (clip != null and !SDL_SetRenderClipRect(renderer, null)) return sdlFail("SDL_SetRenderClipRect");
@@ -8568,7 +8675,7 @@ fn presentScene(
     gate: *renderer_policy.FrameGate,
     counters: *renderer_policy.FrameCounters,
     atlas_cache: ?*AtlasTextureCache,
-) !void {
+) !renderer_policy.DrawStats {
     var texture_cache = FrameTextureCache.init(std.heap.smp_allocator);
     defer texture_cache.deinit();
     var width: c_int = 0;
@@ -8576,7 +8683,7 @@ fn presentScene(
     SDL_GetWindowSize(window, &width, &height);
     if (!gate.shouldPresent(@intCast(width), @intCast(height))) {
         counters.recordSkipped();
-        return;
+        return .{};
     }
     const started_ticks = SDL_GetPerformanceCounter();
     try buildSceneDrawList(scene, list, @intCast(width), @intCast(height));
@@ -8588,6 +8695,7 @@ fn presentScene(
         performanceTicksToNanos(ended_ticks - started_ticks),
         performanceTicksToNanos(ended_ticks),
     );
+    return execution;
 }
 
 fn presentSceneDamage(
@@ -8854,6 +8962,7 @@ fn pollEmacsFacts(shared: *SharedFacts, gpa: std.mem.Allocator, io: std.Io, path
 }
 
 pub fn main(minimal: std.process.Init.Minimal) !void {
+    defer unicode_text_renderer.deinit();
     const gpa = std.heap.smp_allocator;
     var args = try std.process.Args.Iterator.initAllocator(minimal.args, gpa);
     defer args.deinit();
@@ -9243,7 +9352,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             }
             if (quit) break;
             if (snapshot_scene) |*scene| {
-                try presentScene(scene, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
+                _ = try presentScene(scene, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
             } else {
                 try presentFacts(latest, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
             }
@@ -9486,7 +9595,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     var draw_list: renderer_policy.DrawList = .{ .allocator = gpa };
     defer draw_list.deinit();
 
-    try presentScene(&scene, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
+    const initial_execution = try presentScene(&scene, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
 
     var quit = false;
     const started_ticks = SDL_GetTicks();
@@ -9499,7 +9608,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                 frame_gate.dirty = true;
             }
         }
-        try presentScene(&scene, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
+        _ = try presentScene(&scene, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
         SDL_Delay(10);
     }
 
@@ -9517,6 +9626,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             if (quit) "closed by quit event" else "auto timeout",
         },
     );
+    if (config.mode == .emacs_epxl_unicode_input) {
+        if (initial_execution.unicode_texts == 0) return error.UnicodeTextNotRendered;
+        std.debug.print(
+            "sdl3-unicode-render-smoke: {{\"kind\":\"sdl3-unicode-render-smoke\",\"text\":\"你好Emacs Proto-UI\",\"unicode_draws\":{d},\"result\":\"pass\"}}\n",
+            .{initial_execution.unicode_texts},
+        );
+    }
 }
 
 fn atomicWriteFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8, data: []const u8) !void {
@@ -9771,7 +9887,7 @@ fn runFrameLifecycleSmoke(
             if (!SDL_RenderPresent(selected_renderer.handle)) return sdlFail("SDL_RenderPresent");
             SDL_Delay(250);
         } else {
-            try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
+            _ = try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
         }
     }
     if (scene.stats.frame_updates != 1 or scene.frame == null or
@@ -9798,7 +9914,7 @@ fn runFrameLifecycleSmoke(
     try scene.apply(glyph_message.items);
     if (producer_scene.next_sequence != 8 or scene.next_sequence != 8)
         return error.FrameLifecycleRoundTripFailed;
-    try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
+    _ = try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
     if (scene.glyph_runs.items.len != 1) return error.GlyphRunSceneStateInvalid;
     const active_run = scene.glyph_runs.items[0];
     if (!std.mem.eql(u8, active_run.text, marker) or
@@ -9820,7 +9936,7 @@ fn runFrameLifecycleSmoke(
     if (producer_scene.next_sequence != 9 or scene.next_sequence != 9 or
         scene.glyph_runs.items.len != 0 or !sceneHasText(&scene, marker))
         return error.GlyphRunDeleteFailed;
-    try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
+    _ = try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
     var marker_rendered = false;
     for (draw_list.commands.items) |command| {
         if (command == .text and std.mem.eql(u8, command.text.bytes, marker))

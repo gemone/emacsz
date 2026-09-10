@@ -1369,6 +1369,10 @@ pub fn build(b: *std.Build) void {
             }),
         });
         sdl3_frontend.root_module.linkSystemLibrary("sdl3", .{});
+        // SDL_ttf is the bounded text-presentation backend. The diagnostic
+        // renderer falls back to ASCII only; a Unicode draw command fails
+        // closed when no usable font is available.
+        sdl3_frontend.root_module.linkSystemLibrary("SDL3_ttf", .{});
         sdl3_frontend.root_module.addImport("proto_ui", proto_ui_module);
         b.installArtifact(sdl3_frontend);
         sdl3_frontend_dep = &sdl3_frontend.step;
@@ -1921,7 +1925,7 @@ pub fn build(b: *std.Build) void {
         if (sdl3_frontend_dep) |step| run_sdl3_epxl_unicode_input.step.dependOn(step);
         const sdl3_epxl_unicode_input_step = b.step(
             "sdl3-epxl-unicode-input-smoke",
-            "Negotiate Unicode input and deliver bounded UTF-8 through EPXL",
+            "Negotiate Unicode input, render bounded UTF-8 in SDL3, and verify the draw",
         );
         sdl3_epxl_unicode_input_step.dependOn(&run_sdl3_epxl_unicode_input.step);
 
