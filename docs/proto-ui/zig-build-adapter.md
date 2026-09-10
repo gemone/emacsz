@@ -111,8 +111,8 @@ zig-out/proto-ui/
 5. **Boundary audit.**  Validate paths, symbols, exported ABI, and feature
    isolation.
 6. **Conformance gate.**  Run adapter contract tests against a fake host.
-7. **Decision gate.**  `proto-ui-host-contract` audits the pending registration
-   decision.  An approved decision also requires complete review metadata, all
+7. **Decision gate.**  `proto-ui-host-contract` audits the source registration
+   decision.  Approval additionally requires complete review metadata, all
    callback groups, evidence gates, rollback/disable/isolation guarantees, and
    no forbidden mechanism.
 8. **Optional integration.**  Attach the adapter to an existing stable Emacs

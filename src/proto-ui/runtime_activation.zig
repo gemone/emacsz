@@ -1,7 +1,7 @@
 //! Selection-gated runtime activation and machine-readable activation plan.
 //!
-//! The controller can exercise the approved path with a conformance host, but
-//! the repository's current selection is unselected while R7 remains pending.
+//! The controller can exercise a linked conformance host, but the selected
+//! repository candidate is not linked, registered, or activated.
 //! No code in this module registers an Emacs terminal or enables runtime.
 
 const std = @import("std");
@@ -68,7 +68,7 @@ pub const Controller = struct {
         const consistent = switch (selection.status) {
             .unselected => !selection.selected and !selection.activation_allowed and
                 !selection.registered and !selection.runtime_available,
-            .selected => selection.selected and selection.activation_allowed and
+            .selected => selection.selected and selection.activation_allowed == selection.linked_into_emacs and
                 !selection.registered and !selection.runtime_available,
             .rejected => !selection.selected and !selection.activation_allowed and
                 !selection.registered and !selection.runtime_available,
@@ -151,7 +151,7 @@ pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
     try out.print(gpa, "{d}", .{activation_schema_version});
     try out.appendSlice(gpa, ",\"selection_status\":\"");
     try out.appendSlice(gpa, @tagName(current_selection.status));
-    try out.appendSlice(gpa, "\",\"activation\":{\"allowed\":false,\"state\":\"blocked_by_r7\"");
+    try out.appendSlice(gpa, "\",\"activation\":{\"allowed\":false,\"state\":\"blocked_by_linkage_or_registration\"");
     try out.appendSlice(gpa, ",\"registered\":false,\"runtime_available\":false,\"reason_code\":");
     try runtime.appendJsonStringPublic(gpa, out, current_selection.reason_code);
     try out.appendSlice(gpa, "},\"activation_sequence\":[");
@@ -188,6 +188,7 @@ test "activation controller activates and drains an approved fake host" {
     const approved = host_adapter.evaluate(.{
         .r7_status = .approved,
         .r7_metadata_complete = true,
+        .linked_into_emacs = true,
     });
     var controller = try Controller.init(table, &terminals, approved);
 
@@ -209,6 +210,7 @@ test "activation controller rolls back a failed terminal activation" {
     const approved = host_adapter.evaluate(.{
         .r7_status = .approved,
         .r7_metadata_complete = true,
+        .linked_into_emacs = true,
     });
     var controller = try Controller.init(table, &terminals, approved);
 
@@ -227,6 +229,7 @@ test "activation controller retains failed rollback for bounded retry" {
     const approved = host_adapter.evaluate(.{
         .r7_status = .approved,
         .r7_metadata_complete = true,
+        .linked_into_emacs = true,
     });
     var controller = try Controller.init(table, &terminals, approved);
 
@@ -266,9 +269,11 @@ fn successfulDeletion(
     return .ok;
 }
 
-test "current runtime activation remains blocked by pending R7" {
+test "current runtime activation remains blocked without linkage or registration" {
     try std.testing.expectEqual(@as(?[]const u8, null), validateState());
-    try std.testing.expectEqual(host_adapter.SelectionStatus.unselected, current_selection.status);
+    try std.testing.expectEqual(host_adapter.SelectionStatus.selected, current_selection.status);
+    try std.testing.expect(current_selection.selected);
+    try std.testing.expect(!current_selection.linked_into_emacs);
     try std.testing.expect(!current_selection.activation_allowed);
 }
 

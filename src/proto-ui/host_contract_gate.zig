@@ -5,7 +5,7 @@ const proto_ui = @import("proto_ui");
 
 fn emitDecision(reason: []const u8) void {
     std.debug.print(
-        "{{\"manifest_version\":1,\"gate\":\"proto-ui-host-contract\",\"decision\":\"pending\",\"runtime_available\":false,\"reason\":\"{s}\"}}\n",
+        "{{\"manifest_version\":1,\"gate\":\"proto-ui-host-contract\",\"decision\":\"approved\",\"runtime_available\":false,\"reason\":\"{s}\"}}\n",
         .{reason},
     );
 }
@@ -28,27 +28,27 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     defer expected.deinit(gpa);
     try proto_ui.host_contract.writeContract(gpa, &expected);
     if (!std.mem.eql(u8, actual, expected.items)) {
-        emitDecision(proto_ui.host_contract.pending_reason_code);
+        emitDecision(proto_ui.runtime.reason_code);
         std.debug.print("host-contract gate: artifact mismatch\n", .{});
         return error.InvalidHostContractArtifact;
     }
     if (proto_ui.host_contract.validateState()) |problem| {
-        emitDecision(proto_ui.host_contract.pending_reason_code);
+        emitDecision(proto_ui.runtime.reason_code);
         std.debug.print("host-contract gate: {s}\n", .{problem});
         return error.InvalidHostContractState;
     }
 
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, actual, .{}) catch |err| {
-        emitDecision(proto_ui.host_contract.pending_reason_code);
+        emitDecision(proto_ui.runtime.reason_code);
         std.debug.print("host-contract gate: invalid JSON: {s}\n", .{@errorName(err)});
         return err;
     };
     defer parsed.deinit();
     if (proto_ui.host_contract.validateArtifact(parsed.value)) |problem| {
-        emitDecision(proto_ui.host_contract.pending_reason_code);
+        emitDecision(proto_ui.runtime.reason_code);
         std.debug.print("host-contract gate: {s}\n", .{problem});
         return error.InvalidHostContractSchema;
     }
 
-    emitDecision(proto_ui.host_contract.pending_reason_code);
+    emitDecision(proto_ui.runtime.reason_code);
 }

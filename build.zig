@@ -398,12 +398,12 @@ pub fn build(b: *std.Build) void {
     // it never enables terminal registration or output_proto.
     const enable_proto_ui_runtime = b.option(bool, "proto-ui-runtime", "Audit the host registration runtime contract; fails closed without -Dproto-ui") orelse false;
     if (enable_proto_ui_runtime and !enable_proto_ui) {
-        @panic("host_registration_contract_missing: -Dproto-ui-runtime=true requires -Dproto-ui=true; runtime remains unavailable");
+        @panic("runtime_host_linkage_or_registration_missing: -Dproto-ui-runtime=true requires -Dproto-ui=true; runtime remains unavailable");
     }
     // The normal R8 readiness gate accepts a blocked entry.  This opt-in flag
     // flips the same gate into negative mode: it fails until reviewed R7 and
     // every R8 readiness condition are complete.
-    const enable_r8_entry_gate = b.option(bool, "r8-entry-gate", "Require R8 entry readiness; fails closed while R7 is pending") orelse false;
+    const enable_r8_entry_gate = b.option(bool, "r8-entry-gate", "Require R8 entry readiness; fails closed without adapter linkage/registration") orelse false;
     var proto_compat_dep: ?*std.Build.Step = null;
 
     // Target-derived flags.  `target` is resolved at line 64, so target.result
@@ -804,8 +804,8 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&run_isolation_audit.step);
 
         // R7: the host registration decision is source-authoritative policy.
-        // Pending is valid, but it neither approves integration nor enables
-        // runtime; the independent gate audits schema and fail-closed policy.
+        // Approval is policy-only and does not link or register the adapter;
+        // the independent gate audits schema and fail-closed policy.
         const host_contract_gen_tool = b.addExecutable(.{
             .name = "proto-ui-host-contract-gen",
             .root_module = b.createModule(.{
@@ -839,7 +839,7 @@ pub fn build(b: *std.Build) void {
 
         const host_contract_step = b.step(
             "proto-ui-host-contract",
-            "Generate and audit the pending host registration decision contract",
+            "Generate and audit the approved host registration decision contract",
         );
         host_contract_step.dependOn(&run_host_contract_gen.step);
         host_contract_step.dependOn(&install_host_contract.step);
@@ -848,8 +848,8 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&install_host_contract.step);
         boundary_step.dependOn(&run_host_contract_gate.step);
 
-        // P2: model the pure-SDL3 host adapter as an explicitly unselected
-        // candidate until an approved R7 decision selects and links it.
+        // P2: the approved R7 policy selects the pure-SDL3 candidate, but it
+        // is not linked into Emacs.
         const host_adapter_gen_tool = b.addExecutable(.{
             .name = "proto-ui-host-adapter-gen",
             .root_module = b.createModule(.{
@@ -883,7 +883,7 @@ pub fn build(b: *std.Build) void {
 
         const host_adapter_step = b.step(
             "proto-ui-host-adapter",
-            "Generate and audit the unselected pure-SDL3 host adapter candidate",
+            "Generate and audit the selected but unlinked pure-SDL3 host adapter",
         );
         host_adapter_step.dependOn(&run_host_adapter_gen.step);
         host_adapter_step.dependOn(&install_host_adapter.step);
@@ -892,8 +892,8 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&install_host_adapter.step);
         boundary_step.dependOn(&run_host_adapter_gate.step);
 
-        // P2: activation is explicitly modeled but blocked while R7 remains
-        // pending.  The artifact records the approved-path order and rollback.
+        // P2: activation is explicitly modeled but blocked without adapter
+        // linkage or terminal registration.
         const runtime_activation_gen_tool = b.addExecutable(.{
             .name = "proto-ui-runtime-activation-gen",
             .root_module = b.createModule(.{
@@ -927,7 +927,7 @@ pub fn build(b: *std.Build) void {
 
         const runtime_activation_step = b.step(
             "proto-ui-runtime-activation",
-            "Audit the explicit runtime activation plan blocked by pending R7",
+            "Audit the explicit runtime activation plan blocked without linkage/registration",
         );
         runtime_activation_step.dependOn(&run_runtime_activation_gen.step);
         runtime_activation_step.dependOn(&install_runtime_activation.step);
@@ -937,8 +937,8 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&run_runtime_activation_gate.step);
 
         // R8: keep the launch decision machine-checkable.  The artifact is
-        // blocked by policy; the opt-in negative mode is the reviewable gate
-        // that cannot pass until the readiness source itself becomes ready.
+        // blocked without linkage/registration; the opt-in negative mode is
+        // the reviewable gate that cannot pass until the source is ready.
         const r8_readiness_gen_tool = b.addExecutable(.{
             .name = "proto-ui-r8-readiness-gen",
             .root_module = b.createModule(.{
@@ -1018,7 +1018,7 @@ pub fn build(b: *std.Build) void {
 
         const r7_proposal_step = b.step(
             "proto-ui-r7-proposal",
-            "Generate and audit the pending pure-SDL3 R7 registration proposal",
+            "Generate and audit the approved, policy-only pure-SDL3 R7 proposal",
         );
         r7_proposal_step.dependOn(&run_r7_proposal_gen.step);
         r7_proposal_step.dependOn(&install_r7_proposal.step);
@@ -1027,8 +1027,8 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&install_r7_proposal.step);
         boundary_step.dependOn(&run_r7_proposal_gate.step);
 
-        // The review packet packages the pending R7 decision for a human
-        // reviewer.  It cannot approve, select, link, register, or activate.
+        // The review packet records the completed R7 review.  It does not link,
+        // register, or activate the selected adapter.
         const r7_review_packet_gen_tool = b.addExecutable(.{
             .name = "proto-ui-r7-review-packet-gen",
             .root_module = b.createModule(.{
@@ -1072,7 +1072,7 @@ pub fn build(b: *std.Build) void {
 
         const r7_review_packet_step = b.step(
             "proto-ui-r7-review-packet",
-            "Generate and audit the fail-closed R7 review packet",
+            "Generate and audit the approved, fail-closed R7 review packet",
         );
         r7_review_packet_step.dependOn(&run_r7_review_packet_gen.step);
         r7_review_packet_step.dependOn(&install_r7_review_packet.step);
@@ -1307,7 +1307,7 @@ pub fn build(b: *std.Build) void {
 
         const r8_adapter_linkage_step = b.step(
             "proto-ui-r8-adapter-linkage",
-            "Build and audit the fail-closed R8 candidate adapter linkage artifact",
+            "Build and audit the selected but unlinked R8 adapter linkage artifact",
         );
         r8_adapter_linkage_step.dependOn(&install_runtime_host_adapter_lib.step);
         r8_adapter_linkage_step.dependOn(&run_r8_adapter_linkage_gen.step);
@@ -6983,12 +6983,12 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true proto-ui-bench - opt-in adapter hot-path benchmark evidence
         \\  zig build -Dproto-ui=true proto-ui-isolation-audit - disabled/default runtime isolation audit
         \\
-        \\  zig build -Dproto-ui=true proto-ui-host-contract - pending registration decision audit
-        \\  zig build -Dproto-ui=true proto-ui-r7-review-packet - fail-closed R7 reviewer packet
-        \\  zig build -Dproto-ui=true proto-ui-host-adapter - unselected pure-SDL3 host adapter audit
-        \\  zig build -Dproto-ui=true proto-ui-runtime-activation - blocked runtime activation audit
+        \\  zig build -Dproto-ui=true proto-ui-host-contract - approved registration decision audit
+        \\  zig build -Dproto-ui=true proto-ui-r7-review-packet - approved fail-closed R7 reviewer packet
+        \\  zig build -Dproto-ui=true proto-ui-host-adapter - selected but unlinked pure-SDL3 host adapter audit
+        \\  zig build -Dproto-ui=true proto-ui-runtime-activation - linkage/registration blocked activation audit
         \\  zig build -Dproto-ui=true proto-ui-runtime-manifest - fail-closed runtime manifest audit
-        \\  zig build -Dproto-ui=true proto-ui-r8-adapter-linkage - fail-closed candidate adapter linkage artifact/manifest
+        \\  zig build -Dproto-ui=true proto-ui-r8-adapter-linkage - selected but unlinked adapter linkage artifact/manifest
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module - Emacs dynamic-module seam
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke - verify module seam in batch Emacs
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-frame-fact-smoke - public frame facts on a display

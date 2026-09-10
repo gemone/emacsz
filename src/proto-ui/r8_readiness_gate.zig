@@ -1,6 +1,6 @@
 //! Audits R8 entry readiness.  Normal mode accepts a blocked entry; negative
 //! mode (`--expect=ready`) intentionally fails until every readiness condition
-//! and the reviewed R7 decision are complete.
+//! and adapter linkage/registration are complete.
 
 const std = @import("std");
 const proto_ui = @import("proto_ui");
@@ -53,7 +53,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             "r8-readiness gate: entry is blocked by {s}\n",
             .{proto_ui.r8_readiness.reason_code},
         );
-        return error.R8EntryReadinessMissing;
+        return error.R8AdapterLinkageOrRegistrationMissing;
     }
     emit(.blocked);
 }

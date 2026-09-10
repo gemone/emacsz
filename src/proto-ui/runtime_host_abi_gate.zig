@@ -18,7 +18,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     defer gpa.free(actual);
     if (!std.mem.eql(u8, actual, abi.manifest)) return error.InvalidRuntimeHostAbiManifest;
     std.debug.print(
-        "{{\"manifest_version\":1,\"gate\":\"proto-ui-runtime-host-abi\",\"abi_version\":1,\"registered\":false,\"runtime_available\":false,\"decision\":\"pending\",\"reason\":\"host_registration_contract_missing\"}}\n",
+        "{{\"manifest_version\":1,\"gate\":\"proto-ui-runtime-host-abi\",\"abi_version\":1,\"registered\":false,\"runtime_available\":false,\"decision\":\"approved\",\"reason\":\"runtime_host_linkage_or_registration_missing\"}}\n",
         .{},
     );
 }

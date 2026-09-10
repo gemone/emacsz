@@ -1,6 +1,6 @@
 # `output_proto` Runtime Bridge Design
 
-Status: normative design; R1 terminal lifecycle core, R2 fail-closed runtime manifest, R3 generated thin C adapter, R4 shared host-observation library, R5 frame service mapping, R6 atomic capture batches, and R7 pending host-decision infrastructure are implemented; runtime is not implemented
+Status: normative design; R1 terminal lifecycle core, R2 fail-closed runtime manifest, R3 generated thin C adapter, R4 shared host-observation library, R5 frame service mapping, R6 atomic capture batches, and R7 approved policy/candidate-selection infrastructure is implemented; runtime is not implemented
 Protocol: EUP v1
 Boundary rule: no intrusive edits to inherited GNU Emacs C files
 
@@ -192,16 +192,16 @@ Current and target options:
 | Option | Meaning | Status |
 |---|---|---|
 | `-Dproto-ui=true` | Adapter protocol/ABI, conformance, replay, and optional frontend smokes | Implemented in bounded slices |
-| `proto-ui-host-contract` step | Generate and audit the source-authoritative registration decision | Implemented; decision is pending and runtime unavailable |
-| `proto-ui-r7-proposal` step | Generate and audit the pure-SDL3 R7 registration proposal | Implemented; proposal is ready for review, decision remains pending, and runtime is unavailable |
+| `proto-ui-host-contract` step | Generate and audit the source-authoritative registration decision | Implemented; R7 is approved for policy/candidate selection only and runtime unavailable |
+| `proto-ui-r7-proposal` step | Generate and audit the pure-SDL3 R7 registration proposal | Implemented; proposal records the approved policy decision and runtime is unavailable |
 | `proto-ui-pgtk-parity-plan` step | Generate and audit the planned PGTK-to-Proto differential matrix | Implemented as planning policy; all 48 cases remain planned and parity is not implemented |
-| `proto-ui-protocol-coverage` step | Audit every assigned EUP message ID against its implementation status | Implemented; 108 codecs implemented, 3 partial, and 53 planned |
+| `proto-ui-protocol-coverage` step | Audit every assigned EUP message ID against its implementation status | Implemented; 164 codecs implemented, 0 partial, and 0 planned |
 | `session` module | Standard EUP setup/control codecs, setup state machine, Scene control integration, automatic frontend PONG, and EPXL transport for every standard control | Implemented as bounded adapter-first protocol coverage; full Emacs runtime ownership remains pending |
 | `proto-ui-runtime-host` step | Validate the five-group versioned `PureRuntimeHostV1` ABI with a fake host | ABI conformance implemented; registration is absent and runtime remains fail closed |
 | `proto-ui-runtime-host-abi` step | Generate, compile, and conformance-test the C projection of `PureRuntimeHostV1` | Implemented; generated header is installed under `zig-out/include/proto-ui` and remains unlinked from Emacs |
 | `runtime_bridge` module | Drive the pure host ABI in both directions: frames, runs, input lifecycle, visibility/focus state, host lifecycle operations, and authoritative geometry | Fake-host unit and SDL3 presentation conformance implemented; no Emacs host, transport, or registration |
 | `-Dmodules=true` | Public dynamic-module observation bridge | Implemented in bounded slices |
-| `-Dproto-ui-runtime=true` | Require the future host extension contract; without it the boundary fails with `host_registration_contract_missing` | Fail-closed audit/gate implemented; runtime absent |
+| `-Dproto-ui-runtime=true` | Require the future host extension contract; without linked registration it fails with `runtime_host_linkage_or_registration_missing` | Fail-closed audit/gate implemented; runtime absent |
 | `-Dproto-ui-frontend=true` | Install and smoke the independent SDL3 frontend | Design for final name; current SDL option remains opt-in |
 
 Build artifacts must live in `zig-out` or cache output.  Generated adapters and
@@ -225,7 +225,7 @@ manifest must record:
 | R4. Host adapter library | Linkable read-only host-observation library | Exported ABI conformance and symbol isolation pass |
 | R5. Frame service | Frame create/state/delete mapping | Implemented with bounded host-handle to EUP-frame mapping and fake-host coverage |
 | R6. Capture service | Window/row/cursor/damage atomic batches | Implemented with fake, Scene-apply, and replay byte-stability tests |
-| R7. Host registration contract | Explicit reviewed extension decision | Infrastructure implemented; decision remains pending and registration is forbidden |
+| R7. Host registration contract | Explicit reviewed extension decision | Infrastructure implemented; R7 is approved for policy/candidate selection only, registration remains forbidden until linkage |
 | R8. First terminal smoke | Real `window-system . proto` frame | Emacs creates, displays, operates, and deletes one SDL3 frame |
 | R9. Differential compatibility | PGTK vs Proto-UI behavior suite | Frame, text, cursor, input, scroll, resize, and lifecycle baselines pass |
 
@@ -239,10 +239,11 @@ cat zig-out/proto-ui/r7_review_packet.json
 ```
 
 The packet embeds SHA-256 provenance for five generated review artifacts and
-builds/validates each exact artifact: the registration proposal, registration
-contract, unselected host-adapter selection, blocked activation contract, and
-R8 readiness record.  The runtime design is carried as an explicit, unverified
-reference document.  The packet presents six pending reviewer questions:
+builds/validates each exact artifact: the approved registration proposal,
+approved registration contract, selected host-adapter record, activation
+contract blocked by missing linkage/registration, and R8 readiness record.  The
+runtime design is carried as an explicit, unverified reference document.  The
+packet records six approved reviewer checks:
 
 1. pure-SDL3/`output_proto` boundary policy;
 2. no edits, replacement, patching, or interposition in tracked inherited
@@ -251,15 +252,14 @@ reference document.  The packet presents six pending reviewer questions:
 4. reproducible prerequisite, fail-closed, pure-frame, and differential
    evidence gates;
 5. reverse rollback and default-build isolation;
-6. complete reviewer metadata only when the source decision leaves pending.
+6. complete reviewer metadata with the approved policy-only scope.
 
-Approving a packet merge is not an R7 approval.  The gate compares every
-generated input byte-for-byte with the source-derived artifact before reporting
-the pending state.  Approval requires a separate reviewed source-contract
-change that records reviewer, decision ID, review time, and approval scope
-while all packet checks pass.  Only then may the host adapter selection and R8
-entry record be changed; runtime activation remains a separate explicit path
-and cannot happen implicitly.
+The gate compares every generated input byte-for-byte with the source-derived
+artifact and records the completed R7 review, including reviewer, decision ID,
+review time, and approval scope.  This approval selects only policy and the
+host-adapter candidate.  It does not link Emacs, register a terminal, or enable
+runtime; activation remains a separate explicit path and cannot happen
+implicitly.
 
 P5 preparation extends `PureRuntimeHostV1.RunRecord` with a bounded
 printable-ASCII payload and geometry so `runtime_bridge` can project host runs
@@ -274,7 +274,7 @@ observations and `IMAGE_DEFINE`/`IMAGE_DATA` emission, currently capped at four
 The fail-closed runtime contract now inventories the complete redisplay
 callback set, including face, font, shaped-run, and image capture operations.
 The R7 proposal records these as implemented adapter prerequisites while the
-host-decision gate remains pending.
+host-decision gate is approved; linkage and registration remain absent.
 A P4-preparation `runtime_bridge` now drives validated `PureRuntimeHostV1`
 callbacks and emits bounded frame lifecycle/update messages for fake-host
 conformance.  It is not linked to an Emacs host and does not authorize terminal
@@ -306,26 +306,27 @@ drain.  R6 adds deterministic window/row/cursor/damage `FRAME_UPDATE` encoding,
 stale-generation commit guards, and replay byte-stability evidence.  R7 adds
 the deterministic `host_registration_contract.json`, contract gate,
 runtime-manifest reference, and capability descriptor.  Its decision is
-`pending` with `host_registration_contract_missing`; approved decisions will
-require complete review metadata and every policy/evidence field before the
-gate passes.  R8-R9 remain not implemented; in particular, there is no terminal
+`approved` with complete metadata and scope `policy_and_candidate_selection_only`.
+The fail-closed reason is now
+`runtime_host_linkage_or_registration_missing`; every policy/evidence field
+continues to be gate-checked.  R8-R9 remain not implemented; in particular, there is no terminal
 registration, redisplay-owned EUP generation, transport, or real
 `output_proto` frame.
 The newer terminal service additionally orchestrates fake-host
 create/activate/drain/delete callbacks with generation-safe registry state and
-drain retry/rollback handling; it still cannot select or register an Emacs
+drain retry/rollback handling; it still cannot register an Emacs
 terminal.
-The host-adapter selection manifest names the pure-SDL3 candidate but leaves it
-unselected until an approved, metadata-complete R7 decision; selection still
-requires an explicit activation path and never enables runtime automatically.
+The host-adapter selection manifest records the pure-SDL3 candidate as selected
+by the approved, metadata-complete R7 decision, but it remains unlinked.
+Selection never enables runtime automatically.
 The activation contract records the approved-path order and reverse rollback
-order.  Its current gate remains blocked by pending R7 and performs no host
-callback.
+order.  Its current gate is blocked by missing linkage/registration and performs
+no Emacs host callback.
 
 ## 11. R8 entry readiness gate
 
-R8 may begin only after a host-extension decision records how the approved
-adapter is linked without touching tracked inherited C/Lisp source.  The
+R8 may begin only after the selected adapter is linked under the approved
+host-extension decision without touching tracked inherited C/Lisp source.  The
 decision must be separate from the adapter code and must make the activation
 path, ownership boundary, and disable path reproducible.
 
@@ -344,17 +345,16 @@ An R8-ready decision record contains:
    crash containment, and the fail-closed runtime manifest.
 
 A fake-host smoke, public-fact stream, replay renderer, or PGTK diagnostic is
-never sufficient to mark R8 ready.  The transition is allowed only when the
-pending R7 decision is explicitly approved with this metadata and the runtime
-manifest changes from `host_registration_contract_missing` to a reviewed,
-versioned registration contract.
+never sufficient to mark R8 ready.  R7 policy approval is complete, but the
+transition additionally requires the selected adapter to be linked and a
+reviewed, versioned registration contract to exist without implicit runtime.
 
 `proto-ui-r8-readiness` makes this gate executable.  Its normal pass result
 means the audit successfully proved that R8 is still blocked and no inherited
 source edits are declared.  `-Dr8-entry-gate=true proto-ui-r8-readiness` is the
-negative launch check: it returns `r8_entry_readiness_missing` until the
-source-authoritative readiness record, approved R7 decision, and selected host
-adapter agree.
+negative launch check: it returns `r8_host_adapter_linkage_or_registration_missing` until the
+source-authoritative readiness record, approved R7 decision, selected host
+adapter, linkage, and registration agree.
 
 W12n now prepares the linkage evidence without activating it.
 `src/proto-ui/runtime_host_adapter_lib.zig` builds a host-audit candidate shared

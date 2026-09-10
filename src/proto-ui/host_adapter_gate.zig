@@ -5,8 +5,8 @@ const proto_ui = @import("proto_ui");
 
 fn emitSelection() void {
     std.debug.print(
-        "{{\"manifest_version\":1,\"gate\":\"proto-ui-host-adapter\",\"selection\":\"unselected\",\"selected\":false,\"activation_allowed\":false,\"registered\":false,\"runtime_available\":false,\"reason\":\"{s}\",\"result\":\"pass\"}}\n",
-        .{proto_ui.host_adapter.pending_reason_code},
+        "{{\"manifest_version\":1,\"gate\":\"proto-ui-host-adapter\",\"selection\":\"selected\",\"selected\":true,\"activation_allowed\":false,\"registered\":false,\"runtime_available\":false,\"reason\":\"{s}\",\"result\":\"pass\"}}\n",
+        .{proto_ui.host_adapter.linkage_missing_reason_code},
     );
 }
 

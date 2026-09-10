@@ -1,7 +1,8 @@
 //! Source-authoritative R7 registration proposal for the pure SDL3 runtime.
 //!
-//! This artifact is review input only.  It does not approve R7, register a
-//! terminal, enable output_proto, alter an inherited backend, or claim parity.
+//! This artifact is the reviewed R7 proposal input.  The recorded decision is
+//! policy-only; it does not register a terminal, enable output_proto, alter an
+//! inherited backend, or claim parity.
 
 const std = @import("std");
 const host_contract = @import("host_contract.zig");
@@ -16,6 +17,7 @@ pub const reason_code = runtime.reason_code;
 pub const ProposalStatus = enum {
     draft,
     ready_for_review,
+    approved,
     withdrawn,
 };
 
@@ -92,8 +94,8 @@ pub const prerequisites = [_]Prerequisite{
     },
     .{
         .name = "host.registration_decision",
-        .status = "pending",
-        .evidence = "proto-ui-host-contract",
+        .status = "implemented",
+        .evidence = "proto-ui-host-contract approved with complete policy-only metadata",
     },
 };
 
@@ -114,13 +116,13 @@ pub const evidence_gates = [_]EvidenceGate{
         .name = "proto-ui-host-contract",
         .command = "zig build -Dproto-ui=true proto-ui-host-contract",
         .status = "passing",
-        .expected = "exit 0 and pending registration decision",
+        .expected = "exit 0 and approved policy-only registration decision",
     },
     .{
         .name = "runtime-fail-closed",
         .command = "zig build -Dproto-ui=true -Dproto-ui-runtime=true proto-ui-boundary",
         .status = "passing-by-failing",
-        .expected = "exit 1 with host_registration_contract_missing",
+        .expected = "exit 1 with runtime_host_linkage_or_registration_missing",
     },
     .{
         .name = "pure-proto-frame",
@@ -137,10 +139,10 @@ pub const evidence_gates = [_]EvidenceGate{
 };
 
 pub const Proposal = struct {
-    status: ProposalStatus = .ready_for_review,
+    status: ProposalStatus = .approved,
     registered: bool = false,
     runtime_available: bool = false,
-    decision_status: []const u8 = "pending",
+    decision_status: []const u8 = "approved",
     reason_code: []const u8 = runtime.reason_code,
 };
 
@@ -152,11 +154,11 @@ fn expectedPrerequisite(name: []const u8) ?Prerequisite {
 }
 
 fn validateProposalState(candidate: Proposal) ?[]const u8 {
-    if (candidate.status != .ready_for_review) return "proposal is not ready for review";
+    if (candidate.status != .approved) return "proposal is not approved";
     if (candidate.registered) return "proposal unexpectedly claims registration";
     if (candidate.runtime_available) return "proposal unexpectedly claims runtime";
-    if (!std.mem.eql(u8, candidate.decision_status, "pending"))
-        return "proposal decision is not pending";
+    if (!std.mem.eql(u8, candidate.decision_status, "approved"))
+        return "proposal decision is not approved";
     if (!std.mem.eql(u8, candidate.reason_code, runtime.reason_code))
         return "proposal reason code changed";
     return null;
@@ -164,8 +166,8 @@ fn validateProposalState(candidate: Proposal) ?[]const u8 {
 
 pub fn validateState() ?[]const u8 {
     if (validateProposalState(proposal)) |problem| return problem;
-    if (host_contract.decision.status != .pending)
-        return "source host-contract decision is not pending";
+    if (host_contract.decision.status != .approved)
+        return "source host-contract decision is not approved";
     if (runtime.runtime_state.runtime_available or !runtime.runtime_state.fail_closed)
         return "source runtime is not fail-closed";
     if (!target.pure_sdl3_ui or !target.pgtk_reference_only)
@@ -287,8 +289,8 @@ pub fn writeProposal(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
     try out.appendSlice(gpa, "]}\n");
 }
 
-test "R7 proposal remains ready for review but fail closed" {
-    try std.testing.expectEqual(ProposalStatus.ready_for_review, proposal.status);
+test "R7 proposal records the approved decision but remains fail closed" {
+    try std.testing.expectEqual(ProposalStatus.approved, proposal.status);
     try std.testing.expect(!proposal.registered);
     try std.testing.expect(!proposal.runtime_available);
     try std.testing.expectEqualStrings(runtime.reason_code, proposal.reason_code);
@@ -320,7 +322,7 @@ test "R7 proposal JSON is deterministic and policy complete" {
     try writeProposal(gpa, &first);
     try writeProposal(gpa, &second);
     try std.testing.expectEqualSlices(u8, first.items, second.items);
-    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"proposal_status\":\"ready_for_review\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"proposal_status\":\"approved\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"registered\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"runtime_available\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"pgtk_runtime_fallback_allowed\":false") != null);

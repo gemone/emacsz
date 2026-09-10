@@ -1,7 +1,8 @@
 //! Source-authoritative Proto-UI host registration decision contract.
 //!
-//! This is policy only.  A pending or approved decision never registers a
-//! terminal, enables `output_proto`, or changes inherited Emacs C/Lisp.
+//! This is policy only.  Approval selects policy and a candidate; it never
+//! registers a terminal, enables `output_proto`, or changes inherited Emacs
+//! C/Lisp.
 
 const std = @import("std");
 const runtime = @import("runtime.zig");
@@ -10,6 +11,11 @@ pub const manifest_version: u32 = 1;
 pub const contract_schema_version: u32 = 1;
 pub const authoritative_source = "src/proto-ui/host_contract.zig";
 pub const pending_reason_code = "host_registration_contract_missing";
+pub const approved_reason_code = runtime.reason_code;
+pub const approved_reviewer = "Proto-UI Dedicated Review Agent";
+pub const approved_decision_id = "R7:pure-sdl3-output-proto-terminal:2026-09-10";
+pub const approved_reviewed_at = "2026-09-10T09:49:41Z";
+pub const approved_scope = "policy_and_candidate_selection_only";
 
 pub const DecisionStatus = enum {
     pending,
@@ -25,9 +31,14 @@ pub const DecisionMetadata = struct {
 };
 
 pub const Decision = struct {
-    status: DecisionStatus = .pending,
-    reason_code: []const u8 = pending_reason_code,
-    metadata: DecisionMetadata = .{},
+    status: DecisionStatus = .approved,
+    reason_code: []const u8 = approved_reason_code,
+    metadata: DecisionMetadata = .{
+        .reviewer = approved_reviewer,
+        .decision_id = approved_decision_id,
+        .reviewed_at = approved_reviewed_at,
+        .approval_scope = approved_scope,
+    },
 };
 
 pub const decision = Decision{};
@@ -65,7 +76,7 @@ pub const required_evidence_gates = [_]EvidenceGate{
     .{
         .name = "proto-ui-host-contract",
         .command = "zig build -Dproto-ui=true proto-ui-host-contract",
-        .expected_result = "exit 0 for the source-authoritative pending decision",
+        .expected_result = "exit 0 for the source-authoritative approved policy-only decision",
     },
     .{
         .name = "proto-ui-unit",
@@ -80,7 +91,7 @@ pub const required_evidence_gates = [_]EvidenceGate{
     .{
         .name = "runtime-fail-closed",
         .command = "zig build -Dproto-ui=true -Dproto-ui-runtime=true proto-ui-boundary",
-        .expected_result = "nonzero exit until the reviewed adapter registration exists",
+        .expected_result = "nonzero exit while adapter linkage or terminal registration is absent",
         .reason_code = runtime.reason_code,
     },
 };
@@ -113,7 +124,13 @@ pub fn validateDecision() ?[]const u8 {
         },
         .approved => {
             if (!metadataComplete()) return "approved decision lacks complete review metadata";
-            if (decision.reason_code.len == 0) return "approved decision lacks reason";
+            if (!std.mem.eql(u8, decision.metadata.reviewer.?, approved_reviewer) or
+                !std.mem.eql(u8, decision.metadata.decision_id.?, approved_decision_id) or
+                !std.mem.eql(u8, decision.metadata.reviewed_at.?, approved_reviewed_at) or
+                !std.mem.eql(u8, decision.metadata.approval_scope.?, approved_scope))
+                return "approved decision metadata changed";
+            if (!std.mem.eql(u8, decision.reason_code, approved_reason_code))
+                return "approved reason changed";
         },
         .rejected => {
             if (!metadataComplete()) return "rejected decision lacks complete review metadata";
@@ -168,6 +185,16 @@ pub fn validateArtifact(value: std.json.Value) ?[]const u8 {
         if (!equalsString(decision_object, "reason_code", pending_reason_code))
             return "pending reason changed";
         if (!metadataNull(decision_object)) return "pending metadata is not placeholder";
+    } else if (status == .approved) {
+        if (!equalsString(decision_object, "reason_code", approved_reason_code))
+            return "approved reason changed";
+        if (!metadataCompleteValue(decision_object)) return "decision lacks review metadata";
+        const metadata = decision_object.get("metadata").?.object;
+        if (!equalsString(metadata, "reviewer", approved_reviewer) or
+            !equalsString(metadata, "decision_id", approved_decision_id) or
+            !equalsString(metadata, "reviewed_at", approved_reviewed_at) or
+            !equalsString(metadata, "approval_scope", approved_scope))
+            return "approved decision metadata changed";
     } else {
         if (!metadataCompleteValue(decision_object)) return "decision lacks review metadata";
     }
@@ -375,9 +402,9 @@ pub fn writeContract(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
     try out.appendSlice(gpa, "}}\n");
 }
 
-test "source decision is pending and policy is fail-closed" {
-    try std.testing.expectEqual(Decision{}, decision);
-    try std.testing.expectEqualStrings(pending_reason_code, runtime.reason_code);
+test "source decision is approved policy only and runtime remains fail-closed" {
+    try std.testing.expectEqual(DecisionStatus.approved, decision.status);
+    try std.testing.expectEqualStrings(approved_reason_code, runtime.reason_code);
     try std.testing.expectEqual(@as(?[]const u8, null), validateState());
     try std.testing.expect(frontend_contract.may_render_protocol_scenes);
     try std.testing.expect(!frontend_contract.may_evaluate_elisp);
@@ -394,8 +421,8 @@ test "contract JSON is deterministic and policy-complete" {
     try writeContract(gpa, &second);
     try std.testing.expectEqualSlices(u8, first.items, second.items);
     try std.testing.expect(first.items.len < 16 * 1024);
-    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"status\":\"pending\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"reviewer\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"status\":\"approved\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"reviewer\":\"Proto-UI Dedicated Review Agent\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"may_evaluate_elisp\":false") != null);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, first.items, .{});
@@ -411,15 +438,19 @@ test "approved decisions require complete review metadata" {
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, contract.items, .{});
     defer parsed.deinit();
     const decision_object = parsed.value.object.getPtr("decision").?.object;
-    decision_object.getPtr("status").?.* = .{ .string = "approved" };
+    const metadata_object = decision_object.getPtr("metadata").?.object;
+    metadata_object.getPtr("reviewer").?.* = .null;
+    metadata_object.getPtr("decision_id").?.* = .null;
+    metadata_object.getPtr("reviewed_at").?.* = .null;
+    metadata_object.getPtr("approval_scope").?.* = .null;
     const invalid = validateArtifact(parsed.value);
     try std.testing.expect(invalid != null);
     try std.testing.expectEqualStrings("decision lacks review metadata", invalid.?);
 
     const metadata = decision_object.getPtr("metadata").?.object;
-    metadata.getPtr("reviewer").?.* = .{ .string = "reviewer" };
-    metadata.getPtr("decision_id").?.* = .{ .string = "decision" };
-    metadata.getPtr("reviewed_at").?.* = .{ .string = "timestamp" };
-    metadata.getPtr("approval_scope").?.* = .{ .string = "R7" };
+    metadata.getPtr("reviewer").?.* = .{ .string = approved_reviewer };
+    metadata.getPtr("decision_id").?.* = .{ .string = approved_decision_id };
+    metadata.getPtr("reviewed_at").?.* = .{ .string = approved_reviewed_at };
+    metadata.getPtr("approval_scope").?.* = .{ .string = approved_scope };
     try std.testing.expectEqual(@as(?[]const u8, null), validateArtifact(parsed.value));
 }

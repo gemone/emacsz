@@ -1,4 +1,4 @@
-//! Emits the deterministic pending R7 review-packet artifact.
+//! Emits the deterministic approved R7 review-packet artifact.
 
 const std = @import("std");
 const proto_ui = @import("proto_ui");

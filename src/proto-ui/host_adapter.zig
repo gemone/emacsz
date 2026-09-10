@@ -1,8 +1,8 @@
 //! Versioned host-adapter selection policy for the pure SDL3 runtime.
 //!
-//! The source currently records the pure-SDL3 candidate as *unselected*: R7 is
-//! pending and no Emacs host adapter is linked or activated.  This module does
-//! not create a terminal or modify inherited GNU Emacs C/Lisp source.
+//! The approved R7 policy records the pure-SDL3 candidate as *selected*, but
+//! no Emacs host adapter is linked, registered, or activated.  This module
+//! does not create a terminal or modify inherited GNU Emacs C/Lisp source.
 
 const std = @import("std");
 const host_contract = @import("host_contract.zig");
@@ -12,10 +12,11 @@ const runtime_host = @import("runtime_host.zig");
 pub const manifest_version: u32 = 1;
 pub const selection_schema_version: u32 = 1;
 pub const authoritative_source = "src/proto-ui/host_adapter.zig";
-pub const pending_reason_code = runtime.reason_code;
+pub const unselected_reason_code = runtime.reason_code;
 pub const rejected_reason_code = "r7_registration_rejected";
 pub const metadata_reason_code = "r7_review_metadata_incomplete";
 pub const invalid_reason_code = "host_adapter_contract_invalid";
+pub const linkage_missing_reason_code = "runtime_host_linkage_or_registration_missing";
 
 pub const SelectionStatus = enum {
     unselected,
@@ -42,12 +43,14 @@ pub const Input = struct {
     selected: bool = false,
     registered: bool = false,
     runtime_available: bool = false,
+    linked_into_emacs: bool = false,
 };
 
 pub const Decision = struct {
     status: SelectionStatus,
     selected: bool = false,
     activation_allowed: bool = false,
+    linked_into_emacs: bool = false,
     registered: bool = false,
     runtime_available: bool = false,
     reason_code: []const u8,
@@ -94,7 +97,7 @@ pub fn evaluate(input: Input) Decision {
     return switch (input.r7_status) {
         .pending => .{
             .status = .unselected,
-            .reason_code = pending_reason_code,
+            .reason_code = unselected_reason_code,
         },
         .rejected => .{
             .status = .rejected,
@@ -106,8 +109,12 @@ pub fn evaluate(input: Input) Decision {
         } else .{
             .status = .selected,
             .selected = true,
-            .activation_allowed = true,
-            .reason_code = "r7_approved",
+            .activation_allowed = input.linked_into_emacs,
+            .linked_into_emacs = input.linked_into_emacs,
+            .reason_code = if (input.linked_into_emacs)
+                "r7_approved"
+            else
+                linkage_missing_reason_code,
         },
     };
 }
@@ -115,11 +122,12 @@ pub fn evaluate(input: Input) Decision {
 pub fn validateState() ?[]const u8 {
     if (host_contract.validateState()) |problem| return problem;
     if (validateCandidate(candidate_input.candidate)) |problem| return problem;
-    if (current.status != .unselected) return "current selection is not unselected";
-    if (current.selected or current.activation_allowed or
+    if (current.status != .selected) return "current selection is not selected";
+    if (!current.selected) return "selected candidate is not marked selected";
+    if (current.activation_allowed or current.linked_into_emacs or
         current.registered or current.runtime_available)
-        return "pending R7 unexpectedly enables selection";
-    if (!std.mem.eql(u8, current.reason_code, pending_reason_code))
+        return "unlinked adapter unexpectedly enables activation";
+    if (!std.mem.eql(u8, current.reason_code, linkage_missing_reason_code))
         return "current selection reason changed";
     return null;
 }
@@ -142,8 +150,8 @@ pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
     try runtime.appendJsonStringPublic(gpa, out, candidate_input.candidate.ui_backend);
     try out.appendSlice(gpa, "},\"r7_decision_status\":");
     try runtime.appendJsonStringPublic(gpa, out, @tagName(host_contract.decision.status));
-    try out.appendSlice(gpa, ",\"selection\":{\"status\":\"unselected\",\"selected\":false");
-    try out.appendSlice(gpa, ",\"activation_allowed\":false,\"registered\":false");
+    try out.appendSlice(gpa, ",\"selection\":{\"status\":\"selected\",\"selected\":true");
+    try out.appendSlice(gpa, ",\"activation_allowed\":false,\"linked_into_emacs\":false,\"registered\":false");
     try out.appendSlice(gpa, ",\"runtime_available\":false,\"reason_code\":");
     try runtime.appendJsonStringPublic(gpa, out, current.reason_code);
     try out.appendSlice(gpa, "},\"required_callback_groups\":[");
@@ -165,10 +173,10 @@ pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
     try out.appendSlice(gpa, ",\"frontend_may_own_emacs_layout\":false}}\n");
 }
 
-test "current pure SDL3 candidate remains unselected before R7 approval" {
-    try std.testing.expectEqual(host_contract.DecisionStatus.pending, host_contract.decision.status);
-    try std.testing.expectEqual(SelectionStatus.unselected, current.status);
-    try std.testing.expect(!current.selected);
+test "current pure SDL3 candidate is selected but remains unlinked" {
+    try std.testing.expectEqual(host_contract.DecisionStatus.approved, host_contract.decision.status);
+    try std.testing.expectEqual(SelectionStatus.selected, current.status);
+    try std.testing.expect(current.selected);
     try std.testing.expect(!current.activation_allowed);
     try std.testing.expect(!current.registered);
     try std.testing.expect(!current.runtime_available);
@@ -178,18 +186,29 @@ test "current pure SDL3 candidate remains unselected before R7 approval" {
 test "candidate selection policy requires approval and complete metadata" {
     const pending = evaluate(.{ .r7_status = .pending, .r7_metadata_complete = false });
     try std.testing.expectEqual(SelectionStatus.unselected, pending.status);
-    try std.testing.expectEqualStrings(pending_reason_code, pending.reason_code);
+    try std.testing.expectEqualStrings(unselected_reason_code, pending.reason_code);
 
     const incomplete = evaluate(.{ .r7_status = .approved, .r7_metadata_complete = false });
     try std.testing.expectEqual(SelectionStatus.rejected, incomplete.status);
     try std.testing.expectEqualStrings(metadata_reason_code, incomplete.reason_code);
 
-    const approved = evaluate(.{ .r7_status = .approved, .r7_metadata_complete = true });
-    try std.testing.expectEqual(SelectionStatus.selected, approved.status);
-    try std.testing.expect(approved.selected);
-    try std.testing.expect(approved.activation_allowed);
-    try std.testing.expect(!approved.registered);
-    try std.testing.expect(!approved.runtime_available);
+    const approved_unlinked = evaluate(.{ .r7_status = .approved, .r7_metadata_complete = true });
+    try std.testing.expectEqual(SelectionStatus.selected, approved_unlinked.status);
+    try std.testing.expect(approved_unlinked.selected);
+    try std.testing.expect(!approved_unlinked.activation_allowed);
+    try std.testing.expect(!approved_unlinked.linked_into_emacs);
+    try std.testing.expect(!approved_unlinked.registered);
+    try std.testing.expect(!approved_unlinked.runtime_available);
+
+    const approved_linked = evaluate(.{
+        .r7_status = .approved,
+        .r7_metadata_complete = true,
+        .linked_into_emacs = true,
+    });
+    try std.testing.expect(approved_linked.activation_allowed);
+    try std.testing.expect(approved_linked.linked_into_emacs);
+    try std.testing.expect(!approved_linked.registered);
+    try std.testing.expect(!approved_linked.runtime_available);
 
     const fallback = evaluate(.{
         .r7_status = .approved,
@@ -210,6 +229,6 @@ test "host adapter selection manifest is deterministic and bounded" {
     try writeManifest(gpa, &second);
     try std.testing.expectEqualSlices(u8, first.items, second.items);
     try std.testing.expect(first.items.len < 16 * 1024);
-    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"status\":\"unselected\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"status\":\"selected\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"runtime_available\":false") != null);
 }

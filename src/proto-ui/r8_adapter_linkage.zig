@@ -1,9 +1,8 @@
 //! Source-authoritative provenance for the candidate R8 adapter linkage.
 //!
 //! This module names the adapter-owned shared-library artifact and pins the
-//! exact PureRuntimeHostV1 ABI/table inventory before R7 approval.  It never
-//! selects the host adapter, links it into Emacs, registers a terminal, or
-//! enables runtime.
+//! exact PureRuntimeHostV1 ABI/table inventory after R7 approval.  The selected
+//! adapter remains unlinked; it does not register a terminal or enable runtime.
 
 const std = @import("std");
 const host_adapter = @import("host_adapter.zig");
@@ -16,10 +15,10 @@ pub const linkage_schema_version: u32 = 1;
 pub const authoritative_source = "src/proto-ui/r8_adapter_linkage.zig";
 pub const artifact_id = "proto-ui-runtime-host-adapter";
 pub const injection_point = "build.zig:proto-ui-runtime-host-adapter";
-pub const pending_reason_code = runtime.reason_code;
+pub const prepared_not_linked_reason_code = runtime.reason_code;
 pub const status = "prepared_not_linked";
 pub const inherited_source_paths_modified = host_adapter.candidate_input.candidate.inherited_source_paths_modified;
-pub const selected = false;
+pub const selected = true;
 pub const registered = false;
 pub const runtime_available = false;
 pub const linked_into_emacs = false;
@@ -70,15 +69,17 @@ pub fn abiTableHash() [64]u8 {
 pub fn validateState() ?[]const u8 {
     if (linkage_schema_version != 1) return "unsupported linkage schema";
     if (host_contract.validateState()) |problem| return problem;
-    if (host_contract.decision.status != .pending) return "linkage requires pending R7";
-    if (host_adapter.current.status != .unselected) return "candidate adapter is selected";
+    if (host_contract.decision.status != .approved) return "linkage requires approved R7";
+    if (host_adapter.current.status != .selected) return "candidate adapter is not selected";
+    if (!host_adapter.current.selected) return "candidate selection flag is absent";
+    if (host_adapter.current.linked_into_emacs) return "candidate adapter is linked";
     if (inherited_source_paths_modified.len != 0) return "candidate linkage claims inherited-source edits";
     if (runtime_host.abi_version != 1) return "unsupported runtime host ABI";
     if (table_size == 0 or group_count != 5 or operation_count != 27)
         return "runtime host table inventory changed";
     if (!std.mem.eql(u8, status, "prepared_not_linked"))
         return "candidate linkage is not prepared-not-linked";
-    if (selected or registered or runtime_available or linked_into_emacs)
+    if (registered or runtime_available or linked_into_emacs)
         return "candidate linkage claims activation";
     return null;
 }
@@ -100,7 +101,7 @@ pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
         registered,
         runtime_available,
     });
-    try runtime.appendJsonStringPublic(gpa, out, pending_reason_code);
+    try runtime.appendJsonStringPublic(gpa, out, prepared_not_linked_reason_code);
     try out.appendSlice(gpa, ",\"artifact\":{\"build_artifact_id\":");
     try runtime.appendJsonStringPublic(gpa, out, artifact_id);
     try out.print(gpa, ",\"kind\":\"shared_library\",\"linked_into_emacs\":{}}}", .{linked_into_emacs});
@@ -123,9 +124,9 @@ pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
     try out.append(gpa, '\n');
 }
 
-test "adapter linkage remains prepared and fail closed" {
-    try std.testing.expectEqual(host_contract.DecisionStatus.pending, host_contract.decision.status);
-    try std.testing.expectEqual(host_adapter.SelectionStatus.unselected, host_adapter.current.status);
+test "selected adapter linkage remains prepared and fail closed" {
+    try std.testing.expectEqual(host_contract.DecisionStatus.approved, host_contract.decision.status);
+    try std.testing.expectEqual(host_adapter.SelectionStatus.selected, host_adapter.current.status);
     try std.testing.expectEqual(@as(?[]const u8, null), validateState());
     try std.testing.expectEqualStrings("prepared_not_linked", status);
     try std.testing.expectEqual(@as(usize, 27), operation_count);

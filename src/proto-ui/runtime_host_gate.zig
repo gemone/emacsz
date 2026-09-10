@@ -5,7 +5,7 @@ const proto_ui = @import("proto_ui");
 
 fn emitPrepared() void {
     std.debug.print(
-        "{{\"manifest_version\":1,\"gate\":\"proto-ui-runtime-host\",\"abi_version\":1,\"registered\":false,\"runtime_available\":false,\"decision\":\"pending\",\"reason\":\"host_registration_contract_missing\"}}\n",
+        "{{\"manifest_version\":1,\"gate\":\"proto-ui-runtime-host\",\"abi_version\":1,\"registered\":false,\"runtime_available\":false,\"decision\":\"approved\",\"reason\":\"runtime_host_linkage_or_registration_missing\"}}\n",
         .{},
     );
 }

@@ -9,11 +9,11 @@ const terminal = @import("terminal.zig");
 
 pub const manifest_version: u32 = 1;
 pub const authoritative_source = "src/proto-ui/runtime.zig";
-pub const reason_code = "host_registration_contract_missing";
+pub const reason_code = "runtime_host_linkage_or_registration_missing";
 pub const fail_closed_reason =
-    "No reviewed Emacs host adapter can supply the versioned terminal, frame, " ++
-    "redisplay, input, and lifecycle callback groups required to register " ++
-    "an output_proto terminal.";
+    "R7 policy is approved and the pure-SDL3 adapter is selected, but the " ++
+    "adapter is not linked into Emacs and no output_proto terminal is " ++
+    "registered through the versioned host callback seam.";
 
 pub const Error = error{
     InvalidRuntimeManifest,
@@ -136,7 +136,7 @@ pub const evidence_gate = EvidenceGate{};
 pub const HostContractSummary = struct {
     artifact: []const u8 = "proto-ui/host_registration_contract.json",
     contract_schema_version: u32 = 1,
-    decision_status: []const u8 = "pending",
+    decision_status: []const u8 = "approved",
     reason_code: []const u8 = reason_code,
 };
 
@@ -159,7 +159,7 @@ pub fn validateState() ?[]const u8 {
         "frame.service_mapping",
         "capture.atomic_batches",
     };
-    if (!std.mem.eql(u8, host_contract_summary.decision_status, "pending"))
+    if (!std.mem.eql(u8, host_contract_summary.decision_status, "approved"))
         return "runtime host-contract decision changed";
     if (!std.mem.eql(u8, host_contract_summary.reason_code, reason_code))
         return "runtime host-contract reason changed";
@@ -285,9 +285,9 @@ test "runtime manifest is valid, deterministic, and never enables runtime" {
     try std.testing.expect(first.items.len < 8 * 1024);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"runtime_available\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"fail_closed\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"host_registration_contract_missing\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"runtime_host_linkage_or_registration_missing\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"host_contract\":{\"contract_schema_version\":1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"decision_status\":\"pending\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"decision_status\":\"approved\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"terminal.lifecycle_state_machine\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"frame.service_mapping\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "runtime_available\":true") == null);
@@ -298,7 +298,7 @@ test "runtime manifest is valid, deterministic, and never enables runtime" {
 }
 
 test "reason message and evidence gate remain stable" {
-    try std.testing.expect(std.mem.indexOf(u8, fail_closed_reason, "No reviewed Emacs host adapter") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fail_closed_reason, "not linked into Emacs") != null);
     try std.testing.expect(std.mem.indexOf(u8, evidence_gate.command, "-Dproto-ui-runtime=true") != null);
     try std.testing.expectEqualStrings("nonzero exit", evidence_gate.expected_result);
 }

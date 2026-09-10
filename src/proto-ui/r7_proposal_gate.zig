@@ -1,11 +1,11 @@
-//! Audits the R7 proposal and enforces its fail-closed review boundary.
+//! Audits the approved R7 proposal and enforces its fail-closed runtime boundary.
 
 const std = @import("std");
 const proto_ui = @import("proto_ui");
 
-fn emitPending() void {
+fn emitApproved() void {
     std.debug.print(
-        "{{\"manifest_version\":1,\"gate\":\"proto-ui-r7-proposal\",\"proposal\":\"ready_for_review\",\"registered\":false,\"runtime_available\":false,\"decision\":\"pending\",\"reason\":\"{s}\"}}\n",
+        "{{\"manifest_version\":1,\"gate\":\"proto-ui-r7-proposal\",\"proposal\":\"approved\",\"registered\":false,\"runtime_available\":false,\"decision\":\"approved\",\"reason\":\"{s}\"}}\n",
         .{proto_ui.r7_proposal.reason_code},
     );
 }
@@ -28,14 +28,14 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     defer expected.deinit(gpa);
     try proto_ui.r7_proposal.writeProposal(gpa, &expected);
     if (!std.mem.eql(u8, actual, expected.items)) {
-        emitPending();
+        emitApproved();
         std.debug.print("r7-proposal gate: artifact mismatch\n", .{});
         return error.InvalidR7ProposalArtifact;
     }
     if (proto_ui.r7_proposal.validateState()) |problem| {
-        emitPending();
+        emitApproved();
         std.debug.print("r7-proposal gate: {s}\n", .{problem});
         return error.InvalidR7ProposalState;
     }
-    emitPending();
+    emitApproved();
 }

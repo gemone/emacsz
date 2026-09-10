@@ -1,8 +1,8 @@
-//! Source-authoritative review packet for the pending R7 host decision.
+//! Source-authoritative review packet for the approved, policy-only R7 decision.
 //!
-//! The packet packages policy, evidence, and reviewer checks.  It does not
-//! approve R7, select a host adapter, register a terminal, enable
-//! `output_proto`, or claim PGTK parity.
+//! The packet records the completed policy review.  Approval selected only the
+//! policy and candidate; it does not link the adapter, register a terminal,
+//! enable `output_proto`, or claim PGTK parity.
 
 const std = @import("std");
 const host_contract = @import("host_contract.zig");
@@ -18,13 +18,14 @@ pub const authoritative_source = "src/proto-ui/r7_review_packet.zig";
 pub const packet_id = r7_proposal.proposal_id ++ ":review";
 pub const reason_code = runtime.reason_code;
 pub const activation_rule =
-    "A reviewer approves every checklist item, records complete metadata, and " ++
-    "updates the source contract in a separate reviewed commit.  The packet " ++
-    "itself never activates the runtime.";
+    "The approved policy and candidate never activate runtime by themselves; " ++
+    "activation additionally requires adapter linkage, terminal registration, " ++
+    "and the complete reverse-rollback path.";
 
 pub const PacketStatus = enum {
     draft,
     ready_for_review,
+    approved,
     withdrawn,
 };
 
@@ -37,7 +38,7 @@ pub const CheckStatus = enum {
 pub const ReviewItem = struct {
     id: []const u8,
     question: []const u8,
-    status: CheckStatus = .pending,
+    status: CheckStatus = .approved,
 };
 
 pub const InputKind = enum {
@@ -60,18 +61,23 @@ pub const ReferenceDocument = struct {
 };
 
 pub const Packet = struct {
-    status: PacketStatus = .ready_for_review,
-    approved: bool = false,
+    status: PacketStatus = .approved,
+    approved: bool = true,
     registered: bool = false,
     runtime_available: bool = false,
     activation_allowed: bool = false,
     fail_closed: bool = true,
-    decision_status: []const u8 = "pending",
+    decision_status: []const u8 = "approved",
     reason_code: []const u8 = reason_code,
 };
 
 pub const packet = Packet{};
-pub const approval = host_contract.DecisionMetadata{};
+pub const approval = host_contract.DecisionMetadata{
+    .reviewer = host_contract.approved_reviewer,
+    .decision_id = host_contract.approved_decision_id,
+    .reviewed_at = host_contract.approved_reviewed_at,
+    .approval_scope = host_contract.approved_scope,
+};
 
 pub const review_items = [_]ReviewItem{
     .{
@@ -143,9 +149,13 @@ fn expectedItemFrom(items: []const ReviewItem, id: []const u8) ?ReviewItem {
     return null;
 }
 
-fn approvalPresent(metadata: host_contract.DecisionMetadata) bool {
-    return metadata.reviewer != null or metadata.decision_id != null or
-        metadata.reviewed_at != null or metadata.approval_scope != null;
+fn approvalMatches(metadata: host_contract.DecisionMetadata) bool {
+    return metadata.reviewer != null and metadata.decision_id != null and
+        metadata.reviewed_at != null and metadata.approval_scope != null and
+        std.mem.eql(u8, metadata.reviewer.?, host_contract.approved_reviewer) and
+        std.mem.eql(u8, metadata.decision_id.?, host_contract.approved_decision_id) and
+        std.mem.eql(u8, metadata.reviewed_at.?, host_contract.approved_reviewed_at) and
+        std.mem.eql(u8, metadata.approval_scope.?, host_contract.approved_scope);
 }
 
 fn validatePacket(
@@ -154,12 +164,12 @@ fn validatePacket(
     candidate_approval: host_contract.DecisionMetadata,
 ) ?[]const u8 {
     if (packet_schema_version != 1) return "unsupported packet schema";
-    if (candidate.status != .ready_for_review) return "packet is not ready for review";
-    if (candidate.approved or candidate.registered or candidate.runtime_available or
+    if (candidate.status != .approved) return "packet is not approved";
+    if (!candidate.approved or candidate.registered or candidate.runtime_available or
         candidate.activation_allowed or !candidate.fail_closed)
-        return "packet unexpectedly claims an activation outcome";
-    if (!std.mem.eql(u8, candidate.decision_status, "pending"))
-        return "packet decision is not pending";
+        return "approved packet lacks its decision or claims an activation outcome";
+    if (!std.mem.eql(u8, candidate.decision_status, "approved"))
+        return "packet decision is not approved";
     if (!std.mem.eql(u8, candidate.reason_code, runtime.reason_code))
         return "packet reason code changed";
     if (activation_rule.len == 0) return "missing activation rule";
@@ -175,7 +185,7 @@ fn validatePacket(
     if (candidate_items.len != required.len) return "unexpected review-item count";
     for (required) |id| {
         const item = expectedItemFrom(candidate_items, id) orelse return "missing review item";
-        if (item.status != .pending) return "review item is pre-approved";
+        if (item.status != .approved) return "approved packet has an unapproved review item";
         if (item.question.len == 0) return "review item lacks a question";
     }
     const required_inputs = [_]struct { kind: InputKind, name: []const u8, artifact: []const u8 }{
@@ -198,7 +208,7 @@ fn validatePacket(
         if (document.name.len == 0 or document.artifact.len == 0)
             return "incomplete reference document";
     }
-    if (approvalPresent(candidate_approval)) return "pending packet has approval metadata";
+    if (!approvalMatches(candidate_approval)) return "packet approval metadata is absent or changed";
 
     if (r7_proposal.validateState()) |problem| return problem;
     if (host_contract.validateState()) |problem| return problem;
@@ -339,9 +349,9 @@ pub fn writePacket(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
     try out.appendSlice(gpa, "}\n");
 }
 
-test "review packet remains pending and fail closed" {
-    try std.testing.expectEqual(PacketStatus.ready_for_review, packet.status);
-    try std.testing.expect(!packet.approved);
+test "review packet records the approved policy decision and remains fail closed" {
+    try std.testing.expectEqual(PacketStatus.approved, packet.status);
+    try std.testing.expect(packet.approved);
     try std.testing.expect(!packet.registered);
     try std.testing.expect(!packet.runtime_available);
     try std.testing.expect(!packet.activation_allowed);
@@ -350,19 +360,19 @@ test "review packet remains pending and fail closed" {
     try std.testing.expectEqual(@as(?[]const u8, null), validateState());
 }
 
-test "pre-approving packet state fails validation" {
+test "claiming registration in the approved packet fails validation" {
     var candidate = packet;
-    candidate.approved = true;
+    candidate.registered = true;
     try std.testing.expectEqualStrings(
-        "packet unexpectedly claims an activation outcome",
+        "approved packet lacks its decision or claims an activation outcome",
         validatePacket(candidate, &review_items, approval).?,
     );
 
-    var approved_items = review_items;
-    for (&approved_items) |*item| item.status = .approved;
+    var pending_items = review_items;
+    for (&pending_items) |*item| item.status = .pending;
     try std.testing.expectEqualStrings(
-        "review item is pre-approved",
-        validatePacket(packet, &approved_items, approval).?,
+        "approved packet has an unapproved review item",
+        validatePacket(packet, &pending_items, approval).?,
     );
 }
 
@@ -376,8 +386,8 @@ test "review packet JSON is deterministic, bounded, and policy complete" {
     try writePacket(gpa, &second);
     try std.testing.expectEqualSlices(u8, first.items, second.items);
     try std.testing.expect(first.items.len < 16 * 1024);
-    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"packet_status\":\"ready_for_review\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"approved\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"packet_status\":\"approved\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"approved\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"runtime_available\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"activation_allowed\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"policy.pure_sdl3_boundary\"") != null);

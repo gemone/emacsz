@@ -446,6 +446,6 @@ pub const conformance =
 ;
 
 pub const manifest =
-    \\{"manifest_version":1,"kind":"proto-ui-pure-runtime-host-abi-c","abi_version":1,"registered":false,"runtime_available":false,"decision_status":"pending","reason_code":"host_registration_contract_missing","c_conformance":"implemented"}
+    \\{"manifest_version":1,"kind":"proto-ui-pure-runtime-host-abi-c","abi_version":1,"registered":false,"runtime_available":false,"decision_status":"approved","reason_code":"runtime_host_linkage_or_registration_missing","c_conformance":"implemented"}
     \\
 ;

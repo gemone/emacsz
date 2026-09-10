@@ -1,9 +1,9 @@
 //! Adapter-owned full-runtime host ABI for the future pure SDL3 backend.
 //!
-//! This file defines the versioned contract that an R7-approved Emacs host
-//! adapter would implement.  It is deliberately only an ABI contract and fake
-//! conformance fixture: it does not register a terminal, enable output_proto,
-//! initialize PGTK, or modify inherited GNU Emacs code.
+//! This file defines the versioned contract for the selected, but unlinked,
+//! pure-SDL3 Emacs host adapter.  It is deliberately only an ABI contract and
+//! fake conformance fixture: it does not register a terminal, enable
+//! output_proto, initialize PGTK, or modify inherited GNU Emacs code.
 
 const std = @import("std");
 pub const adapter = @import("adapter.zig");
@@ -12,7 +12,7 @@ pub const runtime = @import("runtime.zig");
 
 pub const abi_version: u32 = 1;
 pub const authoritative_source = "src/proto-ui/runtime_host.zig";
-pub const reason_code = "host_registration_contract_missing";
+pub const reason_code = "runtime_host_linkage_or_registration_missing";
 
 pub const Status = enum(u8) {
     ok = 0,
@@ -542,7 +542,7 @@ fn invalidIfError(result: Error!void) Status {
 pub const Manifest = struct {
     registered: bool = false,
     runtime_available: bool = false,
-    decision_status: []const u8 = "pending",
+    decision_status: []const u8 = "approved",
 };
 
 pub const manifest = Manifest{};
@@ -554,7 +554,7 @@ pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
     try appendJsonString(gpa, out, authoritative_source);
     try out.appendSlice(gpa, ",\"abi_version\":");
     try out.print(gpa, "{d}", .{abi_version});
-    try out.appendSlice(gpa, ",\"registered\":false,\"runtime_available\":false,\"decision_status\":\"pending\",\"reason_code\":");
+    try out.appendSlice(gpa, ",\"registered\":false,\"runtime_available\":false,\"decision_status\":\"approved\",\"reason_code\":");
     try appendJsonString(gpa, out, reason_code);
     try out.appendSlice(gpa, ",\"required_callback_groups\":[");
     const groups = [_][]const u8{ "terminal", "frame", "redisplay", "input", "lifecycle" };
@@ -970,7 +970,7 @@ test "manifest records the ABI as available policy but not runtime" {
     try writeManifest(gpa, &output);
     try std.testing.expect(std.mem.indexOf(u8, output.items, "\"registered\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, output.items, "\"runtime_available\":false") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output.items, "\"reason_code\":\"host_registration_contract_missing\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "\"reason_code\":\"runtime_host_linkage_or_registration_missing\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output.items, "\"terminal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output.items, "\"lifecycle\"") != null);
 }

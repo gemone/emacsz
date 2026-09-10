@@ -1,4 +1,4 @@
-//! Audits the fail-closed R8 candidate-adapter linkage record.
+//! Audits the selected but unlinked R8 adapter linkage record.
 
 const std = @import("std");
 const proto_ui = @import("proto_ui");
@@ -28,7 +28,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         return error.InvalidAdapterLinkageState;
     }
     std.debug.print(
-        "{{\"manifest_version\":1,\"gate\":\"proto-ui-r8-adapter-linkage\",\"status\":\"prepared_not_linked\",\"linked\":false,\"registered\":false,\"runtime_available\":false,\"result\":\"pass\"}}\n",
+        "{{\"manifest_version\":1,\"gate\":\"proto-ui-r8-adapter-linkage\",\"status\":\"prepared_not_linked\",\"selected\":true,\"linked\":false,\"registered\":false,\"runtime_available\":false,\"result\":\"pass\"}}\n",
         .{},
     );
 }

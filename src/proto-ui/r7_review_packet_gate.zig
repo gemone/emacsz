@@ -3,9 +3,9 @@
 const std = @import("std");
 const proto_ui = @import("proto_ui");
 
-fn emitPending() void {
+fn emitApproved() void {
     std.debug.print(
-        "{{\"manifest_version\":1,\"gate\":\"proto-ui-r7-review-packet\",\"packet\":\"ready_for_review\",\"approved\":false,\"registered\":false,\"runtime_available\":false,\"activation_allowed\":false,\"decision\":\"pending\",\"reason\":\"{s}\"}}\n",
+        "{{\"manifest_version\":1,\"gate\":\"proto-ui-r7-review-packet\",\"packet\":\"approved\",\"approved\":true,\"registered\":false,\"runtime_available\":false,\"activation_allowed\":false,\"decision\":\"approved\",\"reason\":\"{s}\"}}\n",
         .{proto_ui.r7_review_packet.reason_code},
     );
 }
@@ -47,12 +47,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     defer expected.deinit(gpa);
     try proto_ui.r7_review_packet.writePacket(gpa, &expected);
     if (!std.mem.eql(u8, actual, expected.items)) {
-        emitPending();
+        emitApproved();
         std.debug.print("r7-review-packet gate: artifact mismatch\n", .{});
         return error.InvalidR7ReviewPacketArtifact;
     }
     if (proto_ui.r7_review_packet.validateState()) |problem| {
-        emitPending();
+        emitApproved();
         std.debug.print("r7-review-packet gate: {s}\n", .{problem});
         return error.InvalidR7ReviewPacketState;
     }
@@ -64,7 +64,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         defer source_bytes.deinit(gpa);
         try writeExpectedInput(gpa, input.kind, &source_bytes);
         if (!std.mem.eql(u8, artifact, source_bytes.items)) {
-            emitPending();
+            emitApproved();
             std.debug.print(
                 "r7-review-packet gate: provenance mismatch for {s}\n",
                 .{input.name},
@@ -73,5 +73,5 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         }
     }
 
-    emitPending();
+    emitApproved();
 }

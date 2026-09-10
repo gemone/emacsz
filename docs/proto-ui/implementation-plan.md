@@ -86,11 +86,11 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P12-prep window patch | Implemented bounded geometry/parent/visibility/face/depth patch with cycle and depth validation; zones/scroll pending |
 | P12-prep cursor update | Implemented dedicated cursor codec, Scene owner/geometry validation, and SDL render evidence; cursor styles/IME pending |
 | P14-prep continuous capture generations | Implemented monotonic host-capture reuse from `captured` to `capturing`, atomic observation reset, stale-generation rejection, monotonic encoded/accepted `FRAME_UPDATE` identity, host-flush-bound `FLUSH` emission, and frame-lifetime render hints; no real Emacs host |
-| P15-prep terminal runtime service | Implemented `proto-ui-terminal-service` for fake-host create/activate/drain/delete orchestration with no-reuse registry IDs, drain retry, rollback-pending cleanup, and strict identity validation; no R7 approval or Emacs terminal |
-| P16-prep host adapter selection | Implemented the versioned pure-SDL3 `output_proto` candidate as unselected until an approved, metadata-complete R7 decision; machine-readable gate records no activation, registration, or runtime |
-| P17-prep runtime activation contract | Implemented a selection-gated controller plus explicit activation/rollback sequences; current gate remains blocked by pending R7 with no registration or runtime |
+| P15-prep terminal runtime service | Implemented `proto-ui-terminal-service` for fake-host create/activate/drain/delete orchestration with no-reuse registry IDs, drain retry, rollback-pending cleanup, and strict identity validation; no Emacs terminal linkage/registration |
+| P16-prep host adapter selection | Implemented the versioned pure-SDL3 `output_proto` candidate as selected by the approved, metadata-complete R7 decision; machine-readable gate records no activation, linkage, registration, or runtime |
+| P17-prep runtime activation contract | Implemented a selection-gated controller plus explicit activation/rollback sequences; current gate is blocked without linkage/registration; no registration or runtime |
 | P21-prep R8 entry readiness | Implemented a machine-readable blocked-entry manifest with seven readiness requirements, inherited-source audit, rollback-order audit, and opt-in negative launch gate |
-| P22-prep R8 adapter linkage | Implemented a fail-closed host-audit candidate shared library, exported-ABI probe, canonical ABI/table inventory hash, build artifact provenance, planned opt-in injection point, and blocked R8 linkage gate |
+| P22-prep R8 adapter linkage | Implemented a fail-closed host-audit candidate shared library, exported-ABI probe, canonical ABI/table inventory hash, build artifact provenance, planned opt-in injection point, and selected-but-unlinked R8 linkage gate |
 | P18-prep explicit damage array | Implemented bounded `DAMAGE_RECTS` codec, atomic Scene replacement, bridge emission, union clipping, clipped retained-target present, and command-culling counters with smoke evidence; redisplay-owned incremental damage pending |
 | P19-prep clear-area render control | Implemented a 40-byte face-colored `CLEAR_AREA` v1 codec with bounded Scene table, active-frame/window bounds, live-face validation, and SDL render evidence; not redisplay capture |
 | P20-prep scroll-copy execution | Implemented bounded full-width vertical `SCROLL_RUN` v1, Scene band validation, overlap planning, estimated RGBA upload metrics, and scratch-target SDL retained-frame copy execution; redisplay ownership and GPU batching pending |
@@ -174,9 +174,9 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W12j R5 frame service mapping | Approved |
 | W12k R6 atomic capture batches | Approved |
 | W12l R7 host-registration decision contract | Approved |
-| W12l-a R7 reviewer packet | Implemented; decision remains pending |
+| W12l-a R7 reviewer packet | Approved; policy-only approval is recorded, without runtime |
 | W12m R8 entry-readiness manifest and negative gate | Approved; R8 entry remains blocked |
-| W12n R8 candidate adapter linkage artifact | Approved; host-audit candidate is prepared and fail closed, not linked or selected |
+| W12n R8 candidate adapter linkage artifact | Approved; selected host-audit candidate is prepared and fail closed, not linked |
 | W11a bounded clipboard paste | Approved |
 | W11b bounded clipboard copy | Approved |
 | Build option `-Dsdl3-frontend` | EUP replay, local live, and opt-in Emacs facts/text/input/cursor modes; the Emacs mode is process/public-API observation and adapter-owned EUP transport, not redisplay-hook streaming |
@@ -3223,7 +3223,7 @@ zig build -Dproto-ui=true proto-ui-boundary --summary all
 
 Status: normative design.  Runtime tasks R1-R7 infrastructure are implemented
 through bounded frame-service mapping, deterministic capture-batch encoding,
-and the pending host-registration decision contract; R8-R9 remain
+and the approved policy-only host-registration decision contract; R8-R9 remain
 unimplemented.  The boundary gate and documentation links remain green.
 
 ##### R2 evidence
@@ -3231,7 +3231,7 @@ unimplemented.  The boundary gate and documentation links remain green.
 R2 adds `src/proto-ui/runtime.zig` as the source-authoritative state,
 `proto-ui-runtime-manifest` as the deterministic manifest step, and a required
 nonzero boundary gate with reason
-`host_registration_contract_missing`.  The generated manifest records all five
+`runtime_host_linkage_or_registration_missing`.  The generated manifest records all five
 required callback groups, R1 groundwork, ownership boundaries, and the exact
 failure command.  It never enables terminal registration or falls back to
 PGTK/TTY.
@@ -3280,27 +3280,30 @@ and `zig-out/proto-ui/host_registration_contract.json`.  The schema records
 decision status and review metadata, acceptable and forbidden integration
 mechanisms, required callback groups and evidence gates, rollback/disable
 guarantees, default-build isolation, and the rule that the frontend never
-evaluates Elisp or owns layout.  The source decision remains `pending` with
-`host_registration_contract_missing`; the runtime manifest references this
-decision and remains fail closed.
+evaluates Elisp or owns layout.  The source decision is `approved` with reviewer `Proto-UI Dedicated Review
+Agent`, decision ID `R7:pure-sdl3-output-proto-terminal:2026-09-10`, timestamp
+`2026-09-10T09:49:41Z`, and scope `policy_and_candidate_selection_only`.  The
+runtime manifest remains fail closed with reason
+`runtime_host_linkage_or_registration_missing` because the selected adapter is
+not linked or registered.
 
 ##### R8 entry-readiness evidence
 
 R8 readiness is machine-readable in `src/proto-ui/r8_readiness.zig` and
 `zig-out/proto-ui/r8_readiness.json`.  The source records seven required
-conditions, tracks the pending R7 decision, asserts an empty inherited-source
+conditions, records the approved R7 policy decision, asserts an empty inherited-source
 edit set, keeps activation/runtime/default enablement false, and validates the
 rollback order.  `proto-ui-r8-readiness` accepts the blocked state as a valid
 audit result.  W12n adds `r8_adapter_linkage.zig`, the host-audit candidate
 shared artifact `proto-ui-runtime-host-adapter`, and
 `r8_adapter_linkage.json`, which pin the PureRuntimeHostV1 ABI/table inventory
 and planned opt-in build injection point.  The linkage status is
-`prepared_not_linked`; R8 remains blocked until R7 is explicitly approved, a
-target-specific candidate is selected, and that artifact is linked without
-inherited source edits.  The opt-in `-Dr8-entry-gate=true proto-ui-r8-readiness`
+`prepared_not_linked`; R8 remains blocked because the selected candidate is not
+linked into Emacs and no terminal is registered through inherited-source-free
+build glue.  The opt-in `-Dr8-entry-gate=true proto-ui-r8-readiness`
 form is
-the negative launch gate: it fails with `r8_entry_readiness_missing` until the
-source itself becomes ready.
+the negative launch gate: it fails with `r8_host_adapter_linkage_or_registration_missing` until linkage
+and registration make the source ready.
 
 1. Implement child and tooltip frame protocol.
 2. Implement multi-frame focus isolation.
@@ -3682,23 +3685,23 @@ capture and `output_proto` registration remain pending.
 P15 terminal-service preparation binds `PureRuntimeHostV1` terminal callbacks
 to the bounded no-reuse terminal registry.  The fake-host service covers
 create, activate, host-delete drain with retry, rollback-pending cleanup, and
-strict host identity validation.  This is orchestration readiness only; no R7
-approval, Emacs terminal selection, registration, or runtime enablement exists.
+strict host identity validation.  This is orchestration readiness only; adapter
+linkage, Emacs terminal registration, and runtime enablement remain absent.
 The `proto-ui-terminal-service` gate emits deterministic machine-readable
 evidence and is part of `proto-ui-boundary`; its report still records
 `emacs_registered=false` and `runtime_available=false`.
 P16 host-adapter selection preparation names the pure-SDL3 `output_proto`
 candidate and records its policy in one versioned manifest.  The candidate must
 use ABI v1, modify no inherited source, forbid PGTK/TTY runtime fallback and
-frontend Elisp/layout ownership, and require every callback group.  While R7 is
-pending it remains `unselected`; an approved decision also requires complete
-review metadata before selection can be marked selected.  Selection never
-implies activation: the current source and gate remain registered=false and
+frontend Elisp/layout ownership, and require every callback group.  The approved
+metadata-complete R7 decision marks the candidate selected.  Selection never
+implies activation: the current source and gate remain unlinked, registered=false, and
 runtime_available=false.
 P17 activation preparation adds a selection-gated controller and an explicit
-seven-step activation sequence with the reverse rollback order.  While R7 is
-pending, the controller rejects activation before any host callback and the
-manifest reports `blocked_by_r7`.  Unit conformance uses an approved fake-host
+seven-step activation sequence with the reverse rollback order.  The selected
+repository candidate is unlinked, so the controller rejects activation before
+any Emacs host callback and the manifest reports
+`blocked_by_linkage_or_registration`.  Unit conformance uses a linked fake-host
 decision to prove activate, rollback-on-failure, and drain paths; no real Emacs
 terminal is registered and runtime remains unavailable.
 P18 damage-array preparation adds a bounded `DAMAGE_RECTS` codec and bridge
@@ -3813,12 +3816,12 @@ P3 C projection adds `proto-ui-runtime-host-abi`: the generated C header and
 translation unit compile, but remain build artifacts outside inherited Emacs.
 P3 runtime-ABI preparation adds `proto-ui-runtime-host`: the five required
 callback groups now have a versioned C-ABI table and fake-host conformance, but
-no Emacs host is selected and runtime remains fail-closed.
+the selected Emacs host adapter is not linked and runtime remains fail-closed.
 P1 readiness adds `proto-ui-pgtk-parity-plan`: all 48 differential cases remain
 planned and the aggregate parity status remains `not_implemented`.
 P2 readiness adds `proto-ui-r7-proposal`: the generated proposal is
-`ready_for_review`, but its decision remains pending and the runtime remains
-fail-closed.  Acceptance is defined by the P0-P10 milestones in the parity
+`approved` for policy and candidate selection only, while the runtime remains
+fail-closed without linkage/registration.  Acceptance is defined by the P0-P10 milestones in the parity
 document and by the W16 final scenario.  The distinguishing R8 evidence is a real frame whose
 `window-system` is `proto`, whose visible surface is SDL3-owned, and whose
 frame, redisplay, resource, input, and desktop-integration paths require no

@@ -1,8 +1,8 @@
 //! Source-authoritative R8 entry-readiness policy.
 //!
 //! R8 means a real terminal and frame, not another fake-host or public-fact
-//! fixture.  The source remains blocked while R7 is pending; this module cannot
-//! register a terminal, activate a host adapter, or enable runtime.
+//! fixture.  R7 is approved and the adapter is selected, but the source remains
+//! blocked without linkage/registration and cannot enable runtime.
 
 const std = @import("std");
 const host_contract = @import("host_contract.zig");
@@ -13,7 +13,7 @@ const runtime = @import("runtime.zig");
 pub const manifest_version: u32 = 1;
 pub const readiness_schema_version: u32 = 1;
 pub const authoritative_source = "src/proto-ui/r8_readiness.zig";
-pub const blocked_reason_code = "r8_entry_readiness_missing";
+pub const blocked_reason_code = "r8_host_adapter_linkage_or_registration_missing";
 
 pub const Status = enum {
     pending,
@@ -30,8 +30,8 @@ pub const Requirement = struct {
 pub const requirements = [_]Requirement{
     .{
         .name = "r7.reviewed_decision",
-        .status = .pending,
-        .evidence = "proto-ui-host-contract remains pending with complete review metadata required",
+        .status = .implemented,
+        .evidence = "proto-ui-host-contract records the complete policy-only R7 approval metadata",
     },
     .{
         .name = "adapter.linked_without_inherited_source_edits",
@@ -56,7 +56,7 @@ pub const requirements = [_]Requirement{
     .{
         .name = "fail_closed_runtime_manifest",
         .status = .implemented,
-        .evidence = "proto-ui-runtime manifest and required nonzero runtime boundary without approved R7",
+        .evidence = "proto-ui-runtime manifest and required nonzero runtime boundary without a linked registered adapter",
     },
     .{
         .name = "rollback_and_disable",
@@ -77,10 +77,6 @@ pub const rollback_order = [_][]const u8{
 pub const Error = error{
     InvalidR8Readiness,
 };
-
-fn r7Pending() bool {
-    return host_contract.decision.status == .pending;
-}
 
 pub fn entryReady() bool {
     for (requirements) |requirement| {
@@ -197,9 +193,9 @@ pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
     try out.appendSlice(gpa, "]}\n");
 }
 
-test "R8 entry remains blocked while R7 is pending" {
-    try std.testing.expectEqual(host_contract.Decision{}, host_contract.decision);
-    try std.testing.expectEqual(host_adapter.SelectionStatus.unselected, host_adapter.current.status);
+test "R8 entry remains blocked without linkage or registration" {
+    try std.testing.expectEqual(host_contract.DecisionStatus.approved, host_contract.decision.status);
+    try std.testing.expectEqual(host_adapter.SelectionStatus.selected, host_adapter.current.status);
     try std.testing.expectEqual(@as(?[]const u8, null), validateState());
     try std.testing.expect(!entryReady());
     try std.testing.expectEqual(EntryStatus.blocked, entry_status);
@@ -220,7 +216,7 @@ test "R8 readiness JSON is deterministic and bounded" {
     try std.testing.expectEqualSlices(u8, first.items, second.items);
     try std.testing.expect(first.items.len < 16 * 1024);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"entry_status\":\"blocked\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"r7_decision\":\"pending\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first.items, "\"r7_decision\":\"approved\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"activation_allowed\":false") != null);
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, first.items, .{});
     defer parsed.deinit();

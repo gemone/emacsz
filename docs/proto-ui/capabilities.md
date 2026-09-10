@@ -581,32 +581,34 @@ Render hints remain frame-lifetime policy.  This remains fake-host adapter
 preparation, not redisplay capture.
 `terminal_service` can also orchestrate fake-host terminal create/activate/
 drain/delete callbacks against the bounded no-reuse registry.  It retries a
-failed drain safely and tracks rollback-pending cleanup, but cannot select or
-register an Emacs terminal until R7 is approved.
+failed drain safely and tracks rollback-pending cleanup.  R7 policy approval is
+recorded, but the adapter is not linked and no Emacs terminal is registered.
 `proto-ui-terminal-service` emits machine-readable lifecycle/rollback evidence
 and explicitly reports `emacs_registered=false` and `runtime_available=false`.
 `proto-ui-host-adapter` records the versioned pure-SDL3 `output_proto` candidate
-as unselected until R7 is approved with complete review metadata.  Its policy
-forbids inherited-source edits, PGTK/TTY runtime fallback, and frontend
-Elisp/layout ownership.
+as selected by the approved, metadata-complete R7 decision.  It remains
+unlinked.  Its policy forbids inherited-source edits, PGTK/TTY runtime fallback,
+and frontend Elisp/layout ownership.
 `runtime_activation` defines the approved activation sequence and reverse
 rollback sequence.  The controller is selection-gated and conformance tests can
-exercise an approved fake-host path, but the current manifest remains
-`blocked_by_r7` with no registration or runtime.
+exercise a linked fake-host path, but the current selected candidate remains
+unlinked and the manifest is `blocked_by_linkage_or_registration` with no
+registration or runtime.
 `proto-ui-runtime-host-abi` projects that contract to a generated C header and
 compiles a conformance translation unit.  `proto-ui-runtime-host` defines and conformance-tests a versioned five-group
 PureRuntimeHostV1 ABI while keeping runtime unavailable.  It does not register a
 terminal or claim output_proto.  `proto-ui-pgtk-parity-plan` emits a 48-case planned PGTK/SDL differential
 matrix; it is planning policy, not parity evidence.  R7 host-registration
 decision infrastructure is implemented, and `proto-ui-r7-proposal` emits a
-source-authoritative pure-SDL3 registration proposal with `ready_for_review`
-status.  The source decision itself remains
-`pending` with `host_registration_contract_missing`, so no terminal can be
-registered and runtime remains fail closed.  `proto-ui-r8-readiness` records
+source-authoritative pure-SDL3 registration proposal with `approved` status and
+scope `policy_and_candidate_selection_only`.  The current fail-closed reason is
+`runtime_host_linkage_or_registration_missing`: no terminal can be registered
+and runtime remains unavailable.  `proto-ui-r8-readiness` records
 the R8 entry as blocked, inventories R7 metadata, adapter linkage, isolation,
 callback conformance, crash containment, fail-closed runtime, and rollback
 requirements, and proves that no inherited source edits are declared.  Its
-opt-in negative gate (`-Dr8-entry-gate=true`) fails while the entry is blocked.
+opt-in negative gate (`-Dr8-entry-gate=true`) fails while linkage/registration
+are absent.
 Current PGTK/SDL diagnostic bridges therefore remain non-final compatibility
 evidence.
 The task split and fail-closed runtime contract are defined in

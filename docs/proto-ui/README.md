@@ -240,23 +240,24 @@ P15 terminal-service preparation adds an adapter-owned orchestrator for
 `PureRuntimeHostV1` terminal create/activate/drain/delete callbacks and the
 existing no-reuse terminal registry.  Fake-host tests cover activation, safe
 drain retry after host deletion failure, and rollback-pending cleanup.  This
-remains fail-closed preparation; R7 approval and a real Emacs terminal are
-still absent.
+remains fail-closed preparation; R7 approval is recorded, but adapter linkage
+and a real Emacs terminal remain absent.
 `zig build -Dproto-ui=true proto-ui-terminal-service` runs the deterministic
 fake-host evidence gate and reports `emacs_registered=false` plus
 `runtime_available=false`.
 
 P16 host-adapter selection preparation adds a versioned pure-SDL3
-`output_proto` candidate policy.  While R7 is pending, the candidate remains
-`unselected`; approval and complete review metadata are required before
-selection.  The candidate forbids inherited-source edits, backend fallback, and
-frontend ownership.  The current gate still reports no activation, registration,
-or runtime.
+`output_proto` candidate policy.  The approved, metadata-complete R7 decision
+now selects the candidate for future linkage.  The candidate forbids
+inherited-source edits, backend fallback, and frontend ownership.  The gate
+reports `selected=true` while activation, linkage, registration, and runtime
+remain absent.
 
 P17 runtime-activation preparation defines the approved activation order and
 reverse rollback order.  A selection-gated controller can exercise the path with
-a fake host, but the repository's current activation gate is `blocked_by_r7`,
-performs no host callback, and still reports `runtime_available=false`.
+a linked fake host, but the selected repository candidate is unlinked.  Its
+gate is `blocked_by_linkage_or_registration`, performs no Emacs host callback,
+and reports `runtime_available=false`.
 
 P18 damage-array preparation adds `DAMAGE_RECTS` v1.  The codec carries
 1..256 active-frame logical rectangles, `Scene` atomically replaces its damage
@@ -357,7 +358,8 @@ attachment remains pending.
 
 P41 R7-readiness audit synchronizes the fail-closed runtime contract with the
 full redisplay callback inventory and records resource/shaped-run capture as
-implemented adapter prerequisites.  The R7 decision remains pending.
+implemented adapter prerequisites.  The R7 decision is approved for policy and
+candidate selection only; linkage and registration remain absent.
 
 P42 mouse-highlight preparation adds `WINDOW_MOUSE_HIGHLIGHT` v1 as a bounded,
 visible face rectangle.  The Scene validates active frame/header identity, owner

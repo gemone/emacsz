@@ -1,12 +1,12 @@
-//! Audits current runtime activation as blocked by pending R7.
+//! Audits current runtime activation as blocked without linkage or registration.
 
 const std = @import("std");
 const proto_ui = @import("proto_ui");
 
 fn emitBlocked() void {
     std.debug.print(
-        "{{\"manifest_version\":1,\"gate\":\"proto-ui-runtime-activation\",\"selection\":\"unselected\",\"activation\":\"blocked_by_r7\",\"allowed\":false,\"registered\":false,\"runtime_available\":false,\"reason\":\"{s}\",\"result\":\"pass\"}}\n",
-        .{proto_ui.host_adapter.pending_reason_code},
+        "{{\"manifest_version\":1,\"gate\":\"proto-ui-runtime-activation\",\"selection\":\"selected\",\"activation\":\"blocked_by_linkage_or_registration\",\"allowed\":false,\"registered\":false,\"runtime_available\":false,\"reason\":\"{s}\",\"result\":\"pass\"}}\n",
+        .{proto_ui.host_adapter.linkage_missing_reason_code},
     );
 }
 

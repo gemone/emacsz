@@ -1848,9 +1848,9 @@ honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 108 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
-| `partial` | 3 | Concrete local path exists; full payload/recovery semantics remain pending |
-| `planned` | 53 | Assigned for the target protocol but not implemented |
+| `implemented_codec` | 164 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `partial` | 0 | Reserved classification: a concrete local path exists but full payload/recovery semantics are absent |
+| `planned` | 0 | Reserved classification: the assigned target protocol is not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
 
 The manifest records one status, domain, family, and evidence/gap note for every
