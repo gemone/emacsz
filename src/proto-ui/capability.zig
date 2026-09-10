@@ -57,6 +57,7 @@ pub const Feature = enum {
     platform_theme_events,
     clipboard_ascii_bounded,
     clipboard_text_unicode,
+    clipboard_primary_selection_bounded,
     damage_retained_clip,
     scroll_copy_policy,
     renderer_sdl3,
@@ -183,6 +184,7 @@ pub const Feature = enum {
             .platform_theme_events => "platform.theme_events",
             .clipboard_ascii_bounded => "clipboard.ascii_bounded",
             .clipboard_text_unicode => "clipboard.text_unicode",
+            .clipboard_primary_selection_bounded => "clipboard.primary_selection_bounded",
             .damage_retained_clip => "damage.retained_clip",
             .scroll_copy_policy => "render.scroll_copy_policy",
             .renderer_sdl3 => "renderer.sdl3",
@@ -367,6 +369,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .platform_theme_events, .status = .degraded, .evidence = "sdl3-theme-event-smoke" },
     .{ .feature = .clipboard_ascii_bounded, .status = .degraded, .evidence = "sdl3-clipboard-smoke" },
     .{ .feature = .clipboard_text_unicode, .status = .degraded, .evidence = "sdl3-clipboard-unicode-smoke" },
+    .{ .feature = .clipboard_primary_selection_bounded, .status = .degraded, .evidence = "sdl3-primary-selection-roundtrip-smoke" },
     .{ .feature = .damage_retained_clip, .status = .degraded, .evidence = "sdl3-pointer-smoke and sdl3-epxl-interactive-smoke" },
     .{ .feature = .scroll_copy_policy, .status = .degraded, .evidence = "proto-ui-unit vertical scroll codec and copy-plan metrics; SDL retained-frame copy pending" },
     .{ .feature = .renderer_sdl3, .status = .degraded, .evidence = "sdl3-renderer-smoke" },
@@ -549,6 +552,10 @@ pub fn negotiate(backend: Set, frontend: Set) Error!Negotiated {
     }
     if (!effective.contains(.input_pointer_selection_left))
         effective.bits[@intFromEnum(Feature.input_pointer_middle_paste)] = false;
+    // PRIMARY text reuses the bounded clipboard text admission path; the
+    // Unicode bit remains an independent upgrade on top of this prerequisite.
+    if (!effective.contains(.clipboard_ascii_bounded))
+        effective.bits[@intFromEnum(Feature.clipboard_primary_selection_bounded)] = false;
     for (feature_descriptors) |item| {
         if (item.feature.required() and !effective.contains(item.feature))
             return Error.MissingRequiredCapability;
@@ -765,6 +772,27 @@ test "text Unicode negotiation remains optional alongside ASCII" {
     const no_text_negotiated = try negotiate(all, no_text);
     try std.testing.expect(!no_text_negotiated.effective.contains(.input_text_ascii));
     try std.testing.expect(!no_text_negotiated.effective.contains(.input_text_unicode));
+}
+
+test "PRIMARY selection requires bounded clipboard text" {
+    const all = backendSupported();
+    const negotiated = try negotiate(all, all);
+    try std.testing.expect(negotiated.effective.contains(.clipboard_ascii_bounded));
+    try std.testing.expect(negotiated.effective.contains(.clipboard_text_unicode));
+    try std.testing.expect(negotiated.effective.contains(.clipboard_primary_selection_bounded));
+
+    var ascii_only = all;
+    ascii_only.bits[@intFromEnum(Feature.clipboard_text_unicode)] = false;
+    const effective = try negotiate(all, ascii_only);
+    try std.testing.expect(effective.effective.contains(.clipboard_ascii_bounded));
+    try std.testing.expect(effective.effective.contains(.clipboard_primary_selection_bounded));
+    try std.testing.expect(!effective.effective.contains(.clipboard_text_unicode));
+
+    var no_clipboard = all;
+    no_clipboard.bits[@intFromEnum(Feature.clipboard_ascii_bounded)] = false;
+    const primary_missing = try negotiate(all, no_clipboard);
+    try std.testing.expect(!primary_missing.effective.contains(.clipboard_ascii_bounded));
+    try std.testing.expect(!primary_missing.effective.contains(.clipboard_primary_selection_bounded));
 }
 
 test "full key v2 remains optional for ASCII-only peers" {

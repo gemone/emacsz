@@ -2181,6 +2181,43 @@ pub fn build(b: *std.Build) void {
             "Exercise bounded Unicode paste and base64 copy through real Emacs and SDL3",
         );
         sdl3_clipboard_unicode_step.dependOn(&run_sdl3_clipboard_unicode.step);
+
+        const run_sdl3_primary_selection = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--primary-selection-smoke",
+        });
+        run_sdl3_primary_selection.setCwd(b.path("."));
+        run_sdl3_primary_selection.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_primary_selection.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_primary_selection.step.dependOn(step);
+        const sdl3_primary_selection_step = b.step(
+            "sdl3-primary-selection-smoke",
+            "Capture bounded UTF-8 SDL primary selection text",
+        );
+        sdl3_primary_selection_step.dependOn(&run_sdl3_primary_selection.step);
+
+        const run_sdl3_primary_selection_roundtrip = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--emacs-primary-selection-smoke",
+            "--auto-quit-ms=5000",
+        });
+        run_sdl3_primary_selection_roundtrip.setCwd(b.path("."));
+        run_sdl3_primary_selection_roundtrip.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_primary_selection_roundtrip.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_primary_selection_roundtrip.step.dependOn(step);
+        const sdl3_primary_selection_roundtrip_step = b.step(
+            "sdl3-primary-selection-roundtrip-smoke",
+            "Round-trip bounded Emacs text through SDL primary selection",
+        );
+        sdl3_primary_selection_roundtrip_step.dependOn(&run_sdl3_primary_selection_roundtrip.step);
     }
     if (proto_frame_smoke_dep) |frame_step| {
         if (proto_sdl_fixture_dep) |fixture_step| fixture_step.dependOn(frame_step);

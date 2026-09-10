@@ -29,10 +29,13 @@ pub const SDL_SCANCODE_DOWN: i32 = 81;
 pub const SDL_SCANCODE_UP: i32 = 82;
 pub const SDL_SCANCODE_C: i32 = 6;
 pub const SDL_SCANCODE_V: i32 = 25;
+pub const SDL_SCANCODE_INSERT: i32 = 73;
 
 pub const max_text_bytes: usize = 120;
 pub const queue_capacity: usize = 32;
 pub const sdl_ctrl_modifiers: u16 = 0x00c0;
+pub const sdl_shift_modifiers: u16 = 0x0003;
+pub const sdl_any_shift_modifiers: u16 = sdl_shift_modifiers;
 pub const max_clipboard_bytes: usize = 120;
 
 pub const max_logical_key_bytes: usize = 64;
@@ -1083,6 +1086,17 @@ pub fn isPasteShortcut(
         modifiers & sdl_ctrl_modifiers != 0 and modifiers & ~sdl_ctrl_modifiers == 0;
 }
 
+pub fn isPrimarySelectionPasteShortcut(
+    scancode: i32,
+    down: bool,
+    repeat: bool,
+    modifiers: u16,
+) bool {
+    return down and !repeat and scancode == SDL_SCANCODE_INSERT and
+        modifiers & sdl_any_shift_modifiers != 0 and
+        modifiers & ~sdl_any_shift_modifiers == 0;
+}
+
 pub const clipboard_artifact_prefix = "base64:";
 pub const max_clipboard_artifact_bytes =
     clipboard_artifact_prefix.len + std.base64.standard.Encoder.calcSize(max_clipboard_bytes);
@@ -1752,6 +1766,17 @@ test "paste shortcut requires V with only either Ctrl modifier" {
     try std.testing.expect(!isPasteShortcut(SDL_SCANCODE_V, true, false, 0));
     try std.testing.expect(!isPasteShortcut(SDL_SCANCODE_C, true, false, 0x40));
     try std.testing.expect(!isPasteShortcut(SDL_SCANCODE_V, true, false, 0xc1));
+}
+
+test "primary selection paste requires only pressed Shift+Insert" {
+    try std.testing.expect(isPrimarySelectionPasteShortcut(SDL_SCANCODE_INSERT, true, false, sdl_shift_modifiers));
+    try std.testing.expect(isPrimarySelectionPasteShortcut(SDL_SCANCODE_INSERT, true, false, 1));
+    try std.testing.expect(isPrimarySelectionPasteShortcut(SDL_SCANCODE_INSERT, true, false, 2));
+    try std.testing.expect(!isPrimarySelectionPasteShortcut(SDL_SCANCODE_INSERT, false, false, sdl_shift_modifiers));
+    try std.testing.expect(!isPrimarySelectionPasteShortcut(SDL_SCANCODE_INSERT, true, true, sdl_shift_modifiers));
+    try std.testing.expect(!isPrimarySelectionPasteShortcut(SDL_SCANCODE_INSERT, true, false, 0));
+    try std.testing.expect(!isPrimarySelectionPasteShortcut(SDL_SCANCODE_INSERT, true, false, sdl_ctrl_modifiers));
+    try std.testing.expect(!isPrimarySelectionPasteShortcut(SDL_SCANCODE_V, true, false, sdl_shift_modifiers));
 }
 
 test "apply ACK accepts only the exact bounded sequence payload" {

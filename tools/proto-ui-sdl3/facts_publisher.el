@@ -1,4 +1,4 @@
-;;; facts_publisher.el --- adapter-owned Emacs facts publisher -*- lexical-binding: t; -*-
+;;; facts_publisher.el --- adapter-owned Emacs facts publisher -*- lexical-binding: t; no-native-compile: t; -*-
 
 ;; Copyright (C) 2026 Free Software Foundation, Inc.
 
@@ -47,8 +47,6 @@
   (equal (getenv "PROTO_UI_POINTER_GENERIC") "1"))
 (defconst proto-ui--pointer-middle-paste
   (equal (getenv "PROTO_UI_POINTER_MIDDLE_PASTE") "1"))
-
-(module-load proto-ui--module-path)
 
 (defun proto-ui--bounded-lines (text)
   (let* ((lines (split-string text "\n" t))
@@ -215,7 +213,7 @@
              (concat "base64:"
                      (base64-encode-string
                       (encode-coding-string copy-text 'utf-8) t))
-           copy-text))))))
+           copy-text)))))))
 
 (defun proto-ui--key-action (action)
   (let ((kind (nth 2 action)))
@@ -231,7 +229,7 @@
         ("copy" (proto-ui--copy-first-line))
         (_ nil))
       (set-window-point (selected-window) (point))
-      (redisplay)))))
+      (redisplay))))
 
 (defun proto-ui--key-v2-action (value)
   (let* ((event (json-parse-string value :object-type 'plist))
@@ -459,6 +457,8 @@
       (with-temp-file temporary-path
         (insert (json-serialize wire))))
     (rename-file temporary-path proto-ui--facts-path t)))
+
+(module-load proto-ui--module-path)
 
 (let* ((frame (selected-frame))
        (window (selected-window))

@@ -136,6 +136,9 @@ extern fn SDL_GetModState() u16;
 extern fn SDL_SetModState(modifiers: u16) void;
 extern fn SDL_GetClipboardText() [*c]u8;
 extern fn SDL_SetClipboardText(text: [*:0]const u8) bool;
+extern fn SDL_GetPrimarySelectionText() [*c]u8;
+extern fn SDL_SetPrimarySelectionText(text: [*:0]const u8) bool;
+extern fn SDL_HasPrimarySelectionText() bool;
 extern fn SDL_free(mem: ?*anyopaque) void;
 extern fn SDL_GetTicks() u64;
 extern fn SDL_GetPerformanceCounter() u64;
@@ -350,12 +353,29 @@ fn queueClipboardText(queue: anytype, support: input_policy.TextSupport) !bool {
     return true;
 }
 
+fn queuePrimarySelectionText(queue: anytype, support: input_policy.TextSupport) !bool {
+    const text: ?[*:0]u8 = SDL_GetPrimarySelectionText();
+    defer if (text) |owned| SDL_free(owned);
+    const source: ?[*:0]const u8 = if (text) |owned| owned else null;
+    const translated = input_policy.translateText(source, support) orelse return false;
+    try queue.pushText(translated.bytes());
+    return true;
+}
+
 fn setPlatformClipboard(bytes: []const u8) !void {
     if (!input_policy.validClipboardText(bytes)) return error.ClipboardTextNotAccepted;
     var text: [121]u8 = undefined;
     @memcpy(text[0..bytes.len], bytes);
     text[bytes.len] = 0;
     if (!SDL_SetClipboardText(@ptrCast(&text))) return sdlFail("SDL_SetClipboardText");
+}
+
+fn setPlatformPrimarySelection(bytes: []const u8) !void {
+    if (!input_policy.validClipboardText(bytes)) return error.ClipboardTextNotAccepted;
+    var text: [121]u8 = undefined;
+    @memcpy(text[0..bytes.len], bytes);
+    text[bytes.len] = 0;
+    if (!SDL_SetPrimarySelectionText(@ptrCast(&text))) return sdlFail("SDL_SetPrimarySelectionText");
 }
 
 fn runClipboardSmoke() !void {
@@ -366,6 +386,17 @@ fn runClipboardSmoke() !void {
     if (!try queueClipboardText(&queue, .ascii)) return error.ClipboardTextNotAccepted;
     if (queue.length != 1) return error.ClipboardQueueCount;
     std.debug.print("sdl3-clipboard-smoke: captured bounded clipboard text; queue=1; lifecycle OK\n", .{});
+}
+
+fn runPrimarySelectionSmoke() !void {
+    if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
+    defer SDL_Quit();
+    if (!SDL_SetPrimarySelectionText("Emacs 你好")) return sdlFail("SDL_SetPrimarySelectionText");
+    if (!SDL_HasPrimarySelectionText()) return error.PrimarySelectionUnavailable;
+    var queue: input_policy.Queue = .{};
+    if (!try queuePrimarySelectionText(&queue, .unicode)) return error.PrimarySelectionTextNotAccepted;
+    if (queue.length != 1) return error.PrimarySelectionQueueCount;
+    std.debug.print("sdl3-primary-selection-smoke: captured bounded UTF-8 primary text; queue=1; lifecycle OK\n", .{});
 }
 
 const SDL_Rect = extern struct {
@@ -382,7 +413,7 @@ const SDL_FRect = extern struct {
     h: f32,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_gap, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, emacs_epxl_key_modifier, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, emacs_clipboard_unicode, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke, emacs_epxl_failure_cleanup };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_gap, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, emacs_epxl_key_modifier, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, primary_selection, emacs_clipboard_unicode, emacs_primary_selection, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke, emacs_epxl_failure_cleanup };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -405,7 +436,9 @@ const Config = struct {
     synthetic_interactive: bool = false,
     synthetic_copy: bool = false,
     synthetic_clipboard_unicode: bool = false,
+    synthetic_primary_selection: bool = false,
     clipboard_unicode_publisher: bool = false,
+    primary_selection_publisher: bool = false,
     pointer_selection_publisher: bool = false,
     pointer_generic_publisher: bool = false,
     pointer_middle_paste_publisher: bool = false,
@@ -5519,6 +5552,7 @@ fn pollEpxlInteractiveInput(
     gate: *renderer_policy.FrameGate,
     capabilities: capability.Set,
     dirty: *bool,
+    primary_paste_queued: *bool,
     monitor_refresh_needed: *bool,
 ) !void {
     var event: SDL_Event = undefined;
@@ -5538,7 +5572,20 @@ fn pollEpxlInteractiveInput(
                     event.key.repeat,
                     event.key.modifiers,
                 );
-                if (event.type == SDL_EVENT_KEY_DOWN and is_paste) {
+                const is_primary_paste = input_policy.isPrimarySelectionPasteShortcut(
+                    event.key.scancode,
+                    event.key.down,
+                    event.key.repeat,
+                    event.key.modifiers,
+                );
+                if (event.type == SDL_EVENT_KEY_DOWN and is_primary_paste) {
+                    const support = clipboardSupportFor(capabilities) orelse return;
+                    if (!capabilities.contains(.clipboard_primary_selection_bounded)) return;
+                    if (try queuePrimarySelectionText(delivery, support)) {
+                        primary_paste_queued.* = true;
+                        dirty.* = true;
+                    }
+                } else if (event.type == SDL_EVENT_KEY_DOWN and is_paste) {
                     if (clipboardSupportFor(capabilities)) |support| {
                         if (try queueClipboardText(delivery, support)) dirty.* = true;
                     }
@@ -6120,6 +6167,16 @@ fn runEpxlInteractiveFrontend(
             .{},
         );
     }
+    if (config.mode == .emacs_primary_selection) {
+        if (!negotiated.effective.contains(.clipboard_ascii_bounded) or
+            !negotiated.effective.contains(.clipboard_text_unicode) or
+            !negotiated.effective.contains(.clipboard_primary_selection_bounded))
+            return error.PrimarySelectionCapabilityNotNegotiated;
+        std.debug.print(
+            "sdl3-primary-selection-smoke: {{\"kind\":\"sdl3-primary-selection-smoke\",\"negotiated\":{{\"clipboard.ascii_bounded\":true,\"clipboard.text_unicode\":true,\"clipboard.primary_selection_bounded\":true}},\"result\":\"negotiated\"}}\n",
+            .{},
+        );
+    }
     if (config.mode == .emacs_pointer_selection) {
         if (!negotiated.effective.contains(.input_pointer_v2) or
             !negotiated.effective.contains(.input_pointer_selection_left))
@@ -6220,6 +6277,8 @@ fn runEpxlInteractiveFrontend(
     var middle_release_sequence: u64 = 0;
     var paste_unicode_applied = false;
     var copy_unicode_exact = false;
+    var primary_copy_exact = false;
+    var primary_paste_queued = false;
     var pointer_release_delivered = false;
     var wheel_ticks_delivered: i32 = 0;
     var horizontal_wheel_ticks_delivered: i32 = 0;
@@ -6256,6 +6315,9 @@ fn runEpxlInteractiveFrontend(
     }
     if (config.synthetic_clipboard_unicode) {
         if (!SDL_SetClipboardText("你好")) return sdlFail("SDL_SetClipboardText");
+        if (config.synthetic_primary_selection) {
+            if (!SDL_SetPrimarySelectionText("stale")) return sdlFail("SDL_SetPrimarySelectionText");
+        }
         var paste = keyboardEvent(input_policy.SDL_SCANCODE_V, true, input_policy.sdl_ctrl_modifiers);
         if (!SDL_PushEvent(&paste)) return sdlFail("SDL_PushEvent");
         var copy = keyboardEvent(input_policy.SDL_SCANCODE_C, true, input_policy.sdl_ctrl_modifiers);
@@ -6299,7 +6361,7 @@ fn runEpxlInteractiveFrontend(
     }
     var scrollbar_drag: input_policy.ScrollbarDragTracker = .{};
     var monitor_refresh_needed = false;
-    try pollEpxlInteractiveInput(delivery, &scrollbar_drag, config, window, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty, &monitor_refresh_needed);
+    try pollEpxlInteractiveInput(delivery, &scrollbar_drag, config, window, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty, &primary_paste_queued, &monitor_refresh_needed);
     try deliveryAllowed(delivery, negotiated.effective);
 
     var quit = false;
@@ -6358,7 +6420,7 @@ fn runEpxlInteractiveFrontend(
         }
         try live.writeControl(&writer.interface, .{ .kind = .ack, .sequence = envelope.sequence });
         try writer.interface.flush();
-        pollEpxlInteractiveInput(delivery, &scrollbar_drag, config, window, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty, &monitor_refresh_needed) catch |err| switch (err) {
+        pollEpxlInteractiveInput(delivery, &scrollbar_drag, config, window, &retained_frame, &scene, &frame_gate, negotiated.effective, &input_dirty, &primary_paste_queued, &monitor_refresh_needed) catch |err| switch (err) {
             error.InteractiveQuit => quit = true,
             else => return err,
         };
@@ -6412,6 +6474,21 @@ fn runEpxlInteractiveFrontend(
                         SDL_free(owned);
                     }
                 }
+                if (negotiated.effective.contains(.clipboard_primary_selection_bounded)) {
+                    try setPlatformPrimarySelection(clipboard_text);
+                    if (SDL_GetPrimarySelectionText()) |owned| {
+                        primary_copy_exact = std.mem.eql(u8, std.mem.span(owned), "Emacs 你好");
+                        SDL_free(owned);
+                    }
+                    if (config.synthetic_primary_selection) {
+                        var primary_paste = keyboardEvent(
+                            input_policy.SDL_SCANCODE_INSERT,
+                            true,
+                            0x0001,
+                        );
+                        if (!SDL_PushEvent(&primary_paste)) return sdlFail("SDL_PushEvent");
+                    }
+                }
                 frame_gate.dirty = true;
             }
         }
@@ -6443,6 +6520,19 @@ fn runEpxlInteractiveFrontend(
         if (!copy_applied or !copy_unicode_exact) return error.ClipboardCopyNotApplied;
         std.debug.print(
             "sdl3-clipboard-unicode-smoke: {{\"kind\":\"sdl3-clipboard-unicode-smoke\",\"paste\":\"你好\",\"marker\":\"visible ASCII text\",\"copy\":\"Emacs 你好\",\"copy_bytes_exact\":true,\"result\":\"pass\"}}\n",
+            .{},
+        );
+    }
+    if (config.mode == .emacs_primary_selection) {
+        if (!copy_applied or !copy_unicode_exact or !primary_copy_exact)
+            return error.PrimarySelectionCopyNotApplied;
+        const primary_pasted = sceneHasText(&scene, "你好") and
+            sceneHasText(&scene, "Emacs 你好");
+        if (!primary_paste_queued) return error.PrimarySelectionPasteNotQueued;
+        if (!primary_pasted)
+            return error.PrimarySelectionPasteNotApplied;
+        std.debug.print(
+            "sdl3-primary-selection-smoke: {{\"kind\":\"sdl3-primary-selection-smoke\",\"copy\":\"Emacs 你好\",\"first_line\":\"你好Emacs 你好\",\"round_trip\":true,\"result\":\"pass\"}}\n",
             .{},
         );
     }
@@ -7931,8 +8021,12 @@ fn runEmacsEpxlSession(
             else if (config.pointer_generic_publisher)
                 "--pointer-generic-publisher"
             else
-                "--clipboard-ascii-publisher",
-            if (config.pointer_middle_paste_publisher) "--pointer-middle-paste-publisher" else "--clipboard-ascii-publisher",
+                "--interactive-publisher",
+            if (config.primary_selection_publisher)
+                "--primary-selection-publisher"
+            else
+                "--interactive-publisher",
+            if (config.pointer_middle_paste_publisher) "--pointer-middle-paste-publisher" else "--interactive-publisher",
             "--interactive-publisher",
         }
     else
@@ -7960,6 +8054,7 @@ fn runEmacsEpxlSession(
     var loaded: ?frontend.Scene = null;
     errdefer if (loaded != null) loaded.?.deinit();
     if (config.mode == .emacs_epxl_interactive or config.mode == .emacs_clipboard_unicode or
+        config.mode == .emacs_primary_selection or
         config.mode == .emacs_pointer_selection or
         config.mode == .emacs_pointer_middle_paste)
     {
@@ -8170,10 +8265,21 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.auto_key = .backspace;
         } else if (std.mem.eql(u8, arg, "--clipboard-smoke")) {
             config.mode = .clipboard;
+        } else if (std.mem.eql(u8, arg, "--primary-selection-smoke")) {
+            config.mode = .primary_selection;
+        } else if (std.mem.eql(u8, arg, "--primary-selection-publisher")) {
+            config.primary_selection_publisher = true;
         } else if (std.mem.eql(u8, arg, "--clipboard-unicode-smoke")) {
             config.mode = .emacs_clipboard_unicode;
             config.interactive_publisher = true;
             config.synthetic_clipboard_unicode = true;
+            config.clipboard_unicode_publisher = true;
+        } else if (std.mem.eql(u8, arg, "--emacs-primary-selection-smoke")) {
+            config.mode = .emacs_primary_selection;
+            config.interactive_publisher = true;
+            config.synthetic_clipboard_unicode = true;
+            config.synthetic_primary_selection = true;
+            config.primary_selection_publisher = true;
             config.clipboard_unicode_publisher = true;
         } else if (std.mem.eql(u8, arg, "--pointer-selection-publisher")) {
             config.pointer_selection_publisher = true;
@@ -8260,6 +8366,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     if (config.mode == .clipboard) {
         try runClipboardSmoke();
+        return;
+    }
+
+    if (config.mode == .primary_selection) {
+        try runPrimarySelectionSmoke();
         return;
     }
 
@@ -8477,6 +8588,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .focus_window_translation => unreachable,
         .emacs_interactive => unreachable,
         .clipboard => unreachable,
+        .primary_selection => unreachable,
         .emacs_epxl => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_reconnect => try runEmacsEpxlSession(gpa, io, &config, 2),
         .emacs_epxl_recovery => try runEmacsEpxlSession(gpa, io, &config, 2),
@@ -8489,6 +8601,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .emacs_epxl_edit => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_sequence => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_clipboard_unicode => try runEmacsEpxlSession(gpa, io, &config, 1),
+        .emacs_primary_selection => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_pointer_selection,
         .emacs_pointer_middle_paste,
         => try runEmacsEpxlSession(gpa, io, &config, 1),
