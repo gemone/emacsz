@@ -379,6 +379,12 @@ command interpreter. The split smoke proves two live Emacs windows are observed
 and rendered. This remains bounded command compatibility, not general keymap or
 prefix-sequence support.
 
+W8h-e proves side-by-side navigation with `C-x 3`, `C-x o`, and bounded ASCII
+insertion. Its smoke drains queued intents after the preceding intent's ACK and
+a frame update, so a suppressed local prefix cannot stall the next suffix. The
+forced drain is navigation-specific; one-in-flight ordering, ACK-loss retry,
+and capability checks remain unchanged.
+
 W11a implements the first clipboard capture path: Ctrl+V reads SDL clipboard
 text, validates it as a bounded one-line UTF-8 payload, and frees SDL-owned
 text on every path. W11c adds optional `clipboard.text_unicode`; without it,

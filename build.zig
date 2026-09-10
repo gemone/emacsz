@@ -1998,6 +1998,29 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_window_split_step.dependOn(&run_sdl3_window_split.step);
 
+        const run_sdl3_window_navigation = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-window-navigation-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=6000",
+        });
+        run_sdl3_window_navigation.setCwd(b.path("."));
+        run_sdl3_window_navigation.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_window_navigation.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_window_navigation.step.dependOn(step);
+        const sdl3_window_navigation_step = b.step(
+            "sdl3-emacs-window-navigation-smoke",
+            "Execute C-x 3, select the other window, insert text, and verify both live windows",
+        );
+        sdl3_window_navigation_step.dependOn(&run_sdl3_window_navigation.step);
+
         const run_sdl3_monitor_change = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/proto-ui-sdl3",
             "--emacs-monitor-change-smoke",

@@ -369,7 +369,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .input_key_bounded, .status = .degraded, .evidence = "sdl3-epxl-edit-smoke" },
     .{ .feature = .input_key_full_v2, .status = .degraded, .evidence = "sdl3-epxl-key-v2-smoke" },
     .{ .feature = .input_key_command_v1, .status = .degraded, .evidence = "sdl3-key-modifier-smoke" },
-    .{ .feature = .input_composite_key_command_v1, .status = .degraded, .evidence = "sdl3-emacs-window-split-smoke observes C-x 2 from the exact C-x 1/2/3/o whitelist" },
+    .{ .feature = .input_composite_key_command_v1, .status = .degraded, .evidence = "sdl3-emacs-window-split-smoke observes C-x 2; sdl3-emacs-window-navigation-smoke observes C-x 3 and C-x o from the exact whitelist" },
     .{ .feature = .input_pointer_bounded, .status = .degraded, .evidence = "sdl3-pointer-smoke" },
     .{ .feature = .input_pointer_v2, .status = .degraded, .evidence = "sdl3-pointer-v2-smoke" },
     .{ .feature = .input_pointer_selection_left, .status = .degraded, .evidence = "sdl3-pointer-selection-smoke" },

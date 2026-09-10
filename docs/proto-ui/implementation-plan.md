@@ -2044,7 +2044,7 @@ Implemented:
    registration parity remain pending. Evidence is `sdl3-key-modifier-smoke`;
    both required smokes fail closed when the capability is absent.
 
-### W8h-d — Bounded `C-x` window commands and split observation (in review)
+### W8h-d — Bounded `C-x` window commands and split observation (approved)
 
 Goal: exercise a real Emacs window-layout command from the SDL3 bridge without
 forwarding arbitrary prefix sequences or claiming general keymap parity.
@@ -2080,6 +2080,42 @@ zig build -Dproto-ui=true proto-ui-unit --summary all
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-window-split-smoke --summary all
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-key-modifier-smoke --summary all
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-key-v2-smoke --summary all
+```
+
+### W8h-e — Horizontal split navigation and queued command drain (in review)
+
+Goal: prove that two side-by-side live Emacs windows can be selected and edited
+through the bounded command bridge while preserving one-in-flight wire order.
+
+1. Add `sdl3-emacs-window-navigation-smoke` using only the existing exact
+   `C-x 3` and `C-x o` whitelist entries followed by bounded ASCII `Z`.
+2. Require ASCII text, full-key, single-command, and composite-command
+   capabilities before queuing any navigation intent.
+3. Assert a two-window horizontal layout with one window at x=0, one at x>0,
+   equal heights, and positive widths.
+4. Assert the active cursor is in the right window at column 8 after `C-x o`
+   and insertion, and that the selected window's first visible line begins with
+   `Z`. Both windows share the same buffer, so both observe the inserted text.
+5. In this smoke only, drain queued intents after the preceding intent's ACK
+   when a frame update arrives, even when a suppressed prefix causes no Emacs
+   fact change. This prevents a local `C-x` half-command from stalling the next
+   whitelisted suffix while preserving one-in-flight EPXL ordering. ACK-loss
+   retry still keeps the pending intent and remaining queue in order.
+
+Non-goals: no arbitrary prefix chains, keyboard quit, window deletion in this
+smoke, general keymap execution, IME, redisplay-owned hierarchy, or
+`output_proto` activation.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-window-navigation-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-window-split-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-key-modifier-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-key-v2-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-smoke --summary all
+zig build -Dproto-ui=true proto-ui-boundary --summary all
 ```
 
 ### W9n — Backward-compatible pointer event v2 transport (approved)
