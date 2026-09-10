@@ -452,6 +452,7 @@ const Config = struct {
     synthetic_focus_events: bool = false,
     synthetic_window_resize: bool = false,
     synthetic_window_move: bool = false,
+    synthetic_window_maximize: bool = false,
     synthetic_monitor_change: bool = false,
     force_frontend_failure: bool = false,
     synthetic_pointer: bool = false,
@@ -6326,6 +6327,15 @@ fn runEpxlInteractiveFrontend(
         );
         if (!SDL_PushEvent(&moved)) return sdlFail("SDL_PushEvent");
     }
+    if (config.synthetic_window_maximize) {
+        var maximized = windowEvent(
+            input_policy.SDL_EVENT_WINDOW_MAXIMIZED,
+            SDL_GetWindowID(window),
+            0,
+            0,
+        );
+        if (!SDL_PushEvent(&maximized)) return sdlFail("SDL_PushEvent");
+    }
 
     var expected_monitor_id: SDL_DisplayID = 0;
     var expected_bounds: SDL_Rect = undefined;
@@ -6464,7 +6474,10 @@ fn runEpxlInteractiveFrontend(
                         const move_matches = request.kind == .move and
                             config.synthetic_window_move and
                             request.x == 32 and request.y == 24;
-                        if (resize_matches or move_matches)
+                        const maximize_matches = request.kind == .maximize and
+                            config.synthetic_window_maximize and
+                            request.sdl_window_id == SDL_GetWindowID(window);
+                        if (resize_matches or move_matches or maximize_matches)
                             window_request_delivered = true;
                     },
                     .monitor => |monitor| delivered_monitor = monitor,
@@ -6649,6 +6662,15 @@ fn runEpxlInteractiveFrontend(
             return error.WindowMoveNotApplied;
         std.debug.print(
             "sdl3-window-move-roundtrip-smoke: {{\"kind\":\"sdl3-window-move-roundtrip-smoke\",\"x\":32,\"y\":24,\"emacs_applied\":true,\"result\":\"pass\"}}\n",
+            .{},
+        );
+    }
+    if (config.synthetic_window_maximize) {
+        if (!window_request_delivered or
+            !sceneHasText(&scene, "MaximizeApplied"))
+            return error.WindowMaximizeNotApplied;
+        std.debug.print(
+            "sdl3-window-maximize-roundtrip-smoke: {{\"kind\":\"sdl3-window-maximize-roundtrip-smoke\",\"fullscreen\":\"maximized\",\"emacs_parameter_accepted\":true,\"result\":\"pass\"}}\n",
             .{},
         );
     }
@@ -8331,6 +8353,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
             config.synthetic_window_move = true;
+        } else if (std.mem.eql(u8, arg, "--emacs-window-maximize-roundtrip-smoke")) {
+            config.mode = .emacs_epxl_interactive;
+            config.interactive_publisher = true;
+            config.synthetic_window_maximize = true;
         } else if (std.mem.eql(u8, arg, "--interactive-publisher")) {
             config.interactive_publisher = true;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-input-smoke")) {

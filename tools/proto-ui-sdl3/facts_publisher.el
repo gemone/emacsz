@@ -35,6 +35,7 @@
 (defvar proto-ui--dpi-observed nil)
 (defvar proto-ui--window-resize-observed nil)
 (defvar proto-ui--window-move-observed nil)
+(defvar proto-ui--window-maximize-observed nil)
 
 (defconst proto-ui--module-path (getenv "PROTO_UI_MODULE_PATH"))
 (defconst proto-ui--local-compat
@@ -415,6 +416,19 @@
               (set-window-point window (point)))
             (setq proto-ui--window-move-observed event)
             (redisplay frame))
+        (error nil)))
+     ((and (string= request "maximize") (frame-live-p frame))
+      (condition-case nil
+          (progn
+            (set-frame-parameter frame 'fullscreen 'maximized)
+            (redisplay frame)
+            (when (eq (frame-parameter frame 'fullscreen) 'maximized)
+              (with-current-buffer (window-buffer window)
+                (goto-char (point-min))
+                (unless (looking-at-p "MaximizeApplied")
+                  (insert "MaximizeApplied "))
+                (set-window-point window (point)))
+              (setq proto-ui--window-maximize-observed event)))
         (error nil))))))
 
 (defun proto-ui--wheel-action (value)
