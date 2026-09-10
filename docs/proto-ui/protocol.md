@@ -2254,9 +2254,9 @@ state values and any nonzero reserved byte.
 
 A new frame starts visible and unfocused. Changing to hidden or iconified
 clears focus. Setting focus requires visibility; clearing focus is valid in
-every visibility state. A stale or destroyed generation is invalid. These
-contracts currently stop at the adapter/frontend scene; no runtime Emacs focus
-or visibility round trip is claimed.
+every visibility state. A stale or destroyed generation is invalid. The bounded
+diagnostic publisher can project a one-frame focused fact from Emacs; visibility
+round trips, OS focus control, and multi-frame runtime parity remain unclaimed.
 
 #### Frame title state
 
@@ -2691,8 +2691,10 @@ geometry and resize cannot carry position. Truncated, trailing, contradictory,
 reserved, and zero-identity payloads reject before queue mutation. These
 events are translated by the SDL frontend only when `platform.focus_window_events`
 is effective. They use the ordinary one-in-flight EPXL reverse-input sequence
-and ACK discipline; the smoke intentionally does not destroy Emacs in response
-to a synthetic close request.
+and ACK discipline. The bounded Emacs publisher records gained/lost focus as a
+public focused fact for one frame and calls public frame selection on gain; OS
+focus control and multi-frame selection parity remain pending. The window-request
+smoke intentionally does not destroy Emacs in response to a synthetic close request.
 
 #### Security and limits
 

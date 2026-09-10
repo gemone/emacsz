@@ -449,6 +449,7 @@ const Config = struct {
     interactive_synthetic: bool = false,
     title_smoke: bool = false,
     synthetic_theme_event: bool = false,
+    synthetic_focus_events: bool = false,
     synthetic_monitor_change: bool = false,
     force_frontend_failure: bool = false,
     synthetic_pointer: bool = false,
@@ -6219,6 +6220,10 @@ fn runEpxlInteractiveFrontend(
     errdefer scene.deinit();
     var scrollbar_event_delivered = false;
     var title_applied = false;
+    var focus_gained_delivered = false;
+    var focus_lost_delivered = false;
+    var observed_focus_gained = false;
+    var observed_focus_transition = false;
     var theme_event_delivered = false;
     var delivered_monitor: ?protocol.MonitorEvent = null;
     var delivered_dpi: ?protocol.DpiEvent = null;
@@ -6292,6 +6297,13 @@ fn runEpxlInteractiveFrontend(
         var theme_changed: SDL_Event = std.mem.zeroes(SDL_Event);
         theme_changed.type = SDL_EVENT_SYSTEM_THEME_CHANGED;
         if (!SDL_PushEvent(&theme_changed)) return sdlFail("SDL_PushEvent");
+    }
+    if (config.synthetic_focus_events) {
+        const window_id = SDL_GetWindowID(window);
+        var focus_gained = windowEvent(input_policy.SDL_EVENT_WINDOW_FOCUS_GAINED, window_id, 0, 0);
+        if (!SDL_PushEvent(&focus_gained)) return sdlFail("SDL_PushEvent");
+        var focus_lost = windowEvent(input_policy.SDL_EVENT_WINDOW_FOCUS_LOST, window_id, 0, 0);
+        if (!SDL_PushEvent(&focus_lost)) return sdlFail("SDL_PushEvent");
     }
 
     var expected_monitor_id: SDL_DisplayID = 0;
@@ -6375,6 +6387,15 @@ fn runEpxlInteractiveFrontend(
         defer gpa.free(message);
         const envelope = (try protocol.decodeEnvelope(message)).envelope;
         try scene.apply(message);
+        if (config.synthetic_focus_events) {
+            if (scene.frames.lookup(1)) |frame| {
+                if (frame.focused and !observed_focus_gained) {
+                    observed_focus_gained = true;
+                } else if (observed_focus_gained and !frame.focused) {
+                    observed_focus_transition = true;
+                }
+            }
+        }
         if (envelope.message_type == protocol.Message.frame_title) {
             if (scene.title) |title| {
                 SDL_SetWindowTitle(window, title.ptr);
@@ -6411,6 +6432,10 @@ fn runEpxlInteractiveFrontend(
                         horizontal_wheel_ticks_delivered += @abs(wheel.x);
                     },
                     .scrollbar_event => scrollbar_event_delivered = true,
+                    .focus => |focus| switch (focus.phase) {
+                        .gained => focus_gained_delivered = true,
+                        .lost => focus_lost_delivered = true,
+                    },
                     .monitor => |monitor| delivered_monitor = monitor,
                     .dpi => |dpi| delivered_dpi = dpi,
                     .theme => theme_event_delivered = true,
@@ -6533,6 +6558,17 @@ fn runEpxlInteractiveFrontend(
             return error.PrimarySelectionPasteNotApplied;
         std.debug.print(
             "sdl3-primary-selection-smoke: {{\"kind\":\"sdl3-primary-selection-smoke\",\"copy\":\"Emacs 你好\",\"first_line\":\"你好Emacs 你好\",\"round_trip\":true,\"result\":\"pass\"}}\n",
+            .{},
+        );
+    }
+    if (config.synthetic_focus_events) {
+        if (!focus_gained_delivered or !focus_lost_delivered or
+            !observed_focus_gained or !observed_focus_transition)
+            return error.FocusEventNotDelivered;
+        const frame = scene.frames.lookup(1) orelse return error.FrameNotActive;
+        if (frame.focused) return error.FocusStateNotObserved;
+        std.debug.print(
+            "sdl3-focus-roundtrip-smoke: {{\"kind\":\"sdl3-focus-roundtrip-smoke\",\"gained_then_lost\":true,\"emacs_focused\":false,\"result\":\"pass\"}}\n",
             .{},
         );
     }
@@ -8234,6 +8270,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
             config.interactive_synthetic = true;
+        } else if (std.mem.eql(u8, arg, "--emacs-focus-roundtrip-smoke")) {
+            config.mode = .emacs_epxl_interactive;
+            config.interactive_publisher = true;
+            config.synthetic_focus_events = true;
         } else if (std.mem.eql(u8, arg, "--interactive-publisher")) {
             config.interactive_publisher = true;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-input-smoke")) {

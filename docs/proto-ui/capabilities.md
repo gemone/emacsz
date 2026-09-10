@@ -214,7 +214,7 @@ Priorities:
 | Terminal creation | `create_terminal(output_pgtk)` | `create_terminal(output_proto)` | P0 | Pending | Existing-frame observation is not terminal creation; no `output_proto` terminal |
 | Terminal deletion | PGTK terminal hooks | EUP session/frame teardown | P0 | Pending | Smoke process cleanup is not terminal deletion; no teardown contract |
 | Graphic frame predicate | `output_pgtk` frame | `output_proto` frame | P0 | Pending | No `output_proto`; W12/W16 P0 gap |
-| Focus frame | GDK focus | Frontend focus + core state | P0 | Degraded | W12d strict EUP focus state contract; no frame-focus event round trip |
+| Focus frame | GDK focus | Frontend focus + core state | P0 | Degraded | Strict EUP focus state plus one-frame SDL gained/lost round trip through public Emacs selection and focused fact; no OS focus control or multi-frame parity |
 | Multi-frame | GTK windows | Multiple SDL windows | P1 | Pending | Single SDL facts window and one EUP frame profile |
 | Monitor attributes | GDK monitor | SDL monitor events | P1 | Degraded | EUP `FRAME_MONITOR` v1 owns generation-qualified identity, primary flag, and bounds; negotiated `MONITOR_EVENT` EPXL transport records current SDL bounds, while migration and redisplay adaptation remain pending |
 | Scale factor | GDK scale | SDL display scale | P1 | Degraded | `FRAME_SCALE` v1 owns generation-qualified scale state, SDL reports per-window scale, and negotiated `DPI_EVENT` records scale observations; redisplay still consumes fixed `FRAME_UPDATE` values |
@@ -325,7 +325,7 @@ Priorities:
 | Touch | EXP | Pending | W12/W16 PGTK parity gate not met |
 | Pen | EXP | Pending | W12/W16 PGTK parity gate not met |
 | Gestures | EXP | Pending | W12/W16 PGTK parity gate not met |
-| Focus enter/leave | P0 | Degraded | Negotiated strict FOCUS_EVENT observation; no Emacs core focus mutation (`sdl3-focus-window-smoke`) |
+| Focus enter/leave | P0 | Degraded | Negotiated strict FOCUS_EVENT observation with one-frame Emacs focused-fact round trip (`sdl3-focus-roundtrip-smoke`); no OS focus control or multi-frame parity |
 | Window requests | P1 | Degraded | Negotiated strict close/resize/move/fullscreen/maximize/minimize/restore intents; no host contract or runtime mutation (`sdl3-focus-window-smoke`) |
 | IME activation | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Preedit | P1 | Degraded | EUP start/update/end Scene state with bounded UTF-8 text, cursor offset, selected length, and bounded ASCII SDL overlay; platform input, Unicode/font rendering, and PGTK parity pending |

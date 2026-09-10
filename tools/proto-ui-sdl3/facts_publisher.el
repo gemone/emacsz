@@ -29,6 +29,7 @@
 (require 'json)
 
 (defvar proto-ui--bounded-selection nil)
+(defvar proto-ui--focus-observed nil)
 (defvar proto-ui--theme-observed nil)
 (defvar proto-ui--monitor-observed nil)
 (defvar proto-ui--dpi-observed nil)
@@ -347,6 +348,19 @@
     (when (and (plist-get event :current) (numberp (plist-get event :monitor_id)))
       (setq proto-ui--monitor-observed event))))
 
+(defun proto-ui--focus-action (value)
+  (let* ((event (condition-case nil
+                  (proto-ui--json-plist value)
+                (error nil)))
+         (phase (plist-get event :phase))
+         (frame (selected-frame)))
+    (when (member phase '("focus-gained" "focus-lost"))
+      (setq proto-ui--focus-observed (string= phase "focus-gained"))
+      (when (and (string= phase "focus-gained") (frame-live-p frame))
+        (condition-case nil
+            (select-frame frame 'norecord)
+          (error nil))))))
+
 (defun proto-ui--dpi-action (value)
   (let ((event (condition-case nil
                   (json-parse-string value :object-type 'plist)
@@ -399,6 +413,8 @@
         (proto-ui--monitor-action value))
        ((and (= (length action) 3) (string= kind "dpi"))
         (proto-ui--dpi-action value))
+       ((and (= (length action) 3) (string= kind "platform-focus"))
+        (proto-ui--focus-action value))
        ((and (= (length action) 3) (string= kind "wheel"))
         (proto-ui--wheel-action value))
        ((and (= (length action) 3) (string= kind "pointer-v2"))
@@ -452,7 +468,8 @@
                       :text (vconcat lines)
                       :cursor cursor
                       :window_start_line start-line
-                      :window_visible_lines (length lines))))
+                      :window_visible_lines (length lines)
+                      :focused (if proto-ui--focus-observed t :false))))
       (when title (plist-put wire :title title))
       (with-temp-file temporary-path
         (insert (json-serialize wire))))

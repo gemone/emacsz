@@ -13,6 +13,7 @@ pub const FrameFacts = struct {
     frame_height: i32,
     window_width: i32,
     window_height: i32,
+    focused: bool = false,
 };
 
 pub const CursorFacts = struct {
@@ -133,6 +134,7 @@ pub const Snapshot = struct {
     cursor: CursorFacts = .{ .line = 0, .column = 0 },
     viewport: ViewportFacts = .{ .start_line = 1, .line_count = 0 },
     title: ?[]const u8 = null,
+    focused: bool = false,
 
     pub fn eql(left: Snapshot, right: Snapshot) bool {
         return factsEql(left.facts, right.facts) and left.text.eql(right.text) and
@@ -142,7 +144,8 @@ pub const Snapshot = struct {
             std.meta.eql(left.viewport, right.viewport) and
             ((left.title == null and right.title == null) or
                 (left.title != null and right.title != null and
-                    std.mem.eql(u8, left.title.?, right.title.?)));
+                    std.mem.eql(u8, left.title.?, right.title.?))) and
+            left.focused == right.focused;
     }
 
     pub fn deinit(self: *Snapshot, gpa: std.mem.Allocator) void {
@@ -179,6 +182,7 @@ const SnapshotWire = struct {
     window_start_line: i32 = 1,
     window_visible_lines: i32 = 0,
     title: ?[]const u8 = null,
+    focused: bool = false,
 };
 
 const WindowStateWire = struct {
@@ -469,6 +473,7 @@ pub fn parseSnapshot(gpa: std.mem.Allocator, bytes: []const u8) !Snapshot {
             .frame_height = wire.frame_height,
             .window_width = wire.window_width,
             .window_height = wire.window_height,
+            .focused = wire.focused,
         },
         .windows = windows,
         .contents = contents,
@@ -476,6 +481,7 @@ pub fn parseSnapshot(gpa: std.mem.Allocator, bytes: []const u8) !Snapshot {
         .cursor = wire.cursor,
         .viewport = viewport,
         .title = if (wire.title) |title| try gpa.dupe(u8, title) else null,
+        .focused = wire.focused,
     };
 }
 
@@ -1112,12 +1118,42 @@ pub fn appendWireSnapshotWindows(
         sequence += 1;
     }
 
+    const observed_focus = if (scene.frames.lookup(1)) |frame| frame.focused else false;
+    if (facts.focused != observed_focus) {
+        var focus_payload: std.ArrayList(u8) = .empty;
+        defer focus_payload.deinit(gpa);
+        try protocol.encodeFrameFocus(gpa, .{
+            .frame_id = 1,
+            .frame_generation = 1,
+            .focused = facts.focused,
+        }, &focus_payload);
+        var focus_message: std.ArrayList(u8) = .empty;
+        defer focus_message.deinit(gpa);
+        try protocol.encodeEnvelope(gpa, .{
+            .flags = 0,
+            .message_type = protocol.Message.frame_focus,
+            .sequence = sequence,
+            .ack_sequence = 0,
+            .session_id = 0x1001,
+            .frame_id = 1,
+            .timestamp_ns = sequence,
+        }, focus_payload.items, &focus_message);
+        const retained_focus = try gpa.dupe(u8, focus_message.items);
+        messages.append(gpa, retained_focus) catch |err| {
+            gpa.free(retained_focus);
+            return err;
+        };
+        try scene.apply(retained_focus);
+        sequence += 1;
+    }
+
     const update_sequence = sequence;
     const snapshot_wire: SnapshotWire = .{
         .frame_width = facts.frame_width,
         .frame_height = facts.frame_height,
         .window_width = facts.window_width,
         .window_height = facts.window_height,
+        .focused = facts.focused,
     };
     var selected: WindowFact = .{
         .id = 1001,
@@ -1452,6 +1488,24 @@ test "wire snapshots advance contiguous scene sequences" {
     try std.testing.expectEqual(@as(usize, 3), messages.items.len);
     try std.testing.expectEqual(@as(u64, 2), scene.stats.frame_updates);
     try std.testing.expectEqual(@as(u64, 4), scene.next_sequence.?);
+}
+
+test "focused public fact wires FRAME_FOCUS" {
+    const a = std.testing.allocator;
+    var focused = try parseSnapshot(a, "{\"frame_width\":120,\"frame_height\":90,\"window_width\":110,\"window_height\":75,\"focused\":true}");
+    defer focused.deinit(a);
+    try std.testing.expect(focused.focused);
+    try std.testing.expect(focused.facts.focused);
+    var messages: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (messages.items) |message| a.free(message);
+        messages.deinit(a);
+    }
+    var scene = frontend.Scene.init(a);
+    defer scene.deinit();
+    try appendWireSnapshot(a, focused.facts, &.{}, .{ .line = 1, .column = 0 }, .{ .start_line = 1, .line_count = 0 }, &scene, &messages);
+    try std.testing.expectEqual(@as(usize, 3), messages.items.len);
+    try std.testing.expect(scene.frames.lookup(1).?.focused);
 }
 
 test "title facts parse and wire through string plus frame title" {
