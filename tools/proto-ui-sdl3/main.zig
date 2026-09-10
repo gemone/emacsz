@@ -454,6 +454,7 @@ const Config = struct {
     synthetic_window_move: bool = false,
     synthetic_window_maximize: bool = false,
     synthetic_window_fullscreen: bool = false,
+    selection_owner_smoke: bool = false,
     synthetic_monitor_change: bool = false,
     force_frontend_failure: bool = false,
     synthetic_pointer: bool = false,
@@ -1539,6 +1540,66 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
                 const envelope = (try protocol.decodeEnvelope(message)).envelope;
                 try acks.markSent(envelope.sequence);
                 try live.writeFrame(&writer.interface, message);
+                try writer.interface.flush();
+                try awaitFrameAck(gpa, io, &reader, &writer, envelope.sequence, input_path, &input_sequence, envelope.session_id, envelope.frame_id, negotiated.effective);
+                try acks.ack(envelope.sequence);
+            }
+        }
+        if (config.selection_owner_smoke and
+            negotiated.effective.contains(.selection_primary_ownership_v1))
+        {
+            const offers = [_]protocol.SelectionOffer{
+                .{ .target = "UTF8_STRING", .priority = 2 },
+                .{ .target = "STRING", .priority = 1 },
+            };
+            const sequence = scene.next_sequence.?;
+            var owner_payload: std.ArrayList(u8) = .empty;
+            defer owner_payload.deinit(gpa);
+            try protocol.encodeSelectionOwnerSet(gpa, .{
+                .kind = .primary,
+                .generation = 1,
+                .flags = protocol.SelectionOwnerFlags.export_to_platform |
+                    protocol.SelectionOwnerFlags.notify_on_loss,
+                .offers = offers[0..],
+            }, &owner_payload);
+            var owner_message: std.ArrayList(u8) = .empty;
+            defer owner_message.deinit(gpa);
+            try protocol.encodeEnvelope(gpa, .{
+                .flags = 0,
+                .message_type = protocol.Message.selection_owner_set,
+                .sequence = sequence,
+                .ack_sequence = 0,
+                .session_id = capability.session_id,
+                .frame_id = 1,
+                .timestamp_ns = sequence,
+            }, owner_payload.items, &owner_message);
+            try scene.apply(owner_message.items);
+
+            const clear_sequence = sequence + 1;
+            var clear_payload: std.ArrayList(u8) = .empty;
+            defer clear_payload.deinit(gpa);
+            try protocol.encodeSelectionClear(gpa, .{
+                .generation = 1,
+                .kind = .primary,
+            }, &clear_payload);
+            var clear_message: std.ArrayList(u8) = .empty;
+            defer clear_message.deinit(gpa);
+            try protocol.encodeEnvelope(gpa, .{
+                .flags = 0,
+                .message_type = protocol.Message.selection_owner_clear,
+                .sequence = clear_sequence,
+                .ack_sequence = 0,
+                .session_id = capability.session_id,
+                .frame_id = 1,
+                .timestamp_ns = clear_sequence,
+            }, clear_payload.items, &clear_message);
+            try scene.apply(clear_message.items);
+
+            const messages = [_]std.ArrayList(u8){ owner_message, clear_message };
+            for (messages) |message| {
+                const envelope = (try protocol.decodeEnvelope(message.items)).envelope;
+                try acks.markSent(envelope.sequence);
+                try live.writeFrame(&writer.interface, message.items);
                 try writer.interface.flush();
                 try awaitFrameAck(gpa, io, &reader, &writer, envelope.sequence, input_path, &input_sequence, envelope.session_id, envelope.frame_id, negotiated.effective);
                 try acks.ack(envelope.sequence);
@@ -6230,6 +6291,8 @@ fn runEpxlInteractiveFrontend(
     var observed_focus_transition = false;
     var window_request_delivered = false;
     var fullscreen_request_delivered = false;
+    var selection_owner_set_seen = false;
+    var selection_owner_clear_seen = false;
     var theme_event_delivered = false;
     var delivered_monitor: ?protocol.MonitorEvent = null;
     var delivered_dpi: ?protocol.DpiEvent = null;
@@ -6252,6 +6315,19 @@ fn runEpxlInteractiveFrontend(
                 defer gpa.free(message);
                 const envelope = (try protocol.decodeEnvelope(message)).envelope;
                 try scene.apply(message);
+                if (config.selection_owner_smoke) {
+                    if (envelope.message_type == protocol.Message.selection_owner_set and
+                        scene.selection_kind != null and
+                        scene.selection_generation == 1)
+                    {
+                        selection_owner_set_seen = true;
+                    }
+                    if (envelope.message_type == protocol.Message.selection_owner_clear and
+                        scene.selection_kind == null)
+                    {
+                        selection_owner_clear_seen = true;
+                    }
+                }
                 if (envelope.message_type == protocol.Message.frame_title) {
                     if (scene.title) |title| {
                         SDL_SetWindowTitle(window, title.ptr);
@@ -6629,6 +6705,14 @@ fn runEpxlInteractiveFrontend(
         if (frame.focused) return error.FocusStateNotObserved;
         std.debug.print(
             "sdl3-focus-roundtrip-smoke: {{\"kind\":\"sdl3-focus-roundtrip-smoke\",\"gained_then_lost\":true,\"emacs_focused\":false,\"result\":\"pass\"}}\n",
+            .{},
+        );
+    }
+    if (config.selection_owner_smoke) {
+        if (!selection_owner_set_seen or !selection_owner_clear_seen)
+            return error.SelectionOwnershipTransitionNotObserved;
+        std.debug.print(
+            "sdl3-selection-owner-smoke: {{\"kind\":\"sdl3-selection-owner-smoke\",\"selection\":\"primary\",\"targets\":[\"UTF8_STRING\",\"STRING\"],\"generation\":1,\"set_and_clear\":true,\"result\":\"pass\"}}\n",
             .{},
         );
     }
@@ -8159,6 +8243,7 @@ fn runEmacsEpxlSession(
             else
                 "--interactive-publisher",
             if (config.pointer_middle_paste_publisher) "--pointer-middle-paste-publisher" else "--interactive-publisher",
+            if (config.selection_owner_smoke) "--selection-owner-smoke" else "--interactive-publisher",
             "--interactive-publisher",
         }
     else
@@ -8386,8 +8471,14 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
             config.synthetic_window_fullscreen = true;
+        } else if (std.mem.eql(u8, arg, "--emacs-selection-owner-smoke")) {
+            config.mode = .emacs_epxl_interactive;
+            config.interactive_publisher = true;
+            config.selection_owner_smoke = true;
         } else if (std.mem.eql(u8, arg, "--interactive-publisher")) {
             config.interactive_publisher = true;
+        } else if (std.mem.eql(u8, arg, "--selection-owner-smoke")) {
+            config.selection_owner_smoke = true;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-input-smoke")) {
             config.mode = .emacs_epxl_input;
             config.auto_input = "X";

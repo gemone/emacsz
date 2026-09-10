@@ -1622,7 +1622,8 @@ not request/data transfer.  `SELECTION_REQUEST` (`0x0803`), `SELECTION_DATA` (`0
 primary owner.  A request must name a target offered by the current generation.
 Data/error must match the waiting request ID and generation; data stores at most
 4096 bytes and error stores a bounded UTF-8 reason.  A newer owner set, clear,
-or loss invalidates the transfer.  Platform negotiation, target conversion, and
+or loss invalidates the transfer.  Negotiated `selection.primary_ownership_v1` can transport bounded set/clear
+ownership transitions over EPXL. Platform negotiation, target conversion, and
 Emacs/core application remain pending.
 
 ### Wheel event fields

@@ -2333,6 +2333,29 @@ pub fn build(b: *std.Build) void {
             "Apply a bounded SDL fullscreen request through public Emacs APIs",
         );
         sdl3_window_fullscreen_roundtrip_step.dependOn(&run_sdl3_window_fullscreen_roundtrip.step);
+
+        const run_sdl3_selection_owner = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--emacs-selection-owner-smoke",
+            "--auto-quit-ms=5000",
+        });
+        run_sdl3_selection_owner.setCwd(b.path("."));
+        run_sdl3_selection_owner.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_selection_owner.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_selection_owner.step.dependOn(step);
+        const sdl3_selection_owner_step = b.step(
+            "sdl3-selection-owner-smoke",
+            "Deliver and clear bounded primary selection ownership over EPXL",
+        );
+        sdl3_selection_owner_step.dependOn(&run_sdl3_selection_owner.step);
     }
     if (proto_frame_smoke_dep) |frame_step| {
         if (proto_sdl_fixture_dep) |fixture_step| fixture_step.dependOn(frame_step);
