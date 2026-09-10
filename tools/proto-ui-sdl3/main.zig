@@ -455,6 +455,7 @@ const Config = struct {
     synthetic_window_maximize: bool = false,
     synthetic_window_fullscreen: bool = false,
     selection_owner_smoke: bool = false,
+    selection_transfer_smoke: bool = false,
     synthetic_monitor_change: bool = false,
     force_frontend_failure: bool = false,
     synthetic_pointer: bool = false,
@@ -1596,6 +1597,102 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
             try scene.apply(clear_message.items);
 
             const messages = [_]std.ArrayList(u8){ owner_message, clear_message };
+            for (messages) |message| {
+                const envelope = (try protocol.decodeEnvelope(message.items)).envelope;
+                try acks.markSent(envelope.sequence);
+                try live.writeFrame(&writer.interface, message.items);
+                try writer.interface.flush();
+                try awaitFrameAck(gpa, io, &reader, &writer, envelope.sequence, input_path, &input_sequence, envelope.session_id, envelope.frame_id, negotiated.effective);
+                try acks.ack(envelope.sequence);
+            }
+        }
+        if (config.selection_transfer_smoke and
+            negotiated.effective.contains(.selection_primary_ownership_v1) and
+            negotiated.effective.contains(.selection_primary_transfer_v1))
+        {
+            const offers = [_]protocol.SelectionOffer{
+                .{ .target = "UTF8_STRING", .priority = 1 },
+            };
+            const base_sequence = scene.next_sequence.?;
+            var messages: [4]std.ArrayList(u8) = .{ .empty, .empty, .empty, .empty };
+            defer {
+                for (&messages) |*message| message.deinit(gpa);
+            }
+
+            var owner_payload: std.ArrayList(u8) = .empty;
+            defer owner_payload.deinit(gpa);
+            try protocol.encodeSelectionOwnerSet(gpa, .{
+                .kind = .primary,
+                .generation = 1,
+                .flags = protocol.SelectionOwnerFlags.export_to_platform,
+                .offers = offers[0..],
+            }, &owner_payload);
+            try protocol.encodeEnvelope(gpa, .{
+                .flags = 0,
+                .message_type = protocol.Message.selection_owner_set,
+                .sequence = base_sequence,
+                .ack_sequence = 0,
+                .session_id = capability.session_id,
+                .frame_id = 1,
+                .timestamp_ns = base_sequence,
+            }, owner_payload.items, &messages[0]);
+            try scene.apply(messages[0].items);
+
+            var request_payload: std.ArrayList(u8) = .empty;
+            defer request_payload.deinit(gpa);
+            try protocol.encodeSelectionRequest(gpa, .{
+                .kind = .primary,
+                .request_id = 9001,
+                .generation = 1,
+                .target = "UTF8_STRING",
+            }, &request_payload);
+            try protocol.encodeEnvelope(gpa, .{
+                .flags = 0,
+                .message_type = protocol.Message.selection_request,
+                .sequence = base_sequence + 1,
+                .ack_sequence = 0,
+                .session_id = capability.session_id,
+                .frame_id = 1,
+                .timestamp_ns = base_sequence + 1,
+            }, request_payload.items, &messages[1]);
+            try scene.apply(messages[1].items);
+
+            var data_payload: std.ArrayList(u8) = .empty;
+            defer data_payload.deinit(gpa);
+            try protocol.encodeSelectionData(gpa, .{
+                .kind = .primary,
+                .request_id = 9001,
+                .generation = 1,
+                .bytes = "Proto-UI transfer",
+            }, &data_payload);
+            try protocol.encodeEnvelope(gpa, .{
+                .flags = 0,
+                .message_type = protocol.Message.selection_data,
+                .sequence = base_sequence + 2,
+                .ack_sequence = 0,
+                .session_id = capability.session_id,
+                .frame_id = 1,
+                .timestamp_ns = base_sequence + 2,
+            }, data_payload.items, &messages[2]);
+            try scene.apply(messages[2].items);
+
+            var clear_payload: std.ArrayList(u8) = .empty;
+            defer clear_payload.deinit(gpa);
+            try protocol.encodeSelectionClear(gpa, .{
+                .generation = 1,
+                .kind = .primary,
+            }, &clear_payload);
+            try protocol.encodeEnvelope(gpa, .{
+                .flags = 0,
+                .message_type = protocol.Message.selection_owner_clear,
+                .sequence = base_sequence + 3,
+                .ack_sequence = 0,
+                .session_id = capability.session_id,
+                .frame_id = 1,
+                .timestamp_ns = base_sequence + 3,
+            }, clear_payload.items, &messages[3]);
+            try scene.apply(messages[3].items);
+
             for (messages) |message| {
                 const envelope = (try protocol.decodeEnvelope(message.items)).envelope;
                 try acks.markSent(envelope.sequence);
@@ -6293,6 +6390,10 @@ fn runEpxlInteractiveFrontend(
     var fullscreen_request_delivered = false;
     var selection_owner_set_seen = false;
     var selection_owner_clear_seen = false;
+    var selection_transfer_owner_seen = false;
+    var selection_transfer_request_seen = false;
+    var selection_transfer_data_seen = false;
+    var selection_transfer_clear_seen = false;
     var theme_event_delivered = false;
     var delivered_monitor: ?protocol.MonitorEvent = null;
     var delivered_dpi: ?protocol.DpiEvent = null;
@@ -6326,6 +6427,36 @@ fn runEpxlInteractiveFrontend(
                         scene.selection_kind == null)
                     {
                         selection_owner_clear_seen = true;
+                    }
+                }
+                if (config.selection_transfer_smoke) {
+                    if (envelope.message_type == protocol.Message.selection_owner_set and
+                        scene.selection_kind != null and
+                        scene.selection_generation == 1)
+                    {
+                        selection_transfer_owner_seen = true;
+                    }
+                    if (envelope.message_type == protocol.Message.selection_request and
+                        scene.selection_transfer != null and
+                        scene.selection_transfer.?.request_id == 9001 and
+                        scene.selection_transfer.?.status == .waiting and
+                        std.mem.eql(u8, scene.selection_transfer.?.targetSlice(), "UTF8_STRING"))
+                    {
+                        selection_transfer_request_seen = true;
+                    }
+                    if (envelope.message_type == protocol.Message.selection_data and
+                        scene.selection_transfer != null and
+                        scene.selection_transfer.?.request_id == 9001 and
+                        scene.selection_transfer.?.status == .completed and
+                        std.mem.eql(u8, scene.selection_transfer.?.dataSlice(), "Proto-UI transfer"))
+                    {
+                        selection_transfer_data_seen = true;
+                    }
+                    if (envelope.message_type == protocol.Message.selection_owner_clear and
+                        scene.selection_kind == null and
+                        scene.selection_transfer == null)
+                    {
+                        selection_transfer_clear_seen = true;
                     }
                 }
                 if (envelope.message_type == protocol.Message.frame_title) {
@@ -6713,6 +6844,15 @@ fn runEpxlInteractiveFrontend(
             return error.SelectionOwnershipTransitionNotObserved;
         std.debug.print(
             "sdl3-selection-owner-smoke: {{\"kind\":\"sdl3-selection-owner-smoke\",\"selection\":\"primary\",\"targets\":[\"UTF8_STRING\",\"STRING\"],\"generation\":1,\"set_and_clear\":true,\"result\":\"pass\"}}\n",
+            .{},
+        );
+    }
+    if (config.selection_transfer_smoke) {
+        if (!selection_transfer_owner_seen or !selection_transfer_request_seen or
+            !selection_transfer_data_seen or !selection_transfer_clear_seen)
+            return error.SelectionTransferNotObserved;
+        std.debug.print(
+            "sdl3-selection-transfer-smoke: {{\"kind\":\"sdl3-selection-transfer-smoke\",\"selection\":\"primary\",\"request_id\":9001,\"target\":\"UTF8_STRING\",\"data\":\"Proto-UI transfer\",\"status\":\"completed\",\"cleared\":true,\"result\":\"pass\"}}\n",
             .{},
         );
     }
@@ -8244,6 +8384,7 @@ fn runEmacsEpxlSession(
                 "--interactive-publisher",
             if (config.pointer_middle_paste_publisher) "--pointer-middle-paste-publisher" else "--interactive-publisher",
             if (config.selection_owner_smoke) "--selection-owner-smoke" else "--interactive-publisher",
+            if (config.selection_transfer_smoke) "--selection-transfer-smoke" else "--interactive-publisher",
             "--interactive-publisher",
         }
     else
@@ -8479,6 +8620,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.interactive_publisher = true;
         } else if (std.mem.eql(u8, arg, "--selection-owner-smoke")) {
             config.selection_owner_smoke = true;
+        } else if (std.mem.eql(u8, arg, "--selection-transfer-smoke")) {
+            config.selection_transfer_smoke = true;
+        } else if (std.mem.eql(u8, arg, "--emacs-selection-transfer-smoke")) {
+            config.mode = .emacs_epxl_interactive;
+            config.interactive_publisher = true;
+            config.selection_transfer_smoke = true;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-input-smoke")) {
             config.mode = .emacs_epxl_input;
             config.auto_input = "X";

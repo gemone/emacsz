@@ -59,6 +59,7 @@ pub const Feature = enum {
     clipboard_text_unicode,
     clipboard_primary_selection_bounded,
     selection_primary_ownership_v1,
+    selection_primary_transfer_v1,
     damage_retained_clip,
     scroll_copy_policy,
     renderer_sdl3,
@@ -187,6 +188,7 @@ pub const Feature = enum {
             .clipboard_text_unicode => "clipboard.text_unicode",
             .clipboard_primary_selection_bounded => "clipboard.primary_selection_bounded",
             .selection_primary_ownership_v1 => "selection.primary_ownership_v1",
+            .selection_primary_transfer_v1 => "selection.primary_transfer_v1",
             .damage_retained_clip => "damage.retained_clip",
             .scroll_copy_policy => "render.scroll_copy_policy",
             .renderer_sdl3 => "renderer.sdl3",
@@ -373,6 +375,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .clipboard_text_unicode, .status = .degraded, .evidence = "sdl3-clipboard-unicode-smoke" },
     .{ .feature = .clipboard_primary_selection_bounded, .status = .degraded, .evidence = "sdl3-primary-selection-roundtrip-smoke" },
     .{ .feature = .selection_primary_ownership_v1, .status = .degraded, .evidence = "sdl3-selection-owner-smoke negotiated set/clear state" },
+    .{ .feature = .selection_primary_transfer_v1, .status = .degraded, .evidence = "sdl3-selection-transfer-smoke bounded request/data completion" },
     .{ .feature = .damage_retained_clip, .status = .degraded, .evidence = "sdl3-pointer-smoke and sdl3-epxl-interactive-smoke" },
     .{ .feature = .scroll_copy_policy, .status = .degraded, .evidence = "proto-ui-unit vertical scroll codec and copy-plan metrics; SDL retained-frame copy pending" },
     .{ .feature = .renderer_sdl3, .status = .degraded, .evidence = "sdl3-renderer-smoke" },
@@ -559,6 +562,10 @@ pub fn negotiate(backend: Set, frontend: Set) Error!Negotiated {
     // Unicode bit remains an independent upgrade on top of this prerequisite.
     if (!effective.contains(.clipboard_ascii_bounded))
         effective.bits[@intFromEnum(Feature.clipboard_primary_selection_bounded)] = false;
+    // A target transfer requires a live ownership context for generation and
+    // target validation.
+    if (!effective.contains(.selection_primary_ownership_v1))
+        effective.bits[@intFromEnum(Feature.selection_primary_transfer_v1)] = false;
     for (feature_descriptors) |item| {
         if (item.feature.required() and !effective.contains(item.feature))
             return Error.MissingRequiredCapability;
@@ -796,6 +803,19 @@ test "PRIMARY selection requires bounded clipboard text" {
     const primary_missing = try negotiate(all, no_clipboard);
     try std.testing.expect(!primary_missing.effective.contains(.clipboard_ascii_bounded));
     try std.testing.expect(!primary_missing.effective.contains(.clipboard_primary_selection_bounded));
+}
+
+test "primary transfer requires ownership negotiation" {
+    const all = backendSupported();
+    const negotiated = try negotiate(all, all);
+    try std.testing.expect(negotiated.effective.contains(.selection_primary_ownership_v1));
+    try std.testing.expect(negotiated.effective.contains(.selection_primary_transfer_v1));
+
+    var transfer_only = all;
+    transfer_only.bits[@intFromEnum(Feature.selection_primary_ownership_v1)] = false;
+    const effective = try negotiate(all, transfer_only);
+    try std.testing.expect(!effective.effective.contains(.selection_primary_ownership_v1));
+    try std.testing.expect(!effective.effective.contains(.selection_primary_transfer_v1));
 }
 
 test "full key v2 remains optional for ASCII-only peers" {

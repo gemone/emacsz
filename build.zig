@@ -2356,6 +2356,29 @@ pub fn build(b: *std.Build) void {
             "Deliver and clear bounded primary selection ownership over EPXL",
         );
         sdl3_selection_owner_step.dependOn(&run_sdl3_selection_owner.step);
+
+        const run_sdl3_selection_transfer = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--emacs-selection-transfer-smoke",
+            "--auto-quit-ms=5000",
+        });
+        run_sdl3_selection_transfer.setCwd(b.path("."));
+        run_sdl3_selection_transfer.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_selection_transfer.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_selection_transfer.step.dependOn(step);
+        const sdl3_selection_transfer_step = b.step(
+            "sdl3-selection-transfer-smoke",
+            "Deliver bounded primary request/data/clear state over EPXL",
+        );
+        sdl3_selection_transfer_step.dependOn(&run_sdl3_selection_transfer.step);
     }
     if (proto_frame_smoke_dep) |frame_step| {
         if (proto_sdl_fixture_dep) |fixture_step| fixture_step.dependOn(frame_step);
