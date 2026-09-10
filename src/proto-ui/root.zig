@@ -25,6 +25,8 @@ pub const runtime_host = @import("runtime_host.zig");
 pub const runtime_bridge = @import("runtime_bridge.zig");
 pub const runtime_activation = @import("runtime_activation.zig");
 pub const r8_readiness = @import("r8_readiness.zig");
+pub const r8_adapter_linkage = @import("r8_adapter_linkage.zig");
+pub const runtime_host_adapter_lib = @import("runtime_host_adapter_lib.zig");
 pub const fuzz = @import("fuzz.zig");
 pub const recovery_diff = @import("recovery_diff.zig");
 pub const crash_isolation = @import("crash_isolation.zig");
@@ -58,6 +60,8 @@ test {
     _ = runtime_bridge;
     _ = runtime_activation;
     _ = r8_readiness;
+    _ = r8_adapter_linkage;
+    _ = runtime_host_adapter_lib;
     _ = fuzz;
     _ = recovery_diff;
     _ = crash_isolation;

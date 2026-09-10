@@ -7,6 +7,7 @@
 const std = @import("std");
 const host_contract = @import("host_contract.zig");
 const host_adapter = @import("host_adapter.zig");
+const adapter_linkage = @import("r8_adapter_linkage.zig");
 const runtime = @import("runtime.zig");
 
 pub const manifest_version: u32 = 1;
@@ -35,7 +36,7 @@ pub const requirements = [_]Requirement{
     .{
         .name = "adapter.linked_without_inherited_source_edits",
         .status = .pending,
-        .evidence = "R8 entry decision must name the adapter artifact, ABI/table hash, and build-graph injection point",
+        .evidence = "Candidate artifact, ABI/table inventory hash, and planned injection point are pinned by r8_adapter_linkage.json; an R7-approved Emacs link remains required",
     },
     .{
         .name = "static_isolation",
@@ -168,7 +169,14 @@ pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
     try out.print(gpa, "{}", .{runtime_available});
     try out.appendSlice(gpa, ",\"tracked_inherited_source_edits\":");
     try runtime.appendJsonStringArrayPublic(gpa, out, tracked_inherited_source_edits);
-    try out.appendSlice(gpa, ",\"requirements\":[");
+    try out.appendSlice(gpa, ",\"adapter_linkage\":{\"status\":");
+    try runtime.appendJsonStringPublic(gpa, out, adapter_linkage.status);
+    try out.appendSlice(gpa, ",\"artifact_id\":");
+    try runtime.appendJsonStringPublic(gpa, out, adapter_linkage.artifact_id);
+    try out.appendSlice(gpa, ",\"abi_table_sha256\":");
+    const abi_hash = adapter_linkage.abiTableHash();
+    try runtime.appendJsonStringPublic(gpa, out, &abi_hash);
+    try out.appendSlice(gpa, "},\"requirements\":[");
     for (requirements, 0..) |requirement, index| {
         if (index != 0) try out.append(gpa, ',');
         try out.appendSlice(gpa, "{\"name\":");
@@ -214,4 +222,7 @@ test "R8 readiness JSON is deterministic and bounded" {
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"entry_status\":\"blocked\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"r7_decision\":\"pending\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.items, "\"activation_allowed\":false") != null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, first.items, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("blocked", parsed.value.object.get("entry_status").?.string);
 }

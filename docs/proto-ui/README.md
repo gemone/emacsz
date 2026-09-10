@@ -43,7 +43,7 @@ W10a adds adapter-owned SDL renderer negotiation: the frontend reports the actua
 | System theme | Negotiated `THEME_EVENT` EPXL transport and Emacs recording of delivered dark/light appearance via `sdl3-theme-event-smoke` | No complete theme refresh, accessibility preferences, face remapping, or PGTK parity |
 | Input | Bounded Unicode text, pointer sessions, vertical/horizontal line wheel, Ctrl/Alt motion commands, and ACK/recovery evidence | No general keymap execution, full IME, redisplay-owned input feedback, or complete pointer parity |
 | IME state | Scene state for bounded preedit, selected candidate metadata, and commit reports; bounded ASCII SDL diagnostics where implemented | No platform IME backend, core buffer application, full candidate lists, Unicode diagnostic rendering, or complete multibyte input |
-| R7/R8 gate | Fail-closed reviewer packet, contract, unselected host adapter, blocked activation, and R8 readiness evidence | No host approval, adapter linkage, terminal registration, runtime activation, or PGTK fallback |
+| R7/R8 gate | Fail-closed reviewer packet, contract, unselected host adapter, blocked activation, R8 readiness, and a fail-closed host-audit candidate adapter artifact with pinned ABI/table linkage provenance | No host approval, Emacs adapter linkage, terminal registration, runtime activation, or PGTK fallback |
 | Performance | ReleaseFast adapter hot-path JSON from deterministic 960×600 fixtures at `zig-out/proto-ui/benchmark.json`; timing itself remains host-dependent | Adapter baseline only; no end-to-end, real redisplay, PGTK comparison, or production GPU-tier proof |
 
 W12c adds the first real-frame lifecycle bridge smoke: an isolated PGTK Emacs

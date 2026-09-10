@@ -356,6 +356,23 @@ negative launch check: it returns `r8_entry_readiness_missing` until the
 source-authoritative readiness record, approved R7 decision, and selected host
 adapter agree.
 
+W12n now prepares the linkage evidence without activating it.
+`src/proto-ui/runtime_host_adapter_lib.zig` builds a host-audit candidate shared
+artifact, installed for the native host as
+`zig-out/lib/libproto-ui-runtime-host-adapter.so` (Zig selects the host-platform
+suffix and Windows DLL/import-library forms).  It validates a caller-supplied
+`PureRuntimeHostV1` table, rejects a null table, and refuses adapter creation
+with a fail-closed status.  The build probe verifies the exported ABI version,
+table size, null-table rejection, and blocked creation.
+`zig-out/proto-ui/r8_adapter_linkage.json` records `prepared_not_linked`, the
+build artifact ID, the planned `build.zig:proto-ui-runtime-host-adapter`
+injection point, the ABI version/table size, and a canonical SHA-256 inventory
+of all five callback groups and 27 operations.  It also reports an empty
+inherited-source edit list.  `proto-ui-r8-adapter-linkage` verifies the exact
+manifest and, on the host target, the exported candidate ABI.  It does not
+select a target-specific Emacs candidate, link anything into Emacs, register a
+terminal, or enable runtime.
+
 ### 11.1 First-frame execution slices
 
 When the entry gate is satisfied, implement R8 in these verifiable slices:

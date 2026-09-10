@@ -1242,6 +1242,84 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&run_runtime_host_abi_conformance.step);
         boundary_step.dependOn(&run_runtime_host_abi_gate.step);
 
+        // R8 candidate linkage: this adapter-owned host-audit artifact
+        // validates a PureRuntimeHostV1 table and refuses creation while R7 is
+        // pending.  It is never linked into GNU Emacs, is intentionally not a
+        // target-specific linkable candidate, and does not enable runtime.
+        const runtime_host_adapter_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = optimize,
+            .root_source_file = b.path("src/proto-ui/runtime_host_adapter_lib.zig"),
+        });
+        runtime_host_adapter_module.link_libc = true;
+        const runtime_host_adapter_lib = b.addLibrary(.{
+            .name = "proto-ui-runtime-host-adapter",
+            .root_module = runtime_host_adapter_module,
+            .linkage = .dynamic,
+        });
+        const install_runtime_host_adapter_lib = b.addInstallArtifact(
+            runtime_host_adapter_lib,
+            .{},
+        );
+
+        const runtime_host_adapter_probe_tool = b.addExecutable(.{
+            .name = "proto-ui-runtime-host-adapter-probe",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/runtime_host_adapter_probe.zig"),
+            }),
+        });
+        runtime_host_adapter_probe_tool.root_module.addImport("proto_ui", proto_ui_module);
+        runtime_host_adapter_probe_tool.root_module.linkLibrary(runtime_host_adapter_lib);
+        const run_runtime_host_adapter_probe = b.addRunArtifact(runtime_host_adapter_probe_tool);
+
+        const r8_adapter_linkage_gen_tool = b.addExecutable(.{
+            .name = "proto-ui-r8-adapter-linkage-gen",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/r8_adapter_linkage_gen.zig"),
+            }),
+        });
+        r8_adapter_linkage_gen_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_r8_adapter_linkage_gen = b.addRunArtifact(r8_adapter_linkage_gen_tool);
+        const r8_adapter_linkage_artifact = run_r8_adapter_linkage_gen.addOutputFileArg(
+            "r8_adapter_linkage.json",
+        );
+        const install_r8_adapter_linkage = b.addInstallFile(
+            r8_adapter_linkage_artifact,
+            "proto-ui/r8_adapter_linkage.json",
+        );
+
+        const r8_adapter_linkage_gate_tool = b.addExecutable(.{
+            .name = "proto-ui-r8-adapter-linkage-gate",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/r8_adapter_linkage_gate.zig"),
+            }),
+        });
+        r8_adapter_linkage_gate_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_r8_adapter_linkage_gate = b.addRunArtifact(r8_adapter_linkage_gate_tool);
+        run_r8_adapter_linkage_gate.addFileArg(r8_adapter_linkage_artifact);
+        run_r8_adapter_linkage_gate.step.dependOn(&run_r8_adapter_linkage_gen.step);
+
+        const r8_adapter_linkage_step = b.step(
+            "proto-ui-r8-adapter-linkage",
+            "Build and audit the fail-closed R8 candidate adapter linkage artifact",
+        );
+        r8_adapter_linkage_step.dependOn(&install_runtime_host_adapter_lib.step);
+        r8_adapter_linkage_step.dependOn(&run_r8_adapter_linkage_gen.step);
+        r8_adapter_linkage_step.dependOn(&install_r8_adapter_linkage.step);
+        r8_adapter_linkage_step.dependOn(&run_r8_adapter_linkage_gate.step);
+        r8_adapter_linkage_step.dependOn(&run_runtime_host_adapter_probe.step);
+
+        boundary_step.dependOn(&install_runtime_host_adapter_lib.step);
+        boundary_step.dependOn(&run_runtime_host_adapter_probe.step);
+        boundary_step.dependOn(&install_r8_adapter_linkage.step);
+        boundary_step.dependOn(&run_r8_adapter_linkage_gate.step);
+
         // Complete assigned-ID coverage is auditable while implementation
         // status remains intentionally and honestly partial.
         const protocol_coverage_gen_tool = b.addExecutable(.{
@@ -6865,6 +6943,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true proto-ui-host-adapter - unselected pure-SDL3 host adapter audit
         \\  zig build -Dproto-ui=true proto-ui-runtime-activation - blocked runtime activation audit
         \\  zig build -Dproto-ui=true proto-ui-runtime-manifest - fail-closed runtime manifest audit
+        \\  zig build -Dproto-ui=true proto-ui-r8-adapter-linkage - fail-closed candidate adapter linkage artifact/manifest
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module - Emacs dynamic-module seam
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke - verify module seam in batch Emacs
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-frame-fact-smoke - public frame facts on a display
