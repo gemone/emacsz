@@ -455,6 +455,7 @@ pub const FrameCounters = struct {
     clear_commands_total: u64 = 0,
     fill_commands_total: u64 = 0,
     text_commands_total: u64 = 0,
+    unicode_text_commands_total: u64 = 0,
     atlas_glyphs_total: u64 = 0,
     frame_path_total_ns: u64 = 0,
     frame_path_last_ns: u64 = 0,
@@ -557,6 +558,7 @@ pub const FrameCounters = struct {
         self.clear_commands_total += stats.clears;
         self.fill_commands_total += stats.fills;
         self.text_commands_total += stats.texts;
+        self.unicode_text_commands_total += stats.unicode_texts;
         self.atlas_glyphs_total += stats.atlas_glyphs;
     }
 };

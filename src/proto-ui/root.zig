@@ -6,6 +6,7 @@ pub const lifecycle = @import("lifecycle.zig");
 pub const frontend = @import("frontend.zig");
 pub const facts = @import("facts.zig");
 pub const renderer = @import("renderer.zig");
+pub const text_cache = @import("text_cache.zig");
 pub const input = @import("input.zig");
 pub const adapter = @import("adapter.zig");
 pub const transport = @import("transport.zig");
@@ -38,6 +39,7 @@ test {
     _ = frontend;
     _ = facts;
     _ = renderer;
+    _ = text_cache;
     _ = input;
     _ = adapter;
     _ = transport;

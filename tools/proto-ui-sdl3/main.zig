@@ -843,6 +843,13 @@ fn runEmacsInteractive(gpa: std.mem.Allocator, io: std.Io, config: *const Config
                         frame_gate.dirty = true;
                     }
                 },
+                SDL_EVENT_RENDER_TARGETS_RESET,
+                SDL_EVENT_RENDER_DEVICE_RESET,
+                SDL_EVENT_RENDER_DEVICE_LOST,
+                => {
+                    unicode_text_renderer.clearTextures();
+                    frame_gate.dirty = true;
+                },
                 else => frame_gate.dirty = true,
             }
         }
@@ -1076,6 +1083,7 @@ fn createRenderer(
 }
 
 fn destroyRenderer(selected: SelectedRenderer) void {
+    unicode_text_renderer.clearTextures();
     SDL_DestroyRenderer(selected.handle);
 }
 
@@ -2957,7 +2965,14 @@ fn runGlyphRunSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
     while (!quit and SDL_GetTicks() - started < config.auto_quit_ms) {
         var event: SDL_Event = undefined;
         while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_EVENT_QUIT) quit = true;
+            switch (event.type) {
+                SDL_EVENT_QUIT => quit = true,
+                SDL_EVENT_RENDER_TARGETS_RESET,
+                SDL_EVENT_RENDER_DEVICE_RESET,
+                SDL_EVENT_RENDER_DEVICE_LOST,
+                => unicode_text_renderer.clearTextures(),
+                else => {},
+            }
         }
         _ = try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
         SDL_Delay(10);
@@ -5182,6 +5197,7 @@ fn runRuntimeBridgeSmoke(gpa: std.mem.Allocator, config: *const Config) !void {
                 event.type == SDL_EVENT_RENDER_DEVICE_RESET or
                 event.type == SDL_EVENT_RENDER_DEVICE_LOST)
             {
+                unicode_text_renderer.clearTextures();
                 atlas_texture_cache.clear();
                 continue;
             }
@@ -6326,6 +6342,7 @@ fn pollEpxlInteractiveInput(
                 )) dirty.* = true;
             },
             SDL_EVENT_RENDER_TARGETS_RESET, SDL_EVENT_RENDER_DEVICE_RESET, SDL_EVENT_RENDER_DEVICE_LOST => {
+                unicode_text_renderer.clearTextures();
                 destroyRetainedFrame(retained);
                 gate.dirty = true;
             },
@@ -8331,6 +8348,7 @@ fn buildSceneDrawList(
 const UnicodeTextRenderer = struct {
     initialized: bool = false,
     font: ?*TTF_Font = null,
+    cache: proto_ui.text_cache.TextureCache = .{},
 
     fn fontPointSize() f32 {
         const raw = std.c.getenv("PROTO_UI_FONT_SIZE") orelse return 16;
@@ -8367,9 +8385,14 @@ const UnicodeTextRenderer = struct {
     }
 
     fn deinit(self: *UnicodeTextRenderer) void {
+        self.cache.clear(destroyUnicodeTexture);
         if (self.font) |font| TTF_CloseFont(font);
         if (self.initialized) TTF_Quit();
         self.* = .{};
+    }
+
+    fn clearTextures(self: *UnicodeTextRenderer) void {
+        self.cache.clear(destroyUnicodeTexture);
     }
 
     fn render(
@@ -8384,6 +8407,23 @@ const UnicodeTextRenderer = struct {
     ) !void {
         try self.ensure();
         const font = self.font.?;
+        const cache_key = try proto_ui.text_cache.Key.init(
+            @intFromPtr(renderer),
+            bytes,
+            color,
+        );
+        if (self.cache.lookup(cache_key)) |cached| {
+            return renderUnicodeTexture(
+                renderer,
+                @ptrFromInt(cached.texture_id),
+                cached.width,
+                cached.height,
+                x,
+                y,
+                scale_x,
+                scale_y,
+            );
+        }
         const surface = TTF_RenderText_Blended(
             font,
             bytes.ptr,
@@ -8393,12 +8433,45 @@ const UnicodeTextRenderer = struct {
         defer SDL_DestroySurface(surface);
         const texture = SDL_CreateTextureFromSurface(renderer, surface) orelse
             return sdlFail("SDL_CreateTextureFromSurface");
-        defer SDL_DestroyTexture(texture);
+        var owns_texture = true;
+        defer if (owns_texture) SDL_DestroyTexture(texture);
         if (!SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND)) return sdlFail("SDL_SetTextureBlendMode");
         var texture_width: f32 = 0;
         var texture_height: f32 = 0;
         if (!SDL_GetTextureSize(texture, &texture_width, &texture_height)) return sdlFail("SDL_GetTextureSize");
         if (texture_width <= 0 or texture_height <= 0) return error.InvalidUnicodeTexture;
+        self.cache.insert(
+            cache_key,
+            @intFromPtr(texture),
+            texture_width,
+            texture_height,
+            destroyUnicodeTexture,
+        ) catch {
+            return error.UnicodeTextureCacheInsert;
+        };
+        owns_texture = false;
+        return renderUnicodeTexture(
+            renderer,
+            texture,
+            texture_width,
+            texture_height,
+            x,
+            y,
+            scale_x,
+            scale_y,
+        );
+    }
+
+    fn renderUnicodeTexture(
+        renderer: *SDL_Renderer,
+        texture: *SDL_Texture,
+        texture_width: f32,
+        texture_height: f32,
+        x: f32,
+        y: f32,
+        scale_x: f32,
+        scale_y: f32,
+    ) !void {
         if (!SDL_RenderTexture(renderer, texture, null, &.{
             .x = x * scale_x,
             .y = y * scale_y,
@@ -8409,6 +8482,10 @@ const UnicodeTextRenderer = struct {
 };
 
 var unicode_text_renderer: UnicodeTextRenderer = .{};
+
+fn destroyUnicodeTexture(texture_id: usize) void {
+    SDL_DestroyTexture(@ptrFromInt(texture_id));
+}
 
 fn buildFactsDrawList(
     snapshot: FrameFacts,
@@ -9430,10 +9507,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             var quit = false;
             var event: SDL_Event = undefined;
             while (SDL_PollEvent(&event)) {
-                if (event.type == SDL_EVENT_QUIT) {
-                    quit = true;
-                } else {
-                    frame_gate.dirty = true;
+                switch (event.type) {
+                    SDL_EVENT_QUIT => quit = true,
+                    SDL_EVENT_RENDER_TARGETS_RESET,
+                    SDL_EVENT_RENDER_DEVICE_RESET,
+                    SDL_EVENT_RENDER_DEVICE_LOST,
+                    => unicode_text_renderer.clearTextures(),
+                    else => frame_gate.dirty = true,
                 }
             }
             if (quit) break;
@@ -9693,6 +9773,17 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     const initial_execution = try presentScene(&scene, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
 
+    // Force one deliberate repeat so the Unicode smoke can prove texture reuse
+    // independently of whether the host delivers a benign window event.
+    frame_gate.dirty = true;
+    var repeated_execution = initial_execution;
+    if (config.mode == .emacs_epxl_unicode_input) {
+        // Force one deliberate repeat so the Unicode smoke can prove texture reuse
+        // independently of whether the host delivers a benign window event.
+        frame_gate.dirty = true;
+        repeated_execution = try presentScene(&scene, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
+    }
+
     var quit = false;
     const started_ticks = SDL_GetTicks();
     while (!quit and SDL_GetTicks() - started_ticks < config.auto_quit_ms) {
@@ -9700,16 +9791,24 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) {
                 quit = true;
-            } else {
-                frame_gate.dirty = true;
+                continue;
             }
+            if (event.type == SDL_EVENT_RENDER_TARGETS_RESET or
+                event.type == SDL_EVENT_RENDER_DEVICE_RESET or
+                event.type == SDL_EVENT_RENDER_DEVICE_LOST)
+            {
+                unicode_text_renderer.clearTextures();
+                frame_gate.dirty = true;
+                continue;
+            }
+            frame_gate.dirty = true;
         }
         _ = try presentScene(&scene, &draw_list, renderer, window, &frame_gate, &frame_counters, null);
         SDL_Delay(10);
     }
 
     std.debug.print(
-        "sdl3-eup-smoke: present={d} skipped={d} frame={d}ns draws={d} clears={d} fills={d} text={d} last_present={d}ns; lifecycle OK ({s})\n",
+        "sdl3-eup-smoke: present={d} skipped={d} frame={d}ns draws={d} clears={d} fills={d} text={d} unicode={d} last_present={d}ns; lifecycle OK ({s})\n",
         .{
             frame_counters.presented_frames,
             frame_counters.skipped_frames,
@@ -9718,15 +9817,25 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             frame_counters.clear_commands_total,
             frame_counters.fill_commands_total,
             frame_counters.text_commands_total,
+            frame_counters.unicode_text_commands_total,
             frame_counters.present_last_ns,
             if (quit) "closed by quit event" else "auto timeout",
         },
     );
     if (config.mode == .emacs_epxl_unicode_input) {
         if (initial_execution.unicode_texts == 0) return error.UnicodeTextNotRendered;
+        if (repeated_execution.unicode_texts == 0) return error.UnicodeTextNotRendered;
+        const cache_stats = unicode_text_renderer.cache.stats;
+        if (cache_stats.misses == 0 or cache_stats.hits == 0 or cache_stats.evictions != 0)
+            return error.UnicodeTextureCacheNotObserved;
         std.debug.print(
-            "sdl3-unicode-render-smoke: {{\"kind\":\"sdl3-unicode-render-smoke\",\"text\":\"你好Emacs Proto-UI\",\"unicode_draws\":{d},\"result\":\"pass\"}}\n",
-            .{initial_execution.unicode_texts},
+            "sdl3-unicode-render-smoke: {{\"kind\":\"sdl3-unicode-render-smoke\",\"text\":\"你好Emacs Proto-UI\",\"unicode_draws\":{d},\"cache_misses\":{d},\"cache_hits\":{d},\"cache_evictions\":{d},\"result\":\"pass\"}}\n",
+            .{
+                initial_execution.unicode_texts + repeated_execution.unicode_texts,
+                cache_stats.misses,
+                cache_stats.hits,
+                cache_stats.evictions,
+            },
         );
     }
 }

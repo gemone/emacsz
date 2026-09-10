@@ -251,11 +251,16 @@ default non-SDL builds do not gain it. Font selection accepts `PROTO_UI_FONT`
 and a bounded `PROTO_UI_FONT_SIZE` (8..72), then uses a small platform discovery
 list. The draw is bounded to 120 UTF-8 bytes and the smoke fails closed if the
 negotiated `render.unicode_text_v1` capability is absent, no font is available,
-or no Unicode draw is executed. Each executed line creates a temporary
-SDL surface and texture; there is no glyph or texture cache. This proves visible
-UTF-8 transport/presentation only: it does not shape text, use Emacs font
-metrics, implement fallback policy, render glyph runs or faces, or register
-`output_proto`.
+or no Unicode draw is executed.
+
+W10h adds a bounded 64-entry LRU texture cache keyed by renderer, RGBA color,
+and exact UTF-8 bytes. Repeated unchanged lines reuse the SDL texture and its
+intrinsic size; misses rasterize once and insert. Replacing a matching key,
+eviction, render reset/device loss, and renderer destruction destroy the old or
+cached textures through the SDL frontend callback. Cache counters are exposed in
+the Unicode smoke. This remains line-level presentation caching, not a shaped
+glyph atlas or a substitute for Emacs font metrics or fallback policy. It does
+not render glyph runs or faces or register `output_proto`.
 
 Damage culling keeps Unicode commands conservative rather than estimating
 glyph metrics; it never rejects one from an assumed text box, while the SDL

@@ -160,6 +160,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W10e real-frame public-facts glyph marker | Approved |
 | W10f explicit bounded glyph-run delete | Approved |
 | W10g bounded UTF-8 SDL_ttf presentation | Reviewed |
+| W10h bounded Unicode texture cache | Reviewed |
 | W12a EPXL capability/status manifest | Approved |
 | W12b frame lifecycle/resource generation contract | Approved |
 | W12c real-frame lifecycle bridge smoke | Approved |
@@ -2690,6 +2691,43 @@ Acceptance:
 ```sh
 zig fmt --check build.zig src/proto-ui/capability.zig src/proto-ui/renderer.zig tools/proto-ui-sdl3/main.zig
 git diff --check
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-unicode-input-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-ui-smoke --summary all
+zig build -Dproto-ui=true proto-ui-boundary --summary all
+```
+
+#### W10h — Bounded Unicode texture cache (reviewed)
+
+Goal: remove repeated SDL_ttf rasterization and texture creation for unchanged
+Unicode facts lines while keeping ownership strict and bounded.
+
+1. Add a backend-neutral, bounded LRU text-texture cache keyed by renderer
+   device identity, RGBA color, and up to 120 bytes of UTF-8 content.
+2. Store opaque backend texture IDs and their intrinsic sizes; the SDL frontend
+   supplies the texture destroyer. Matching-key replacement, eviction, and clear
+   immediately destroy the replaced or evicted texture.
+3. Reuse a texture when the next frame draws the same Unicode bytes and color to
+   the same renderer; otherwise rasterize once, validate texture size, and insert
+   it into the 64-entry cache.
+4. Clear cached textures when a renderer is destroyed or SDL reports render
+   target/device reset or loss.
+5. Record lookups, hits, misses, inserts, updates, evictions, and destroys, and
+   add cumulative `unicode_text_commands_total` renderer counters.
+6. Make the Unicode smoke force one repeated full-frame presentation, require at
+   least one miss and one hit, reject evictions in the bounded scenario, and
+   emit machine-readable cache counters.
+
+Non-goals: this is not a shaped glyph atlas, does not cache partial runs or font
+fallback chains, does not use Emacs font metrics, and does not imply
+`output_proto` or redisplay ownership.
+
+Acceptance:
+
+```sh
+zig fmt --check src/proto-ui/root.zig src/proto-ui/text_cache.zig src/proto-ui/renderer.zig tools/proto-ui-sdl3/main.zig
+git diff --check
+test -z "$(git diff --name-only | grep -E '^src/.*\.c$|^lisp/.*\.el$' || true)"
 zig build -Dproto-ui=true proto-ui-unit --summary all
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-unicode-input-smoke --summary all
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-ui-smoke --summary all
