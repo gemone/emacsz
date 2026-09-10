@@ -211,9 +211,9 @@ Priorities:
 
 | Capability | PGTK equivalent | Proto requirement | Priority | Status | Evidence |
 |---|---|---|---|---|---|
-| Terminal creation | `create_terminal(output_pgtk)` | `create_terminal(output_proto)` | P0 | Pending | Existing-frame observation is not terminal creation; the Terminal Provider Extension is design-only and no `output_proto` terminal exists |
+| Terminal creation | `create_terminal(output_pgtk)` | `create_terminal(output_proto)` | P0 | Pending | Existing-frame observation is not terminal creation; TP1 core dispatch remains absent and no `output_proto` terminal exists |
 | Terminal deletion | PGTK terminal hooks | EUP session/frame teardown | P0 | Pending | Smoke process cleanup is not terminal deletion; no teardown contract |
-| Graphic frame predicate | `output_pgtk` frame | `output_proto` frame | P0 | Pending | No `output_proto`; the Terminal Provider Extension is design-only and the W12/W16 P0 gap remains |
+| Graphic frame predicate | `output_pgtk` frame | `output_proto` frame | P0 | Pending | No `output_proto`; TP1 core dispatch remains absent and the W12/W16 P0 gap remains |
 | Focus frame | GDK focus | Frontend focus + core state | P0 | Degraded | Strict EUP focus state plus one-frame SDL gained/lost round trip through public Emacs selection and focused fact; no OS focus control or multi-frame parity |
 | Multi-frame | GTK windows | Multiple SDL windows | P1 | Pending | Single SDL facts window and one EUP frame profile |
 | Monitor attributes | GDK monitor | SDL monitor events | P1 | Degraded | EUP `FRAME_MONITOR` v1 owns generation-qualified identity, primary flag, and bounds; negotiated `MONITOR_EVENT` EPXL transport records current SDL bounds, while migration and redisplay adaptation remain pending |
@@ -606,8 +606,11 @@ source-authoritative pure-SDL3 registration proposal with `approved` status and
 scope `policy_and_candidate_selection_only`.  The current fail-closed reason is
 `runtime_host_linkage_or_registration_missing`: no terminal can be registered
 and runtime remains unavailable.  The Terminal Provider Extension in
-[`registration-seam.md`](registration-seam.md) is the design-only registration
-path; its generic core dispatch and provider adapter are not implemented.
+[`registration-seam.md`](registration-seam.md) remains the only registration
+path.  Its TP1 generic core dispatch is not implemented or authorized.  TP2
+now provides adapter-only fake-core policy conformance in
+`proto-ui-tpe-registration`; it performs no production core dispatch, Emacs
+registration, terminal creation, or runtime activation.
 `-Dproto-ui-runtime=true` additionally
 requires a native Linux glibc target, selects a target-specific static adapter
 candidate, forces its ABI symbol into the temacs link, and audits the resulting

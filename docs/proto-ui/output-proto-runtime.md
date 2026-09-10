@@ -196,6 +196,7 @@ Current and target options:
 | `-Dproto-ui=true` | Adapter protocol/ABI, conformance, replay, and optional frontend smokes | Implemented in bounded slices |
 | `proto-ui-host-contract` step | Generate and audit the source-authoritative registration decision | Implemented; R7 is approved for policy/candidate selection only and runtime unavailable |
 | `proto-ui-r7-proposal` step | Generate and audit the pure-SDL3 R7 registration proposal | Implemented; proposal records the approved policy decision and runtime is unavailable |
+| `proto-ui-tpe-registration` step | Validate the canonical provider descriptor, exact `PureRuntimeHostV1` shape, fake-core state transitions, quarantine, retention, and rollback policy | Implemented as adapter-only TP2 policy; TP1 dispatch, production registration, and runtime remain absent |
 | `proto-ui-pgtk-parity-plan` step | Generate and audit the planned PGTK-to-Proto differential matrix | Implemented as planning policy; all 48 cases remain planned and parity is not implemented |
 | `proto-ui-protocol-coverage` step | Audit every assigned EUP message ID against its implementation status | Implemented; 164 codecs implemented, 0 partial, and 0 planned |
 | `session` module | Standard EUP setup/control codecs, setup state machine, Scene control integration, automatic frontend PONG, and EPXL transport for every standard control | Implemented as bounded adapter-first protocol coverage; full Emacs runtime ownership remains pending |
@@ -386,8 +387,9 @@ availability, performance claim, or change to PGTK/TTY.
 
 The only selected path from `linked_not_registered` to a real terminal is the
 generic Terminal Provider Extension defined in
-[`registration-seam.md`](registration-seam.md).  It is design-only until a
-separate reviewed core-extension exception or upstream acceptance exists.
+[`registration-seam.md`](registration-seam.md).  TP2 provides adapter-side
+fake-core policy conformance only; its TP1 core seam remains design-only until
+a separate reviewed core-extension exception or upstream acceptance exists.
 Output-method aliasing, startup interception, and inherited-symbol wrapping are
 forbidden.
 

@@ -1,6 +1,6 @@
 # Proto-UI Terminal Registration Seam
 
-Status: normative design; not implemented
+Status: TP2 adapter policy implemented; TP1 core seam not implemented or authorized
 Protocol: EUP v1
 R8 runtime state: fail closed
 Date: 2026-09-10
@@ -347,8 +347,12 @@ slot, or reused generation fails the gate.
 | TP10 | Performance acceptance | Reference-host latency/FPS/CPU/bandwidth budgets pass |
 
 TP1 is not authorized by the current adapter-first default.  It requires a
-separate reviewed exception or acceptance as an upstream extension.  Until then
-R8 remains `linked_not_registered` and fail closed.
+separate reviewed exception or acceptance as an upstream extension.  TP2 has a
+bounded adapter-side witness in `proto-ui-tpe-registration`: it validates the
+canonical `proto` descriptor, exact PureRuntimeHostV1 inventory, explicit
+fake-core registration states, quarantine, generation retention, and reverse
+rollback.  It is not a core extension, Emacs registration, or runtime.  Until
+TP1 exists, R8 remains `linked_not_registered` and fail closed.
 
 ## 8. Performance contract
 
@@ -390,6 +394,7 @@ Implemented today:
 
 * reviewed R7 policy approval;
 * selected pure-SDL3 provider candidate;
+* adapter-only TP2 registration-policy conformance against a fake core;
 * opt-in native-glibc target linkage audited as `linked_not_registered`;
 * complete EUP codec/transport/frontend design and bounded bridges.
 

@@ -115,7 +115,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 
 
 
-| P2 R7 registration proposal | Implemented as ready-for-review policy artifact; R7 decision, terminal registration, and runtime remain pending |
+| P2 R7 registration proposal | Implemented as ready-for-review policy artifact; R7 decision is approved, while terminal registration and runtime remain blocked |
 
 
 | Adapter-first C boundary | Required; no new inherited-C Proto-UI edits |
@@ -3330,6 +3330,22 @@ reviewed core-extension exception or upstream acceptance.  TP1 is not
 authorized by this branch.  Output-method aliasing, startup constructors,
 dynamic-module access to internal symbols, and symbol interposition are
 forbidden.
+
+##### R8-c TP2 registration-policy conformance (adapter-only)
+
+`proto-ui-tpe-registration` adds `src/proto-ui/tpe_registration.zig` and a
+deterministic `tpe_registration_policy.json` gate.  The fake-core policy
+witness validates immutable provider identity `proto`, the six required capability
+flags, an empty inherited-source edit set, exact PureRuntimeHostV1 ABI v1
+shape (64-byte aggregate table, five groups, 27 operations), explicit forward
+registration states, duplicate/invalid-transition rejection, failure
+quarantine, generation retention, and idempotent reverse rollback order.
+
+The manifest reports `tp1_core_dispatch_absent=true`, `registered=false`,
+`runtime_available=false`, and no terminal registration or Emacs call path.
+The default build remains disabled; `-Dproto-ui-runtime=true` may link the R8
+candidate but TP2 does not call, initialize, or register it.  TP1 remains
+unauthorized, R8 remains blocked, and SDL3 cannot open an Emacs frame yet.
 
 1. Implement child and tooltip frame protocol.
 2. Implement multi-frame focus isolation.

@@ -996,6 +996,50 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&install_r8_readiness.step);
         boundary_step.dependOn(&run_r8_readiness_gate.step);
 
+        // TP2 is adapter-side policy only.  It validates provider metadata and
+        // a fake-core state machine; TP1 core dispatch remains absent.
+        const tpe_registration_gen_tool = b.addExecutable(.{
+            .name = "proto-ui-tpe-registration-gen",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = .Debug,
+                .root_source_file = b.path("src/proto-ui/tpe_registration_gen.zig"),
+            }),
+        });
+        tpe_registration_gen_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_tpe_registration_gen = b.addRunArtifact(tpe_registration_gen_tool);
+        const tpe_registration_artifact = run_tpe_registration_gen.addOutputFileArg(
+            "tpe_registration_policy.json",
+        );
+        const install_tpe_registration = b.addInstallFile(
+            tpe_registration_artifact,
+            "proto-ui/tpe_registration_policy.json",
+        );
+
+        const tpe_registration_gate_tool = b.addExecutable(.{
+            .name = "proto-ui-tpe-registration-gate",
+            .root_module = b.createModule(.{
+                .target = b.graph.host,
+                .optimize = optimize,
+                .root_source_file = b.path("src/proto-ui/tpe_registration_gate.zig"),
+            }),
+        });
+        tpe_registration_gate_tool.root_module.addImport("proto_ui", proto_ui_module);
+        const run_tpe_registration_gate = b.addRunArtifact(tpe_registration_gate_tool);
+        run_tpe_registration_gate.addFileArg(tpe_registration_artifact);
+        run_tpe_registration_gate.step.dependOn(&run_tpe_registration_gen.step);
+
+        const tpe_registration_step = b.step(
+            "proto-ui-tpe-registration",
+            "Audit adapter-only TPE v1 registration policy and fake-core conformance",
+        );
+        tpe_registration_step.dependOn(&run_tpe_registration_gen.step);
+        tpe_registration_step.dependOn(&install_tpe_registration.step);
+        tpe_registration_step.dependOn(&run_tpe_registration_gate.step);
+
+        boundary_step.dependOn(&install_tpe_registration.step);
+        boundary_step.dependOn(&run_tpe_registration_gate.step);
+
         // P2: the R7 proposal is review input only.  Its gate proves that the
         // pure-SDL3 registration request is coherent while registration and
         // runtime remain unavailable and fail closed.

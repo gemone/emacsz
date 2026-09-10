@@ -42,7 +42,7 @@ pub const requirements = [_]Requirement{
     .{
         .name = "core.terminal_provider_extension",
         .status = .pending,
-        .evidence = "registration-seam.md is design-only and TP1 remains unauthorized; no generic core dispatch, provider registration, or output_proto terminal exists",
+        .evidence = "TP2 adapter policy conformance is complete, but TP1 remains unauthorized; no generic core dispatch, provider registration, or output_proto terminal exists",
     },
     .{
         .name = "static_isolation",
