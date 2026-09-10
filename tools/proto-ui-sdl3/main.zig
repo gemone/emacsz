@@ -6494,6 +6494,8 @@ fn runEpxlInteractiveFrontend(
     var selection_error_request_seen = false;
     var selection_error_seen = false;
     var selection_transfer_clear_seen = false;
+    var transfer_platform_claimed = false;
+    var transfer_platform_released = false;
     var theme_event_delivered = false;
     var delivered_monitor: ?protocol.MonitorEvent = null;
     var delivered_dpi: ?protocol.DpiEvent = null;
@@ -6587,9 +6589,17 @@ fn runEpxlInteractiveFrontend(
                         scene.selection_transfer != null and
                         scene.selection_transfer.?.request_id == 9001 and
                         scene.selection_transfer.?.status == .completed and
+                        scene.selection_flags & protocol.SelectionOwnerFlags.export_to_platform != 0 and
                         std.mem.eql(u8, scene.selection_transfer.?.dataSlice(), "Proto-UI transfer"))
                     {
                         selection_transfer_data_seen = true;
+                        try setPlatformPrimarySelection(scene.selection_transfer.?.dataSlice());
+                        if (!SDL_HasPrimarySelectionText()) return error.PrimarySelectionUnavailable;
+                        if (SDL_GetPrimarySelectionText()) |owned| {
+                            transfer_platform_claimed =
+                                std.mem.eql(u8, std.mem.span(owned), "Proto-UI transfer");
+                            SDL_free(owned);
+                        }
                     }
                     if (envelope.message_type == protocol.Message.selection_request and
                         scene.selection_transfer != null and
@@ -6613,6 +6623,8 @@ fn runEpxlInteractiveFrontend(
                         scene.selection_transfer == null)
                     {
                         selection_transfer_clear_seen = true;
+                        try clearPlatformPrimarySelection();
+                        transfer_platform_released = !SDL_HasPrimarySelectionText();
                     }
                 }
                 if (envelope.message_type == protocol.Message.frame_title) {
@@ -7039,10 +7051,11 @@ fn runEpxlInteractiveFrontend(
     if (config.selection_transfer_smoke) {
         if (!selection_transfer_owner_seen or !selection_transfer_request_seen or
             !selection_transfer_data_seen or !selection_error_request_seen or
-            !selection_error_seen or !selection_transfer_clear_seen)
+            !selection_error_seen or !selection_transfer_clear_seen or
+            !transfer_platform_claimed or !transfer_platform_released)
             return error.SelectionTransferNotObserved;
         std.debug.print(
-            "sdl3-selection-transfer-smoke: {{\"kind\":\"sdl3-selection-transfer-smoke\",\"selection\":\"primary\",\"request_id\":9001,\"target\":\"UTF8_STRING\",\"data\":\"Proto-UI transfer\",\"status\":\"completed\",\"error_request_id\":9002,\"error_reason\":\"conversion_failed\",\"error_message\":\"conversion unavailable\",\"cleared\":true,\"result\":\"pass\"}}\n",
+            "sdl3-selection-transfer-smoke: {{\"kind\":\"sdl3-selection-transfer-smoke\",\"selection\":\"primary\",\"request_id\":9001,\"target\":\"UTF8_STRING\",\"data\":\"Proto-UI transfer\",\"status\":\"completed\",\"platform_claimed\":true,\"platform_released\":true,\"error_request_id\":9002,\"error_reason\":\"conversion_failed\",\"error_message\":\"conversion unavailable\",\"cleared\":true,\"result\":\"pass\"}}\n",
             .{},
         );
     }
