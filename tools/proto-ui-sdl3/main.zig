@@ -451,6 +451,7 @@ const Config = struct {
     synthetic_theme_event: bool = false,
     synthetic_focus_events: bool = false,
     synthetic_window_resize: bool = false,
+    synthetic_window_move: bool = false,
     synthetic_monitor_change: bool = false,
     force_frontend_failure: bool = false,
     synthetic_pointer: bool = false,
@@ -6225,7 +6226,7 @@ fn runEpxlInteractiveFrontend(
     var focus_lost_delivered = false;
     var observed_focus_gained = false;
     var observed_focus_transition = false;
-    var resize_request_delivered = false;
+    var window_request_delivered = false;
     var theme_event_delivered = false;
     var delivered_monitor: ?protocol.MonitorEvent = null;
     var delivered_dpi: ?protocol.DpiEvent = null;
@@ -6315,6 +6316,15 @@ fn runEpxlInteractiveFrontend(
             480,
         );
         if (!SDL_PushEvent(&resized)) return sdlFail("SDL_PushEvent");
+    }
+    if (config.synthetic_window_move) {
+        var moved = windowEvent(
+            input_policy.SDL_EVENT_WINDOW_MOVED,
+            SDL_GetWindowID(window),
+            32,
+            24,
+        );
+        if (!SDL_PushEvent(&moved)) return sdlFail("SDL_PushEvent");
     }
 
     var expected_monitor_id: SDL_DisplayID = 0;
@@ -6447,10 +6457,15 @@ fn runEpxlInteractiveFrontend(
                         .gained => focus_gained_delivered = true,
                         .lost => focus_lost_delivered = true,
                     },
-                    .window => |request| if (request.kind == .resize and
-                        request.width == 720 and request.height == 480)
-                    {
-                        resize_request_delivered = true;
+                    .window => |request| {
+                        const resize_matches = request.kind == .resize and
+                            config.synthetic_window_resize and
+                            request.width == 720 and request.height == 480;
+                        const move_matches = request.kind == .move and
+                            config.synthetic_window_move and
+                            request.x == 32 and request.y == 24;
+                        if (resize_matches or move_matches)
+                            window_request_delivered = true;
                     },
                     .monitor => |monitor| delivered_monitor = monitor,
                     .dpi => |dpi| delivered_dpi = dpi,
@@ -6620,11 +6635,20 @@ fn runEpxlInteractiveFrontend(
             return error.MonitorEventPayloadMismatch;
     }
     if (config.synthetic_window_resize) {
-        if (!resize_request_delivered or
+        if (!window_request_delivered or
             !sceneHasText(&scene, "ResizeApplied"))
             return error.WindowResizeNotApplied;
         std.debug.print(
             "sdl3-window-resize-roundtrip-smoke: {{\"kind\":\"sdl3-window-resize-roundtrip-smoke\",\"width\":720,\"height\":480,\"emacs_applied\":true,\"result\":\"pass\"}}\n",
+            .{},
+        );
+    }
+    if (config.synthetic_window_move) {
+        if (!window_request_delivered or
+            !sceneHasText(&scene, "MoveApplied"))
+            return error.WindowMoveNotApplied;
+        std.debug.print(
+            "sdl3-window-move-roundtrip-smoke: {{\"kind\":\"sdl3-window-move-roundtrip-smoke\",\"x\":32,\"y\":24,\"emacs_applied\":true,\"result\":\"pass\"}}\n",
             .{},
         );
     }
@@ -8303,6 +8327,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
             config.synthetic_window_resize = true;
+        } else if (std.mem.eql(u8, arg, "--emacs-window-move-roundtrip-smoke")) {
+            config.mode = .emacs_epxl_interactive;
+            config.interactive_publisher = true;
+            config.synthetic_window_move = true;
         } else if (std.mem.eql(u8, arg, "--interactive-publisher")) {
             config.interactive_publisher = true;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-input-smoke")) {

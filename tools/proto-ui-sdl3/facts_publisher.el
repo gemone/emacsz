@@ -34,6 +34,7 @@
 (defvar proto-ui--monitor-observed nil)
 (defvar proto-ui--dpi-observed nil)
 (defvar proto-ui--window-resize-observed nil)
+(defvar proto-ui--window-move-observed nil)
 
 (defconst proto-ui--module-path (getenv "PROTO_UI_MODULE_PATH"))
 (defconst proto-ui--local-compat
@@ -377,13 +378,14 @@
          (request (plist-get event :request))
          (frame (selected-frame))
          (window (selected-window)))
-    (when (and (string= request "resize") (frame-live-p frame)
-               (numberp (plist-get event :width))
-               (numberp (plist-get event :height))
-               (> (plist-get event :width) 0)
-               (> (plist-get event :height) 0)
-               (<= (plist-get event :width) 16384)
-               (<= (plist-get event :height) 16384))
+    (cond
+     ((and (string= request "resize") (frame-live-p frame)
+           (numberp (plist-get event :width))
+           (numberp (plist-get event :height))
+           (> (plist-get event :width) 0)
+           (> (plist-get event :height) 0)
+           (<= (plist-get event :width) 16384)
+           (<= (plist-get event :height) 16384))
       (condition-case err
           (let ((frame-resize-pixelwise t))
             (set-frame-size frame
@@ -397,7 +399,23 @@
               (set-window-point window (point)))
             (setq proto-ui--window-resize-observed event)
             (redisplay frame))
-        (error nil)))))
+        (error nil)))
+     ((and (string= request "move") (frame-live-p frame)
+           (numberp (plist-get event :x))
+           (numberp (plist-get event :y)))
+      (condition-case nil
+          (progn
+            (set-frame-position frame
+                                (plist-get event :x)
+                                (plist-get event :y))
+            (with-current-buffer (window-buffer window)
+              (goto-char (point-min))
+              (unless (looking-at-p "MoveApplied")
+                (insert "MoveApplied "))
+              (set-window-point window (point)))
+            (setq proto-ui--window-move-observed event)
+            (redisplay frame))
+        (error nil))))))
 
 (defun proto-ui--wheel-action (value)
   (let ((wheel (split-string value " " t)))
