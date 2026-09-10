@@ -458,6 +458,7 @@ const Config = struct {
     synthetic_window_move: bool = false,
     synthetic_window_maximize: bool = false,
     synthetic_window_fullscreen: bool = false,
+    synthetic_window_minimize_restore: bool = false,
     selection_owner_smoke: bool = false,
     selection_transfer_smoke: bool = false,
     synthetic_monitor_change: bool = false,
@@ -6476,6 +6477,10 @@ fn runEpxlInteractiveFrontend(
     var window_request_delivered = false;
     var fullscreen_request_delivered = false;
     var selection_owner_set_seen = false;
+    var minimize_request_delivered = false;
+    var restore_request_delivered = false;
+    var minimize_sequence: u64 = 0;
+    var restore_sequence: u64 = 0;
     var selection_owner_clear_seen = false;
     var selection_lost_seen = false;
     var selection_replacement_seen = false;
@@ -6651,6 +6656,8 @@ fn runEpxlInteractiveFrontend(
     var pointer_release_delivered = false;
     var wheel_ticks_delivered: i32 = 0;
     var horizontal_wheel_ticks_delivered: i32 = 0;
+    var expected_monitor_id: SDL_DisplayID = 0;
+    var expected_bounds: SDL_Rect = undefined;
     if (config.interactive_synthetic) {
         // Seed the real SDL event queue so headless automation validates the
         // same input translation path as an operator typing in the window.
@@ -6705,9 +6712,23 @@ fn runEpxlInteractiveFrontend(
             .sdl_window_id = SDL_GetWindowID(window),
         });
     }
-
-    var expected_monitor_id: SDL_DisplayID = 0;
-    var expected_bounds: SDL_Rect = undefined;
+    if (config.synthetic_window_minimize_restore) {
+        const window_id = SDL_GetWindowID(window);
+        var minimized = windowEvent(
+            input_policy.SDL_EVENT_WINDOW_MINIMIZED,
+            window_id,
+            0,
+            0,
+        );
+        if (!SDL_PushEvent(&minimized)) return sdlFail("SDL_PushEvent");
+        var restored = windowEvent(
+            input_policy.SDL_EVENT_WINDOW_RESTORED,
+            window_id,
+            0,
+            0,
+        );
+        if (!SDL_PushEvent(&restored)) return sdlFail("SDL_PushEvent");
+    }
     if (config.synthetic_monitor_change) {
         expected_monitor_id = SDL_GetDisplayForWindow(window);
         if (expected_monitor_id == 0 or
@@ -6849,10 +6870,24 @@ fn runEpxlInteractiveFrontend(
                         const fullscreen_matches = request.kind == .fullscreen and
                             config.synthetic_window_fullscreen and
                             request.sdl_window_id == SDL_GetWindowID(window);
+                        const minimize_matches = request.kind == .minimize and
+                            config.synthetic_window_minimize_restore and
+                            request.sdl_window_id == SDL_GetWindowID(window);
+                        const restore_matches = request.kind == .restore and
+                            config.synthetic_window_minimize_restore and
+                            request.sdl_window_id == SDL_GetWindowID(window);
                         if (resize_matches or move_matches or maximize_matches)
                             window_request_delivered = true;
                         if (fullscreen_matches)
                             fullscreen_request_delivered = true;
+                        if (minimize_matches) {
+                            minimize_request_delivered = true;
+                            minimize_sequence = outcome.delivered.sequence;
+                        }
+                        if (restore_matches) {
+                            restore_request_delivered = true;
+                            restore_sequence = outcome.delivered.sequence;
+                        }
                     },
                     .monitor => |monitor| delivered_monitor = monitor,
                     .dpi => |dpi| delivered_dpi = dpi,
@@ -7087,6 +7122,18 @@ fn runEpxlInteractiveFrontend(
         std.debug.print(
             "sdl3-monitor-change-smoke: {{\"kind\":\"sdl3-monitor-change-smoke\",\"monitor_id\":{d},\"width\":{d},\"height\":{d},\"monitor_transport\":\"verified\",\"dpi_transport\":\"verified\",\"publisher\":\"observation-only\",\"result\":\"pass\"}}\n",
             .{ monitor.monitor_id, monitor.width, monitor.height },
+        );
+    }
+
+    if (config.synthetic_window_minimize_restore) {
+        if (!minimize_request_delivered or !restore_request_delivered or
+            minimize_sequence == 0 or restore_sequence == 0 or minimize_sequence >= restore_sequence or
+            !sceneHasText(&scene, "MinimizeApplied") or
+            !sceneHasText(&scene, "RestoreApplied"))
+            return error.WindowMinimizeRestoreNotApplied;
+        std.debug.print(
+            "sdl3-window-minimize-restore-smoke: {{\"kind\":\"sdl3-window-minimize-restore-smoke\",\"minimize_request\":\"accepted\",\"restore_request\":\"accepted\",\"platform_state\":\"pending\",\"result\":\"pass\"}}\n",
+            .{},
         );
     }
 
@@ -8540,6 +8587,7 @@ fn runEmacsEpxlSession(
             if (config.pointer_middle_paste_publisher) "--pointer-middle-paste-publisher" else "--interactive-publisher",
             if (config.selection_owner_smoke) "--selection-owner-smoke" else "--interactive-publisher",
             if (config.selection_transfer_smoke) "--selection-transfer-smoke" else "--interactive-publisher",
+            if (config.synthetic_window_minimize_restore) "--window-minimize-restore-smoke" else "--interactive-publisher",
             "--interactive-publisher",
         }
     else
@@ -8767,6 +8815,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
             config.synthetic_window_fullscreen = true;
+        } else if (std.mem.eql(u8, arg, "--emacs-window-minimize-restore-smoke")) {
+            config.mode = .emacs_epxl_interactive;
+            config.interactive_publisher = true;
+            config.synthetic_window_minimize_restore = true;
         } else if (std.mem.eql(u8, arg, "--emacs-selection-owner-smoke")) {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
@@ -8777,6 +8829,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.selection_owner_smoke = true;
         } else if (std.mem.eql(u8, arg, "--selection-transfer-smoke")) {
             config.selection_transfer_smoke = true;
+        } else if (std.mem.eql(u8, arg, "--window-minimize-restore-smoke")) {
+            config.synthetic_window_minimize_restore = true;
         } else if (std.mem.eql(u8, arg, "--emacs-selection-transfer-smoke")) {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;

@@ -2334,6 +2334,29 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_window_fullscreen_roundtrip_step.dependOn(&run_sdl3_window_fullscreen_roundtrip.step);
 
+        const run_sdl3_window_minimize_restore = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--emacs-window-minimize-restore-smoke",
+            "--auto-quit-ms=6000",
+        });
+        run_sdl3_window_minimize_restore.setCwd(b.path("."));
+        run_sdl3_window_minimize_restore.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_window_minimize_restore.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_window_minimize_restore.step.dependOn(step);
+        const sdl3_window_minimize_restore_step = b.step(
+            "sdl3-window-minimize-restore-smoke",
+            "Apply bounded SDL minimize and restore requests through public Emacs APIs",
+        );
+        sdl3_window_minimize_restore_step.dependOn(&run_sdl3_window_minimize_restore.step);
+
         const run_sdl3_selection_owner = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/proto-ui-sdl3",
             "--emacs",

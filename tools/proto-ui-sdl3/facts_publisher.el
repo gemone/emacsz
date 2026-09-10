@@ -37,6 +37,8 @@
 (defvar proto-ui--window-move-observed nil)
 (defvar proto-ui--window-maximize-observed nil)
 (defvar proto-ui--window-fullscreen-observed nil)
+(defvar proto-ui--window-minimize-observed nil)
+(defvar proto-ui--window-restore-observed nil)
 
 (defconst proto-ui--module-path (getenv "PROTO_UI_MODULE_PATH"))
 (defconst proto-ui--local-compat
@@ -443,6 +445,30 @@
                   (insert "FullscreenApplied "))
                 (set-window-point window (point)))
               (setq proto-ui--window-fullscreen-observed event)))
+        (error nil)))
+     ((and (string= request "minimize") (frame-live-p frame))
+      (condition-case nil
+          (progn
+            (iconify-frame frame)
+            (redisplay frame)
+            (with-current-buffer (window-buffer window)
+              (goto-char (point-min))
+              (unless (looking-at-p "MinimizeApplied")
+                (insert "MinimizeApplied "))
+              (set-window-point window (point)))
+            (setq proto-ui--window-minimize-observed event))
+        (error nil)))
+     ((and (string= request "restore") (frame-live-p frame))
+      (condition-case nil
+          (progn
+            (make-frame-visible frame)
+            (redisplay frame)
+            (with-current-buffer (window-buffer window)
+              (goto-char (point-min))
+              (unless (looking-at-p "RestoreApplied")
+                (insert "RestoreApplied "))
+              (set-window-point window (point)))
+            (setq proto-ui--window-restore-observed event))
         (error nil))))))
 
 (defun proto-ui--wheel-action (value)
