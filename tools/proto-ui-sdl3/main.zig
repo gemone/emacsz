@@ -1612,9 +1612,10 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
         {
             const offers = [_]protocol.SelectionOffer{
                 .{ .target = "UTF8_STRING", .priority = 1 },
+                .{ .target = "STRING", .priority = 2 },
             };
             const base_sequence = scene.next_sequence.?;
-            var messages: [4]std.ArrayList(u8) = .{ .empty, .empty, .empty, .empty };
+            var messages: [6]std.ArrayList(u8) = .{ .empty, .empty, .empty, .empty, .empty, .empty };
             defer {
                 for (&messages) |*message| message.deinit(gpa);
             }
@@ -1676,6 +1677,45 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
             }, data_payload.items, &messages[2]);
             try scene.apply(messages[2].items);
 
+            var error_request_payload: std.ArrayList(u8) = .empty;
+            defer error_request_payload.deinit(gpa);
+            try protocol.encodeSelectionRequest(gpa, .{
+                .kind = .primary,
+                .request_id = 9002,
+                .generation = 1,
+                .target = "STRING",
+            }, &error_request_payload);
+            try protocol.encodeEnvelope(gpa, .{
+                .flags = 0,
+                .message_type = protocol.Message.selection_request,
+                .sequence = base_sequence + 3,
+                .ack_sequence = 0,
+                .session_id = capability.session_id,
+                .frame_id = 1,
+                .timestamp_ns = base_sequence + 3,
+            }, error_request_payload.items, &messages[3]);
+            try scene.apply(messages[3].items);
+
+            var error_payload: std.ArrayList(u8) = .empty;
+            defer error_payload.deinit(gpa);
+            try protocol.encodeSelectionError(gpa, .{
+                .kind = .primary,
+                .request_id = 9002,
+                .generation = 1,
+                .reason = .conversion_failed,
+                .message = "conversion unavailable",
+            }, &error_payload);
+            try protocol.encodeEnvelope(gpa, .{
+                .flags = 0,
+                .message_type = protocol.Message.selection_error,
+                .sequence = base_sequence + 4,
+                .ack_sequence = 0,
+                .session_id = capability.session_id,
+                .frame_id = 1,
+                .timestamp_ns = base_sequence + 4,
+            }, error_payload.items, &messages[4]);
+            try scene.apply(messages[4].items);
+
             var clear_payload: std.ArrayList(u8) = .empty;
             defer clear_payload.deinit(gpa);
             try protocol.encodeSelectionClear(gpa, .{
@@ -1685,13 +1725,13 @@ fn runFactsPublisher(gpa: std.mem.Allocator, io: std.Io, config: *Config) !void 
             try protocol.encodeEnvelope(gpa, .{
                 .flags = 0,
                 .message_type = protocol.Message.selection_owner_clear,
-                .sequence = base_sequence + 3,
+                .sequence = base_sequence + 5,
                 .ack_sequence = 0,
                 .session_id = capability.session_id,
                 .frame_id = 1,
-                .timestamp_ns = base_sequence + 3,
-            }, clear_payload.items, &messages[3]);
-            try scene.apply(messages[3].items);
+                .timestamp_ns = base_sequence + 5,
+            }, clear_payload.items, &messages[5]);
+            try scene.apply(messages[5].items);
 
             for (messages) |message| {
                 const envelope = (try protocol.decodeEnvelope(message.items)).envelope;
@@ -6393,6 +6433,8 @@ fn runEpxlInteractiveFrontend(
     var selection_transfer_owner_seen = false;
     var selection_transfer_request_seen = false;
     var selection_transfer_data_seen = false;
+    var selection_error_request_seen = false;
+    var selection_error_seen = false;
     var selection_transfer_clear_seen = false;
     var theme_event_delivered = false;
     var delivered_monitor: ?protocol.MonitorEvent = null;
@@ -6451,6 +6493,23 @@ fn runEpxlInteractiveFrontend(
                         std.mem.eql(u8, scene.selection_transfer.?.dataSlice(), "Proto-UI transfer"))
                     {
                         selection_transfer_data_seen = true;
+                    }
+                    if (envelope.message_type == protocol.Message.selection_request and
+                        scene.selection_transfer != null and
+                        scene.selection_transfer.?.request_id == 9002 and
+                        scene.selection_transfer.?.status == .waiting and
+                        std.mem.eql(u8, scene.selection_transfer.?.targetSlice(), "STRING"))
+                    {
+                        selection_error_request_seen = true;
+                    }
+                    if (envelope.message_type == protocol.Message.selection_error and
+                        scene.selection_transfer != null and
+                        scene.selection_transfer.?.request_id == 9002 and
+                        scene.selection_transfer.?.status == .failed and
+                        scene.selection_transfer.?.error_reason.? == .conversion_failed and
+                        std.mem.eql(u8, scene.selection_transfer.?.errorSlice(), "conversion unavailable"))
+                    {
+                        selection_error_seen = true;
                     }
                     if (envelope.message_type == protocol.Message.selection_owner_clear and
                         scene.selection_kind == null and
@@ -6849,10 +6908,11 @@ fn runEpxlInteractiveFrontend(
     }
     if (config.selection_transfer_smoke) {
         if (!selection_transfer_owner_seen or !selection_transfer_request_seen or
-            !selection_transfer_data_seen or !selection_transfer_clear_seen)
+            !selection_transfer_data_seen or !selection_error_request_seen or
+            !selection_error_seen or !selection_transfer_clear_seen)
             return error.SelectionTransferNotObserved;
         std.debug.print(
-            "sdl3-selection-transfer-smoke: {{\"kind\":\"sdl3-selection-transfer-smoke\",\"selection\":\"primary\",\"request_id\":9001,\"target\":\"UTF8_STRING\",\"data\":\"Proto-UI transfer\",\"status\":\"completed\",\"cleared\":true,\"result\":\"pass\"}}\n",
+            "sdl3-selection-transfer-smoke: {{\"kind\":\"sdl3-selection-transfer-smoke\",\"selection\":\"primary\",\"request_id\":9001,\"target\":\"UTF8_STRING\",\"data\":\"Proto-UI transfer\",\"status\":\"completed\",\"error_request_id\":9002,\"error_reason\":\"conversion_failed\",\"error_message\":\"conversion unavailable\",\"cleared\":true,\"result\":\"pass\"}}\n",
             .{},
         );
     }
