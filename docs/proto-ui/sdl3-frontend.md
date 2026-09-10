@@ -327,9 +327,25 @@ and repeat events become strict v2 intents with scancode, logical-key name,
 folded left/right modifiers, and explicit state/repeat. Printable unmodified
 presses defer to `TEXT_INPUT`; ASCII-only peers continue using the existing
 4-byte profile. The frontend never evaluates Elisp. The EPXL Emacs bridge
-ACKs observed v2 events and may execute only a tiny explicit compatibility
-subset; all other events remain observed/unhandled. This is not full keymap,
-IME, or command execution parity.
+ACKs observed v2 events. W8h initially executed only a tiny explicit
+compatibility subset; W8h-c below replaces that with negotiated bounded
+canonical key descriptions. Neither version claims full keymap, IME, or
+command execution parity.
+
+W8h-c adds optional, independently negotiated `input.key_command_v1`. The Zig
+frontend translates only a closed whitelist of full-key events into bounded
+canonical Emacs key descriptions such as `C-a`, `C-<left>`, and `<f5>`. It
+emits no command descriptor for key release, malformed/unknown keys,
+non-ASCII names, likely text-producing shifted/unmodified printable events, or
+unsafe prefix/quit events (`ESC`, `C-g`, `C-]`, `C-u`, `C-x`, `M-x`);
+command descriptors are base64 and bounded to 32 bytes. Emacs owns validation
+and execution:
+the publisher accepts only press/repeat, an exact JSON marker, a bounded
+base64/UTF-8 key description, and a conservative key-description character
+set, reduces the parsed sequence to exactly one key event, then calls
+`execute-kbd-macro`. This is degraded keyboard-command compatibility only.
+It is not full Emacs keymap, minor-mode, prefix, keyboard-quit, session, or
+IME parity, and it does not activate runtime registration or `output_proto`.
 
 W11a implements the first clipboard capture path: Ctrl+V reads SDL clipboard
 text, validates it as a bounded one-line UTF-8 payload, and frees SDL-owned

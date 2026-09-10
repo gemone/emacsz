@@ -2106,25 +2106,180 @@ fn base64Alloc(gpa: std.mem.Allocator, bytes: []const u8) ![]u8 {
     return encoded;
 }
 
+fn appendKeyDescriptionModifier(gpa: std.mem.Allocator, out: *std.ArrayList(u8), enabled: bool, prefix: []const u8) !void {
+    if (enabled) try out.appendSlice(gpa, prefix);
+}
+
+/// Translate a bounded full-key event to a canonical Emacs key description.
+/// The mapping is deliberately closed: unknown names, lock-only input,
+/// text-producing input, and non-ASCII logical keys stay observation-only
+/// rather than reaching Emacs.
+fn emacsKeyDescription(
+    gpa: std.mem.Allocator,
+    event: input_policy.FullKeyEvent,
+) !?[]u8 {
+    if (event.state == .up or event.logicalKey().len == 0 or event.text().len != 0)
+        return null;
+    var description: std.ArrayList(u8) = .empty;
+    errdefer description.deinit(gpa);
+    const modifiers = event.modifiers;
+    try appendKeyDescriptionModifier(gpa, &description, modifiers & input_policy.key_modifier_control != 0, "C-");
+    try appendKeyDescriptionModifier(gpa, &description, modifiers & (input_policy.key_modifier_alt | input_policy.key_modifier_meta) != 0, "M-");
+    try appendKeyDescriptionModifier(gpa, &description, modifiers & input_policy.key_modifier_super != 0, "s-");
+    try appendKeyDescriptionModifier(gpa, &description, modifiers & input_policy.key_modifier_hyper != 0, "H-");
+    try appendKeyDescriptionModifier(gpa, &description, modifiers & input_policy.key_modifier_shift != 0, "S-");
+
+    const logical = event.logicalKey();
+    const physical = event.physical_key;
+    var key_name: ?[]const u8 = null;
+    var fixed_buffer: [4]u8 = undefined;
+    var function_buffer: [5]u8 = undefined;
+    // Shifted printable characters belong to TEXT_INPUT in this slice.  A
+    // command twin would double-insert when both reverse inputs are enabled.
+    if (logical.len == 1 and logical[0] >= 0x20 and logical[0] <= 0x7e and
+        modifiers & ~input_policy.key_modifier_shift == 0) return null;
+    if (physical >= 4 and physical <= 29) {
+        // SDL keyboard-layout scancodes 4..29 are A..Z.  Canonical Emacs
+        // command descriptions use lowercase base keys.
+        fixed_buffer[0] = @intCast('a' + (physical - 4));
+        key_name = fixed_buffer[0..1];
+    } else if (physical >= 30 and physical <= 39) {
+        // SDL scancodes 30..39 are the top-digit row 1..9 followed by 0.
+        fixed_buffer[0] = if (physical == 39)
+            '0'
+        else
+            @intCast('1' + (physical - 30));
+        key_name = fixed_buffer[0..1];
+    } else if (std.ascii.eqlIgnoreCase(logical, "return") or std.ascii.eqlIgnoreCase(logical, "enter")) {
+        key_name = "RET";
+    } else if (std.ascii.eqlIgnoreCase(logical, "escape")) {
+        key_name = "ESC";
+    } else if (std.ascii.eqlIgnoreCase(logical, "backspace")) {
+        key_name = "DEL";
+    } else if (std.ascii.eqlIgnoreCase(logical, "tab")) {
+        key_name = "TAB";
+    } else if (std.ascii.eqlIgnoreCase(logical, "space")) {
+        key_name = "SPC";
+    } else if (std.ascii.eqlIgnoreCase(logical, "up")) {
+        key_name = "<up>";
+    } else if (std.ascii.eqlIgnoreCase(logical, "down")) {
+        key_name = "<down>";
+    } else if (std.ascii.eqlIgnoreCase(logical, "left")) {
+        key_name = "<left>";
+    } else if (std.ascii.eqlIgnoreCase(logical, "right")) {
+        key_name = "<right>";
+    } else if (std.ascii.eqlIgnoreCase(logical, "home")) {
+        key_name = "<home>";
+    } else if (std.ascii.eqlIgnoreCase(logical, "end")) {
+        key_name = "<end>";
+    } else if (std.ascii.eqlIgnoreCase(logical, "pageup")) {
+        key_name = "<prior>";
+    } else if (std.ascii.eqlIgnoreCase(logical, "pagedown")) {
+        key_name = "<next>";
+    } else if (std.ascii.eqlIgnoreCase(logical, "insert")) {
+        key_name = "<insert>";
+    } else if (std.ascii.eqlIgnoreCase(logical, "delete")) {
+        key_name = "<delete>";
+    } else if (logical.len >= 2 and std.ascii.toLower(logical[0]) == 'f') {
+        var number: usize = 0;
+        var valid = true;
+        for (logical[1..]) |byte| {
+            if (byte < '0' or byte > '9') {
+                valid = false;
+                break;
+            }
+            number = number * 10 + (byte - '0');
+            if (number > 24) {
+                valid = false;
+                break;
+            }
+        }
+        if (valid and number > 0) {
+            function_buffer[0] = '<';
+            function_buffer[1] = 'f';
+            var length: usize = 2;
+            var value = number;
+            var digits: [2]u8 = undefined;
+            var digit_count: usize = 0;
+            while (value > 0) {
+                digits[digit_count] = @intCast('0' + value % 10);
+                digit_count += 1;
+                value /= 10;
+            }
+            while (digit_count > 0) {
+                digit_count -= 1;
+                function_buffer[length] = digits[digit_count];
+                length += 1;
+            }
+            function_buffer[length] = '>';
+            key_name = function_buffer[0 .. length + 1];
+        }
+    }
+
+    if (key_name == null and logical.len == 1) {
+        const byte = logical[0];
+        if (byte >= 'a' and byte <= 'z') {
+            fixed_buffer[0] = byte;
+            key_name = fixed_buffer[0..1];
+        } else if (byte >= 'A' and byte <= 'Z') {
+            fixed_buffer[0] = byte + ('a' - 'A');
+            key_name = fixed_buffer[0..1];
+        } else if (byte >= 0x20 and byte <= 0x7e and byte != ' ') {
+            fixed_buffer[0] = byte;
+            key_name = fixed_buffer[0..1];
+        }
+    }
+    const name = key_name orelse {
+        description.deinit(gpa);
+        return null;
+    };
+    try description.appendSlice(gpa, name);
+    // These are control/prefix entry points, not the bounded motion/function
+    // commands exercised by this diagnostic slice.
+    if (std.mem.eql(u8, description.items, "ESC") or
+        std.mem.eql(u8, description.items, "C-g") or
+        std.mem.eql(u8, description.items, "C-]") or
+        std.mem.eql(u8, description.items, "C-u") or
+        std.mem.eql(u8, description.items, "C-x") or
+        std.mem.eql(u8, description.items, "M-x"))
+    {
+        description.deinit(gpa);
+        return null;
+    }
+    if (description.items.len > 32) {
+        description.deinit(gpa);
+        return null;
+    }
+    return try description.toOwnedSlice(gpa);
+}
+
 fn writeKeyV2Artifact(
     gpa: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
     sequence: u64,
     event: input_policy.FullKeyEvent,
+    command_execution_allowed: bool,
 ) !void {
     const logical = try base64Alloc(gpa, event.logicalKey());
     defer gpa.free(logical);
     const text = try base64Alloc(gpa, event.text());
     defer gpa.free(text);
+    const command_key = if (command_execution_allowed)
+        try emacsKeyDescription(gpa, event)
+    else
+        null;
+    const encoded_key = if (command_key) |key| try base64Alloc(gpa, key) else null;
+    defer if (encoded_key) |key| gpa.free(key);
     const value = try std.fmt.allocPrint(
         gpa,
-        "{{\"schema\":2,\"state\":{d},\"modifiers\":{d},\"physical_key\":{d},\"repeat_count\":{d},\"device_id\":{d},\"layout_id\":{d},\"logical_key\":\"{s}\",\"text\":\"{s}\",\"execution\":\"observed\"}}",
+        "{{\"schema\":2,\"state\":{d},\"modifiers\":{d},\"physical_key\":{d},\"repeat_count\":{d},\"device_id\":{d},\"layout_id\":{d},\"logical_key\":\"{s}\",\"text\":\"{s}\",\"command_key\":\"{s}\",\"execution\":\"{s}\"}}",
         .{
             @intFromEnum(event.state), event.modifiers,
             event.physical_key,        event.repeat_count,
             event.device_id,           event.layout_id,
             logical,                   text,
+            encoded_key orelse "",     if (encoded_key != null) "command" else "observed",
         },
     );
     defer gpa.free(value);
@@ -2255,7 +2410,14 @@ fn awaitFrameAck(
                     defer gpa.free(value);
                     try writeEpxlInputArtifact(gpa, io, input_path, payload.envelope.sequence, "pointer", value);
                 } else if (is_key_v2) {
-                    try writeKeyV2Artifact(gpa, io, input_path, payload.envelope.sequence, full_key.?);
+                    try writeKeyV2Artifact(
+                        gpa,
+                        io,
+                        input_path,
+                        payload.envelope.sequence,
+                        full_key.?,
+                        capabilities.contains(.input_key_command_v1),
+                    );
                 } else if (is_focus) {
                     const event = try protocol.decodeFocusEvent(payload.bytes);
                     const phase = if (event.phase == .gained) "focus-gained" else "focus-lost";
@@ -5501,10 +5663,11 @@ fn runLiveFrontend(
 
     if (config.mode == .emacs_epxl_key_v2) {
         if (!negotiated.effective.contains(.input_key_bounded) or
-            !negotiated.effective.contains(.input_key_full_v2))
+            !negotiated.effective.contains(.input_key_full_v2) or
+            !negotiated.effective.contains(.input_key_command_v1))
             return error.FullKeyCapabilityNotNegotiated;
         std.debug.print(
-            "sdl3-epxl-key-v2-smoke: {{\"kind\":\"sdl3-epxl-key-v2-smoke\",\"negotiated\":{{\"input.key_bounded\":true,\"input.key_full_v2\":true}},\"result\":\"negotiated\"}}\n",
+            "sdl3-epxl-key-v2-smoke: {{\"kind\":\"sdl3-epxl-key-v2-smoke\",\"negotiated\":{{\"input.key_bounded\":true,\"input.key_full_v2\":true,\"input.key_command_v1\":true}},\"result\":\"negotiated\"}}\n",
             .{},
         );
         try delivery.pushKeyV2(input_policy.translateFullKey(4, "a", true, false, input_policy.sdl_kmod_lctrl, 0).?);
@@ -5514,10 +5677,11 @@ fn runLiveFrontend(
 
     if (config.mode == .emacs_epxl_key_modifier) {
         if (!negotiated.effective.contains(.input_key_bounded) or
-            !negotiated.effective.contains(.input_key_full_v2))
+            !negotiated.effective.contains(.input_key_full_v2) or
+            !negotiated.effective.contains(.input_key_command_v1))
             return error.FullKeyCapabilityNotNegotiated;
         std.debug.print(
-            "sdl3-key-modifier-smoke: {{\"kind\":\"sdl3-key-modifier-smoke\",\"negotiated\":{{\"input.key_bounded\":true,\"input.key_full_v2\":true}},\"result\":\"negotiated\"}}\n",
+            "sdl3-key-modifier-smoke: {{\"kind\":\"sdl3-key-modifier-smoke\",\"negotiated\":{{\"input.key_bounded\":true,\"input.key_full_v2\":true,\"input.key_command_v1\":true}},\"result\":\"negotiated\"}}\n",
             .{},
         );
         try delivery.pushKeyV2(input_policy.translateFullKey(9, "f", true, false, input_policy.sdl_kmod_lctrl, 0).?);

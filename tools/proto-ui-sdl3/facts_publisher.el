@@ -239,32 +239,45 @@
       (redisplay))))
 
 (defun proto-ui--key-v2-action (value)
-  (let* ((event (json-parse-string value :object-type 'plist))
-         (logical (decode-coding-string
-                   (base64-decode-string
-                    (plist-get event :logical_key)) 'utf-8))
+  (let* ((event (condition-case nil
+                   (json-parse-string value :object-type 'plist)
+                 (error nil)))
          (state (plist-get event :state))
-         (modifiers (plist-get event :modifiers))
-         (physical (plist-get event :physical_key)))
-    (when (= state 1)
-      (condition-case nil
-          (with-current-buffer (window-buffer (selected-window))
-            (cond
-             ((and (= modifiers 2) (= physical 4) (string= logical "a"))
-              (beginning-of-line))
-             ((and (= modifiers 2) (= physical 8) (string= logical "e"))
-              (end-of-line))
-             ((and (= modifiers 2) (= physical 5) (string= logical "b"))
-              (backward-char 1))
-             ((and (= modifiers 2) (= physical 9) (string= logical "f"))
-              (forward-char 1))
-             ((and (= modifiers 8) (= physical 5) (string= logical "b"))
-              (backward-word 1))
-             ((and (= modifiers 8) (= physical 9) (string= logical "f"))
-              (forward-word 1)))
-            (set-window-point (selected-window) (point))
-            (redisplay))
-        (error nil)))))
+         (raw-command-key (plist-get event :command_key))
+         (execution (plist-get event :execution)))
+    (when (and (eql (plist-get event :schema) 2)
+               (memq state '(1 3))
+               (equal execution "command")
+               (stringp raw-command-key)
+               (> (length raw-command-key) 0)
+               (<= (length raw-command-key) 32))
+      (let ((command-key
+             (condition-case nil
+                 (decode-coding-string
+                  (base64-decode-string raw-command-key) 'utf-8)
+               (error nil))))
+        (when (and (stringp command-key) (> (length command-key) 0))
+          (let ((valid-command-key t)
+                (index 0))
+            (while (and valid-command-key (< index (length command-key)))
+              (let ((char (aref command-key index)))
+                (setq valid-command-key
+                      (or (and (>= char ?a) (<= char ?z))
+                          (and (>= char ?A) (<= char ?Z))
+                          (and (>= char ?0) (<= char ?9))
+                          (= char ?-) (= char ?<) (= char ?>)))
+                (setq index (1+ index))))
+            (when valid-command-key
+              (condition-case nil
+                  (with-current-buffer (window-buffer (selected-window))
+                    (let ((key-sequence (kbd command-key)))
+                      ;; One event only: this bridge must not accept a
+                      ;; multi-key macro even if the source is compromised.
+                      (when (= (length key-sequence) 1)
+                        (execute-kbd-macro key-sequence)))
+                    (set-window-point (selected-window) (point))
+                    (redisplay))
+                (error nil)))))))))
 
 (defun proto-ui--pointer-v2-action (value)
   (let* ((event (condition-case nil

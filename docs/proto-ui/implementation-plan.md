@@ -2010,6 +2010,39 @@ Ctrl-B.  The Emacs-owned publisher maps these exact modifier/scancode records to
 public motion commands and the smoke asserts the final public cursor fact.  This
 is still a bounded compatibility subset, not general keymap execution.
 
+### W8h-c — Bounded canonical key command execution (reviewed)
+
+Goal: replace the hardcoded modifier/scancode command cases with bounded
+canonical Emacs key descriptions on the same negotiated full-key v2 transport
+without claiming full keyboard compatibility or runtime activation.
+
+Implemented:
+
+1. `input.key_command_v1` is a separate optional capability. The wire codec
+   remains `KEY_EVENT` v2; the command field is an adapter-owned JSON
+   extension and no command descriptor is emitted unless the effective set
+   contains both `input.key_full_v2` and `input.key_command_v1`.
+2. Zig maps only a closed SDL whitelist to bounded Emacs key descriptions:
+   letter/digit scancodes, Return, Escape, Backspace, Tab, Space, arrows,
+   Home/End, PageUp/PageDown, Insert/Delete, and F1-F24. Unknown logical
+   names, non-ASCII text, lock-only behavior, release, likely text-producing
+   shifted/unmodified printable events, and events with `TEXT_INPUT` bytes
+   remain observation-only. The current slice also leaves quit/prefix entry
+   points (`ESC`, `C-g`, `C-]`, `C-u`, `C-x`, `M-x`) observation-only so it
+   cannot enter an interactive prefix sequence while a publisher loop is
+   waiting.
+3. Command descriptions fold C/M/s/H modifiers into canonical prefixes,
+   cap descriptions at 32 bytes, and base64-encode them in JSON. The Zig side
+   does not evaluate Elisp.
+4. Emacs validates JSON schema/state, execution marker, base64/UTF-8, length,
+   and a conservative key-description character set, then parses exactly one
+   key event before `execute-kbd-macro`. Execution failures are contained and
+   do not become arbitrary Elisp evaluation.
+5. This is degraded bounded keyboard-command compatibility. Full keymap,
+   minor-mode, prefix, keyboard-quit, session, IME, and `output_proto`/runtime
+   registration parity remain pending. Evidence is `sdl3-key-modifier-smoke`;
+   both required smokes fail closed when the capability is absent.
+
 ### W9n — Backward-compatible pointer event v2 transport (approved)
 
 Goal: extend the existing bounded `POINTER_EVENT` profile with strict,
