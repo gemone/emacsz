@@ -1572,7 +1572,7 @@ pub fn build(b: *std.Build) void {
         );
         const sdl3_renderer_bench_step = b.step(
             "sdl3-renderer-bench",
-            "Benchmark full draw and unchanged-skip SDL3 presentation in ReleaseFast",
+            "Benchmark bounded SDL3 renderer workload proxies in ReleaseFast",
         );
         sdl3_renderer_bench_step.dependOn(&run_sdl3_renderer_bench.step);
         sdl3_renderer_bench_step.dependOn(&install_renderer_bench_report.step);

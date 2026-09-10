@@ -3468,9 +3468,11 @@ Review gates:
 
 ### W14 — Performance hardening
 
-Goal: prove the documented performance improvement.
+Goal: measure the documented adapter and renderer baselines; performance
+improvement requires a separate end-to-end comparison.
 
-Status: W14-a and W14-b complete. `proto-ui-bench` is an opt-in, adapter-only
+Status: W14-a, W14-b, and W14-c renderer-proxy work are complete; full W14
+parity remains partial.  `proto-ui-bench` is an opt-in, adapter-only
 ReleaseFast baseline that installs `zig-out/proto-ui/benchmark.json`.
 It covers EUP `FRAME_UPDATE` encoding, envelope/payload decode and validation,
 fresh `frontend.Scene.apply`, atomic `CaptureService` encoding, and bounded
@@ -3483,17 +3485,27 @@ renderer-call benchmark for the real draw list plus `SDL_RenderPresent`: a
 deterministic 960x600 replay scene measures bounded full-draw and unchanged-
 skip CPU wall-clock latency, FPS, commands/frame, and presented/skipped frames.
 It records the selected renderer and build mode and is opt-in; its result only
-proves the run/report, not a host-independent regression threshold.  Frame
-creation, typing, scroll, resize, faces, fonts, images, widgets, multi-frame,
-comprehensive renderer tiers, and optimization work remain W14 follow-up work.
+proves the run/report, not a host-independent regression threshold.  W14-c keeps
+those baselines and adds three deterministic renderer calls with schema v2:
+`typing_proxy` alternates the visible replay cursor, `scroll_proxy` alternates a
+visible replay row offset, and `resize_proxy` synchronously alternates two
+hidden-window sizes with forced geometry invalidation.  Each phase has bounded
+iterations, nearest-rank latency, FPS, command/frame totals, and explicit
+`workload_kind:"renderer_proxy"` evidence; the benchmark restores the scene and
+original window state afterward.  These are frontend renderer-call workload
+proxies only, not real typing/scroll/resize, Emacs input, core redisplay,
+end-to-end Emacs work, GPU timestamps, PGTK comparison, or host-independent
+regression evidence.  Frame creation, real typing,
+scroll, resize, faces, fonts, images, widgets, multi-frame, comprehensive
+renderer tiers, and optimization work remain W14 follow-up work.
 
 Tasks:
 
 1. Add machine-readable benchmark harness. *(W14-a covers the adapter memory-transport baseline.)*
-2. Benchmark frame creation, typing, scroll, resize, faces, fonts, images, widgets, and multi-frame. *(W14-b covers a bounded SDL3 full-draw/unchanged-skip renderer baseline; full backend workloads remain pending.)*
+2. Benchmark frame creation, typing, scroll, resize, faces, fonts, images, widgets, and multi-frame. *(W14-b covers a bounded SDL3 full-draw/unchanged-skip renderer baseline; W14-c covers deterministic renderer-call typing/scroll/resize proxies; full backend workloads remain pending, and resize geometry setup is outside the timed renderer call.)*
 3. Add allocation counters. *(W14-a records measurable per-operation allocation counts.)*
 4. Add bandwidth counters. *(W14-a records bytes/op and MiB/s for adapter paths.)*
-5. Add latency percentiles. *(W14-a records p50/p95/p99 and mean; W14-b reuses nearest-rank summaries for the SDL renderer-call path.)*
+5. Add latency percentiles. *(W14-a records p50/p95/p99 and mean; W14-b/W14-c reuse nearest-rank summaries for SDL renderer-call paths.)*
 6. Tune damage merging.
 7. Tune glyph atlas.
 8. Tune transport slab reuse.

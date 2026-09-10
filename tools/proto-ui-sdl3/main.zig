@@ -8815,6 +8815,130 @@ fn buildFactsDrawList(
     }, .{ .r = 0xff, .g = 0xd5, .b = 0x4d });
 }
 
+fn benchmarkInside(offset: i32, extent: i32, limit: i32) bool {
+    return offset >= 0 and extent >= 0 and
+        @as(i64, offset) <= @as(i64, limit) and
+        @as(i64, extent) <= @as(i64, limit) - @as(i64, offset);
+}
+
+fn alternateTypingProxy(scene: *frontend.Scene) !void {
+    if (scene.cursor_count == 0) return error.NoBenchmarkCursor;
+    var cursor_index: usize = 0;
+    for (scene.cursors[0..scene.cursor_count], 0..) |candidate, index| {
+        if (candidate.visible and candidate.active) {
+            cursor_index = index;
+            break;
+        }
+    }
+    const cursor = &scene.cursors[cursor_index];
+    const owner = findWindowById(scene.windows.items, cursor.window_id) orelse
+        return error.NoBenchmarkCursorWindow;
+    if (!owner.visible or !cursor.visible or !cursor.active or
+        owner.width <= 0 or owner.height <= 0 or
+        cursor.width <= 0 or cursor.height <= 0 or
+        !benchmarkInside(cursor.x, cursor.width, owner.width) or
+        !benchmarkInside(cursor.y, cursor.height, owner.height))
+        return error.InvalidBenchmarkCursor;
+
+    const base_x: i64 = 8;
+    const maximum_x: i64 = @as(i64, owner.width) - @as(i64, cursor.width);
+    const alternate_x: i64 = @min(maximum_x, base_x + 16);
+    if (alternate_x <= base_x) return error.InvalidBenchmarkCursorGeometry;
+    cursor.x = if (cursor.x == base_x)
+        @intCast(alternate_x)
+    else
+        @intCast(base_x);
+    scene.cursor = cursor.*;
+}
+
+fn alternateScrollProxy(scene: *frontend.Scene, row_index: usize, original_y: i32) !void {
+    if (row_index >= scene.rows.items.len) return error.NoBenchmarkRow;
+    const row = &scene.rows.items[row_index];
+    const owner = findWindowById(scene.windows.items, row.window_id) orelse
+        return error.NoBenchmarkRowWindow;
+    if (!owner.visible or owner.width <= 0 or owner.height <= 0 or
+        row.visible_height <= 0 or
+        !benchmarkInside(row.x, row.width, owner.width) or
+        !benchmarkInside(row.y, row.height, owner.height))
+        return error.InvalidBenchmarkRowGeometry;
+
+    const next_y: i64 = if (row.y == original_y)
+        @as(i64, row.y) + 1
+    else
+        original_y;
+    const bottom: i64 = next_y + @as(i64, row.visible_height);
+    if (next_y < 0 or bottom > @as(i64, owner.height)) return error.InvalidBenchmarkRowGeometry;
+    row.y = @intCast(next_y);
+}
+
+const RendererWorkload = struct {
+    name: []const u8,
+    iterations: usize,
+    warmup: usize,
+    summary: renderer_policy.LatencySummary,
+    draw_commands_total: u64,
+    presented_frames: u64,
+    skipped_frames: u64,
+};
+
+fn appendRendererWorkload(
+    gpa: std.mem.Allocator,
+    report: *std.ArrayList(u8),
+    workload: RendererWorkload,
+    first: bool,
+) !void {
+    if (first) try report.appendSlice(gpa, ",\"workloads\":[");
+    if (!first) try report.appendSlice(gpa, ",");
+    const commands_per_frame: f64 =
+        @as(f64, @floatFromInt(workload.draw_commands_total)) /
+        @as(f64, @floatFromInt(workload.iterations));
+    try report.appendSlice(gpa, "{\"name\":");
+    try runtime.appendJsonStringPublic(gpa, report, workload.name);
+    try report.appendSlice(
+        gpa,
+        ",\"workload_kind\":\"renderer_proxy\",\"iterations_policy\":\"bounded\",",
+    );
+    try report.print(
+        gpa,
+        "\"iterations\":{d},\"warmup\":{d},\"warmup_policy\":\"none\",\"p50_ns\":{d},\"p95_ns\":{d},\"p99_ns\":{d},\"mean_ns\":{d:.2},\"fps\":{d:.2},\"draw_commands_total\":{d},\"commands_per_frame\":{d:.2},\"presented_frames\":{d},\"skipped_frames\":{d}}}",
+        .{
+            workload.iterations,
+            workload.warmup,
+            workload.summary.p50_ns,
+            workload.summary.p95_ns,
+            workload.summary.p99_ns,
+            workload.summary.mean_ns,
+            workload.summary.fps,
+            workload.draw_commands_total,
+            commands_per_frame,
+            workload.presented_frames,
+            workload.skipped_frames,
+        },
+    );
+}
+
+fn restoreRendererBenchState(
+    scene: *frontend.Scene,
+    window: *SDL_Window,
+    typing_cursor: frontend.Cursor,
+    typing_cursor_index: usize,
+    scroll_row_index: usize,
+    scroll_row_y: i32,
+    original_width: c_int,
+    original_height: c_int,
+) !void {
+    scene.cursors[typing_cursor_index] = typing_cursor;
+    scene.cursor = typing_cursor;
+    scene.rows.items[scroll_row_index].y = scroll_row_y;
+    if (!SDL_SetWindowSize(window, original_width, original_height)) return sdlFail("SDL_SetWindowSize");
+    if (!SDL_SyncWindow(window)) return sdlFail("SDL_SyncWindow");
+    var restored_width: c_int = 0;
+    var restored_height: c_int = 0;
+    SDL_GetWindowSize(window, &restored_width, &restored_height);
+    if (restored_width != original_width or restored_height != original_height)
+        return error.BenchmarkResizeRestoreFailed;
+}
+
 fn runRendererBench(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -8843,6 +8967,10 @@ fn runRendererBench(
     defer SDL_DestroyWindow(window);
     const selected_renderer = try createRenderer(gpa, window, config.renderer_request, config.present_mode);
     defer destroyRenderer(selected_renderer);
+    var original_width: c_int = 0;
+    var original_height: c_int = 0;
+    SDL_GetWindowSize(window, &original_width, &original_height);
+    if (original_width <= 0 or original_height <= 0) return error.InvalidOutputGeometry;
 
     var frame_gate: renderer_policy.FrameGate = .{};
     var counters: renderer_policy.FrameCounters = .{};
@@ -8860,6 +8988,8 @@ fn runRendererBench(
     defer gpa.free(full_samples);
     const skip_samples = try gpa.alloc(u64, iterations);
     defer gpa.free(skip_samples);
+    const workload_samples = try gpa.alloc(u64, iterations);
+    defer gpa.free(workload_samples);
     counters = .{};
     var full_draws: u64 = 0;
 
@@ -8880,12 +9010,148 @@ fn runRendererBench(
         const elapsed = performanceTicksToNanos(ended - started);
         skip_samples[index] = if (elapsed == 0) 1 else elapsed;
     }
+    const baseline_counters = counters;
 
     const full = try renderer_policy.summarizeLatencies(full_samples);
     const skipped = try renderer_policy.summarizeLatencies(skip_samples);
+
+    // These are renderer-call proxies: the deterministic replay scene is
+    // mutated locally and never originates Emacs, redisplay, or transport work.
+    const typing_cursor = scene.cursor orelse return error.NoBenchmarkCursor;
+    const typing_cursor_index: usize = blk: {
+        for (scene.cursors[0..scene.cursor_count], 0..) |candidate, index| {
+            if (std.meta.eql(candidate, typing_cursor)) break :blk index;
+        }
+        return error.NoBenchmarkCursor;
+    };
+    if (scene.rows.items.len == 0) return error.NoBenchmarkRow;
+    const scroll_row_index: usize = 0;
+    const scroll_row_y = scene.rows.items[scroll_row_index].y;
+    errdefer restoreRendererBenchState(
+        &scene,
+        window,
+        typing_cursor,
+        typing_cursor_index,
+        scroll_row_index,
+        scroll_row_y,
+        original_width,
+        original_height,
+    ) catch |restore_error| std.debug.print(
+        "sdl3-eup-smoke: renderer benchmark restore failed: {s}\n",
+        .{@errorName(restore_error)},
+    );
+
+    counters = .{};
+    var workload_draws: u64 = 0;
+    for (0..iterations) |index| {
+        try alternateTypingProxy(&scene);
+        frame_gate.dirty = true;
+        const started = SDL_GetPerformanceCounter();
+        const execution = try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &counters, null);
+        const ended = SDL_GetPerformanceCounter();
+        const elapsed = performanceTicksToNanos(ended - started);
+        workload_samples[index] = if (elapsed == 0) 1 else elapsed;
+        if (execution.commands == 0) return error.RendererWorkloadSkipped;
+        workload_draws += execution.commands;
+    }
+    if (counters.presented_frames != iterations or counters.skipped_frames != 0)
+        return error.RendererWorkloadIncomplete;
+    const typing = try renderer_policy.summarizeLatencies(workload_samples);
+    const typing_result: RendererWorkload = .{
+        .name = "typing_proxy",
+        .iterations = iterations,
+        .warmup = 0,
+        .summary = typing,
+        .draw_commands_total = workload_draws,
+        .presented_frames = counters.presented_frames,
+        .skipped_frames = counters.skipped_frames,
+    };
+
+    counters = .{};
+    workload_draws = 0;
+    for (0..iterations) |index| {
+        try alternateScrollProxy(&scene, scroll_row_index, scroll_row_y);
+        frame_gate.dirty = true;
+        const started = SDL_GetPerformanceCounter();
+        const execution = try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &counters, null);
+        const ended = SDL_GetPerformanceCounter();
+        const elapsed = performanceTicksToNanos(ended - started);
+        workload_samples[index] = if (elapsed == 0) 1 else elapsed;
+        if (execution.commands == 0) return error.RendererWorkloadSkipped;
+        workload_draws += execution.commands;
+    }
+    if (counters.presented_frames != iterations or counters.skipped_frames != 0)
+        return error.RendererWorkloadIncomplete;
+    const scrolling = try renderer_policy.summarizeLatencies(workload_samples);
+    const scroll_result: RendererWorkload = .{
+        .name = "scroll_proxy",
+        .iterations = iterations,
+        .warmup = 0,
+        .summary = scrolling,
+        .draw_commands_total = workload_draws,
+        .presented_frames = counters.presented_frames,
+        .skipped_frames = counters.skipped_frames,
+    };
+
+    counters = .{};
+    workload_draws = 0;
+    const resize_sizes = [_]@Vector(2, c_int){
+        .{ 720, 480 },
+        .{ 1200, 800 },
+    };
+    for (0..iterations) |index| {
+        // Keep synchronous geometry setup and validation outside the measured
+        // region so every resize proxy sample remains a renderer-call sample.
+        const size = resize_sizes[index % resize_sizes.len];
+        if (!SDL_SetWindowSize(window, size[0], size[1])) return sdlFail("SDL_SetWindowSize");
+        if (!SDL_SyncWindow(window)) return sdlFail("SDL_SyncWindow");
+        var actual_width: c_int = 0;
+        var actual_height: c_int = 0;
+        SDL_GetWindowSize(window, &actual_width, &actual_height);
+        if (actual_width != size[0] or actual_height != size[1])
+            return error.InvalidBenchmarkResize;
+        frame_gate.width = 0;
+        frame_gate.height = 0;
+        frame_gate.dirty = true;
+        const started = SDL_GetPerformanceCounter();
+        const execution = try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &counters, null);
+        const ended = SDL_GetPerformanceCounter();
+        const elapsed = performanceTicksToNanos(ended - started);
+        workload_samples[index] = if (elapsed == 0) 1 else elapsed;
+        if (execution.commands == 0) return error.RendererWorkloadSkipped;
+        workload_draws += execution.commands;
+    }
+    if (counters.presented_frames != iterations or counters.skipped_frames != 0)
+        return error.RendererWorkloadIncomplete;
+    const resizing = try renderer_policy.summarizeLatencies(workload_samples);
+    const resize_result: RendererWorkload = .{
+        .name = "resize_proxy",
+        .iterations = iterations,
+        .warmup = 0,
+        .summary = resizing,
+        .draw_commands_total = workload_draws,
+        .presented_frames = counters.presented_frames,
+        .skipped_frames = counters.skipped_frames,
+    };
+
+    // Restore the hidden benchmark output and deterministic replay scene so the
+    // measured resize phase does not leak its last synthetic state forward.
+    try restoreRendererBenchState(
+        &scene,
+        window,
+        typing_cursor,
+        typing_cursor_index,
+        scroll_row_index,
+        scroll_row_y,
+        original_width,
+        original_height,
+    );
+    frame_gate.dirty = true;
+    _ = try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &counters, null);
+
     var report: std.ArrayList(u8) = .empty;
     defer report.deinit(gpa);
-    try report.appendSlice(gpa, "{\"schema_version\":1,\"kind\":\"proto-ui-sdl3-renderer-benchmark\",\"protocol\":{\"name\":\"EUP\",\"version\":\"1.0\"},\"renderer_tier\":");
+    try report.appendSlice(gpa, "{\"schema_version\":2,\"kind\":\"proto-ui-sdl3-renderer-benchmark\",\"protocol\":{\"name\":\"EUP\",\"version\":\"1.0\"},\"workload_kind\":\"renderer_proxy\",\"renderer_tier\":");
     try runtime.appendJsonStringPublic(gpa, &report, @tagName(selected_renderer.tier));
     try report.appendSlice(gpa, ",\"renderer_name\":");
     try runtime.appendJsonStringPublic(gpa, &report, selected_renderer.name);
@@ -8893,7 +9159,7 @@ fn runRendererBench(
     try runtime.appendJsonStringPublic(gpa, &report, config.present_mode);
     try report.appendSlice(gpa, ",\"optimization_mode\":");
     try runtime.appendJsonStringPublic(gpa, &report, @tagName(@import("builtin").mode));
-    try report.print(gpa, ",\"iterations\":{d},\"warmup\":{d},\"frame_update_bytes\":{d},\"full_draw\":{{\"p50_ns\":{d},\"p95_ns\":{d},\"p99_ns\":{d},\"mean_ns\":{d:.2},\"fps\":{d:.2},\"draw_commands_total\":{d},\"commands_per_frame\":{d:.2}}},\"unchanged_skip\":{{\"p50_ns\":{d},\"p95_ns\":{d},\"p99_ns\":{d},\"mean_ns\":{d:.2},\"fps\":{d:.2}}},\"presented_frames\":{d},\"skipped_frames\":{d},\"result\":\"pass\"}}\n", .{
+    try report.print(gpa, ",\"iterations\":{d},\"warmup\":{d},\"frame_update_bytes\":{d},\"full_draw\":{{\"p50_ns\":{d},\"p95_ns\":{d},\"p99_ns\":{d},\"mean_ns\":{d:.2},\"fps\":{d:.2},\"draw_commands_total\":{d},\"commands_per_frame\":{d:.2}}},\"unchanged_skip\":{{\"p50_ns\":{d},\"p95_ns\":{d},\"p99_ns\":{d},\"mean_ns\":{d:.2},\"fps\":{d:.2}}},\"presented_frames\":{d},\"skipped_frames\":{d}", .{
         iterations,
         warmup,
         update_bytes,
@@ -8903,15 +9169,19 @@ fn runRendererBench(
         full.mean_ns,
         full.fps,
         full_draws,
-        @as(f64, @floatFromInt(counters.draw_commands_total)) / @as(f64, @floatFromInt(iterations)),
+        @as(f64, @floatFromInt(full_draws)) / @as(f64, @floatFromInt(iterations)),
         skipped.p50_ns,
         skipped.p95_ns,
         skipped.p99_ns,
         skipped.mean_ns,
         skipped.fps,
-        counters.presented_frames,
-        counters.skipped_frames,
+        baseline_counters.presented_frames,
+        baseline_counters.skipped_frames,
     });
+    try appendRendererWorkload(gpa, &report, typing_result, true);
+    try appendRendererWorkload(gpa, &report, scroll_result, false);
+    try appendRendererWorkload(gpa, &report, resize_result, false);
+    try report.appendSlice(gpa, "],\"result\":\"pass\"}\n");
     if (config.benchmark_output.len > 0) {
         try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = config.benchmark_output, .data = report.items });
     }

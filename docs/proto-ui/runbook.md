@@ -49,8 +49,12 @@ cat zig-out/proto-ui/sdl3-renderer-benchmark.json
 ```
 
 The smoke may briefly open an SDL window by design.  The benchmark uses a hidden
-window and renders a bounded fixture; neither proves a complete Emacs editor
-frame.  Benchmark numbers describe the local host and run only.
+window and renders bounded fixtures and deterministic renderer-call
+typing/scroll/resize proxies; neither proves a complete Emacs editor frame,
+real typing/scroll/resize, core redisplay, Emacs end-to-end behavior, GPU
+timestamps, PGTK comparison, host-independent regression evidence, or a real
+Emacs performance improvement.  Benchmark numbers describe the local host and
+run only.
 
 ## 4.1 Current window command checks
 

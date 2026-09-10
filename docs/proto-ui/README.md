@@ -44,7 +44,7 @@ W10a adds adapter-owned SDL renderer negotiation: the frontend reports the actua
 | Input | Bounded Unicode text, pointer sessions, vertical/horizontal line wheel, single-key commands, exact `C-x 1/2/3/o` window lifecycle commands, and ACK/recovery evidence | No general keymap execution, full IME, redisplay-owned input feedback, or complete pointer parity |
 | IME state | Scene state for bounded preedit, selected candidate metadata, and commit reports; bounded ASCII SDL diagnostics where implemented | No platform IME backend, core buffer application, full candidate lists, Unicode diagnostic rendering, or complete multibyte input |
 | R7/R8 gate | Fail-closed reviewer packet, contract, selected host adapter, adapter-only TP2 registration policy, blocked activation, state-aware R8 readiness, fail-closed host-audit adapter, and opt-in native-glibc target link audit with pinned ABI/table provenance | Default builds remain unlinked; linked state is `linked_not_registered`, with no production core dispatch, call, registration, runtime activation, `output_proto`, or PGTK fallback |
-| Performance | ReleaseFast adapter hot-path JSON and an opt-in SDL3 full-draw/unchanged-skip renderer benchmark with nearest-rank latency and FPS counters | Adapter/renderer baseline only; host-dependent CPU timing, no end-to-end, real redisplay, PGTK comparison, GPU timestamps, or production GPU-tier proof |
+| Performance | ReleaseFast adapter hot-path JSON and an opt-in SDL3 full-draw/unchanged-skip plus typing/scroll/resize renderer-proxy benchmark with nearest-rank latency, FPS, and command counters | Adapter/renderer baseline only; host-dependent CPU timing, no end-to-end, real redisplay/typing/scroll/resize, PGTK comparison, GPU timestamps, or production GPU-tier proof |
 
 W12c adds the first real-frame lifecycle bridge smoke: an isolated PGTK Emacs
 daemon creates one visible display-backed frame, the smoke waits for stable
@@ -182,9 +182,13 @@ introduced.
 
 W14-b adds an opt-in SDL3 renderer benchmark over a deterministic ERP1 replay
 scene.  It reports nearest-rank p50/p95/p99/mean latency, FPS, draw-command
-totals, presented/skipped frames, renderer tier/name, and build mode.  It uses
-CPU wall-clock timing and makes no end-to-end, GPU-timestamp, typing, scrolling,
-PGTK-comparison, or host-independent regression claim.
+totals, presented/skipped frames, renderer tier/name, and build mode.
+W14-c adds bounded deterministic `typing_proxy`, `scroll_proxy`, and
+`resize_proxy` renderer calls; they mutate only the frontend replay scene or
+hidden SDL window geometry; resize setup is outside the timed renderer call.
+The benchmark uses CPU wall-clock timing and makes no performance-improvement,
+end-to-end, GPU-timestamp, real typing/scrolling/resize, redisplay, PGTK-
+comparison, or host-independent regression claim.
 
 W13-d adds deterministic process-level frontend crash isolation. The parent
 passes a bounded, ordered corpus of valid and hostile EUP records to child

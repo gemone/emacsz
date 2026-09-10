@@ -386,6 +386,23 @@ between a dirty full draw and an unchanged gate check.  It is not a typing,
 scroll, end-to-end, GPU-timestamp, PGTK-comparison, or host-independent
 regression claim.
 
+W14-c bumps the renderer report to schema v2 and adds three bounded renderer
+phases after those baselines.  `typing_proxy` alternates a visible deterministic
+cursor position, `scroll_proxy` alternates a visible deterministic row offset,
+and `resize_proxy` synchronously alternates hidden-window geometry between two
+sizes and resets the frame gate so every call is dirty.  The report stores each
+phase name, `workload_kind:"renderer_proxy"`, bounded iteration/warm-up policy,
+nearest-rank p50/p95/p99/mean, FPS derivation, executed command totals, and
+presented/skipped counters.  All iterations are validated to render and every
+phase uses no unbounded allocation or nondeterministic work.  The benchmark
+restores the original hidden-window size and replay scene state afterward.
+For `resize_proxy`, synchronous window setup and validation are outside the
+timed region; only the resulting renderer call is sampled.  These are
+renderer-call workload proxies only: they do not perform real typing, scrolling,
+or resizing, generate Emacs input, run core redisplay, exercise Emacs end-to-end,
+collect GPU timestamps, compare PGTK, provide host-independent regression
+evidence, or support a real Emacs performance-improvement claim.
+
 ## 13. Correctness precedence
 
 Optimization must never:
