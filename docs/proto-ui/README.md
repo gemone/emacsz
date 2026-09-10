@@ -474,6 +474,7 @@ Available:
 | [`adapter-boundary.md`](adapter-boundary.md) | Normative adapter-first boundary, C-file restrictions, review gates, and rollback requirements |
 | [`zig-build-adapter.md`](zig-build-adapter.md) | Normative Zig-build adapter runtime, versioned ABI, generated shim rules, and streaming redesign |
 | [`output-proto-runtime.md`](output-proto-runtime.md) | Final `output_proto` host-adapter bridge, terminal lifecycle, recovery, build model, and first-frame task split |
+| [`registration-seam.md`](registration-seam.md) | Terminal Provider Extension design, ABI ownership, registration/rollback order, first-frame acceptance, and explicit non-goals |
 | [`protocol.md`](protocol.md) | Complete EUP v1 wire protocol, envelope, message IDs, payload semantics, and state machines |
 | [`capabilities.md`](capabilities.md) | Backend, frontend, renderer, widget, and PGTK parity capability matrices |
 | [`frame-lifecycle-smoke.md`](frame-lifecycle-smoke.md) | Current real-frame lifecycle bridge smoke, scope, environment, and acceptance |

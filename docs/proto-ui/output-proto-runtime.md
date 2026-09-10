@@ -384,6 +384,13 @@ linkage evidence only: there is no inherited-source call, load-time
 initialization, terminal registration, `output_proto` enablement, runtime
 availability, performance claim, or change to PGTK/TTY.
 
+The only selected path from `linked_not_registered` to a real terminal is the
+generic Terminal Provider Extension defined in
+[`registration-seam.md`](registration-seam.md).  It is design-only until a
+separate reviewed core-extension exception or upstream acceptance exists.
+Output-method aliasing, startup interception, and inherited-symbol wrapping are
+forbidden.
+
 ### 11.1 First-frame execution slices
 
 When the entry gate is satisfied, implement R8 in these verifiable slices:

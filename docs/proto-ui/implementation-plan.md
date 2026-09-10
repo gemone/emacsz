@@ -3314,6 +3314,23 @@ The opt-in `-Dr8-entry-gate=true proto-ui-r8-readiness` form is the negative
 launch gate: it fails with `r8_host_adapter_linkage_or_registration_missing`
 until registration and all remaining source conditions are ready.
 
+##### R8-b registration-seam design (normative; not implemented)
+
+R8-b defines the Terminal Provider Extension (TPE) in
+[`registration-seam.md`](registration-seam.md).  TPE separates one generic
+core-side provider contract from all Proto-UI terminal behavior in a
+provider-owned adapter.  It specifies a linked provider manifest,
+provider/core ABI tables, GC-safe opaque provider storage, exact activation
+and reverse rollback order, first real `window-system=proto` frame checks,
+performance budgets, and the TP0-TP10 work split.
+
+TPE is intentionally not implemented in the current branch.  The selected
+adapter is at most `linked_not_registered`; registration requires a separate
+reviewed core-extension exception or upstream acceptance.  TP1 is not
+authorized by this branch.  Output-method aliasing, startup constructors,
+dynamic-module access to internal symbols, and symbol interposition are
+forbidden.
+
 1. Implement child and tooltip frame protocol.
 2. Implement multi-frame focus isolation.
 3. Implement monitor change and per-monitor scale.

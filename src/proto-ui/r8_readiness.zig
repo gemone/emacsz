@@ -40,9 +40,9 @@ pub const requirements = [_]Requirement{
         .evidence = "Candidate artifact, ABI/table inventory hash, and planned injection point are pinned by r8_adapter_linkage.json; an R7-approved Emacs link remains required",
     },
     .{
-        .name = "adapter.registered_without_inherited_source_edits",
+        .name = "core.terminal_provider_extension",
         .status = .pending,
-        .evidence = "No Emacs terminal registration exists; a linked adapter must remain uncalled and unregistered",
+        .evidence = "registration-seam.md is design-only and TP1 remains unauthorized; no generic core dispatch, provider registration, or output_proto terminal exists",
     },
     .{
         .name = "static_isolation",
@@ -130,7 +130,7 @@ pub fn validateLinkedState(runtime_linking: bool) ?[]const u8 {
     const expected_names = [_][]const u8{
         "r7.reviewed_decision",
         "adapter.linked_without_inherited_source_edits",
-        "adapter.registered_without_inherited_source_edits",
+        "core.terminal_provider_extension",
         "static_isolation",
         "callback_conformance",
         "process_crash_containment",

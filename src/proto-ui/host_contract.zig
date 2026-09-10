@@ -44,9 +44,9 @@ pub const Decision = struct {
 pub const decision = Decision{};
 
 pub const acceptable_integration_mechanism =
-    "A reviewed, adapter-owned Emacs host adapter supplies the complete " ++
-    "versioned callback groups through the host registration seam selected " ++
-    "and linked by zig build.";
+    "A separately reviewed generic Terminal Provider Extension and an " ++
+    "adapter-owned Emacs host adapter supply the complete versioned callback " ++
+    "groups through the seam selected and linked by zig build.";
 
 pub const forbidden_mechanisms = [_][]const u8{
     "Direct edits to inherited GNU Emacs C or Lisp source for Proto-UI",

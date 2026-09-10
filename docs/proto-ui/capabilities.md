@@ -211,9 +211,9 @@ Priorities:
 
 | Capability | PGTK equivalent | Proto requirement | Priority | Status | Evidence |
 |---|---|---|---|---|---|
-| Terminal creation | `create_terminal(output_pgtk)` | `create_terminal(output_proto)` | P0 | Pending | Existing-frame observation is not terminal creation; no `output_proto` terminal |
+| Terminal creation | `create_terminal(output_pgtk)` | `create_terminal(output_proto)` | P0 | Pending | Existing-frame observation is not terminal creation; the Terminal Provider Extension is design-only and no `output_proto` terminal exists |
 | Terminal deletion | PGTK terminal hooks | EUP session/frame teardown | P0 | Pending | Smoke process cleanup is not terminal deletion; no teardown contract |
-| Graphic frame predicate | `output_pgtk` frame | `output_proto` frame | P0 | Pending | No `output_proto`; W12/W16 P0 gap |
+| Graphic frame predicate | `output_pgtk` frame | `output_proto` frame | P0 | Pending | No `output_proto`; the Terminal Provider Extension is design-only and the W12/W16 P0 gap remains |
 | Focus frame | GDK focus | Frontend focus + core state | P0 | Degraded | Strict EUP focus state plus one-frame SDL gained/lost round trip through public Emacs selection and focused fact; no OS focus control or multi-frame parity |
 | Multi-frame | GTK windows | Multiple SDL windows | P1 | Pending | Single SDL facts window and one EUP frame profile |
 | Monitor attributes | GDK monitor | SDL monitor events | P1 | Degraded | EUP `FRAME_MONITOR` v1 owns generation-qualified identity, primary flag, and bounds; negotiated `MONITOR_EVENT` EPXL transport records current SDL bounds, while migration and redisplay adaptation remain pending |
@@ -605,7 +605,10 @@ decision infrastructure is implemented, and `proto-ui-r7-proposal` emits a
 source-authoritative pure-SDL3 registration proposal with `approved` status and
 scope `policy_and_candidate_selection_only`.  The current fail-closed reason is
 `runtime_host_linkage_or_registration_missing`: no terminal can be registered
-and runtime remains unavailable.  `-Dproto-ui-runtime=true` additionally
+and runtime remains unavailable.  The Terminal Provider Extension in
+[`registration-seam.md`](registration-seam.md) is the design-only registration
+path; its generic core dispatch and provider adapter are not implemented.
+`-Dproto-ui-runtime=true` additionally
 requires a native Linux glibc target, selects a target-specific static adapter
 candidate, forces its ABI symbol into the temacs link, and audits the resulting
 ELF with `proto-ui-r8-link`; the state is only `linked_not_registered`.
@@ -618,7 +621,9 @@ missing (and, without runtime linking, linkage also remains missing).
 Current PGTK/SDL diagnostic bridges therefore remain non-final compatibility
 evidence.
 The task split and fail-closed runtime contract are defined in
-[`output-proto-runtime.md`](output-proto-runtime.md).
+[`output-proto-runtime.md`](output-proto-runtime.md); the only selected
+registration path is defined in
+[`registration-seam.md`](registration-seam.md).
 
 ## 13. Initial explicit limitations
 
