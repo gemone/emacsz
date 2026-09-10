@@ -41,10 +41,10 @@ W10a adds adapter-owned SDL renderer negotiation: the frontend reports the actua
 | Selection state | Negotiated primary owner, owner-cancelled loss, replacement, and request/data/error transitions transport into Scene; exported owners can claim/release bounded SDL PRIMARY text (OS-shared on X11/Wayland; app-local SDL fallback elsewhere) | No external target-request service, target conversion, multi-format data, or general Emacs selection parity |
 | Monitor changes | Real SDL display/scale changes refresh frontend-local `FRAME_MONITOR` state and negotiated `MONITOR_EVENT`/`DPI_EVENT` transport is smoke-verified | No redisplay adaptation or Emacs frame migration |
 | System theme | Negotiated `THEME_EVENT` EPXL transport and Emacs recording of delivered dark/light appearance via `sdl3-theme-event-smoke` | No complete theme refresh, accessibility preferences, face remapping, or PGTK parity |
-| Input | Bounded Unicode text, pointer sessions, vertical/horizontal line wheel, Ctrl/Alt motion commands, and ACK/recovery evidence | No general keymap execution, full IME, redisplay-owned input feedback, or complete pointer parity |
+| Input | Bounded Unicode text, pointer sessions, vertical/horizontal line wheel, single-key commands, exact `C-x 1/2/3/o` window lifecycle commands, and ACK/recovery evidence | No general keymap execution, full IME, redisplay-owned input feedback, or complete pointer parity |
 | IME state | Scene state for bounded preedit, selected candidate metadata, and commit reports; bounded ASCII SDL diagnostics where implemented | No platform IME backend, core buffer application, full candidate lists, Unicode diagnostic rendering, or complete multibyte input |
 | R7/R8 gate | Fail-closed reviewer packet, contract, unselected host adapter, blocked activation, R8 readiness, and a fail-closed host-audit candidate adapter artifact with pinned ABI/table linkage provenance | No host approval, Emacs adapter linkage, terminal registration, runtime activation, or PGTK fallback |
-| Performance | ReleaseFast adapter hot-path JSON from deterministic 960×600 fixtures at `zig-out/proto-ui/benchmark.json`; timing itself remains host-dependent | Adapter baseline only; no end-to-end, real redisplay, PGTK comparison, or production GPU-tier proof |
+| Performance | ReleaseFast adapter hot-path JSON and an opt-in SDL3 full-draw/unchanged-skip renderer benchmark with nearest-rank latency and FPS counters | Adapter/renderer baseline only; host-dependent CPU timing, no end-to-end, real redisplay, PGTK comparison, GPU timestamps, or production GPU-tier proof |
 
 W12c adds the first real-frame lifecycle bridge smoke: an isolated PGTK Emacs
 daemon creates one visible display-backed frame, the smoke waits for stable
@@ -177,6 +177,12 @@ step installs the JSON report at `zig-out/proto-ui/benchmark.json`.
 It is evidence only: success does not depend on host timing, the runtime
 contract stays pending, and no SDL or inherited Emacs C/Lisp dependency is
 introduced.
+
+W14-b adds an opt-in SDL3 renderer benchmark over a deterministic ERP1 replay
+scene.  It reports nearest-rank p50/p95/p99/mean latency, FPS, draw-command
+totals, presented/skipped frames, renderer tier/name, and build mode.  It uses
+CPU wall-clock timing and makes no end-to-end, GPU-timestamp, typing, scrolling,
+PGTK-comparison, or host-independent regression claim.
 
 W13-d adds deterministic process-level frontend crash isolation. The parent
 passes a bounded, ordered corpus of valid and hostile EUP records to child

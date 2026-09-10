@@ -14,7 +14,7 @@ fonts, images, widgets, and PGTK parity remain documented gaps in
 2. A working graphical session (`DISPLAY` or `WAYLAND_DISPLAY` and
    `XDG_RUNTIME_DIR`).
 3. GTK3 development files for the default Linux PGTK build.
-4. SDL3 and `pkg-config` for `-Dsdl3-frontend=true`.
+4. SDL3, SDL3_ttf, and `pkg-config` for `-Dsdl3-frontend=true`.
 5. No running Emacs daemon is required; lifecycle smoke tests create an
    isolated private daemon.
 
@@ -40,8 +40,34 @@ zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke --summary all
 zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-renderer-smoke --summary all
 ```
 
-These tests may briefly open an SDL window by design.  They render bounded
-fixtures; they do not prove a complete Emacs editor frame.
+For an opt-in, host-dependent renderer timing report, use:
+
+```sh
+zig build -Doptimize=ReleaseFast -Dproto-ui=true -Dsdl3-frontend=true \
+  sdl3-renderer-bench --summary all
+cat zig-out/proto-ui/sdl3-renderer-benchmark.json
+```
+
+The smoke may briefly open an SDL window by design.  The benchmark uses a hidden
+window and renders a bounded fixture; neither proves a complete Emacs editor
+frame.  Benchmark numbers describe the local host and run only.
+
+## 4.1 Current window command checks
+
+The bounded command bridge can split, select, edit, and restore one live Emacs
+window:
+
+```sh
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
+  sdl3-emacs-window-split-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
+  sdl3-emacs-window-navigation-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
+  sdl3-emacs-window-restore-smoke --summary all
+```
+
+They exercise only the explicit `C-x 2`, `C-x 3`, `C-x o`, insertion, and
+`C-x 1` whitelist entries.  They do not enable arbitrary keymaps or prefixes.
 
 ## 5. Real-frame lifecycle smoke
 
@@ -85,9 +111,9 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
 
 These checks cover bounded ASCII text, negotiated bounded Unicode text, a few
 key actions, pointer/wheel intents, and refreshed public facts.  The Unicode
-gate checks scene bytes only; the current bitmap renderer has no CJK shaping or
-font fallback.  They do not provide a full Emacs keyboard/keymap/IME input
-stack.
+gate also renders one bounded UTF-8 public-facts line with SDL_ttf; it has no
+shaping, BiDi, Emacs font metrics, complete fallback, or IME support.  They do
+not provide a full Emacs keyboard/keymap/IME input stack.
 
 ### 6.1 Manual authenticated session
 
@@ -123,8 +149,9 @@ another process’s `/tmp/proto-ui-frame-*` directory.
 
 ## 8. Current completion boundary
 
-Green smoke commands prove only their documented bounded scope.  The final
-system requires the W16 gates in
+Green smoke commands prove only their documented bounded scope.  Candidate R8
+adapter linkage is prepared and audited, but it is not selected, linked into
+Emacs, or able to register a terminal.  The final system requires the W16 gates in
 [`implementation-plan.md`](implementation-plan.md): an `output_proto` real
 graphic frame, redisplay-owned rendering, full input/platform coverage,
 resource/widget behavior, performance evidence, and unchanged default Emacs
