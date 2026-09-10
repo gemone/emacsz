@@ -341,7 +341,7 @@ Priorities:
 | Clipboard images | P2 | Pending | W12/W16 PGTK parity gate not met |
 | PRIMARY selection | P1 | Degraded | Bounded UTF-8 text round-trips through the negotiated SDL PRIMARY API via Shift+Insert (`sdl3-primary-selection-roundtrip-smoke`); X11/Wayland expose an OS-shared PRIMARY while SDL fallbacks on other platforms are app-local; no selection ownership negotiation, targets, multi-format data, or general Emacs selection parity |
 | SECONDARY selection | P2 | Pending | W12/W16 PGTK parity gate not met |
-| Selection ownership | P1 | Degraded | Negotiated `selection.primary_ownership_v1` delivers bounded `SELECTION_OWNER_SET`/`CLEAR` with up to eight target offers into Scene (`sdl3-selection-owner-smoke`); no platform ownership or clipboard/PRIMARY exchange |
+| Selection ownership | P1 | Degraded | Negotiated `selection.primary_ownership_v1` delivers bounded `SELECTION_OWNER_SET`/`CLEAR` into Scene and the SDL diagnostic frontend can claim/release its bounded PRIMARY marker (`sdl3-selection-owner-smoke`); no external request service, target conversion, multi-format data, or clipboard/PRIMARY exchange parity |
 | Selection target negotiation | P1 | Degraded | Negotiated `selection.primary_transfer_v1` transports bounded `SELECTION_REQUEST`/`DATA` plus a matched `SELECTION_ERROR` into Scene, verifying completed and failed request transitions (`sdl3-selection-transfer-smoke`); platform negotiation, target conversion, and Emacs/core transfer application remain pending |
 | DND text | P2 | Pending | W12/W16 PGTK parity gate not met |
 | DND files | P2 | Pending | W12/W16 PGTK parity gate not met |

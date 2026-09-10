@@ -378,6 +378,10 @@ fn setPlatformPrimarySelection(bytes: []const u8) !void {
     if (!SDL_SetPrimarySelectionText(@ptrCast(&text))) return sdlFail("SDL_SetPrimarySelectionText");
 }
 
+fn clearPlatformPrimarySelection() !void {
+    if (!SDL_SetPrimarySelectionText("")) return sdlFail("SDL_SetPrimarySelectionText");
+}
+
 fn runClipboardSmoke() !void {
     if (!SDL_Init(SDL_INIT_VIDEO)) return sdlFail("SDL_Init");
     defer SDL_Quit();
@@ -6430,6 +6434,8 @@ fn runEpxlInteractiveFrontend(
     var fullscreen_request_delivered = false;
     var selection_owner_set_seen = false;
     var selection_owner_clear_seen = false;
+    var selection_platform_claimed = false;
+    var selection_platform_released = false;
     var selection_transfer_owner_seen = false;
     var selection_transfer_request_seen = false;
     var selection_transfer_data_seen = false;
@@ -6461,14 +6467,24 @@ fn runEpxlInteractiveFrontend(
                 if (config.selection_owner_smoke) {
                     if (envelope.message_type == protocol.Message.selection_owner_set and
                         scene.selection_kind != null and
-                        scene.selection_generation == 1)
+                        scene.selection_generation == 1 and
+                        scene.selection_flags & protocol.SelectionOwnerFlags.export_to_platform != 0)
                     {
                         selection_owner_set_seen = true;
+                        try setPlatformPrimarySelection("Proto-UI primary");
+                        if (!SDL_HasPrimarySelectionText()) return error.PrimarySelectionUnavailable;
+                        if (SDL_GetPrimarySelectionText()) |owned| {
+                            selection_platform_claimed =
+                                std.mem.eql(u8, std.mem.span(owned), "Proto-UI primary");
+                            SDL_free(owned);
+                        }
                     }
                     if (envelope.message_type == protocol.Message.selection_owner_clear and
                         scene.selection_kind == null)
                     {
                         selection_owner_clear_seen = true;
+                        try clearPlatformPrimarySelection();
+                        selection_platform_released = !SDL_HasPrimarySelectionText();
                     }
                 }
                 if (config.selection_transfer_smoke) {
@@ -6899,10 +6915,11 @@ fn runEpxlInteractiveFrontend(
         );
     }
     if (config.selection_owner_smoke) {
-        if (!selection_owner_set_seen or !selection_owner_clear_seen)
+        if (!selection_owner_set_seen or !selection_owner_clear_seen or
+            !selection_platform_claimed or !selection_platform_released)
             return error.SelectionOwnershipTransitionNotObserved;
         std.debug.print(
-            "sdl3-selection-owner-smoke: {{\"kind\":\"sdl3-selection-owner-smoke\",\"selection\":\"primary\",\"targets\":[\"UTF8_STRING\",\"STRING\"],\"generation\":1,\"set_and_clear\":true,\"result\":\"pass\"}}\n",
+            "sdl3-selection-owner-smoke: {{\"kind\":\"sdl3-selection-owner-smoke\",\"selection\":\"primary\",\"targets\":[\"UTF8_STRING\",\"STRING\"],\"generation\":1,\"platform_claimed\":true,\"platform_released\":true,\"set_and_clear\":true,\"result\":\"pass\"}}\n",
             .{},
         );
     }

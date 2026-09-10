@@ -1623,7 +1623,9 @@ primary owner.  A request must name a target offered by the current generation.
 Data/error must match the waiting request ID and generation; data stores at most
 4096 bytes and error stores a bounded UTF-8 reason.  A newer owner set, clear,
 or loss invalidates the transfer.  Negotiated `selection.primary_ownership_v1` can transport bounded set/clear
-ownership transitions over EPXL. Negotiated `selection.primary_transfer_v1` can
+ownership transitions over EPXL. An exported owner may make the diagnostic SDL
+frontend claim/release bounded PRIMARY text; this is not an external target
+service. Negotiated `selection.primary_transfer_v1` can
 transport a bounded offered-target request, completed data record, and matched
 error transition into Scene. Platform negotiation, target conversion, and
 Emacs/core application remain pending.
