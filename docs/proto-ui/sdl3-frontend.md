@@ -401,6 +401,22 @@ clicks the right window, inserts `Z`, and asserts right-window selection plus
 shared-buffer visibility. This remains bounded pointer compatibility, not a
 general mouse, selection, or keymap model.
 
+The bounded committed-input slice adds real SDL text-input lifecycle for the
+interactive window: focus gain starts text input, focus loss and window
+shutdown stop it, and scene cursor/window geometry refreshes
+`SDL_SetTextInputArea`. `sdl3-ime-commit-smoke` polls one smoke-seeded
+committed `你好` `SDL_EVENT_TEXT_INPUT` event, requires negotiated
+`input.text_ascii` and `input.text_unicode`, converts the cursor owner's
+frame-relative geometry to an SDL-window-relative area, routes its non-ASCII
+payload through
+`input.text_unicode` and the existing `DeliveryJournal`, requires the normal
+EPXL apply/ACK and refreshed Emacs frame, and renders it with
+`render.unicode_text_v1`. This is degraded multibyte commit only. It does not
+acquire an OS-generated commit, composition, candidates, or preedit, delete
+surrounding text, or implement a complete IME lifecycle; EUP scene
+preedit/candidate rendering remains separate and PGTK IME parity remains
+pending.
+
 W11a implements the first clipboard capture path: Ctrl+V reads SDL clipboard
 text, validates it as a bounded one-line UTF-8 payload, and frees SDL-owned
 text on every path. W11c adds optional `clipboard.text_unicode`; without it,

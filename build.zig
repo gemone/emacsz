@@ -2104,6 +2104,29 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_epxl_unicode_input_step.dependOn(&run_sdl3_epxl_unicode_input.step);
 
+        const run_sdl3_ime_commit = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-ime-commit-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=2500",
+        });
+        run_sdl3_ime_commit.setCwd(b.path("."));
+        run_sdl3_ime_commit.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_ime_commit.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_ime_commit.step.dependOn(step);
+        const sdl3_ime_commit_step = b.step(
+            "sdl3-ime-commit-smoke",
+            "Start SDL3 text input, deliver a committed UTF-8 event, and render it",
+        );
+        sdl3_ime_commit_step.dependOn(&run_sdl3_ime_commit.step);
+
         const run_sdl3_epxl_key_v2 = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/proto-ui-sdl3",
             "--emacs-epxl-key-v2-smoke",
@@ -7108,6 +7131,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-frame-fact-smoke - public frame facts on a display
         \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-smoke - continuous public Emacs facts
         \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interactive - bounded interactive Emacs facts in SDL3
+        \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-ime-commit-smoke - bounded SDL3 Unicode commit smoke
         \\
         \\SDL3 frontend path (opt-in: -Dsdl3-frontend=true):
         \\  zig build -Dsdl3-frontend=true sdl3-ui-smoke - real Emacs facts/EUP replay renderer

@@ -135,6 +135,8 @@ extern fn SDL_PushEvent(event: *SDL_Event) bool;
 extern fn SDL_GetWindowID(window: *SDL_Window) u32;
 extern fn SDL_Delay(ms: c_uint) void;
 extern fn SDL_StartTextInput(window: *SDL_Window) bool;
+extern fn SDL_StopTextInput(window: *SDL_Window) void;
+extern fn SDL_SetTextInputArea(window: *SDL_Window, rect: *const SDL_Rect, cursor: c_int) bool;
 extern fn SDL_GetKeyName(key: c_uint) ?[*:0]const u8;
 extern fn SDL_GetModState() u16;
 
@@ -429,7 +431,7 @@ const SDL_FRect = extern struct {
     h: f32,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_gap, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, emacs_epxl_key_modifier, emacs_window_split, emacs_window_navigation, emacs_window_restore, emacs_window_pointer_select, renderer_bench, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, primary_selection, emacs_clipboard_unicode, emacs_primary_selection, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke, emacs_epxl_failure_cleanup };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_gap, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_ime_commit, emacs_epxl_key_v2, emacs_epxl_key_modifier, emacs_window_split, emacs_window_navigation, emacs_window_restore, emacs_window_pointer_select, renderer_bench, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, primary_selection, emacs_clipboard_unicode, emacs_primary_selection, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke, emacs_epxl_failure_cleanup };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -2435,7 +2437,16 @@ fn awaitFrameAck(
                     const key = try frontend.decodeKeyEvent(payload.bytes);
                     copy_action = key.action == .copy;
                 }
-                const input_allowed = (is_text and capabilities.contains(.input_text_ascii)) or
+                var text_allowed = false;
+                if (is_text) {
+                    const text = try frontend.decodeTextInput(payload.bytes);
+                    text_allowed = if (input_policy.isAsciiText(text.text))
+                        capabilities.contains(.input_text_ascii) or
+                            capabilities.contains(.input_text_unicode)
+                    else
+                        capabilities.contains(.input_text_unicode);
+                }
+                const input_allowed = (is_text and text_allowed) or
                     (is_key_v2 and capabilities.contains(.input_key_full_v2)) or
                     (is_key and capabilities.contains(.input_key_bounded) and
                         (!copy_action or capabilities.contains(.clipboard_ascii_bounded))) or
@@ -6169,6 +6180,44 @@ fn textSupportFor(capabilities: capability.Set) ?input_policy.TextSupport {
     return null;
 }
 
+const TextInputPlacement = struct {
+    window_id: u64,
+    area: SDL_Rect,
+    cursor: c_int,
+};
+
+const TextInputAreaSync = enum { synced, unavailable, failed };
+
+fn sceneTextInputPlacement(scene: *const frontend.Scene) ?TextInputPlacement {
+    const cursor = scene.cursor orelse return null;
+    if (!cursor.visible or !cursor.active or
+        cursor.width <= 0 or cursor.height <= 0) return null;
+    for (scene.windows.items) |owner| {
+        if (owner.id != cursor.window_id or !owner.visible) continue;
+        if (cursor.x < 0 or cursor.y < 0 or
+            cursor.x >= owner.width or cursor.y >= owner.height) return null;
+        return .{
+            .window_id = owner.id,
+            .area = .{
+                // Scene windows are frame-relative; SDL text-input areas are
+                // relative to the SDL window itself.
+                .x = 0,
+                .y = 0,
+                .w = owner.width,
+                .h = owner.height,
+            },
+            .cursor = cursor.x,
+        };
+    }
+    return null;
+}
+
+fn syncTextInputArea(window: *SDL_Window, scene: *const frontend.Scene) TextInputAreaSync {
+    const placement = sceneTextInputPlacement(scene) orelse return .unavailable;
+    if (!SDL_SetTextInputArea(window, &placement.area, placement.cursor)) return .failed;
+    return .synced;
+}
+
 fn deliveryAllowed(delivery: *input_policy.DeliveryJournal, capabilities: capability.Set) !void {
     if (delivery.pending) |event| {
         if (!inputEventAllowed(capabilities, event)) return error.CapabilityNotNegotiated;
@@ -6282,6 +6331,11 @@ fn pollEpxlInteractiveInput(
             input_policy.SDL_EVENT_WINDOW_FOCUS_GAINED,
             input_policy.SDL_EVENT_WINDOW_FOCUS_LOST,
             => {
+                if (event.type == input_policy.SDL_EVENT_WINDOW_FOCUS_GAINED) {
+                    if (!SDL_StartTextInput(window)) return sdlFail("SDL_StartTextInput");
+                } else {
+                    SDL_StopTextInput(window);
+                }
                 if (input_policy.platformEventsNegotiated(
                     delivery,
                     capabilities.contains(.platform_focus_window_events),
@@ -6860,6 +6914,16 @@ fn runEpxlInteractiveFrontend(
             .{},
         );
     }
+    if (config.mode == .emacs_epxl_ime_commit) {
+        if (!negotiated.effective.contains(.input_text_ascii) or
+            !negotiated.effective.contains(.input_text_unicode) or
+            !negotiated.effective.contains(.render_unicode_text_v1))
+            return error.TextCapabilityNotNegotiated;
+        std.debug.print(
+            "sdl3-ime-commit-smoke: {{\"kind\":\"sdl3-ime-commit-smoke\",\"negotiated\":{{\"input.text_ascii\":true,\"input.text_unicode\":true,\"render.unicode_text_v1\":true}},\"result\":\"negotiated\"}}\n",
+            .{},
+        );
+    }
 
     reserveFrontendInputSequence(delivery);
 
@@ -6868,6 +6932,7 @@ fn runEpxlInteractiveFrontend(
     const window = SDL_CreateWindow("Emacs Proto-UI EPXL", 960, 600, SDL_WINDOW_RESIZABLE) orelse
         return sdlFail("SDL_CreateWindow");
     defer SDL_DestroyWindow(window);
+    defer SDL_StopTextInput(window);
     const selected_renderer = try createRenderer(gpa, window, config.renderer_request, config.present_mode);
     defer destroyRenderer(selected_renderer);
     var retained_frame: RetainedFrame = .{};
@@ -6932,6 +6997,9 @@ fn runEpxlInteractiveFrontend(
                 const decoded = try protocol.decodeEnvelope(message);
                 const envelope = decoded.envelope;
                 try scene.apply(message);
+                if (config.mode == .emacs_epxl_ime_commit and
+                    syncTextInputArea(window, &scene) == .failed)
+                    return error.TextInputAreaNotAccepted;
                 if (config.selection_owner_smoke) {
                     if (envelope.message_type == protocol.Message.selection_owner_set and
                         scene.selection_kind != null and
@@ -7083,6 +7151,16 @@ fn runEpxlInteractiveFrontend(
     var horizontal_wheel_ticks_delivered: i32 = 0;
     var expected_monitor_id: SDL_DisplayID = 0;
     var expected_bounds: SDL_Rect = undefined;
+    var initial_ime_placement: ?TextInputPlacement = null;
+    var ime_event_delivered = false;
+    var ime_area_refreshes: usize = 0;
+    if (config.mode == .emacs_epxl_ime_commit) {
+        // Seed the real SDL event queue.  pollEpxlInteractiveInput receives the
+        // committed text through SDL polling before it enters DeliveryJournal.
+        var synthetic = textEvent("你好");
+        synthetic.text.window_id = SDL_GetWindowID(window);
+        if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
+    }
     if (config.interactive_synthetic) {
         // Seed the real SDL event queue so headless automation validates the
         // same input translation path as an operator typing in the window.
@@ -7233,6 +7311,9 @@ fn runEpxlInteractiveFrontend(
         defer gpa.free(message);
         const envelope = (try protocol.decodeEnvelope(message)).envelope;
         try scene.apply(message);
+        if (config.mode == .emacs_epxl_ime_commit and
+            syncTextInputArea(window, &scene) == .failed)
+            return error.TextInputAreaNotAccepted;
         if (config.synthetic_focus_events) {
             if (scene.frames.lookup(1)) |frame| {
                 if (frame.focused and !observed_focus_gained) {
@@ -7317,6 +7398,11 @@ fn runEpxlInteractiveFrontend(
                     .monitor => |monitor| delivered_monitor = monitor,
                     .dpi => |dpi| delivered_dpi = dpi,
                     .theme => theme_event_delivered = true,
+                    .text => |text| {
+                        ime_event_delivered = ime_event_delivered or
+                            config.mode == .emacs_epxl_ime_commit and
+                                std.mem.eql(u8, text.bytes(), "你好");
+                    },
                     else => {},
                 }
             }
@@ -7412,6 +7498,12 @@ fn runEpxlInteractiveFrontend(
         } else {
             _ = try presentScene(&scene, &draw_list, selected_renderer.handle, window, &frame_gate, &frame_counters, null);
         }
+        if (config.mode == .emacs_epxl_ime_commit) {
+            if (initial_ime_placement == null)
+                initial_ime_placement = sceneTextInputPlacement(&scene);
+            if (syncTextInputArea(window, &scene) == .synced)
+                ime_area_refreshes += 1;
+        }
     }
 
     if (scene.stats.frame_updates < 2) return error.UnexpectedFactUpdateCount;
@@ -7437,6 +7529,32 @@ fn runEpxlInteractiveFrontend(
         std.debug.print(
             "sdl3-primary-selection-smoke: {{\"kind\":\"sdl3-primary-selection-smoke\",\"copy\":\"Emacs 你好\",\"first_line\":\"你好Emacs 你好\",\"round_trip\":true,\"result\":\"pass\"}}\n",
             .{},
+        );
+    }
+    if (config.mode == .emacs_epxl_ime_commit) {
+        const final_placement = sceneTextInputPlacement(&scene) orelse
+            return error.TextInputAreaUnavailable;
+        const initial = initial_ime_placement orelse
+            return error.TextInputAreaUnavailable;
+        if (!ime_event_delivered or final_placement.cursor <= initial.cursor or
+            (final_placement.window_id != initial.window_id or
+                ime_area_refreshes < 2 or
+                frame_counters.unicode_text_commands_total == 0) or
+            scene.stats.frame_updates < 2 or
+            !sceneWindowHasText(&scene, final_placement.window_id, "你好"))
+            return error.ImeCommitNotApplied;
+        std.debug.print(
+            "sdl3-ime-commit-smoke: {{\"kind\":\"sdl3-ime-commit-smoke\",\"committed\":\"你好\",\"emacs_applied\":true,\"area\":{{\"x\":{d},\"y\":{d},\"width\":{d},\"height\":{d}}},\"cursor\":{d},\"area_refreshes\":{d},\"unicode_draws\":{d},\"frame_updates\":{d},\"result\":\"pass\"}}\n",
+            .{
+                final_placement.area.x,
+                final_placement.area.y,
+                final_placement.area.w,
+                final_placement.area.h,
+                final_placement.cursor,
+                ime_area_refreshes,
+                frame_counters.unicode_text_commands_total,
+                scene.stats.frame_updates,
+            },
         );
     }
     if (config.synthetic_focus_events) {
@@ -7770,6 +7888,14 @@ fn rowHasGlyphRun(scene: *const frontend.Scene, window_id: u64, row_index: u32) 
 fn sceneHasText(scene: *const frontend.Scene, needle: []const u8) bool {
     for (scene.text.items) |line| {
         if (std.mem.indexOf(u8, line.bytes, needle) != null) return true;
+    }
+    return false;
+}
+
+fn sceneWindowHasText(scene: *const frontend.Scene, window_id: u64, needle: []const u8) bool {
+    for (scene.text.items) |line| {
+        if (line.window_id == window_id and
+            std.mem.indexOf(u8, line.bytes, needle) != null) return true;
     }
     return false;
 }
@@ -9314,6 +9440,7 @@ fn runEmacsEpxlSession(
     var loaded: ?frontend.Scene = null;
     errdefer if (loaded != null) loaded.?.deinit();
     if (config.mode == .emacs_epxl_interactive or config.mode == .emacs_clipboard_unicode or
+        config.mode == .emacs_epxl_ime_commit or
         config.mode == .emacs_primary_selection or
         config.mode == .emacs_pointer_selection or
         config.mode == .emacs_pointer_middle_paste)
@@ -9541,6 +9668,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-unicode-input-smoke")) {
             config.mode = .emacs_epxl_unicode_input;
             config.auto_input = "你好";
+        } else if (std.mem.eql(u8, arg, "--emacs-epxl-ime-commit-smoke")) {
+            config.mode = .emacs_epxl_ime_commit;
+            config.interactive_publisher = true;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-key-v2-smoke")) {
             config.mode = .emacs_epxl_key_v2;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-key-modifier-smoke")) {
@@ -9928,6 +10058,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .emacs_epxl_interactive => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_input => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_unicode_input => try runEmacsEpxlSession(gpa, io, &config, 1),
+        .emacs_epxl_ime_commit => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_key_v2 => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_key_modifier => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_window_split => try runEmacsEpxlSession(gpa, io, &config, 1),

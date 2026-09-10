@@ -106,14 +106,19 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
   sdl3-epxl-unicode-input-smoke --summary all
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
+  sdl3-ime-commit-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true \
   sdl3-epxl-interactive-smoke --summary all
 ```
 
 These checks cover bounded ASCII text, negotiated bounded Unicode text, a few
 key actions, pointer/wheel intents, and refreshed public facts.  The Unicode
 gate also renders one bounded UTF-8 public-facts line with SDL_ttf; it has no
-shaping, BiDi, Emacs font metrics, complete fallback, or IME support.  They do
-not provide a full Emacs keyboard/keymap/IME input stack.
+shaping, BiDi, Emacs font metrics, or complete fallback.  The committed-input
+gate covers only one bounded, smoke-seeded `SDL_EVENT_TEXT_INPUT` UTF-8 commit:
+no OS-generated commit, composition, candidate/preedit acquisition,
+surrounding-text deletion, or full IME lifecycle.  These checks do not provide
+a full Emacs keyboard/keymap/IME input stack.
 
 ### 6.1 Manual authenticated session
 

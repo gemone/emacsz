@@ -309,7 +309,7 @@ Priorities:
 |---|---|---|---|
 | Keyboard events | P0 | Degraded | Printable ASCII insert, backspace, arrows, copy, paste; negotiated single-key and exact `C-x 1/2/3/o` commands map a closed SDL whitelist to bounded Emacs key descriptions; smokes observe `C-x 2`, `C-x 3` plus `C-x o` navigation/edit, and `C-x 1` one-window restore; no general keymap/IME/session parity |
 | Modifier state | P0 | Degraded | Ctrl+C/V plus bounded C/M/s/H-modified key descriptions and exact two-key `C-x 1/2/3/o` commands through full key v2 with `input.key_command_v1` and `input.composite_key_command_v1`; arbitrary modifier combinations, complete Emacs translation, and general command parity pending |
-| Multibyte input | P0 | Pending | No IME composition/commit path; bounded context lifecycle wire validation only |
+| Multibyte input | P0 | Degraded | Smoke-seeded bounded committed UTF-8 from `SDL_EVENT_TEXT_INPUT` uses `input.text_unicode`, EPXL `TEXT_INPUT`, and `render.unicode_text_v1`; cursor-anchored SDL text-input area is lifecycle-managed. No OS-generated commit, composition/candidate/preedit acquisition, surrounding-text deletion, full IME lifecycle, or shaped-input parity |
 | IME context lifecycle | P1 | Degraded | `IME_ATTACH`/`DETACH`/`FOCUS`/`CURSOR_RECT`/`ALLOWED_INPUT`/`SURROUNDING_TEXT`/`RESET` codecs and Scene owner validation; platform backend and composition pending; bounded commit report state exists without core text application |
 | IME policy and surrounding state | P1 | Degraded | Bounded policy mask and 120-byte surrounding-text snapshot in Scene; platform backend and Emacs application pending |
 | IME reverse wire reports | P1 | Degraded | Bounded attached/detached/preedit/commit/surrounding/delete/candidate/cancel codecs; Scene preedit/candidate/commit state and bounded ASCII SDL overlays proven, with no platform backend or core commit application |
@@ -524,7 +524,7 @@ parity.
 | Base Emacs compatibility | Existing-buffer health gate for version, text/undo, narrowing, properties, faces, windows, scroll/recenter, buffer locals, optional real PGTK frame lifecycle, and a seven-scenario deterministic TTY/PGTK semantic matrix | Proto-frame compatibility and full PGTK parity | `proto-ui-compat` (opt-in); `compatibility.pgtk_base_gate` and `compatibility.backend_semantic_matrix` are degraded and non-negotiable |
 | Disabled/default isolation | Bounded marker audit of inherited C/Header/Lisp files and generated `src/config.h`; explicit owned-root/build-output exclusion; deterministic machine-readable fail-closed JSON | Runtime host registration, real `output_proto` enablement, and proto-frame compatibility | `proto-ui-isolation-audit`; `isolation.disabled_default_gate` is degraded and non-negotiable |
 
-The status audit contains 120 PGTK capability rows: 31 Degraded, 89 Pending,
+The status audit contains 120 PGTK capability rows: 32 Degraded, 88 Pending,
 0 Blocked, and 0 fully Implemented. A Degraded row always identifies both the
 verified bounded subset and the parity gap that remains.
 

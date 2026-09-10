@@ -152,6 +152,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8f-b bounded horizontal wheel intent | Implemented |
 | W8g2 publisher Elisp resource and atomic facts | Approved |
 | W8g3 manual authenticated EPXL session | Implemented; bounded bridge, not `output_proto` |
+| W8h-h SDL3 committed Unicode input lifecycle | Approved |
 | W9g2 bounded viewport facts | Approved |
 | W10b-b2a bounded glyph-atlas policy | Approved |
 | W10c-a damage classification baseline | Approved |
@@ -2179,6 +2180,41 @@ zig build -Dproto-ui=true proto-ui-unit --summary all
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-window-pointer-select-smoke --summary all
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-window-navigation-smoke --summary all
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-v2-smoke --summary all
+zig build -Dproto-ui=true proto-ui-boundary --summary all
+```
+
+### W8h-h — SDL3 committed Unicode input lifecycle (approved)
+
+Goal: prove that one smoke-seeded SDL committed-text event reaches Emacs through
+the existing authenticated Unicode path without adding an IME stack or
+transport.
+
+1. Start SDL text input for the interactive real window and stop it on focus
+   loss and shutdown. Focus gain restarts it.
+2. Project the active Scene cursor owner into an SDL text-input area. Refresh
+   the area when authoritative cursor/window geometry changes.
+3. Poll one bounded UTF-8 `SDL_EVENT_TEXT_INPUT` commit (`你好`) through the
+   SDL event queue—never `pushText` directly—validate it with the existing
+   negotiated text policy, and enqueue it in the existing `DeliveryJournal`.
+   Reuse `TEXT_INPUT`, one-in-flight EPXL ACKs, Emacs application, facts
+   refresh, and Unicode rendering.
+4. Add `sdl3-ime-commit-smoke`. It requires all three capabilities, exact
+   committed text visibility, refreshed frame evidence, cursor-anchored input
+   area refresh, and visible Unicode draws. Do not seed the smoke payload by
+   calling `pushText` directly.
+
+Non-goals: no OS-generated or IME-backend-acquired commit, composition,
+candidates, preedit, surrounding-text deletion, complete IME lifecycle,
+preedit UI change, runtime registration, `output_proto`, TP1, inherited
+C/Lisp edits, or default build behavior change.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-ime-commit-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-window-pointer-select-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-unicode-input-smoke --summary all
 zig build -Dproto-ui=true proto-ui-boundary --summary all
 ```
 
