@@ -2695,10 +2695,11 @@ and ACK discipline. The bounded Emacs publisher records gained/lost focus as a
 public focused fact for one frame and calls public frame selection on gain; OS
 focus control and multi-frame selection parity remain pending. For resize/move, the
 owned publisher may call public `set-frame-size`/`set-frame-position`; for
-maximize it records Emacs parameter acceptance; parameter acceptance does not
-require or prove a graphical frame. Exact geometry and actual WM maximize completion remain host/WM
-dependent. Other window requests remain observed only, and the window-request
-smoke intentionally does not destroy Emacs in response to a synthetic close request.
+fullscreen/maximize it records Emacs parameter acceptance; parameter acceptance
+does not require or prove graphical-frame or WM completion. Exact geometry and
+actual WM state transitions remain host/WM dependent. Other window requests
+remain observed only, and the window-request smoke intentionally does not
+destroy Emacs in response to a synthetic close request.
 
 #### Security and limits
 

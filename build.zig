@@ -2310,6 +2310,29 @@ pub fn build(b: *std.Build) void {
             "Apply a bounded SDL maximize intent through public Emacs APIs",
         );
         sdl3_window_maximize_roundtrip_step.dependOn(&run_sdl3_window_maximize_roundtrip.step);
+
+        const run_sdl3_window_fullscreen_roundtrip = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--emacs-window-fullscreen-roundtrip-smoke",
+            "--auto-quit-ms=5000",
+        });
+        run_sdl3_window_fullscreen_roundtrip.setCwd(b.path("."));
+        run_sdl3_window_fullscreen_roundtrip.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_window_fullscreen_roundtrip.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_window_fullscreen_roundtrip.step.dependOn(step);
+        const sdl3_window_fullscreen_roundtrip_step = b.step(
+            "sdl3-window-fullscreen-roundtrip-smoke",
+            "Apply a bounded SDL fullscreen request through public Emacs APIs",
+        );
+        sdl3_window_fullscreen_roundtrip_step.dependOn(&run_sdl3_window_fullscreen_roundtrip.step);
     }
     if (proto_frame_smoke_dep) |frame_step| {
         if (proto_sdl_fixture_dep) |fixture_step| fixture_step.dependOn(frame_step);

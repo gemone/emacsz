@@ -453,6 +453,7 @@ const Config = struct {
     synthetic_window_resize: bool = false,
     synthetic_window_move: bool = false,
     synthetic_window_maximize: bool = false,
+    synthetic_window_fullscreen: bool = false,
     synthetic_monitor_change: bool = false,
     force_frontend_failure: bool = false,
     synthetic_pointer: bool = false,
@@ -6228,6 +6229,7 @@ fn runEpxlInteractiveFrontend(
     var observed_focus_gained = false;
     var observed_focus_transition = false;
     var window_request_delivered = false;
+    var fullscreen_request_delivered = false;
     var theme_event_delivered = false;
     var delivered_monitor: ?protocol.MonitorEvent = null;
     var delivered_dpi: ?protocol.DpiEvent = null;
@@ -6335,6 +6337,15 @@ fn runEpxlInteractiveFrontend(
             0,
         );
         if (!SDL_PushEvent(&maximized)) return sdlFail("SDL_PushEvent");
+    }
+    if (config.synthetic_window_fullscreen) {
+        // SDL fullscreen notifications report completed transitions; inject
+        // the validated request itself for deterministic request-to-Emacs
+        // evidence.
+        try delivery.pushWindow(.{
+            .kind = .fullscreen,
+            .sdl_window_id = SDL_GetWindowID(window),
+        });
     }
 
     var expected_monitor_id: SDL_DisplayID = 0;
@@ -6477,8 +6488,13 @@ fn runEpxlInteractiveFrontend(
                         const maximize_matches = request.kind == .maximize and
                             config.synthetic_window_maximize and
                             request.sdl_window_id == SDL_GetWindowID(window);
+                        const fullscreen_matches = request.kind == .fullscreen and
+                            config.synthetic_window_fullscreen and
+                            request.sdl_window_id == SDL_GetWindowID(window);
                         if (resize_matches or move_matches or maximize_matches)
                             window_request_delivered = true;
+                        if (fullscreen_matches)
+                            fullscreen_request_delivered = true;
                     },
                     .monitor => |monitor| delivered_monitor = monitor,
                     .dpi => |dpi| delivered_dpi = dpi,
@@ -6671,6 +6687,15 @@ fn runEpxlInteractiveFrontend(
             return error.WindowMaximizeNotApplied;
         std.debug.print(
             "sdl3-window-maximize-roundtrip-smoke: {{\"kind\":\"sdl3-window-maximize-roundtrip-smoke\",\"fullscreen\":\"maximized\",\"emacs_parameter_accepted\":true,\"result\":\"pass\"}}\n",
+            .{},
+        );
+    }
+    if (config.synthetic_window_fullscreen) {
+        if (!fullscreen_request_delivered or
+            !sceneHasText(&scene, "FullscreenApplied"))
+            return error.WindowFullscreenNotApplied;
+        std.debug.print(
+            "sdl3-window-fullscreen-roundtrip-smoke: {{\"kind\":\"sdl3-window-fullscreen-roundtrip-smoke\",\"fullscreen\":\"fullboth\",\"emacs_parameter_accepted\":true,\"result\":\"pass\"}}\n",
             .{},
         );
     }
@@ -8357,6 +8382,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_epxl_interactive;
             config.interactive_publisher = true;
             config.synthetic_window_maximize = true;
+        } else if (std.mem.eql(u8, arg, "--emacs-window-fullscreen-roundtrip-smoke")) {
+            config.mode = .emacs_epxl_interactive;
+            config.interactive_publisher = true;
+            config.synthetic_window_fullscreen = true;
         } else if (std.mem.eql(u8, arg, "--interactive-publisher")) {
             config.interactive_publisher = true;
         } else if (std.mem.eql(u8, arg, "--emacs-epxl-input-smoke")) {
