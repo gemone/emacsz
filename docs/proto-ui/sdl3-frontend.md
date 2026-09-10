@@ -385,6 +385,14 @@ a frame update, so a suppressed local prefix cannot stall the next suffix. The
 forced drain is navigation-specific; one-in-flight ordering, ACK-loss retry,
 and capability checks remain unchanged.
 
+W8h-f closes the bounded lifecycle with `C-x 1`. The smoke first records the
+intermediate two-window state: side-by-side live windows, selected right-window
+cursor at column 8, and visible `Z`. Only then does it enqueue `C-x 1`; the
+final evidence is exactly one live window at x=0 that still owns the active
+cursor at column 8 and still renders `Z`. This verifies restore behavior only;
+it does not generalize prefix handling or claim arbitrary window-command
+support.
+
 W11a implements the first clipboard capture path: Ctrl+V reads SDL clipboard
 text, validates it as a bounded one-line UTF-8 payload, and frees SDL-owned
 text on every path. W11c adds optional `clipboard.text_unicode`; without it,

@@ -2118,6 +2118,36 @@ zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-s
 zig build -Dproto-ui=true proto-ui-boundary --summary all
 ```
 
+### W8h-f — Split-edit-restore lifecycle (approved)
+
+Goal: prove that a selected split window can be edited and then restored to a
+single live window while retaining the selected buffer and point.
+
+1. Add `sdl3-emacs-window-restore-smoke` using the existing exact whitelist:
+   `C-x 3`, `C-x o`, bounded ASCII `Z`, then `C-x 1`.
+2. Require the same bounded ASCII/full-key/single-command/composite-command
+   capability set as navigation.
+3. After the split/select/edit sequence, execute `C-x 1` and fail closed unless
+   exactly one live window remains.
+4. Assert that the remaining window is at x=0 with positive width, remains the
+   selected cursor owner at column 8, and still renders the inserted `Z`.
+5. First observe the intermediate two-window evidence: side-by-side live
+   windows, the selected right-window cursor at column 8, and visible `Z`.
+   Queue `C-x 1` only after that observation. Reuse the bounded queued-intent
+   drain for the two prefix commands; no arbitrary prefix, keymap, or runtime
+   activation support is introduced.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-window-navigation-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-window-restore-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-key-modifier-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-smoke --summary all
+zig build -Dproto-ui=true proto-ui-boundary --summary all
+```
+
 ### W9n — Backward-compatible pointer event v2 transport (approved)
 
 Goal: extend the existing bounded `POINTER_EVENT` profile with strict,

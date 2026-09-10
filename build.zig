@@ -2021,6 +2021,29 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_window_navigation_step.dependOn(&run_sdl3_window_navigation.step);
 
+        const run_sdl3_window_restore = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-window-restore-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=6000",
+        });
+        run_sdl3_window_restore.setCwd(b.path("."));
+        run_sdl3_window_restore.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_window_restore.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_window_restore.step.dependOn(step);
+        const sdl3_window_restore_step = b.step(
+            "sdl3-emacs-window-restore-smoke",
+            "Split, edit, select, and restore one live Emacs window through SDL3",
+        );
+        sdl3_window_restore_step.dependOn(&run_sdl3_window_restore.step);
+
         const run_sdl3_monitor_change = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/proto-ui-sdl3",
             "--emacs-monitor-change-smoke",

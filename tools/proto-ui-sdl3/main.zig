@@ -427,7 +427,7 @@ const SDL_FRect = extern struct {
     h: f32,
 };
 
-const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_gap, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, emacs_epxl_key_modifier, emacs_window_split, emacs_window_navigation, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, primary_selection, emacs_clipboard_unicode, emacs_primary_selection, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke, emacs_epxl_failure_cleanup };
+const Mode = enum { replay, live, publisher, emacs, facts_publisher, emacs_epxl, emacs_epxl_reconnect, emacs_epxl_recovery, emacs_epxl_gap, emacs_epxl_interactive, emacs_epxl_input, emacs_epxl_unicode_input, emacs_epxl_key_v2, emacs_epxl_key_modifier, emacs_window_split, emacs_window_navigation, emacs_window_restore, pointer_v2_translation, emacs_epxl_edit, emacs_epxl_sequence, frame_lifecycle, input_translation, focus_window_translation, emacs_interactive, clipboard, primary_selection, emacs_clipboard_unicode, emacs_primary_selection, emacs_pointer_selection, emacs_pointer_middle_paste, glyph_run_smoke, runtime_bridge_smoke, emacs_epxl_failure_cleanup };
 
 const Config = struct {
     mode: Mode = .replay,
@@ -2328,6 +2328,7 @@ const EmacsKeyCommandTranslator = struct {
 };
 
 var emacs_key_command_translator: EmacsKeyCommandTranslator = .{};
+var window_restore_edited_split_observed = false;
 
 fn writeKeyV2Artifact(
     gpa: std.mem.Allocator,
@@ -5820,6 +5821,26 @@ fn runLiveFrontend(
         try delivery.pushText("Z");
     }
 
+    if (config.mode == .emacs_window_restore) {
+        if (!negotiated.effective.contains(.input_key_bounded) or
+            !negotiated.effective.contains(.input_text_ascii) or
+            !negotiated.effective.contains(.input_key_full_v2) or
+            !negotiated.effective.contains(.input_key_command_v1) or
+            !negotiated.effective.contains(.input_composite_key_command_v1))
+            return error.CompositeCommandCapabilityNotNegotiated;
+        emacs_key_command_translator.reset();
+        std.debug.print(
+            "sdl3-emacs-window-restore-smoke: {{\"kind\":\"sdl3-emacs-window-restore-smoke\",\"negotiated\":{{\"input.key_bounded\":true,\"input.text_ascii\":true,\"input.key_full_v2\":true,\"input.key_command_v1\":true,\"input.composite_key_command_v1\":true}},\"result\":\"negotiated\"}}\n",
+            .{},
+        );
+        window_restore_edited_split_observed = false;
+        try delivery.pushKeyV2(input_policy.translateFullKey(27, "x", true, false, input_policy.sdl_kmod_lctrl, 0).?);
+        try delivery.pushKeyV2(input_policy.translateFullKey(32, "3", true, false, 0, 0).?);
+        try delivery.pushKeyV2(input_policy.translateFullKey(27, "x", true, false, input_policy.sdl_kmod_lctrl, 0).?);
+        try delivery.pushKeyV2(input_policy.translateFullKey(18, "o", true, false, 0, 0).?);
+        try delivery.pushText("Z");
+    }
+
     reserveFrontendInputSequence(delivery);
 
     const use_resync = config.mode == .emacs_epxl or config.mode == .emacs_epxl_reconnect or
@@ -5827,9 +5848,11 @@ fn runLiveFrontend(
         config.mode == .emacs_epxl_unicode_input or config.mode == .emacs_epxl_edit or
         config.mode == .emacs_epxl_key_v2 or config.mode == .emacs_epxl_key_modifier or
         config.mode == .emacs_window_split or config.mode == .emacs_window_navigation or
+        config.mode == .emacs_window_restore or
         config.mode == .emacs_epxl_sequence;
     var scene = frontend.Scene.init(gpa);
     errdefer scene.deinit();
+    var restore_restore_queued = false;
     var frontend_sequence: u64 = frontend_pong_sequence_start;
     var resync_complete = false;
     var input_ack_lost = false;
@@ -5874,6 +5897,35 @@ fn runLiveFrontend(
             );
             continue;
         };
+        if (config.mode == .emacs_window_restore) {
+            var left: ?frontend.Window = null;
+            var right: ?frontend.Window = null;
+            for (scene.windows.items) |window| {
+                if (window.x == 0) {
+                    if (left == null) left = window;
+                } else if (window.x > 0) {
+                    if (right == null) right = window;
+                }
+            }
+            if (scene.windows.items.len == 2 and left != null and right != null) {
+                const left_window = left.?;
+                const right_window = right.?;
+                const cursor = scene.cursor;
+                window_restore_edited_split_observed = left_window.width > 0 and
+                    right_window.width > 0 and left_window.y == right_window.y and
+                    left_window.height == right_window.height and cursor != null and
+                    cursor.?.active and cursor.?.window_id == right_window.id and
+                    cursor.?.x == 8 and cursor.?.y == 0 and
+                    sceneWindowTextStartsWith(&scene, right_window.id, "Z");
+                if (window_restore_edited_split_observed and !restore_restore_queued and
+                    delivery.pending == null and delivery.queue.length == 0)
+                {
+                    restore_restore_queued = true;
+                    try delivery.pushKeyV2(input_policy.translateFullKey(27, "x", true, false, input_policy.sdl_kmod_lctrl, 0).?);
+                    try delivery.pushKeyV2(input_policy.translateFullKey(30, "1", true, false, 0, 0).?);
+                }
+            }
+        }
         if (envelope.message_type == protocol.Message.frame_update) {
             try deliveryAllowed(delivery, negotiated.effective);
             const outcome = try sendDeliveryEvent(gpa, delivery, config, &writer, &reader, envelope);
@@ -5889,7 +5941,7 @@ fn runLiveFrontend(
                 // command sequences remain live. Scope the forced pacing change
                 // to this smoke so recovery and interactive modes retain their
                 // existing one-event-per-frame behavior.
-                if (config.mode == .emacs_window_navigation) {
+                if (config.mode == .emacs_window_navigation or config.mode == .emacs_window_restore) {
                     while (delivery.pending == null and delivery.queue.length > 0) {
                         const queued = try sendDeliveryEvent(
                             gpa,
@@ -9372,6 +9424,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             config.mode = .emacs_window_split;
         } else if (std.mem.eql(u8, arg, "--emacs-window-navigation-smoke")) {
             config.mode = .emacs_window_navigation;
+        } else if (std.mem.eql(u8, arg, "--emacs-window-restore-smoke")) {
+            config.mode = .emacs_window_restore;
         } else if (std.mem.eql(u8, arg, "--clipboard-smoke")) {
             config.mode = .clipboard;
         } else if (std.mem.eql(u8, arg, "--primary-selection-smoke")) {
@@ -9712,6 +9766,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .emacs_epxl_key_modifier => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_window_split => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_window_navigation => try runEmacsEpxlSession(gpa, io, &config, 1),
+        .emacs_window_restore => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_edit => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_epxl_sequence => try runEmacsEpxlSession(gpa, io, &config, 1),
         .emacs_clipboard_unicode => try runEmacsEpxlSession(gpa, io, &config, 1),
@@ -9801,6 +9856,21 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         std.debug.print(
             "sdl3-emacs-window-navigation-smoke: {{\"kind\":\"sdl3-emacs-window-navigation-smoke\",\"commands\":\"C-x 3,C-x o,insert Z\",\"windows\":{d},\"selected_window_id\":{d},\"cursor_x\":{d},\"frame_updates\":{d},\"result\":\"pass\"}}\n",
             .{ scene.windows.items.len, selected.id, cursor.x, scene.stats.frame_updates },
+        );
+    }
+
+    if (config.mode == .emacs_window_restore) {
+        if (!window_restore_edited_split_observed or scene.windows.items.len != 1)
+            return error.WindowRestoreNotObserved;
+        const window = scene.windows.items[0];
+        const cursor = scene.cursor orelse return error.WindowRestoreNotObserved;
+        if (window.x != 0 or window.width <= 0 or window.id != cursor.window_id or
+            !cursor.active or cursor.x != 8 or cursor.y != 0 or
+            !sceneWindowTextStartsWith(&scene, window.id, "Z"))
+            return error.WindowRestoreNotObserved;
+        std.debug.print(
+            "sdl3-emacs-window-restore-smoke: {{\"kind\":\"sdl3-emacs-window-restore-smoke\",\"commands\":\"C-x 3,C-x o,insert Z,C-x 1\",\"windows\":{d},\"selected_window_id\":{d},\"width\":{d},\"cursor_x\":{d},\"result\":\"pass\"}}\n",
+            .{ scene.windows.items.len, window.id, window.width, cursor.x },
         );
     }
 
