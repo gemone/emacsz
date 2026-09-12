@@ -4534,3 +4534,12 @@ wheel, and touchscreen events continue using their `input_event.device` values.
 The input gate now checks `device-class` after `track-mouse` receives real
 provider motion.  Platform device enumeration, per-hardware identities, and
 touch/pen motion attribution remain separate work.
+
+P213 verifies standard multi-click compatibility on the TPE provider path without
+adding a click-count field to the 48-byte envelope or translating commands in the
+frontend.  The real SDL smoke emits a second same-location left press/release with
+monotonic timestamps; Emacs's inherited mouse conversion combines timing,
+distance, and button state into `double-down-mouse-1` followed by
+`double-mouse-1`, both reporting `event-click-count` 2.  This proves that provider
+events reach the normal core inference path.  Binding that event to a live command,
+drag/selection behavior, and higher click counts remain separate work.

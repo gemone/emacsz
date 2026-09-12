@@ -321,7 +321,7 @@ Priorities:
 | Dead keys | P1 | Pending | W12/W16 PGTK parity gate not met |
 | Mouse motion | P0 | Degraded | Bounded hover/drag admission; negotiated v2 preserves the exact button mask; TPE motion updates `last-event-device` through the standard `frame-last-mouse-device` path with provider `mouse` class (`proto-ui-tpe-input`) |
 | Mouse buttons | P0 | Degraded | Bounded left plus negotiated strict left/middle/right/X1/X2 v2 intents; generic publisher performs frame-relative window hit-testing, selects the clicked Emacs window, and moves point for bounded left v2 press/drag/release; the TPE provider path preserves all five SDL buttons as standard Emacs press/release events (`proto-ui-tpe-input`); advanced selection and full mouse parity pending |
-| Click count | P1 | Degraded | V2 validates and transports clicks 1..8; execution/selection parity remains pending |
+| Click count | P1 | Degraded | V2 validates and transports clicks 1..8; the TPE provider path feeds standard mouse press/release timing and coordinates through Emacs's inherited inference, with `proto-ui-tpe-input` observing a real `double-down-mouse-1`/`double-mouse-1` count of 2; command-driven double-click behavior and selection parity remain pending |
 | Drag events | P1 | Degraded | Ordered bounded left or negotiated v2 exact-mask drag; not selection drag |
 | Left-drag selection | P1 | Degraded | One negotiated smoke subset sets public mark/point and copies at most 120 ASCII bytes (`sdl3-pointer-selection-smoke`); no mouse parity |
 | Middle-click paste | P1 | Degraded | One negotiated smoke subset yanks the most recent kill after a prior bounded left selection (`sdl3-pointer-middle-paste-smoke`); no X11 PRIMARY or generic mouse yank |

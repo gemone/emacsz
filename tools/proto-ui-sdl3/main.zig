@@ -1028,6 +1028,12 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     mouse = mouseButtonEvent(17, 21, input_policy.SDL_EVENT_MOUSE_BUTTON_UP, false);
                     mouse.button.timestamp = 2;
                     if (!SDL_PushEvent(&mouse)) return sdlFail("SDL_PushEvent");
+                    mouse = mouseButtonEvent(17, 21, input_policy.SDL_EVENT_MOUSE_BUTTON_DOWN, true);
+                    mouse.button.timestamp = 3;
+                    if (!SDL_PushEvent(&mouse)) return sdlFail("SDL_PushEvent");
+                    mouse = mouseButtonEvent(17, 21, input_policy.SDL_EVENT_MOUSE_BUTTON_UP, false);
+                    mouse.button.timestamp = 4;
+                    if (!SDL_PushEvent(&mouse)) return sdlFail("SDL_PushEvent");
                     mouse = pointerButtonEvent(17, 21, input_policy.SDL_EVENT_MOUSE_BUTTON_DOWN, true, 2, 1);
                     mouse.button.timestamp = 3;
                     if (!SDL_PushEvent(&mouse)) return sdlFail("SDL_PushEvent");
