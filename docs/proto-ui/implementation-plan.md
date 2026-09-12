@@ -4471,5 +4471,14 @@ input envelope.  SDL buttons 4 and 5 preserve their identity as standard
 `mouse-4` and `mouse-5` press/release events for Emacs's command loop; no
 frontend command table or fallback binding is introduced.  The input gate now
 extends the three primary-button sequence with X1/X2 before wheel delivery.
-Pen-barrel buttons, touch button semantics, and high-resolution wheel deltas
-remain separate compatibility work.
+Pen-barrel buttons and touch button semantics remain separate compatibility
+work.
+
+P206 preserves high-resolution wheel deltas in the two reserved i32 fields of
+the canonical 48-byte TPE input envelope.  SDL wheel motion selects the dominant
+standard vertical or horizontal wheel event and carries signed centi-unit X and
+Y deltas together, while the adapter exposes them as the standard wheel-event
+`arg` using the same PGTK sign convention.  The input gate now proves a
+fractional wheel event arrives with exact Lisp deltas; pixel-scroll command
+integration, momentum, page units, and platform acceleration remain separate
+work.

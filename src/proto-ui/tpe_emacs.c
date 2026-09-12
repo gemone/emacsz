@@ -279,7 +279,10 @@ static bool provider_set_frame_window_state (bool visible, bool maximized) {
 
 static bool provider_store_event (uint16_t kind, uint16_t flags,
                                   uint32_t modifiers, uint32_t code,
-                                  int32_t x, int32_t y, uint64_t timestamp) {
+                                  int32_t x, int32_t y,
+                                  int32_t wheel_delta_x,
+                                  int32_t wheel_delta_y,
+                                  uint64_t timestamp) {
   struct input_event event;
   struct frame *provider_frame = provider_terminal_frame ();
   EVENT_INIT (event);
@@ -287,6 +290,7 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
   event.modifiers = modifiers;
   event.code = code;
   event.frame_or_window = selected_frame;
+  event.arg = Qnil;
 
   if (kind == 0)
     event.kind = code < 0x80 ? ASCII_KEYSTROKE_EVENT : NON_ASCII_KEYSTROKE_EVENT;
@@ -318,6 +322,9 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
       XSETFRAME (event.frame_or_window, provider_frame);
       XSETINT (event.x, x);
       XSETINT (event.y, y);
+      if (wheel_delta_x != 0 || wheel_delta_y != 0)
+        event.arg = list3 (Qnil, make_float ((double)-wheel_delta_x),
+                           make_float ((double)-wheel_delta_y));
     }
   else if (kind == 6)
     {
@@ -328,6 +335,9 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
       XSETFRAME (event.frame_or_window, provider_frame);
       XSETINT (event.x, x);
       XSETINT (event.y, y);
+      if (wheel_delta_x != 0 || wheel_delta_y != 0)
+        event.arg = list3 (Qnil, make_float ((double)-wheel_delta_x),
+                           make_float ((double)-wheel_delta_y));
     }
   else if (kind == 7 || kind == 8)
     {
@@ -375,7 +385,7 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
 static bool provider_decode_input (const unsigned char packet[48]) {
   uint16_t kind, flags;
   uint32_t modifiers, code;
-  int32_t x, y;
+  int32_t x, y, wheel_delta_x, wheel_delta_y;
   uint64_t timestamp;
   if (memcmp (packet, "TPEINP1", 8) != 0)
     return false;
@@ -386,7 +396,10 @@ static bool provider_decode_input (const unsigned char packet[48]) {
   memcpy (&timestamp, packet + 24, sizeof timestamp);
   memcpy (&x, packet + 32, sizeof x);
   memcpy (&y, packet + 36, sizeof y);
-  return provider_store_event (kind, flags, modifiers, code, x, y, timestamp);
+  memcpy (&wheel_delta_x, packet + 40, sizeof wheel_delta_x);
+  memcpy (&wheel_delta_y, packet + 44, sizeof wheel_delta_y);
+  return provider_store_event (kind, flags, modifiers, code, x, y,
+                               wheel_delta_x, wheel_delta_y, timestamp);
 }
 
 static bool provider_read_acknowledgment (int fd, unsigned char expected);

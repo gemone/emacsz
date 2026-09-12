@@ -390,6 +390,13 @@ fn pointerButtonEvent(
     return event;
 }
 
+fn highResolutionWheelEvent(x: f32, y: f32) SDL_Event {
+    var event = wheelEvent(0, 0);
+    event.wheel.x = x;
+    event.wheel.y = y;
+    return event;
+}
+
 fn wheelEvent(x: i32, y: i32) SDL_Event {
     var event: SDL_Event = undefined;
     event.wheel = .{
@@ -707,7 +714,17 @@ fn providerEmacsKey(scancode: i32) ?u32 {
     };
 }
 
-fn providerSendInput(kind: u16, flags: u16, modifiers: u32, code: u32, x: i32, y: i32, timestamp: u64) !void {
+fn providerSendInputWithWheelDeltas(
+    kind: u16,
+    flags: u16,
+    modifiers: u32,
+    code: u32,
+    x: i32,
+    y: i32,
+    timestamp: u64,
+    wheel_delta_x: i32,
+    wheel_delta_y: i32,
+) !void {
     var packet: [48]u8 = undefined;
     @memcpy(packet[0..8], "TPEINP1\x00");
     std.mem.writeInt(u16, packet[8..10], kind, .little);
@@ -717,9 +734,33 @@ fn providerSendInput(kind: u16, flags: u16, modifiers: u32, code: u32, x: i32, y
     std.mem.writeInt(u64, packet[24..32], timestamp, .little);
     std.mem.writeInt(i32, packet[32..36], x, .little);
     std.mem.writeInt(i32, packet[36..40], y, .little);
-    std.mem.writeInt(i32, packet[40..44], 0, .little);
-    std.mem.writeInt(i32, packet[44..48], 0, .little);
+    std.mem.writeInt(i32, packet[40..44], wheel_delta_x, .little);
+    std.mem.writeInt(i32, packet[44..48], wheel_delta_y, .little);
     try providerWriteAll(&packet);
+}
+
+fn providerSendInput(kind: u16, flags: u16, modifiers: u32, code: u32, x: i32, y: i32, timestamp: u64) !void {
+    try providerSendInputWithWheelDeltas(
+        kind,
+        flags,
+        modifiers,
+        code,
+        x,
+        y,
+        timestamp,
+        0,
+        0,
+    );
+}
+
+fn providerWheelCentidelta(value: f32) i32 {
+    if (!std.math.isFinite(value)) return 0;
+    const scaled = value * 100.0;
+    if (scaled >= @as(f32, @floatFromInt(std.math.maxInt(i32))))
+        return std.math.maxInt(i32);
+    if (scaled <= @as(f32, @floatFromInt(std.math.minInt(i32))))
+        return std.math.minInt(i32);
+    return @intFromFloat(scaled);
 }
 
 fn providerSendKeyEvent(key: SDL_KeyboardEvent) !void {
@@ -820,13 +861,25 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     try providerSendMouseEvent(2, release, modifiers, event.button.button - 1, event.button.x, event.button.y, event.button.timestamp);
                 },
                 SDL_EVENT_MOUSE_WHEEL => {
-                    const modifiers = providerEmacsModifiers(SDL_GetModState());
-                    if (event.wheel.y != 0) {
-                        const down: u32 = if (event.wheel.y > 0) 1 else 0;
-                        try providerSendMouseEvent(5, 0, modifiers, down, event.wheel.mouse_x, event.wheel.mouse_y, event.wheel.timestamp);
-                    } else if (event.wheel.x != 0) {
-                        const right: u32 = if (event.wheel.x > 0) 1 else 0;
-                        try providerSendMouseEvent(6, 0, modifiers, right, event.wheel.mouse_x, event.wheel.mouse_y, event.wheel.timestamp);
+                    if (event.wheel.x != 0 or event.wheel.y != 0) {
+                        const modifiers = providerEmacsModifiers(SDL_GetModState());
+                        const vertical = @abs(event.wheel.y) >= @abs(event.wheel.x);
+                        const kind: u16 = if (vertical) 5 else 6;
+                        const direction: u32 = if (vertical)
+                            (if (event.wheel.y > 0) 1 else 0)
+                        else
+                            (if (event.wheel.x > 0) 1 else 0);
+                        try providerSendInputWithWheelDeltas(
+                            kind,
+                            0,
+                            modifiers,
+                            direction,
+                            @intFromFloat(event.wheel.mouse_x),
+                            @intFromFloat(event.wheel.mouse_y),
+                            event.wheel.timestamp,
+                            providerWheelCentidelta(event.wheel.x),
+                            providerWheelCentidelta(event.wheel.y),
+                        );
                     }
                 },
                 input_policy.SDL_EVENT_WINDOW_FOCUS_GAINED, input_policy.SDL_EVENT_WINDOW_FOCUS_LOST => {
@@ -926,6 +979,8 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     if (!SDL_PushEvent(&wheel)) return sdlFail("SDL_PushEvent");
                     wheel = wheelEvent(1, 0);
                     if (!SDL_PushEvent(&wheel)) return sdlFail("SDL_PushEvent");
+                    var high_res_wheel = highResolutionWheelEvent(0, -0.5);
+                    if (!SDL_PushEvent(&high_res_wheel)) return sdlFail("SDL_PushEvent");
                     var resized = windowEvent(
                         input_policy.SDL_EVENT_WINDOW_RESIZED,
                         SDL_GetWindowID(window),
