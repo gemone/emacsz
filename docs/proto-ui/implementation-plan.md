@@ -4386,3 +4386,8 @@ and pointer selection.  Expand it to include the Unicode/IME, scrolling, and
 menu gates as their build-graph scopes permit.  Passing this slice proves the
 current bridge only; W18.1 manual interaction and W18.2 pure runtime remain
 required for the final goal.
+P193 preserves provider mouse button identity through the standard input event.
+SDL3 physical button IDs map to normal Emacs `mouse-1`, `mouse-2`, and `mouse-3`
+symbols; the input gate exercises middle and right press/release through
+`read-event` with the same keymap and command-loop ownership as the existing
+left-button slice.  Extra provider buttons remain separate compatibility work.
