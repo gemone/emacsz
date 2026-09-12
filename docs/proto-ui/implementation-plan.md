@@ -4418,3 +4418,11 @@ SDL geometry, emits `MOVE_FRAME_EVENT` for the provider frame, and keeps
 `move-frame-functions` as the Lisp-visible extension point.  The input gate
 verifies the resulting `frame-position`; standard special-event dispatch remains
 inherited unchanged from Emacs.
+P199 maps SDL3 minimize and restore to Emacs's standard frame state.  The
+provider adapter keeps `visible` and `iconified` synchronized before delivering
+`ICONIFY_EVENT` or `DEICONIFY_EVENT`; the gate observes the inherited
+`special-event-map` dispatch order and requires `frame-visible-p` to be `t`
+after restoration.  The snapshot encoder now tracks the actual mouse-face
+count and a monotonic face generation, preventing stale duplicate deletes from
+killing the provider.  Maximization state and WM decoration parity remain
+separate platform work.

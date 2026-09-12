@@ -248,6 +248,16 @@ static bool provider_move_frame (int x, int y) {
   return true;
 }
 
+static bool provider_set_frame_window_state (bool visible) {
+  struct frame *frame = provider_terminal_frame ();
+  if (!frame || frame->terminal != tpe_host.terminal_object ||
+      frame->terminal->type != output_provider)
+    return false;
+  SET_FRAME_VISIBLE (frame, visible);
+  SET_FRAME_ICONIFIED (frame, visible ? 0 : 1);
+  return true;
+}
+
 static bool provider_store_event (uint16_t kind, uint16_t flags,
                                   uint32_t modifiers, uint32_t code,
                                   int32_t x, int32_t y, uint64_t timestamp) {
@@ -321,6 +331,14 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
       if (!provider_move_frame (x, y))
         return false;
       event.kind = MOVE_FRAME_EVENT;
+      XSETFRAME (event.frame_or_window, provider_frame);
+    }
+  else if (kind == 12 || kind == 13)
+    {
+      if (!provider_frame ||
+          !provider_set_frame_window_state (kind == 13))
+        return false;
+      event.kind = kind == 12 ? ICONIFY_EVENT : DEICONIFY_EVENT;
       XSETFRAME (event.frame_or_window, provider_frame);
     }
   else
@@ -548,6 +566,7 @@ static size_t tpe_capture_mouse_highlights (struct frame *frame,
                                             struct window *window,
                                             uint64_t window_id,
                                             uint32_t generation,
+                                            uint32_t face_generation,
                                             TpeWireFace *faces,
                                             TpeWireHighlight *highlights) {
   Mouse_HLInfo *hlinfo = MOUSE_HL_INFO (frame);
@@ -558,7 +577,7 @@ static size_t tpe_capture_mouse_highlights (struct frame *frame,
   tpe_mouse_highlight_debug = 1;
   if (!tpe_mouse.valid)
     return 0;
-  hlinfo->mouse_face_window = window;
+  XSETWINDOW (hlinfo->mouse_face_window, window);
   {
     Lisp_Object overlay = Qnil;
     struct display_pos position;
@@ -598,8 +617,9 @@ static size_t tpe_capture_mouse_highlights (struct frame *frame,
       return 0;
     }
 
-  faces[0] = (TpeWireFace) {9, generation, {background[0], background[1],
-                                            background[2], background[3]}};
+  faces[0] = (TpeWireFace) {9, face_generation,
+                            {background[0], background[1],
+                             background[2], background[3]}};
   int first_row = hlinfo->mouse_face_beg_row;
   int last_row = hlinfo->mouse_face_past_end
     ? matrix->nrows - 1 : hlinfo->mouse_face_end_row;
@@ -629,7 +649,7 @@ static size_t tpe_capture_mouse_highlights (struct frame *frame,
       highlights[count++] = (TpeWireHighlight) {
         1, window_id, generation,
         left, row->y, right - left, row->visible_height,
-        9, generation
+        9, face_generation
       };
     }
   tpe_mouse_highlight_debug = count == 0 ? 5 : 6;
@@ -714,6 +734,7 @@ void terminal_provider_capture_frame (struct frame *frame) {
 
   highlight_count = tpe_capture_mouse_highlights (frame, window, window_id,
                                                   wire_generation,
+                                                  (uint32_t)host->redisplay_generation,
                                                   faces, highlights);
   face_count = highlight_count == 0 ? 0 : 1;
   tpe_capture_acknowledged = false;

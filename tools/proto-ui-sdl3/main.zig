@@ -784,6 +784,7 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
     var snapshot_runs: usize = 0;
     var first_snapshot_rendered = false;
     var smoke_hover_resent = false;
+    var smoke_window_resent = false;
     var draw_list = renderer_policy.DrawList{ .allocator = gpa };
     defer draw_list.deinit();
     var scene = frontend.Scene.init(gpa);
@@ -835,6 +836,9 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                 },
                 input_policy.SDL_EVENT_WINDOW_MOVED => {
                     try providerSendMouseEvent(11, 0, 0, 0, @floatFromInt(event.window.data1), @floatFromInt(event.window.data2), event.window.timestamp);
+                },
+                input_policy.SDL_EVENT_WINDOW_MINIMIZED, input_policy.SDL_EVENT_WINDOW_RESTORED => {
+                    try providerSendMouseEvent(if (event.type == input_policy.SDL_EVENT_WINDOW_MINIMIZED) 12 else 13, 0, 0, 0, 0, 0, event.window.timestamp);
                 },
                 input_policy.SDL_EVENT_WINDOW_CLOSE_REQUESTED => {
                     try providerSendMouseEvent(9, 0, 0, 0, 0, 0, event.window.timestamp);
@@ -957,6 +961,25 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                 SDL_Delay(100);
                 var hover = mouseMotionEvent(2, 0, 0);
                 if (!SDL_PushEvent(&hover)) return sdlFail("SDL_PushEvent");
+            }
+            if (std.c.getenv("TPE_INPUT_SMOKE") != null and
+                snapshot_rows > 24 and !smoke_window_resent)
+            {
+                smoke_window_resent = true;
+                var minimized = windowEvent(
+                    input_policy.SDL_EVENT_WINDOW_MINIMIZED,
+                    SDL_GetWindowID(window),
+                    0,
+                    0,
+                );
+                if (!SDL_PushEvent(&minimized)) return sdlFail("SDL_PushEvent");
+                var restored = windowEvent(
+                    input_policy.SDL_EVENT_WINDOW_RESTORED,
+                    SDL_GetWindowID(window),
+                    0,
+                    0,
+                );
+                if (!SDL_PushEvent(&restored)) return sdlFail("SDL_PushEvent");
             }
         }
     }

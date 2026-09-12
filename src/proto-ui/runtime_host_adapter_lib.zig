@@ -319,6 +319,7 @@ export fn proto_ui_tpe_encode_snapshot(
             tpeAppendEnvelope(&output, protocol.Message.face_delete, 0, sequence, snapshot.session_id, snapshot.frame_id, sequence, &stale_face_payload) catch return 2;
             sequence += 1;
         }
+        TpeSnapshotSequenceState.last_highlight_count = 0;
     }
 
     var create_payload: [8]u8 = undefined;
@@ -521,8 +522,11 @@ export fn proto_ui_tpe_encode_snapshot(
 
     const bytes = std.heap.c_allocator.dupe(u8, output.items) catch return 3;
     TpeSnapshotSequenceState.next = sequence + 1;
-    TpeSnapshotSequenceState.last_face_generation = @intCast(snapshot.redisplay_generation);
-    TpeSnapshotSequenceState.last_highlight_count = snapshot.highlight_count;
+    if (snapshot.highlight_count > 0 and snapshot.faces != null) {
+        TpeSnapshotSequenceState.last_face_generation = snapshot.faces.?[0].generation;
+    }
+    TpeSnapshotSequenceState.last_highlight_count =
+        if (snapshot.highlight_count > 0 and snapshot.faces != null) 1 else 0;
     out_bytes.* = bytes.ptr;
     out_len.* = bytes.len;
     return 0;
