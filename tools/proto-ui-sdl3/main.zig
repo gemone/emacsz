@@ -864,8 +864,14 @@ fn providerWheelCentidelta(value: f32) i32 {
     return @intFromFloat(scaled);
 }
 
+fn repeatedKeyboardEvent(scancode: i32, modifiers: u16) SDL_Event {
+    var event = keyboardEvent(scancode, true, modifiers);
+    event.key.repeat = true;
+    return event;
+}
+
 fn providerSendKeyEvent(key: SDL_KeyboardEvent) !void {
-    if (!key.down or key.repeat) return;
+    if (!key.down) return;
     const name = SDL_GetKeyName(key.key);
     const logical: []const u8 = if (name) |value| std.mem.span(value) else "";
     const modifiers = providerEmacsModifiers(key.modifiers);
@@ -1201,6 +1207,8 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                 first_snapshot_rendered = true;
                 if (std.c.getenv("TPE_INPUT_SMOKE") != null) {
                     var synthetic = keyboardEvent(input_policy.SDL_SCANCODE_LEFT, true, 0);
+                    if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
+                    synthetic = repeatedKeyboardEvent(input_policy.SDL_SCANCODE_LEFT, 0);
                     if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
                     inline for (.{ input_policy.SDL_SCANCODE_F12, input_policy.SDL_SCANCODE_DELETE, input_policy.SDL_SCANCODE_HOME, input_policy.SDL_SCANCODE_PAGEUP, input_policy.SDL_SCANCODE_PAGEDOWN, input_policy.SDL_SCANCODE_END, input_policy.SDL_SCANCODE_INSERT }) |scancode| {
                         synthetic = keyboardEvent(scancode, true, 0);

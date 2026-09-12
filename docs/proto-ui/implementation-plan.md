@@ -4611,3 +4611,10 @@ real input gate round-trips `C-`, `A-`, `s-`, `M-`, and `S-<f12>` plus the
 combined `A-C-M-S-s-<f12>` form through inherited Emacs conversion.  Host
 rebinding of physical modifier semantics and every arbitrary combination remain
 separate work.
+
+P222 enables standard keyboard auto-repeat on the TPE provider path.  SDL repeat
+presses are forwarded as repeated keydown packets instead of being discarded,
+while key release remains rejected.  The real input gate proves two consecutive
+`left` events reach inherited Emacs conversion, so held navigation keys behave
+like other Emacs terminals.  Text-input deduplication, adjustable host repeat
+rates, and key-release-only semantics remain separate work.
