@@ -44,6 +44,7 @@ typedef struct TpeEmacsHost {
   char title[4096];
   size_t title_length;
   uint32_t title_generation;
+  bool explicit_title;
   bool deleted;
   bool window_maximized;
 } TpeEmacsHost;
@@ -684,20 +685,47 @@ static size_t tpe_capture_mouse_highlights (struct frame *frame,
   return count;
 }
 
+static bool provider_store_title (TpeEmacsHost *host, Lisp_Object title,
+                                  bool explicit) {
+  if (!STRINGP (title))
+    return false;
+  ptrdiff_t length = SBYTES (title);
+  if (length <= 0 || length >= (ptrdiff_t)sizeof host->title)
+    return false;
+  host->explicit_title = explicit;
+  if (SBYTES (title) == (ptrdiff_t)host->title_length &&
+      memcmp (host->title, SSDATA (title), host->title_length) == 0)
+    return false;
+  memcpy (host->title, SSDATA (title), (size_t)length);
+  host->title_length = (size_t)length;
+  host->title_generation++;
+  return true;
+}
+
+static void provider_sync_explicit_title (TpeEmacsHost *host,
+                                          struct frame *frame) {
+  Lisp_Object title = get_frame_param (frame, Qtitle);
+  if (STRINGP (title))
+    {
+      provider_store_title (host, title, true);
+      return;
+    }
+  host->explicit_title = false;
+  Lisp_Object name = get_frame_param (frame, Qname);
+  if (STRINGP (name) && provider_store_title (host, name, true))
+    fset_name (frame, name);
+}
+
 static void provider_implicitly_set_name (struct frame *frame,
                                           Lisp_Object arg,
                                           Lisp_Object oldval) {
   TpeEmacsHost *host = frame && frame->terminal
     ? frame->terminal->provider_data : NULL;
-  if (!frame || !host || !STRINGP (arg) || host->surface_frame != frame)
+  if (!frame || !host || host->explicit_title || !STRINGP (arg) ||
+      host->surface_frame != frame)
     return;
-  ptrdiff_t length = SBYTES (arg);
-  if (length <= 0 || length >= (ptrdiff_t)sizeof host->title)
-    return;
-  memcpy (host->title, SSDATA (arg), (size_t)length);
-  host->title_length = (size_t)length;
-  host->title_generation++;
-  fset_name (frame, arg);
+  if (provider_store_title (host, arg, false))
+    fset_name (frame, arg);
   (void)oldval;
 }
 
@@ -709,6 +737,8 @@ void terminal_provider_capture_frame (struct frame *frame) {
       frame->terminal->type != output_provider ||
       host->surface_frame != frame)
     return;
+
+  provider_sync_explicit_title (host, frame);
 
   TpeWireRow rows[256];
   TpeWireRun runs[64];
@@ -894,9 +924,20 @@ static void shutdown_provider_surface (void) {
   provider_surface_pid = -1;
 }
 
+Lisp_Object Fterminal_provider_title (void);
 Lisp_Object Fterminal_provider_capture_p (void);
 Lisp_Object Fterminal_provider_mouse_face_p (void);
 Lisp_Object Fterminal_provider_mouse_face_debug (void);
+
+DEFUN ("terminal-provider-title", Fterminal_provider_title,
+       Sterminal_provider_title, 0, 0, 0,
+       doc: /* Return the title staged for the provider surface.  */)
+  (void)
+{
+  return make_multibyte_string (tpe_host.title,
+                                (ptrdiff_t)tpe_host.title_length,
+                                (ptrdiff_t)tpe_host.title_length);
+}
 
 DEFUN ("terminal-provider-capture-p", Fterminal_provider_capture_p,
        Sterminal_provider_capture_p, 0, 0, 0,
@@ -1036,6 +1077,7 @@ bool init_terminal_provider (void) {
 
   initialize_host_table (&tpe_host);
   Fset (intern_c_string ("frame-background-mode"), Qdark);
+  defsubr (&Sterminal_provider_title);
   defsubr (&Sterminal_provider_capture_p);
   defsubr (&Sterminal_provider_mouse_face_p);
   defsubr (&Sterminal_provider_mouse_face_debug);

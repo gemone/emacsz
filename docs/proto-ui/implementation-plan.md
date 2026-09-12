@@ -4457,3 +4457,11 @@ edit.  The frame gate binds `frame-title-format`, requires Emacs's frame name to
 change through normal redisplay, and the SDL process independently verifies both
 Scene and OS window titles.  Explicit title parameter plumbing and generic
 `FRAME_WINDOW_P` recognition remain separate compatibility work.
+
+P204 adds explicit title compatibility above the implicit title path.  Standard
+`title` parameters now take priority in the adapter and explicit `name`
+parameters become the provider title after `set-frame-name`; implicit
+`frame-title-format` cannot overwrite either explicit state.  The frame gate
+exercises title precedence, clearing `title`, then `set-frame-name`, and requires
+the final Lisp, adapter, and SDL OS-window titles to agree.  Generic provider
+recognition by inherited `FRAME_WINDOW_P` remains future work.
