@@ -4396,3 +4396,8 @@ packet path.  Provider `wheel.x` maps to standard Emacs `wheel-left` and
 `wheel-right` events without a provider-side command table; the input gate now
 exercises both directions after vertical wheel delivery.  Momentum, high-
 resolution wheel deltas, and platform-specific acceleration remain separate work.
+P195 completes the standard provider mouse-position entry point.  The hook now
+reports the provider frame even when Emacs asks from another selected frame, so
+motion, popup positioning, and frame-sensitive Lisp observe the same canonical
+pointer state.  The input gate consumes the synthetic SDL motion through the
+normal `track-mouse` path and requires a standard `mouse-movement` event.

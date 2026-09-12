@@ -827,10 +827,12 @@ static void provider_mouse_position (struct frame **frame, int insist,
                                      enum scroll_bar_part *part,
                                      Lisp_Object *x, Lisp_Object *y,
                                      Time *timestamp) {
-  if (tpe_mouse.valid && frame && *frame &&
-      (*frame)->terminal == tpe_host.terminal_object)
+  struct frame *provider_frame = provider_terminal_frame ();
+  if (tpe_mouse.valid && frame && provider_frame &&
+      provider_frame->terminal == tpe_host.terminal_object)
     {
-      (*frame)->mouse_moved = false;
+      *frame = provider_frame;
+      provider_frame->mouse_moved = false;
       *bar_window = Qnil;
       *part = scroll_bar_nowhere;
       XSETINT (*x, (EMACS_INT)tpe_mouse.x);
