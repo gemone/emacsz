@@ -4485,4 +4485,12 @@ standard `pixel-scroll-precision` command with interpolation disabled and
 requires the provider window's start or pixel vscroll state to change.  Thus
 provider deltas now reach the normal Elisp scrolling implementation, not merely
 `read-event`.  Momentum, page units, interpolation with platform device state,
-and touchpad stop events remain separate work.
+and interpolation with platform device state remain separate work.
+
+P208 maps SDL's native `SDL_EVENT_FINGER_UP` to TPE kind 15 and Emacs's
+standard `TOUCH_END_EVENT`.  The adapter normalizes the SDL finger position to
+window pixels, attributes the event to the provider frame, and lets inherited
+`make-lispy-position` construct the standard `touch-end` posn.  The input gate
+now observes a native finger-up event after the pixel-scroll command.  Touchpad
+scroll source classification, momentum, page units, and multi-touch gestures
+remain separate work.

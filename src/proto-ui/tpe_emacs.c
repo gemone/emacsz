@@ -362,6 +362,15 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
       event.kind = MOVE_FRAME_EVENT;
       XSETFRAME (event.frame_or_window, provider_frame);
     }
+  else if (kind == 15)
+    {
+      if (!provider_frame)
+        return false;
+      event.kind = TOUCH_END_EVENT;
+      XSETFRAME (event.frame_or_window, provider_frame);
+      XSETINT (event.x, x);
+      XSETINT (event.y, y);
+    }
   else if (kind == 12 || kind == 13 || kind == 14)
     {
       bool was_iconified = provider_frame ? provider_frame->iconified : false;

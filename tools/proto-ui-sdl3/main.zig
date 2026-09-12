@@ -258,6 +258,30 @@ const SDL_TouchFingerEvent = extern struct {
     window_id: u32,
 };
 
+fn fingerEvent(
+    event_type: c_uint,
+    normalized_x: f32,
+    normalized_y: f32,
+    timestamp: u64,
+    window_id: u32,
+) SDL_Event {
+    var event: SDL_Event = undefined;
+    event.finger = .{
+        .type = event_type,
+        .reserved = 0,
+        .timestamp = timestamp,
+        .touch_id = 1,
+        .finger_id = 1,
+        .x = normalized_x,
+        .y = normalized_y,
+        .dx = 0,
+        .dy = 0,
+        .pressure = 0,
+        .window_id = window_id,
+    };
+    return event;
+}
+
 const SDL_DropEvent = extern struct {
     type: c_uint,
     reserved: c_uint,
@@ -882,6 +906,30 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                         );
                     }
                 },
+                input_policy.SDL_EVENT_FINGER_UP => {
+                    const valid_touch = (event.finger.window_id == 0 or
+                        event.finger.window_id == SDL_GetWindowID(window)) and
+                        std.math.isFinite(event.finger.x) and
+                        std.math.isFinite(event.finger.y) and
+                        event.finger.x >= 0 and event.finger.x <= 1 and
+                        event.finger.y >= 0 and event.finger.y <= 1;
+                    if (valid_touch) {
+                        var touch_width: c_int = 0;
+                        var touch_height: c_int = 0;
+                        SDL_GetWindowSize(window, &touch_width, &touch_height);
+                        if (touch_width > 0 and touch_height > 0) {
+                            const touch_x = @min(
+                                @as(f32, @floatFromInt(touch_width)) * event.finger.x,
+                                @as(f32, @floatFromInt(touch_width - 1)),
+                            );
+                            const touch_y = @min(
+                                @as(f32, @floatFromInt(touch_height)) * event.finger.y,
+                                @as(f32, @floatFromInt(touch_height - 1)),
+                            );
+                            try providerSendMouseEvent(15, 0, 0, 0, touch_x, touch_y, event.finger.timestamp);
+                        }
+                    }
+                },
                 input_policy.SDL_EVENT_WINDOW_FOCUS_GAINED, input_policy.SDL_EVENT_WINDOW_FOCUS_LOST => {
                     const gained = event.type == input_policy.SDL_EVENT_WINDOW_FOCUS_GAINED;
                     try providerSendMouseEvent(if (gained) 7 else 8, 0, 0, 0, 0, 0, event.window.timestamp);
@@ -983,6 +1031,14 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     if (!SDL_PushEvent(&high_res_wheel)) return sdlFail("SDL_PushEvent");
                     high_res_wheel = highResolutionWheelEvent(0, 0.5);
                     if (!SDL_PushEvent(&high_res_wheel)) return sdlFail("SDL_PushEvent");
+                    var touch = fingerEvent(
+                        input_policy.SDL_EVENT_FINGER_UP,
+                        0.25,
+                        0.5,
+                        11,
+                        SDL_GetWindowID(window),
+                    );
+                    if (!SDL_PushEvent(&touch)) return sdlFail("SDL_PushEvent");
                     var resized = windowEvent(
                         input_policy.SDL_EVENT_WINDOW_RESIZED,
                         SDL_GetWindowID(window),
