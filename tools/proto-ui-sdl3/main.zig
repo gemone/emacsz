@@ -912,6 +912,20 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     if (!SDL_PushEvent(&text)) return sdlFail("SDL_PushEvent");
                     var hover = mouseMotionEvent(2, 0, 0);
                     if (!SDL_PushEvent(&hover)) return sdlFail("SDL_PushEvent");
+                    var focus = windowEvent(
+                        input_policy.SDL_EVENT_WINDOW_FOCUS_GAINED,
+                        SDL_GetWindowID(window),
+                        0,
+                        0,
+                    );
+                    if (!SDL_PushEvent(&focus)) return sdlFail("SDL_PushEvent");
+                    focus = windowEvent(
+                        input_policy.SDL_EVENT_WINDOW_FOCUS_LOST,
+                        SDL_GetWindowID(window),
+                        0,
+                        0,
+                    );
+                    if (!SDL_PushEvent(&focus)) return sdlFail("SDL_PushEvent");
                 }
             }
 

@@ -4407,3 +4407,8 @@ clicks, both wheel kinds, focus transitions, and delete requests now carry the
 provider frame rather than whatever frame happens to be selected, matching the
 PGTK event-attribution model.  Standard motion remains gated through
 `track-mouse`; separate same-terminal multi-frame event ownership smoke follows.
+P197 gates SDL3 focus through the standard Emacs event path.  Provider focus
+gain and loss enter the standard focus-event path, and the gate observes
+`after-focus-change-function` transitions in the expected gained-then-lost
+provider-frame state order.  Platform focus decoration state and multi-frame
+focus arbitration remain separate provider lifecycle work.
