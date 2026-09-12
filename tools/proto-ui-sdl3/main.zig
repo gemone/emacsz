@@ -908,6 +908,18 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     mouse = pointerButtonEvent(17, 21, input_policy.SDL_EVENT_MOUSE_BUTTON_UP, false, 3, 1);
                     mouse.button.timestamp = 6;
                     if (!SDL_PushEvent(&mouse)) return sdlFail("SDL_PushEvent");
+                    mouse = pointerButtonEvent(17, 21, input_policy.SDL_EVENT_MOUSE_BUTTON_DOWN, true, 4, 1);
+                    mouse.button.timestamp = 7;
+                    if (!SDL_PushEvent(&mouse)) return sdlFail("SDL_PushEvent");
+                    mouse = pointerButtonEvent(17, 21, input_policy.SDL_EVENT_MOUSE_BUTTON_UP, false, 4, 1);
+                    mouse.button.timestamp = 8;
+                    if (!SDL_PushEvent(&mouse)) return sdlFail("SDL_PushEvent");
+                    mouse = pointerButtonEvent(17, 21, input_policy.SDL_EVENT_MOUSE_BUTTON_DOWN, true, 5, 1);
+                    mouse.button.timestamp = 9;
+                    if (!SDL_PushEvent(&mouse)) return sdlFail("SDL_PushEvent");
+                    mouse = pointerButtonEvent(17, 21, input_policy.SDL_EVENT_MOUSE_BUTTON_UP, false, 5, 1);
+                    mouse.button.timestamp = 10;
+                    if (!SDL_PushEvent(&mouse)) return sdlFail("SDL_PushEvent");
                     var wheel = wheelEvent(0, 1);
                     if (!SDL_PushEvent(&wheel)) return sdlFail("SDL_PushEvent");
                     wheel = wheelEvent(-1, 0);

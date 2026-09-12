@@ -4465,3 +4465,11 @@ parameters become the provider title after `set-frame-name`; implicit
 exercises title precedence, clearing `title`, then `set-frame-name`, and requires
 the final Lisp, adapter, and SDL OS-window titles to agree.  Generic provider
 recognition by inherited `FRAME_WINDOW_P` remains future work.
+
+P205 carries SDL X1/X2 pointer buttons through the unchanged canonical TPE
+input envelope.  SDL buttons 4 and 5 preserve their identity as standard
+`mouse-4` and `mouse-5` press/release events for Emacs's command loop; no
+frontend command table or fallback binding is introduced.  The input gate now
+extends the three primary-button sequence with X1/X2 before wheel delivery.
+Pen-barrel buttons, touch button semantics, and high-resolution wheel deltas
+remain separate compatibility work.
