@@ -759,24 +759,6 @@ fn providerApplySnapshot(bytes: []const u8, scene: *frontend.Scene) !struct { ro
     return .{ .rows = scene.rows.items.len, .runs = scene.glyph_runs.items.len };
 }
 
-fn providerFirstCodepoint(text: []const u8) ?u21 {
-    if (text.len == 0) return null;
-    const byte = text[0];
-    if (byte < 0x80) return byte;
-    const length: usize = if (byte & 0xe0 == 0xc0) 2 else if (byte & 0xf0 == 0xe0) 3 else if (byte & 0xf8 == 0xf0) 4 else return null;
-    if (text.len < length) return null;
-    var code: u21 = switch (length) {
-        2 => byte & 0x1f,
-        3 => byte & 0x0f,
-        else => byte & 0x07,
-    };
-    for (text[1..length]) |continuation| {
-        if (continuation & 0xc0 != 0x80) return null;
-        code = (code << 6) | (continuation & 0x3f);
-    }
-    return code;
-}
-
 const emacs_alt_modifier: u32 = 0x0400000;
 const emacs_super_modifier: u32 = 0x0800000;
 const emacs_shift_modifier: u32 = 0x2000000;
@@ -864,18 +846,22 @@ fn providerWheelCentidelta(value: f32) i32 {
     return @intFromFloat(scaled);
 }
 
-fn repeatedKeyboardEvent(scancode: i32, modifiers: u16) SDL_Event {
-    var event = keyboardEvent(scancode, true, modifiers);
+fn keycodeKeyboardEvent(scancode: i32, keycode: u32, down: bool, modifiers: u16) SDL_Event {
+    var event = keyboardEvent(scancode, down, modifiers);
+    event.key.key = keycode;
+    return event;
+}
+
+fn repeatedKeyboardEvent(scancode: i32, keycode: u32, modifiers: u16) SDL_Event {
+    var event = keycodeKeyboardEvent(scancode, keycode, true, modifiers);
     event.key.repeat = true;
     return event;
 }
 
 fn providerSendKeyEvent(key: SDL_KeyboardEvent) !void {
     if (!key.down) return;
-    const name = SDL_GetKeyName(key.key);
-    const logical: []const u8 = if (name) |value| std.mem.span(value) else "";
     const modifiers = providerEmacsModifiers(key.modifiers);
-    if (providerFirstCodepoint(logical)) |code| {
+    if (std.math.cast(u21, key.key)) |code| {
         if (code >= 0x20 and code <= 0x7e) {
             try providerSendInput(0, 0, modifiers, code, 0, 0, key.timestamp);
             return;
@@ -1206,12 +1192,32 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                 });
                 first_snapshot_rendered = true;
                 if (std.c.getenv("TPE_INPUT_SMOKE") != null) {
-                    var synthetic = keyboardEvent(input_policy.SDL_SCANCODE_LEFT, true, 0);
+                    const SDL_KEY_SPACE: u32 = 32;
+                    const SDL_KEY_LEFT: u32 = 0x40000050;
+                    const SDL_KEY_F12: u32 = 0x40000045;
+                    const SDL_KEY_DELETE: u32 = 0x7f;
+                    const SDL_KEY_HOME: u32 = 0x4000004a;
+                    const SDL_KEY_PAGEUP: u32 = 0x4000004b;
+                    const SDL_KEY_PAGEDOWN: u32 = 0x4000004e;
+                    const SDL_KEY_END: u32 = 0x4000004d;
+                    const SDL_KEY_INSERT: u32 = 0x40000049;
+                    var synthetic = keycodeKeyboardEvent(input_policy.SDL_SCANCODE_SPACE, SDL_KEY_SPACE, true, 0);
                     if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
-                    synthetic = repeatedKeyboardEvent(input_policy.SDL_SCANCODE_LEFT, 0);
+                    synthetic = keycodeKeyboardEvent(input_policy.SDL_SCANCODE_LEFT, SDL_KEY_LEFT, true, 0);
                     if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
-                    inline for (.{ input_policy.SDL_SCANCODE_F12, input_policy.SDL_SCANCODE_DELETE, input_policy.SDL_SCANCODE_HOME, input_policy.SDL_SCANCODE_PAGEUP, input_policy.SDL_SCANCODE_PAGEDOWN, input_policy.SDL_SCANCODE_END, input_policy.SDL_SCANCODE_INSERT }) |scancode| {
-                        synthetic = keyboardEvent(scancode, true, 0);
+                    synthetic = repeatedKeyboardEvent(input_policy.SDL_SCANCODE_LEFT, SDL_KEY_LEFT, 0);
+                    if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
+                    const special_keys = [_]struct { scancode: i32, keycode: u32 }{
+                        .{ .scancode = input_policy.SDL_SCANCODE_F12, .keycode = SDL_KEY_F12 },
+                        .{ .scancode = input_policy.SDL_SCANCODE_DELETE, .keycode = SDL_KEY_DELETE },
+                        .{ .scancode = input_policy.SDL_SCANCODE_HOME, .keycode = SDL_KEY_HOME },
+                        .{ .scancode = input_policy.SDL_SCANCODE_PAGEUP, .keycode = SDL_KEY_PAGEUP },
+                        .{ .scancode = input_policy.SDL_SCANCODE_PAGEDOWN, .keycode = SDL_KEY_PAGEDOWN },
+                        .{ .scancode = input_policy.SDL_SCANCODE_END, .keycode = SDL_KEY_END },
+                        .{ .scancode = input_policy.SDL_SCANCODE_INSERT, .keycode = SDL_KEY_INSERT },
+                    };
+                    inline for (special_keys) |special_key| {
+                        synthetic = keycodeKeyboardEvent(special_key.scancode, special_key.keycode, true, 0);
                         if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
                     }
                     const modifier_cases = [_]u16{

@@ -4618,3 +4618,11 @@ while key release remains rejected.  The real input gate proves two consecutive
 `left` events reach inherited Emacs conversion, so held navigation keys behave
 like other Emacs terminals.  Text-input deduplication, adjustable host repeat
 rates, and key-release-only semantics remain separate work.
+
+P223 removes the provider's unsafe keyboard-name heuristic.  SDL key names are
+display strings, so reading their first codepoint could turn `Return` into `R`
+or `Left` into `L`.  The provider now accepts only the actual printable SDL
+keycode for ASCII input and routes all other keys through the existing
+scancode-to-Emacs-keysym mapping.  The real input gate now injects SDL keycodes
+for space, repeated left, and every covered navigation/function key; inherited
+Emacs conversion still observes the expected printable and symbolic sequence.
