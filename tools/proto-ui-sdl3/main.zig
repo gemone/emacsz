@@ -836,6 +836,8 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
     defer SDL_DestroyWindow(window);
     const renderer = SDL_CreateRenderer(window, null) orelse return sdlFail("SDL_CreateRenderer");
     defer SDL_DestroyRenderer(renderer);
+    var touch_ids = std.AutoHashMapUnmanaged(u32, void){};
+    defer touch_ids.deinit(gpa);
     if (!SDL_SetRenderDrawColor(renderer, 0x10, 0x12, 0x18, 255)) return sdlFail("SDL_SetRenderDrawColor");
     if (!SDL_RenderClear(renderer)) return sdlFail("SDL_RenderClear");
     if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
@@ -906,7 +908,11 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                         );
                     }
                 },
-                input_policy.SDL_EVENT_FINGER_UP => {
+                input_policy.SDL_EVENT_FINGER_DOWN,
+                input_policy.SDL_EVENT_FINGER_MOTION,
+                input_policy.SDL_EVENT_FINGER_UP,
+                input_policy.SDL_EVENT_FINGER_CANCELED,
+                => {
                     const valid_touch = (event.finger.window_id == 0 or
                         event.finger.window_id == SDL_GetWindowID(window)) and
                         std.math.isFinite(event.finger.x) and
@@ -914,10 +920,34 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                         event.finger.x >= 0 and event.finger.x <= 1 and
                         event.finger.y >= 0 and event.finger.y <= 1;
                     if (valid_touch) {
+                        const raw_touch_id: u64 = @bitCast(event.finger.finger_id);
+                        const touch_id: u32 = if (raw_touch_id == 0)
+                            1
+                        else
+                            @truncate(raw_touch_id);
+                        const touch_kind: u16 = switch (event.type) {
+                            input_policy.SDL_EVENT_FINGER_DOWN => 16,
+                            input_policy.SDL_EVENT_FINGER_MOTION => 17,
+                            else => 18,
+                        };
+                        const known_touch = switch (event.type) {
+                            input_policy.SDL_EVENT_FINGER_DOWN => blk: {
+                                if (touch_ids.contains(touch_id)) break :blk false;
+                                touch_ids.put(gpa, touch_id, {}) catch |err| switch (err) {
+                                    error.OutOfMemory => return err,
+                                };
+                                break :blk true;
+                            },
+                            input_policy.SDL_EVENT_FINGER_MOTION => touch_ids.contains(touch_id),
+                            else => blk: {
+                                if (!touch_ids.remove(touch_id)) break :blk false;
+                                break :blk true;
+                            },
+                        };
                         var touch_width: c_int = 0;
                         var touch_height: c_int = 0;
                         SDL_GetWindowSize(window, &touch_width, &touch_height);
-                        if (touch_width > 0 and touch_height > 0) {
+                        if (known_touch and touch_width > 0 and touch_height > 0) {
                             const touch_x = @min(
                                 @as(f32, @floatFromInt(touch_width)) * event.finger.x,
                                 @as(f32, @floatFromInt(touch_width - 1)),
@@ -926,7 +956,8 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                                 @as(f32, @floatFromInt(touch_height)) * event.finger.y,
                                 @as(f32, @floatFromInt(touch_height - 1)),
                             );
-                            try providerSendMouseEvent(15, 0, 0, 0, touch_x, touch_y, event.finger.timestamp);
+                            const canceled: u16 = if (event.type == input_policy.SDL_EVENT_FINGER_CANCELED) 1 else 0;
+                            try providerSendMouseEvent(touch_kind, canceled, 0, touch_id, touch_x, touch_y, event.finger.timestamp);
                         }
                     }
                 },
@@ -1032,12 +1063,31 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     high_res_wheel = highResolutionWheelEvent(0, 0.5);
                     if (!SDL_PushEvent(&high_res_wheel)) return sdlFail("SDL_PushEvent");
                     var touch = fingerEvent(
-                        input_policy.SDL_EVENT_FINGER_UP,
+                        input_policy.SDL_EVENT_FINGER_DOWN,
                         0.25,
-                        0.5,
+                        0.25,
                         11,
                         SDL_GetWindowID(window),
                     );
+                    touch.finger.finger_id = 7;
+                    if (!SDL_PushEvent(&touch)) return sdlFail("SDL_PushEvent");
+                    touch = fingerEvent(
+                        input_policy.SDL_EVENT_FINGER_MOTION,
+                        0.5,
+                        0.5,
+                        12,
+                        SDL_GetWindowID(window),
+                    );
+                    touch.finger.finger_id = 7;
+                    if (!SDL_PushEvent(&touch)) return sdlFail("SDL_PushEvent");
+                    touch = fingerEvent(
+                        input_policy.SDL_EVENT_FINGER_UP,
+                        0.75,
+                        0.75,
+                        13,
+                        SDL_GetWindowID(window),
+                    );
+                    touch.finger.finger_id = 7;
                     if (!SDL_PushEvent(&touch)) return sdlFail("SDL_PushEvent");
                     var resized = windowEvent(
                         input_policy.SDL_EVENT_WINDOW_RESIZED,

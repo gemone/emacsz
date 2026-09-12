@@ -4487,10 +4487,15 @@ provider deltas now reach the normal Elisp scrolling implementation, not merely
 `read-event`.  Momentum, page units, interpolation with platform device state,
 and interpolation with platform device state remain separate work.
 
-P208 maps SDL's native `SDL_EVENT_FINGER_UP` to TPE kind 15 and Emacs's
-standard `TOUCH_END_EVENT`.  The adapter normalizes the SDL finger position to
-window pixels, attributes the event to the provider frame, and lets inherited
-`make-lispy-position` construct the standard `touch-end` posn.  The input gate
-now observes a native finger-up event after the pixel-scroll command.  Touchpad
-scroll source classification, momentum, page units, and multi-touch gestures
-remain separate work.
+P208 initially mapped SDL finger-up to `TOUCH_END_EVENT`, but P209 replaces
+that touchscreen-facing slice with the complete standard lifecycle.  SDL finger
+down, motion, up, and cancel now map to TPE kinds 16-18 and Emacs's
+`TOUCHSCREEN_BEGIN_EVENT`, `TOUCHSCREEN_UPDATE_EVENT`, and
+`TOUCHSCREEN_END_EVENT`.  The frontend tracks active touch IDs, admits only
+known contacts, suppresses duplicate begins and ghost ends, and marks canceled
+ends with the documented nonzero modifier.  The adapter carries the bounded
+contact ID, updates the active-contact list, and lets inherited conversion build
+standard posns.  The input gate observes ID 7 through begin, update, and normal
+end after the pixel-scroll command.  TPE kind 15 remains reserved for wheel or
+touchpad release; multi-touch list aggregation, pressure, gestures, and
+momentum remain separate work.

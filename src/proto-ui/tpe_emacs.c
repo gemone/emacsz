@@ -371,6 +371,31 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
       XSETINT (event.x, x);
       XSETINT (event.y, y);
     }
+  else if (kind >= 16 && kind <= 18)
+    {
+      if (!provider_frame || code == 0)
+        return false;
+      event.frame_or_window = Qnil;
+      XSETFRAME (event.frame_or_window, provider_frame);
+      XSETINT (event.x, x);
+      XSETINT (event.y, y);
+      if (kind == 16)
+        {
+          event.kind = TOUCHSCREEN_BEGIN_EVENT;
+          XSETINT (event.arg, code);
+        }
+      else if (kind == 17)
+        {
+          event.kind = TOUCHSCREEN_UPDATE_EVENT;
+          event.arg = list1 (list3i (x, y, (intmax_t)code));
+        }
+      else
+        {
+          event.kind = TOUCHSCREEN_END_EVENT;
+          event.modifiers = flags ? 1 : 0;
+          XSETINT (event.arg, code);
+        }
+    }
   else if (kind == 12 || kind == 13 || kind == 14)
     {
       bool was_iconified = provider_frame ? provider_frame->iconified : false;
