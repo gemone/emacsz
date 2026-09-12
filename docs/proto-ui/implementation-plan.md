@@ -4401,3 +4401,9 @@ reports the provider frame even when Emacs asks from another selected frame, so
 motion, popup positioning, and frame-sensitive Lisp observe the same canonical
 pointer state.  The input gate consumes the synthetic SDL motion through the
 normal `track-mouse` path and requires a standard `mouse-movement` event.
+
+P196 fixes provider event ownership for multi-frame Emacs sessions.  Mouse
+clicks, both wheel kinds, focus transitions, and delete requests now carry the
+provider frame rather than whatever frame happens to be selected, matching the
+PGTK event-attribution model.  Standard motion remains gated through
+`track-mouse`; separate same-terminal multi-frame event ownership smoke follows.

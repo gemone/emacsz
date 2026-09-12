@@ -242,6 +242,7 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
                                   uint32_t modifiers, uint32_t code,
                                   int32_t x, int32_t y, uint64_t timestamp) {
   struct input_event event;
+  struct frame *provider_frame = provider_terminal_frame ();
   EVENT_INIT (event);
   event.timestamp = (Time)timestamp;
   event.modifiers = modifiers;
@@ -259,6 +260,7 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
         return false;
       event.kind = MOUSE_CLICK_EVENT;
       event.modifiers |= (flags & 1) ? up_modifier : down_modifier;
+      XSETFRAME (event.frame_or_window, provider_frame);
       XSETINT (event.x, x);
       XSETINT (event.y, y);
     }
@@ -274,6 +276,7 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
         return false;
       event.kind = WHEEL_EVENT;
       event.modifiers |= code ? down_modifier : up_modifier;
+      XSETFRAME (event.frame_or_window, provider_frame);
       XSETINT (event.x, x);
       XSETINT (event.y, y);
     }
@@ -283,13 +286,24 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
         return false;
       event.kind = HORIZ_WHEEL_EVENT;
       event.modifiers |= code ? down_modifier : up_modifier;
+      XSETFRAME (event.frame_or_window, provider_frame);
       XSETINT (event.x, x);
       XSETINT (event.y, y);
     }
   else if (kind == 7 || kind == 8)
-    event.kind = kind == 7 ? FOCUS_IN_EVENT : FOCUS_OUT_EVENT;
+    {
+      if (!provider_frame)
+        return false;
+      event.kind = kind == 7 ? FOCUS_IN_EVENT : FOCUS_OUT_EVENT;
+      XSETFRAME (event.frame_or_window, provider_frame);
+    }
   else if (kind == 9)
-    event.kind = DELETE_WINDOW_EVENT;
+    {
+      if (!provider_frame)
+        return false;
+      event.kind = DELETE_WINDOW_EVENT;
+      XSETFRAME (event.frame_or_window, provider_frame);
+    }
   else if (kind == 10)
     return provider_resize_frame (x, y);
   else
