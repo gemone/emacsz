@@ -4433,3 +4433,9 @@ iconified frame, avoiding a duplicate make-visible transition when restoring
 from maximize.  The SDL smoke samples the standard Lisp parameter while
 maximized and requires `nil` after restoration.  Fullscreen modes, tiled
 states, and WM decoration parity remain separate work.
+P201 gates SDL window close through the inherited lifecycle path.  The smoke
+publishes one close request, temporarily installs a recording handler on the
+standard `delete-frame` special event, and requires exactly one event owned by
+the provider frame while that frame remains live and the smoke process exits
+normally.  This prevents a provider close from being swallowed or from killing
+the harness before compatibility assertions run.

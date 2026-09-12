@@ -786,6 +786,7 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
     var smoke_hover_resent = false;
     var smoke_window_resent = false;
     var smoke_maximize_resent = false;
+    var smoke_close_resent = false;
     var draw_list = renderer_policy.DrawList{ .allocator = gpa };
     defer draw_list.deinit();
     var scene = frontend.Scene.init(gpa);
@@ -1004,6 +1005,18 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     0,
                 );
                 if (!SDL_PushEvent(&restored)) return sdlFail("SDL_PushEvent");
+            }
+            if (std.c.getenv("TPE_INPUT_SMOKE") != null and
+                snapshot_rows > 24 and !smoke_close_resent)
+            {
+                smoke_close_resent = true;
+                var close = windowEvent(
+                    input_policy.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
+                    SDL_GetWindowID(window),
+                    0,
+                    0,
+                );
+                if (!SDL_PushEvent(&close)) return sdlFail("SDL_PushEvent");
             }
         }
     }
