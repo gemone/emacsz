@@ -997,7 +997,7 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                 input_policy.SDL_EVENT_PEN_AXIS => {
                     const axis_supported =
                         (event.paxis.pen_state & input_policy.SDL_PEN_INPUT_ERASER_TIP) == 0 and
-                        event.paxis.axis < 3;
+                        event.paxis.axis < 7;
                     if (axis_supported) {
                         var pen_width: c_int = 0;
                         var pen_height: c_int = 0;
@@ -1013,8 +1013,10 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                             event.paxis.y >= 0 and
                             event.paxis.y < @as(f32, @floatFromInt(pen_height)) and
                             switch (event.paxis.axis) {
-                                0 => event.paxis.value >= 0 and event.paxis.value <= 1,
+                                0, 3, 5 => event.paxis.value >= 0 and event.paxis.value <= 1,
                                 1, 2 => event.paxis.value >= -90 and event.paxis.value <= 90,
+                                4 => event.paxis.value >= -180 and event.paxis.value < 180,
+                                6 => event.paxis.value >= -1 and event.paxis.value <= 1,
                                 else => false,
                             };
                         if (valid_axis) {
@@ -1334,6 +1336,10 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                         .{ .axis = 0, .value = 0.625 },
                         .{ .axis = 1, .value = -45 },
                         .{ .axis = 2, .value = 30 },
+                        .{ .axis = 3, .value = 0.25 },
+                        .{ .axis = 4, .value = -120 },
+                        .{ .axis = 5, .value = 0.75 },
+                        .{ .axis = 6, .value = -0.5 },
                     };
                     for (pen_axes, 0..) |pen_axis, pen_axis_index| {
                         var axis_event = penAxisEvent(

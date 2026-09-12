@@ -73,9 +73,28 @@ static Lisp_Object provider_mouse_device;
 static Lisp_Object provider_touchscreen_device;
 static Lisp_Object provider_pen_device;
 static Lisp_Object provider_motion_device;
-enum { TPE_PEN_AXIS_COUNT = 3 };
+enum { TPE_PEN_AXIS_COUNT = 7 };
 static float provider_pen_axis_value[TPE_PEN_AXIS_COUNT];
 static bool provider_pen_axis_valid[TPE_PEN_AXIS_COUNT];
+
+static bool provider_pen_axis_value_valid (uint32_t axis, float value) {
+  switch (axis)
+    {
+    case 0:
+    case 3:
+    case 5:
+      return value >= 0.0f && value <= 1.0f;
+    case 1:
+    case 2:
+      return value >= -90.0f && value <= 90.0f;
+    case 4:
+      return value >= -180.0f && value < 180.0f;
+    case 6:
+      return value >= -1.0f && value <= 1.0f;
+    default:
+      return false;
+    }
+}
 
 enum { TPE_TOUCH_DEPTH = 8 };
 typedef struct TpeTouchPoint {
@@ -491,10 +510,7 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
       if (code >= TPE_PEN_AXIS_COUNT)
         return false;
       memcpy (&value, &wheel_delta_x, sizeof value);
-      if (!isfinite (value))
-        return false;
-      if (code == 0 ? (value < 0.0f || value > 1.0f)
-          : (value < -90.0f || value > 90.0f))
+      if (!isfinite (value) || !provider_pen_axis_value_valid (code, value))
         return false;
       provider_pen_axis_value[code] = value;
       provider_pen_axis_valid[code] = true;
@@ -1117,7 +1133,7 @@ DEFUN ("terminal-provider-mouse-face-p", Fterminal_provider_mouse_face_p,
 
 DEFUN ("terminal-provider-pen-axis", Fterminal_provider_pen_axis,
        Sterminal_provider_pen_axis, 1, 1, 0,
-       doc: /* Return provider pen AXIS metadata: pressure (0), X tilt (1), or Y tilt (2).  */)
+       doc: /* Return SDL pen AXIS metadata by index: pressure, X/Y tilt, distance, rotation, slider, or tangential pressure.  */)
   (Lisp_Object axis)
 {
   EMACS_INT index;

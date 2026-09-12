@@ -4578,3 +4578,13 @@ exposes them read-only through `terminal-provider-pen-axis`; the input gate
 round-trips exact 0.625, -45, and 30 values.  Standard core pressure/tilt
 events, remaining axes, proximity, chord state, and drawing surfaces remain
 separate work.
+
+P218 completes the bounded adapter metadata surface for all seven SDL pen axes.
+The provider rejects unknown or future indices, eraser-axis events, and values
+outside each SDL physical range; pressure, distance, and slider are bounded to
+`0..1`, tilt to `-90..90`, rotation to `[-180,180)`, and tangential pressure to
+`-1..1`.  The same read-only `terminal-provider-pen-axis` API now covers
+distance, rotation, slider, and tangential pressure, and the input gate
+round-trips one exact value from every axis before rejecting index seven.
+Standard core pen-axis events, proximity, chord state, and drawing surfaces
+remain separate work.
