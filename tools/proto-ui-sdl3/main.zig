@@ -777,13 +777,19 @@ fn providerFirstCodepoint(text: []const u8) ?u21 {
     return code;
 }
 
+const emacs_alt_modifier: u32 = 0x0400000;
+const emacs_super_modifier: u32 = 0x0800000;
+const emacs_shift_modifier: u32 = 0x2000000;
+const emacs_ctrl_modifier: u32 = 0x4000000;
+const emacs_meta_modifier: u32 = 0x8000000;
+
 fn providerEmacsModifiers(modifiers: u16) u32 {
     var result: u32 = 0;
-    if (modifiers & (input_policy.sdl_kmod_lshift | input_policy.sdl_kmod_rshift) != 0) result |= 0x0200000;
-    if (modifiers & (input_policy.sdl_kmod_lctrl | input_policy.sdl_kmod_rctrl) != 0) result |= 0x0400000;
-    if (modifiers & (input_policy.sdl_kmod_lalt | input_policy.sdl_kmod_ralt) != 0) result |= 0x0040000;
-    if (modifiers & (input_policy.sdl_kmod_lgui | input_policy.sdl_kmod_rgui) != 0) result |= 0x0080000;
-    if (modifiers & input_policy.sdl_kmod_mode != 0) result |= 0x0800000;
+    if (modifiers & (input_policy.sdl_kmod_lshift | input_policy.sdl_kmod_rshift) != 0) result |= emacs_shift_modifier;
+    if (modifiers & (input_policy.sdl_kmod_lctrl | input_policy.sdl_kmod_rctrl) != 0) result |= emacs_ctrl_modifier;
+    if (modifiers & (input_policy.sdl_kmod_lalt | input_policy.sdl_kmod_ralt) != 0) result |= emacs_alt_modifier;
+    if (modifiers & (input_policy.sdl_kmod_lgui | input_policy.sdl_kmod_rgui) != 0) result |= emacs_super_modifier;
+    if (modifiers & input_policy.sdl_kmod_mode != 0) result |= emacs_meta_modifier;
     return result;
 }
 
@@ -1196,11 +1202,22 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                 if (std.c.getenv("TPE_INPUT_SMOKE") != null) {
                     var synthetic = keyboardEvent(input_policy.SDL_SCANCODE_LEFT, true, 0);
                     if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
-                    inline for (.{ input_policy.SDL_SCANCODE_F12, input_policy.SDL_SCANCODE_DELETE,
-                        input_policy.SDL_SCANCODE_HOME, input_policy.SDL_SCANCODE_PAGEUP,
-                        input_policy.SDL_SCANCODE_PAGEDOWN, input_policy.SDL_SCANCODE_END,
-                        input_policy.SDL_SCANCODE_INSERT }) |scancode| {
+                    inline for (.{ input_policy.SDL_SCANCODE_F12, input_policy.SDL_SCANCODE_DELETE, input_policy.SDL_SCANCODE_HOME, input_policy.SDL_SCANCODE_PAGEUP, input_policy.SDL_SCANCODE_PAGEDOWN, input_policy.SDL_SCANCODE_END, input_policy.SDL_SCANCODE_INSERT }) |scancode| {
                         synthetic = keyboardEvent(scancode, true, 0);
+                        if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
+                    }
+                    const modifier_cases = [_]u16{
+                        input_policy.sdl_kmod_lctrl,
+                        input_policy.sdl_kmod_lalt,
+                        input_policy.sdl_kmod_lgui,
+                        input_policy.sdl_kmod_mode,
+                        input_policy.sdl_kmod_lshift,
+                        input_policy.sdl_kmod_lshift | input_policy.sdl_kmod_lctrl |
+                            input_policy.sdl_kmod_lalt | input_policy.sdl_kmod_lgui |
+                            input_policy.sdl_kmod_mode,
+                    };
+                    inline for (modifier_cases) |modifiers| {
+                        synthetic = keyboardEvent(input_policy.SDL_SCANCODE_F12, true, modifiers);
                         if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
                     }
                     var mouse = mouseButtonEvent(17, 21, input_policy.SDL_EVENT_MOUSE_BUTTON_DOWN, true);

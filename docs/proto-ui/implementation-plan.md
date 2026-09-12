@@ -4603,3 +4603,11 @@ whitelist.  SDL scancodes for function and navigation keys are named constants,
 and the real TPE input gate proves that `F12`, `Delete`, `Home`, `PageUp`,
 `PageDown`, `End`, and `Insert` reach Emacs as standard key symbols alongside
 `left`.  Emacs continues to own key-symbol conversion, lookup, and execution.
+
+P221 aligns the TPE provider modifier conversion with Emacs's standard modifier
+bits.  SDL `Mode` no longer aliases Super: it maps to Meta like the EUP full-key
+policy, while Shift, Control, Alt, and Super retain their Emacs meanings.  The
+real input gate round-trips `C-`, `A-`, `s-`, `M-`, and `S-<f12>` plus the
+combined `A-C-M-S-s-<f12>` form through inherited Emacs conversion.  Host
+rebinding of physical modifier semantics and every arbitrary combination remain
+separate work.
