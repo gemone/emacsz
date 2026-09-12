@@ -409,6 +409,7 @@ pub fn build(b: *std.Build) void {
         @panic("r8_target_link_unavailable: -Dproto-ui-runtime=true requires a native Linux glibc target");
     }
     var proto_ui_runtime_adapter_target_lib: ?*std.Build.Step.Compile = null;
+    var proto_ui_runtime_abi_header: ?std.Build.LazyPath = null;
     var proto_ui_r8_adapter_linkage_step: ?*std.Build.Step = null;
     var proto_ui_r8_readiness_step: ?*std.Build.Step = null;
     // The normal R8 readiness gate accepts a blocked entry.  This opt-in flag
@@ -416,6 +417,14 @@ pub fn build(b: *std.Build) void {
     // every R8 readiness condition are complete.
     const enable_r8_entry_gate = b.option(bool, "r8-entry-gate", "Require R8 entry readiness; fails closed without adapter linkage/registration") orelse false;
     var proto_compat_dep: ?*std.Build.Step = null;
+    const proto_ui_tpe_c_flags = [_][]const u8{
+        "-std=gnu2x",             "-fno-common",
+        "-fno-strict-aliasing",   "-D_GNU_SOURCE",
+        "-DHAVE_CONFIG_H",        "-I.",
+        "-Isrc",                  "-Ilib",
+        "-Ilib/malloc",           "-I/usr/include",
+        "-I/usr/include/libxml2",
+    };
 
     // Target-derived flags.  `target` is resolved at line 64, so target.result
     // is in scope here; computing these early lets the make-docfile / doc-scan
@@ -440,6 +449,7 @@ pub fn build(b: *std.Build) void {
             // target.
             .target = b.graph.host,
             .optimize = optimize,
+            .link_libc = true,
         });
         const proto_ui_tests = b.addTest(.{
             .root_module = proto_ui_module,
@@ -447,9 +457,51 @@ pub fn build(b: *std.Build) void {
         const run_proto_ui_tests = b.addRunArtifact(proto_ui_tests);
         const proto_ui_unit_step = b.step(
             "proto-ui-unit",
-            "Run adapter, EUP protocol, and transport unit tests",
+            "Run adapter, EUP protocol, transport, and publisher unit tests",
         );
         proto_ui_unit_step.dependOn(&run_proto_ui_tests.step);
+
+        // The producer helper is pure Emacs Lisp, but its menu properties are
+        // observable only through Emacs's own keymap normalization.
+        const proto_ui_publisher_unit = b.addSystemCommand(&.{
+            "emacs",
+            "--batch",
+            "-Q",
+            "--load",
+            "tools/proto-ui-sdl3/facts_publisher.el",
+        });
+        proto_ui_publisher_unit.setEnvironmentVariable("PROTO_UI_MENU_FILTER_TEST", "1");
+        proto_ui_unit_step.dependOn(&proto_ui_publisher_unit.step);
+
+        const proto_ui_keymap_unit = b.addSystemCommand(&.{
+            "emacs",
+            "--batch",
+            "-Q",
+            "--load",
+            "tools/proto-ui-sdl3/facts_publisher.el",
+        });
+        proto_ui_keymap_unit.setEnvironmentVariable("PROTO_UI_KEYMAP_SELF_TEST", "1");
+        proto_ui_unit_step.dependOn(&proto_ui_keymap_unit.step);
+
+        const proto_ui_menu_radio_unit = b.addSystemCommand(&.{
+            "emacs",
+            "--batch",
+            "-Q",
+            "--load",
+            "tools/proto-ui-sdl3/facts_publisher.el",
+        });
+        proto_ui_menu_radio_unit.setEnvironmentVariable("PROTO_UI_MENU_RADIO_TEST", "1");
+        proto_ui_unit_step.dependOn(&proto_ui_menu_radio_unit.step);
+
+        const proto_ui_menu_radio_apply_unit = b.addSystemCommand(&.{
+            "emacs",
+            "--batch",
+            "-Q",
+            "--load",
+            "tools/proto-ui-sdl3/facts_publisher.el",
+        });
+        proto_ui_menu_radio_apply_unit.setEnvironmentVariable("PROTO_UI_MENU_RADIO_APPLY_TEST", "1");
+        proto_ui_unit_step.dependOn(&proto_ui_menu_radio_apply_unit.step);
 
         // R8 preparation: the terminal service is audited only against the
         // fake PureRuntimeHostV1 fixture.  Emacs registration stays absent.
@@ -1248,6 +1300,7 @@ pub fn build(b: *std.Build) void {
         const runtime_host_abi_manifest = run_runtime_host_abi_gen.addOutputFileArg(
             "pure_runtime_host_abi_manifest.json",
         );
+        proto_ui_runtime_abi_header = runtime_host_abi_header;
         const install_runtime_host_abi_header = b.addInstallFile(
             runtime_host_abi_header,
             "include/proto-ui/pure_runtime_host_v1.h",
@@ -1289,6 +1342,50 @@ pub fn build(b: *std.Build) void {
             "proto-ui-runtime-host-abi",
             "Generate and conformance-test the PureRuntimeHostV1 C ABI",
         );
+        // TP1 slice 1: the core-owned generic provider registry is compiled as
+        // a test host tool.  Emacs does not call it until explicit opt-in
+        // linkage and registration land; the default runtime remains closed.
+        const tpe_core_module = b.createModule(.{
+            .target = b.graph.host,
+            .optimize = optimize,
+            .root_source_file = b.path("src/proto-ui/tpe_core_conformance.zig"),
+            .link_libc = true,
+        });
+        tpe_core_module.addCSourceFile(.{
+            .file = b.path("src/proto-ui/tpe_core.c"),
+            .flags = &proto_ui_tpe_c_flags,
+        });
+        tpe_core_module.addCSourceFile(.{
+            .file = b.path("src/proto-ui/tpe_core_test.c"),
+            .flags = &proto_ui_tpe_c_flags,
+        });
+        tpe_core_module.addIncludePath(b.path("src/proto-ui"));
+        tpe_core_module.addIncludePath(runtime_host_abi_header.dirname());
+        const tpe_standalone_files = b.addWriteFiles();
+        _ = tpe_standalone_files.add("config.h",
+            \\#ifndef TPE_STANDALONE_CONFIG_H
+            \\#define TPE_STANDALONE_CONFIG_H
+            \\#define _GL_CONFIG_H_INCLUDED 1
+            \\#define _GL_INLINE static inline
+            \\#define _GL_EXTERN_INLINE static inline
+            \\#define _GL_INLINE_HEADER_BEGIN
+            \\#define _GL_INLINE_HEADER_END
+            \\#endif
+            \\
+        );
+        tpe_core_module.addIncludePath(tpe_standalone_files.getDirectory());
+        const tpe_core_tests = b.addTest(.{
+            .root_module = tpe_core_module,
+        });
+        const run_tpe_core_tests = b.addRunArtifact(tpe_core_tests);
+        const tpe_core_step = b.step(
+            "proto-ui-tpe-core",
+            "Validate the generic Terminal Provider Extension registry",
+        );
+        tpe_core_step.dependOn(&run_runtime_host_abi_gen.step);
+        tpe_core_step.dependOn(&tpe_standalone_files.step);
+        tpe_core_step.dependOn(&run_tpe_core_tests.step);
+
         runtime_host_abi_step.dependOn(&run_runtime_host_abi_gen.step);
         runtime_host_abi_step.dependOn(&install_runtime_host_abi_header.step);
         runtime_host_abi_step.dependOn(&install_runtime_host_abi_manifest.step);
@@ -1299,6 +1396,7 @@ pub fn build(b: *std.Build) void {
         boundary_step.dependOn(&install_runtime_host_abi_manifest.step);
         boundary_step.dependOn(&run_runtime_host_abi_conformance.step);
         boundary_step.dependOn(&run_runtime_host_abi_gate.step);
+        boundary_step.dependOn(tpe_core_step);
 
         // R8 candidate linkage: the host-audit artifact is always built for the
         // build host.  Only the explicit native-glibc runtime option creates a
@@ -1577,6 +1675,40 @@ pub fn build(b: *std.Build) void {
         sdl3_renderer_bench_step.dependOn(&run_sdl3_renderer_bench.step);
         sdl3_renderer_bench_step.dependOn(&install_renderer_bench_report.step);
 
+        const run_sdl3_epxl_roundtrip_bench = b.addRunArtifact(sdl3_frontend);
+        const epxl_bench_module_suffix: []const u8 = switch (target.result.os.tag) {
+            .macos => ".dylib",
+            .windows => ".dll",
+            else => ".so",
+        };
+        run_sdl3_epxl_roundtrip_bench.addArgs(&[_][]const u8{
+            "--emacs-epxl-bench",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{epxl_bench_module_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=30000",
+            "--benchmark-output",
+        });
+        const epxl_roundtrip_report = run_sdl3_epxl_roundtrip_bench.addOutputFileArg(
+            "sdl3-epxl-roundtrip-benchmark.json",
+        );
+        const install_epxl_roundtrip_report = b.addInstallFile(
+            epxl_roundtrip_report,
+            "proto-ui/sdl3-epxl-roundtrip-benchmark.json",
+        );
+        run_sdl3_epxl_roundtrip_bench.step.dependOn(b.getInstallStep());
+        const sdl3_epxl_roundtrip_bench_step = b.step(
+            "sdl3-epxl-roundtrip-bench",
+            "Benchmark bounded Emacs text edits through authenticated EPXL",
+        );
+        sdl3_epxl_roundtrip_bench_step.dependOn(&run_sdl3_epxl_roundtrip_bench.step);
+        sdl3_epxl_roundtrip_bench_step.dependOn(&install_epxl_roundtrip_report.step);
+
         const run_sdl3_glyph_run_smoke = b.addRunArtifact(sdl3_frontend);
         run_sdl3_glyph_run_smoke.addArg("--glyph-run-smoke");
         run_sdl3_glyph_run_smoke.addArg("--renderer=gpu");
@@ -1628,6 +1760,290 @@ pub fn build(b: *std.Build) void {
             "Translate synthetic SDL pointer press, drag, click, and release intents into ordered v2 events",
         );
         sdl3_pointer_v2_step.dependOn(&run_sdl3_pointer_v2_smoke.step);
+
+        const run_sdl3_touch_smoke = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_touch_smoke.addArg("--touch-tap-smoke");
+        const sdl3_touch_step = b.step(
+            "sdl3-touch-tap-smoke",
+            "Translate synthetic SDL finger contacts into bounded single-contact Pointer v2 intents",
+        );
+        sdl3_touch_step.dependOn(&run_sdl3_touch_smoke.step);
+
+        const run_sdl3_pen_smoke = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_pen_smoke.addArg("--pen-tap-smoke");
+        const sdl3_pen_step = b.step(
+            "sdl3-pen-tap-smoke",
+            "Translate synthetic SDL pen hover, tip press/drag, and release into Pointer v2",
+        );
+        sdl3_pen_step.dependOn(&run_sdl3_pen_smoke.step);
+
+        const run_sdl3_face_text_smoke = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_face_text_smoke.addArg("--face-text-smoke");
+        const sdl3_face_text_step = b.step(
+            "sdl3-face-text-smoke",
+            "Draw live window text with its bound default-face foreground",
+        );
+        sdl3_face_text_step.dependOn(&run_sdl3_face_text_smoke.step);
+
+        const run_sdl3_cursor_style_smoke = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_cursor_style_smoke.addArg("--cursor-style-smoke");
+        const sdl3_cursor_style_step = b.step(
+            "sdl3-cursor-style-smoke",
+            "Render bounded cursor shapes and the face-derived cursor color",
+        );
+        sdl3_cursor_style_step.dependOn(&run_sdl3_cursor_style_smoke.step);
+
+        const run_sdl3_emacs_face_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-face-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{epxl_bench_module_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=4000",
+        });
+        run_sdl3_emacs_face_smoke.setCwd(b.path("."));
+        run_sdl3_emacs_face_smoke.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_emacs_face_smoke.step.dependOn(step);
+        const sdl3_emacs_face_step = b.step(
+            "sdl3-emacs-face-smoke",
+            "Round-trip the owned publisher's default face into SDL text",
+        );
+        sdl3_emacs_face_step.dependOn(&run_sdl3_emacs_face_smoke.step);
+
+        const run_sdl3_emacs_cursor_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-cursor-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{epxl_bench_module_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=4000",
+        });
+        run_sdl3_emacs_cursor_smoke.setCwd(b.path("."));
+        run_sdl3_emacs_cursor_smoke.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_emacs_cursor_smoke.step.dependOn(step);
+        const sdl3_emacs_cursor_step = b.step(
+            "sdl3-emacs-cursor-smoke",
+            "Round-trip the owned publisher's cursor type into the SDL cursor shape",
+        );
+        sdl3_emacs_cursor_step.dependOn(&run_sdl3_emacs_cursor_smoke.step);
+
+        const run_sdl3_emacs_scrollbar_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-scrollbar-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{epxl_bench_module_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=4000",
+        });
+        run_sdl3_emacs_scrollbar_smoke.setCwd(b.path("."));
+        run_sdl3_emacs_scrollbar_smoke.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_emacs_scrollbar_smoke.step.dependOn(step);
+        const sdl3_emacs_scrollbar_step = b.step(
+            "sdl3-emacs-scrollbar-smoke",
+            "Round-trip the owned publisher's window scroll state into the SDL scrollbar",
+        );
+        sdl3_emacs_scrollbar_step.dependOn(&run_sdl3_emacs_scrollbar_smoke.step);
+
+        const run_sdl3_emacs_scroll_interaction_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-scrollbar-interaction-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{epxl_bench_module_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=4000",
+        });
+        run_sdl3_emacs_scroll_interaction_smoke.setCwd(b.path("."));
+        run_sdl3_emacs_scroll_interaction_smoke.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_emacs_scroll_interaction_smoke.step.dependOn(step);
+        const sdl3_emacs_scroll_interaction_step = b.step(
+            "sdl3-emacs-scrollbar-interaction-smoke",
+            "Page the live scrollbar trough through EPXL into a real Emacs window scroll",
+        );
+        sdl3_emacs_scroll_interaction_step.dependOn(&run_sdl3_emacs_scroll_interaction_smoke.step);
+
+        const run_sdl3_emacs_hscroll_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-hscroll-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{epxl_bench_module_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=4000",
+        });
+        run_sdl3_emacs_hscroll_smoke.setCwd(b.path("."));
+        run_sdl3_emacs_hscroll_smoke.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_emacs_hscroll_smoke.step.dependOn(step);
+        const sdl3_emacs_hscroll_step = b.step(
+            "sdl3-emacs-hscroll-smoke",
+            "Drag the live horizontal scrollbar through EPXL into real window-hscroll",
+        );
+        sdl3_emacs_hscroll_step.dependOn(&run_sdl3_emacs_hscroll_smoke.step);
+
+        const run_sdl3_emacs_menu_bar_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-menu-bar-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{epxl_bench_module_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=4000",
+        });
+        run_sdl3_emacs_menu_bar_smoke.setCwd(b.path("."));
+        run_sdl3_emacs_menu_bar_smoke.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_emacs_menu_bar_smoke.step.dependOn(step);
+        const sdl3_emacs_menu_bar_step = b.step(
+            "sdl3-emacs-menu-bar-smoke",
+            "Publish the real Emacs menu-bar labels into the SDL menu-bar row",
+        );
+        sdl3_emacs_menu_bar_step.dependOn(&run_sdl3_emacs_menu_bar_smoke.step);
+
+        const run_sdl3_emacs_menu_open_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-menu-open-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{epxl_bench_module_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=4000",
+        });
+        run_sdl3_emacs_menu_open_smoke.setCwd(b.path("."));
+        run_sdl3_emacs_menu_open_smoke.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_emacs_menu_open_smoke.step.dependOn(step);
+        const sdl3_emacs_menu_open_step = b.step(
+            "sdl3-emacs-menu-open-smoke",
+            "Report a real menu-bar slot press to the backend as a bounded open request",
+        );
+        sdl3_emacs_menu_open_step.dependOn(&run_sdl3_emacs_menu_open_smoke.step);
+
+        const run_sdl3_emacs_menu_apply_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-menu-apply-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{epxl_bench_module_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=4000",
+        });
+        run_sdl3_emacs_menu_apply_smoke.setCwd(b.path("."));
+        run_sdl3_emacs_menu_apply_smoke.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_emacs_menu_apply_smoke.step.dependOn(step);
+        const sdl3_emacs_menu_apply_step = b.step(
+            "sdl3-emacs-menu-apply-smoke",
+            "Choose a real Emacs menu row and run its resolved command",
+        );
+        sdl3_emacs_menu_apply_step.dependOn(&run_sdl3_emacs_menu_apply_smoke.step);
+
+        const run_sdl3_emacs_graphic_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-graphic-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{epxl_bench_module_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=4000",
+        });
+        run_sdl3_emacs_graphic_smoke.setCwd(b.path("."));
+        run_sdl3_emacs_graphic_smoke.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_emacs_graphic_smoke.step.dependOn(step);
+        const sdl3_emacs_graphic_step = b.step(
+            "sdl3-emacs-graphic-smoke",
+            "Publish a display-backed Emacs frame's real mode line and scroll bar into SDL",
+        );
+        sdl3_emacs_graphic_step.dependOn(&run_sdl3_emacs_graphic_smoke.step);
+
+        const run_sdl3_emacs_mouse_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-mouse-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{epxl_bench_module_suffix},
+            ) catch @panic("OOM"),
+            "--auto-quit-ms=4000",
+        });
+        run_sdl3_emacs_mouse_smoke.setCwd(b.path("."));
+        run_sdl3_emacs_mouse_smoke.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_emacs_mouse_smoke.step.dependOn(step);
+        const sdl3_emacs_mouse_step = b.step(
+            "sdl3-emacs-mouse-smoke",
+            "Resolve the real mouse-face highlight under the mirror's pointer",
+        );
+        sdl3_emacs_mouse_step.dependOn(&run_sdl3_emacs_mouse_smoke.step);
+
+        const run_sdl3_menu_hit_smoke = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_menu_hit_smoke.addArg("--menu-hit-smoke");
+        const sdl3_menu_hit_step = b.step(
+            "sdl3-menu-hit-smoke",
+            "Select, dismiss, and Escape an open popup menu from a bounded pointer hit test",
+        );
+        sdl3_menu_hit_step.dependOn(&run_sdl3_menu_hit_smoke.step);
+
+        const run_sdl3_toolbar_hit_smoke = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_toolbar_hit_smoke.addArg("--toolbar-hit-smoke");
+        const sdl3_toolbar_hit_step = b.step(
+            "sdl3-toolbar-hit-smoke",
+            "Report bounded tool-bar press/release for the clicked item from the shared layout",
+        );
+        sdl3_toolbar_hit_step.dependOn(&run_sdl3_toolbar_hit_smoke.step);
+
+        const run_sdl3_dialog_hit_smoke = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_dialog_hit_smoke.addArg("--dialog-hit-smoke");
+        const sdl3_dialog_hit_step = b.step(
+            "sdl3-dialog-hit-smoke",
+            "Report a standard dialog button result from the shared dialog layout",
+        );
+        sdl3_dialog_hit_step.dependOn(&run_sdl3_dialog_hit_smoke.step);
+
+        const run_sdl3_scrollbar_smoke = b.addRunArtifact(sdl3_frontend);
+        run_sdl3_scrollbar_smoke.addArg("--scrollbar-smoke");
+        const sdl3_scrollbar_step = b.step(
+            "sdl3-scrollbar-smoke",
+            "Drag the shared scrollbar thumb and page from its trough",
+        );
+        sdl3_scrollbar_step.dependOn(&run_sdl3_scrollbar_smoke.step);
 
         const run_sdl3_clipboard_smoke = b.addRunArtifact(sdl3_frontend);
         run_sdl3_clipboard_smoke.addArg("--clipboard-smoke");
@@ -1898,6 +2314,33 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_manual_emacs_interactive_step.dependOn(&run_sdl3_manual_emacs_interactive.step);
 
+        const run_sdl3_graphic_emacs_interactive = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-interactive",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            // A display-backed publisher reports the frame's real mode line,
+            // fonts, fringes, cursor, faces, and active region, so this target
+            // shows the same mirror a user's own Emacs frame would produce.
+            "--graphic-frame-publisher=true",
+            "--auto-quit-ms=0",
+        });
+        run_sdl3_graphic_emacs_interactive.setCwd(b.path("."));
+        run_sdl3_graphic_emacs_interactive.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_graphic_emacs_interactive.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_graphic_emacs_interactive.step.dependOn(step);
+        const sdl3_graphic_emacs_interactive_step = b.step(
+            "sdl3-emacs-graphic-interactive",
+            "Open the live mirror of a display-backed Emacs frame in SDL3 until closed",
+        );
+        sdl3_graphic_emacs_interactive_step.dependOn(&run_sdl3_graphic_emacs_interactive.step);
+
         const run_sdl3_frame = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/proto-ui-sdl3",
             "--emacs-frame-smoke",
@@ -2127,6 +2570,31 @@ pub fn build(b: *std.Build) void {
         );
         sdl3_ime_commit_step.dependOn(&run_sdl3_ime_commit.step);
 
+        const run_sdl3_dnd_drop = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/proto-ui-sdl3",
+            "--emacs-epxl-dnd-smoke",
+            "--emacs",
+            "./zig-out/bin/emacs",
+            "--module",
+            std.fmt.allocPrint(
+                b.allocator,
+                "zig-out/proto-ui/proto-ui-module{s}",
+                .{proto_suffix},
+            ) catch @panic("OOM"),
+            // Four intents (position/enter/drop/data) plus Emacs startup need
+            // more than the single-intent smoke window.
+            "--auto-quit-ms=4000",
+        });
+        run_sdl3_dnd_drop.setCwd(b.path("."));
+        run_sdl3_dnd_drop.step.dependOn(&proto_module_smoke.step);
+        run_sdl3_dnd_drop.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |step| run_sdl3_dnd_drop.step.dependOn(step);
+        const sdl3_dnd_drop_step = b.step(
+            "sdl3-dnd-drop-smoke",
+            "Deliver one bounded SDL drop as ENTER/DROP/DATA and have Emacs apply it",
+        );
+        sdl3_dnd_drop_step.dependOn(&run_sdl3_dnd_drop.step);
+
         const run_sdl3_epxl_key_v2 = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/proto-ui-sdl3",
             "--emacs-epxl-key-v2-smoke",
@@ -2264,6 +2732,15 @@ pub fn build(b: *std.Build) void {
             "Split live Emacs windows, click the right window, and verify insertion",
         );
         sdl3_window_pointer_select_step.dependOn(&run_sdl3_window_pointer_select.step);
+
+        const sdl3_emacs_acceptance_step = b.step(
+            "sdl3-emacs-acceptance",
+            "Run the automated SDL3 Emacs bridge acceptance slice",
+        );
+        sdl3_emacs_acceptance_step.dependOn(sdl3_window_split_step);
+        sdl3_emacs_acceptance_step.dependOn(sdl3_window_navigation_step);
+        sdl3_emacs_acceptance_step.dependOn(sdl3_window_restore_step);
+        sdl3_emacs_acceptance_step.dependOn(sdl3_window_pointer_select_step);
 
         const run_sdl3_monitor_change = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/proto-ui-sdl3",
@@ -3503,6 +3980,64 @@ pub fn build(b: *std.Build) void {
     if (proto_ui_runtime_adapter_target_lib) |adapter_lib| {
         exe.root_module.linkLibrary(adapter_lib);
         exe.forceUndefinedSymbol("proto_ui_runtime_host_adapter_abi_version");
+        exe.root_module.addCMacro("HAVE_TERMINAL_PROVIDER_EXTENSION", "1");
+        exe.root_module.addIncludePath(proto_ui_runtime_abi_header.?.dirname());
+        exe.root_module.addCSourceFile(.{
+            .file = b.path("src/proto-ui/tpe_core.c"),
+            .flags = &proto_ui_tpe_c_flags,
+        });
+        exe.root_module.addCSourceFile(.{
+            .file = b.path("src/proto-ui/tpe_emacs.c"),
+            .flags = &proto_ui_tpe_c_flags,
+        });
+
+        const run_tpe_headless_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs",
+            "--batch",
+            "--eval",
+            "(let* ((terms (terminal-list)) (provider (car (last terms)))) (unless (and (= (length terms) 2) (eq (terminal-live-p provider) 'proto) (terminal-name provider)) (error \"proto-ui-tpe-headless failed\")) (princ \"proto-ui-tpe-headless: pass\\n\"))",
+        });
+        run_tpe_headless_smoke.setEnvironmentVariable("EMACS_TERMINAL_PROVIDER", "proto");
+        run_tpe_headless_smoke.setCwd(b.path("."));
+        run_tpe_headless_smoke.step.dependOn(b.getInstallStep());
+        const tpe_headless_step = b.step(
+            "proto-ui-tpe-headless",
+            "Create, identify, and drain one generic output_provider terminal",
+        );
+        tpe_headless_step.dependOn(&run_tpe_headless_smoke.step);
+
+        const run_tpe_frame_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs",
+            "--batch",
+            "--eval",
+            "(let* ((initial-frame (selected-frame)) (terms (terminal-list)) (terminal (car (last terms))) (frame (make-terminal-frame (list (cons 'terminal terminal))))) (unless (and (frame-live-p frame) (eq (window-system frame) 'proto) (numberp (frame-id frame))) (error \"proto-ui-tpe-frame failed: live=%S ws=%S id=%S\" (frame-live-p frame) (window-system frame) (frame-id frame))) (select-frame frame) (redraw-frame frame) (unless (and (redisplay t) (terminal-provider-capture-p)) (error \"proto-ui-tpe-frame failed: provider capture ack\")) (sit-for 1) (princ \"proto-ui-tpe-frame: pass\\n\"))",
+        });
+        run_tpe_frame_smoke.setEnvironmentVariable("EMACS_TERMINAL_PROVIDER", "proto");
+        run_tpe_frame_smoke.setCwd(b.path("."));
+        run_tpe_frame_smoke.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |dep| run_tpe_frame_smoke.step.dependOn(dep);
+        const tpe_frame_step = b.step(
+            "proto-ui-tpe-frame",
+            "Create one provider frame and attach its SDL3 surface identity",
+        );
+        tpe_frame_step.dependOn(&run_tpe_frame_smoke.step);
+
+        const run_tpe_input_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs",
+            "--batch",
+            "--eval",
+            "(let* ((initial-frame (selected-frame)) (terms (terminal-list)) (terminal (car (last terms))) (frame (make-terminal-frame (list (cons 'terminal terminal))))) (setq frame-notice-user-settings nil) (unless (and (frame-live-p frame) (eq (window-system frame) 'proto)) (error \"proto-ui-tpe-input failed: frame\")) (select-frame frame) (erase-buffer) (insert \"alpha\nbeta\ngamma\n\") (let ((overlay (make-overlay 1 18))) (overlay-put overlay 'mouse-face 'highlight)) (unless (and (redisplay t) (terminal-provider-capture-p)) (error \"proto-ui-tpe-input failed: capture\")) (let ((key (read-event nil nil 2))) (while (and key (not (eq key 'left))) (setq key (read-event nil nil 2))) (unless (eq key 'left) (error \"proto-ui-tpe-input failed: key=%S\" key))) (let ((down (read-event nil nil 2))) (unless (eq (car-safe down) 'down-mouse-1) (error \"proto-ui-tpe-input failed: down=%S\" down))) (let ((up (read-event nil nil 2))) (unless (eq (car-safe up) 'mouse-1) (error \"proto-ui-tpe-input failed: up=%S\" up))) (let ((wheel (read-event nil nil 2))) (unless (eq (car-safe wheel) 'wheel-down) (error \"proto-ui-tpe-input failed: wheel=%S\" wheel))) (let ((text1 (read-event nil nil 2)) (text2 (read-event nil nil 2))) (unless (and (= text1 #xe9) (= text2 #x4e2d)) (error \"proto-ui-tpe-input failed: text=%S %S\" text1 text2))) (read-event nil nil 2) (unless (and (= (frame-pixel-width frame) 1200) (= (frame-pixel-height frame) 760) (frame-live-p frame)) (error \"proto-ui-tpe-input failed: size=%Sx%S\" (frame-pixel-width frame) (frame-pixel-height frame))) (unless (and (redisplay t) (terminal-provider-capture-p)) (error \"proto-ui-tpe-input failed: resized-capture\")) (read-event nil nil 0.2) (unless (and (redisplay t) (terminal-provider-capture-p) (terminal-provider-mouse-face-p)) (error \"proto-ui-tpe-input failed: mouse-face=%S\" (terminal-provider-mouse-face-debug))) (select-frame initial-frame) (princ \"proto-ui-tpe-input: pass\") (kill-emacs 0))",
+        });
+        run_tpe_input_smoke.setEnvironmentVariable("EMACS_TERMINAL_PROVIDER", "proto");
+        run_tpe_input_smoke.setEnvironmentVariable("TPE_INPUT_SMOKE", "1");
+        run_tpe_input_smoke.setCwd(b.path("."));
+        run_tpe_input_smoke.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |dep| run_tpe_input_smoke.step.dependOn(dep);
+        const tpe_input_step = b.step(
+            "proto-ui-tpe-input",
+            "Deliver one real SDL provider packet through read_socket_hook",
+        );
+        tpe_input_step.dependOn(&run_tpe_input_smoke.step);
 
         const r8_link_audit_tool = b.addExecutable(.{
             .name = "proto-ui-r8-link-audit",
@@ -7109,7 +7644,7 @@ pub fn build(b: *std.Build) void {
         \\  zig build zeln-pgo          - Z7: multi-fixture PGO test (6 workload shapes)
         \\
         \\Proto-UI path (opt-in: -Dproto-ui=true):
-        \\  zig build -Dproto-ui=true proto-ui-unit - adapter, EUP protocol, and transport tests
+        \\  zig build -Dproto-ui=true proto-ui-unit - adapter, EUP protocol, transport, and publisher unit tests
         \\  zig build -Dproto-ui=true proto-ui-shim - generated/installable thin C shim
         \\  zig build -Dproto-ui=true proto-ui-shim-conformance - compile and test the generated C shim
         \\  zig build -Dproto-ui=true proto-ui-shim-library - build/install the shared C shim
@@ -7131,11 +7666,32 @@ pub fn build(b: *std.Build) void {
         \\  zig build -Dproto-ui=true -Dmodules=true proto-ui-frame-fact-smoke - public frame facts on a display
         \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-smoke - continuous public Emacs facts
         \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-interactive - bounded interactive Emacs facts in SDL3
+        \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-roundtrip-bench - bounded public-facts text-edit latency
         \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-ime-commit-smoke - bounded SDL3 Unicode commit smoke
+        \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-dnd-drop-smoke - bounded SDL drop to EPXL/Emacs
         \\
         \\SDL3 frontend path (opt-in: -Dsdl3-frontend=true):
         \\  zig build -Dsdl3-frontend=true sdl3-ui-smoke - real Emacs facts/EUP replay renderer
         \\  zig build -Dsdl3-frontend=true sdl3-live-smoke - local authenticated live publisher + renderer
+        \\  zig build -Dsdl3-frontend=true sdl3-touch-tap-smoke - bounded SDL finger contact to Pointer v2
+        \\  zig build -Dsdl3-frontend=true sdl3-menu-hit-smoke - open popup selection/dismissal hit test
+        \\  zig build -Dsdl3-frontend=true sdl3-toolbar-hit-smoke - tool-bar click hit test
+        \\  zig build -Dsdl3-frontend=true sdl3-dialog-hit-smoke - dialog button result hit test
+        \\  zig build -Dsdl3-frontend=true sdl3-scrollbar-smoke - scrollbar thumb drag + trough paging
+        \\  zig build -Dsdl3-frontend=true sdl3-pen-tap-smoke - bounded SDL pen tip to Pointer v2
+        \\  zig build -Dsdl3-frontend=true sdl3-face-text-smoke - window default-face text foreground
+        \\  zig build -Dsdl3-frontend=true sdl3-cursor-style-smoke - bounded cursor shapes and color
+        \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-face-smoke - live default face into SDL text
+        \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-cursor-smoke - live cursor type into SDL shape
+        \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-scrollbar-smoke - live window scroll state into the SDL scrollbar
+        \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-scrollbar-interaction-smoke - trough page through EPXL into a real Emacs scroll
+        \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-hscroll-smoke - live horizontal scrollbar drag into real window-hscroll
+        \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-menu-bar-smoke - real Emacs menu-bar labels into the SDL menu-bar row
+        \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-menu-open-smoke - menu-bar press to the backend as a bounded open request
+        \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-menu-apply-smoke - choose a real Emacs menu row and run its command
+        \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-graphic-smoke - display-backed frame mode line into SDL (skips without a display)
+        \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-graphic-interactive - interactive SDL3 mirror of a real display-backed Emacs frame
+        \\  zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-acceptance - run the automated SDL3 Emacs bridge acceptance slice
         \\
         \\Native-comp gccjit path (opt-in: -Dnative-comp=true, native glibc-Linux;
         \\  requires libgccjit). Coexists with -Dnative-comp-zig: when both are on,

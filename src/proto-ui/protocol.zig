@@ -151,6 +151,7 @@ pub const Message = struct {
     pub const menu_result: u16 = 0x0904;
     pub const menu_cancel: u16 = 0x0905;
     pub const menu_hover: u16 = 0x0906;
+    pub const menu_open_request: u16 = 0x0907;
     pub const toolbar_model: u16 = 0x0910;
     pub const toolbar_patch: u16 = 0x0911;
     pub const dialog_open: u16 = 0x0920;
@@ -272,10 +273,10 @@ pub const known_message_ids = [_]u16{
     0x0714, 0x0715, 0x0716, 0x0717, 0x0718, 0x0719, 0x0800, 0x0801,
     0x0802, 0x0803, 0x0804, 0x0805, 0x0810, 0x0811, 0x0812, 0x0813,
     0x0820, 0x0821, 0x0822, 0x0823, 0x0824, 0x0825, 0x0826, 0x0900,
-    0x0901, 0x0902, 0x0903, 0x0904, 0x0905, 0x0906, 0x0910, 0x0911,
-    0x0912, 0x0920, 0x0921, 0x0922, 0x0923, 0x0930, 0x0931, 0x0932,
-    0x0940, 0x0941, 0x0a00, 0x0a01, 0x0a02, 0x0a03, 0x0a04, 0x0a05,
-    0x0a06, 0x0a07, 0x0a08, 0x0a09,
+    0x0901, 0x0902, 0x0903, 0x0904, 0x0905, 0x0906, 0x0907, 0x0910,
+    0x0911, 0x0912, 0x0920, 0x0921, 0x0922, 0x0923, 0x0930, 0x0931,
+    0x0932, 0x0940, 0x0941, 0x0a00, 0x0a01, 0x0a02, 0x0a03, 0x0a04,
+    0x0a05, 0x0a06, 0x0a07, 0x0a08, 0x0a09,
 };
 
 pub fn knownMessage(message_type: u16) bool {
@@ -2740,6 +2741,8 @@ pub const MenuNode = struct {
     help_len: u8 = 0,
     key: [32]u8 = @splat(0),
     key_len: u8 = 0,
+    icon_image_id: u32 = 0,
+    icon_image_generation: u32 = 0,
 };
 
 pub const MenuModelSnapshot = struct {
@@ -2748,8 +2751,8 @@ pub const MenuModelSnapshot = struct {
 };
 
 pub const menu_model_header_size: usize = 32;
-pub const menu_node_size: usize = 176;
-pub const menu_model_schema: u16 = 1;
+pub const menu_node_size: usize = 184;
+pub const menu_model_schema: u16 = 2;
 pub const max_menu_nodes: usize = 32;
 pub const max_menu_depth: u8 = 4;
 
@@ -2767,6 +2770,10 @@ fn validateMenuNode(node: MenuNode) Error!void {
     if (node.flags & ~MenuNodeFlags.known != 0) return Error.InvalidReserved;
     if (node.depth > max_menu_depth) return Error.InvalidMessage;
     if (node.parent_item_id == 0 and node.depth != 0) return Error.InvalidMessage;
+    if ((node.icon_image_id == 0) != (node.icon_image_generation == 0))
+        return Error.InvalidMessage;
+    if (node.icon_image_id != 0 and node.kind == .separator)
+        return Error.InvalidMessage;
     if (node.label_len > node.label.len or
         node.help_len > node.help.len or
         node.key_len > node.key.len) return Error.InvalidMessage;
@@ -2876,6 +2883,8 @@ pub fn encodeMenuModelSnapshot(
         @memcpy(bytes[16..80], &node.label);
         @memcpy(bytes[80..144], &node.help);
         @memcpy(bytes[144..176], &node.key);
+        std.mem.writeInt(u32, bytes[176..180], node.icon_image_id, .little);
+        std.mem.writeInt(u32, bytes[180..184], node.icon_image_generation, .little);
         try out.appendSlice(a, &bytes);
     }
 }
@@ -2924,6 +2933,8 @@ pub fn decodeMenuModelSnapshot(
         node.label = (try reader.bytes(64))[0..64].*;
         node.help = (try reader.bytes(64))[0..64].*;
         node.key = (try reader.bytes(32))[0..32].*;
+        node.icon_image_id = try reader.readU32();
+        node.icon_image_generation = try reader.readU32();
     }
     const snapshot: MenuModelSnapshot = .{
         .header = .{
@@ -2963,8 +2974,8 @@ pub const MenuPatchOperation = struct {
 };
 
 pub const menu_patch_header_size: usize = 32;
-pub const menu_patch_operation_size: usize = 184;
-pub const menu_patch_schema: u16 = 1;
+pub const menu_patch_operation_size: usize = 192;
+pub const menu_patch_schema: u16 = 2;
 pub const max_menu_patch_operations: usize = 32;
 
 fn validateMenuPatchHeader(header: MenuPatchHeader, operation_count: u32) Error!void {
@@ -2982,7 +2993,9 @@ fn validateMenuPatchOperation(operation: MenuPatchOperation) Error!void {
         if (operation.node.parent_item_id != 0 or
             operation.node.kind != .command or operation.node.flags != 0 or
             operation.node.depth != 0 or operation.node.label_len != 0 or
-            operation.node.help_len != 0 or operation.node.key_len != 0)
+            operation.node.help_len != 0 or operation.node.key_len != 0 or
+            operation.node.icon_image_id != 0 or
+            operation.node.icon_image_generation != 0)
             return Error.InvalidMessage;
         if (!std.mem.allEqual(u8, &operation.node.label, 0) or
             !std.mem.allEqual(u8, &operation.node.help, 0) or
@@ -3024,6 +3037,8 @@ pub fn encodeMenuPatch(
         @memcpy(bytes[20..84], &operation.node.label);
         @memcpy(bytes[84..148], &operation.node.help);
         @memcpy(bytes[148..180], &operation.node.key);
+        std.mem.writeInt(u32, bytes[180..184], operation.node.icon_image_id, .little);
+        std.mem.writeInt(u32, bytes[184..188], operation.node.icon_image_generation, .little);
         try out.appendSlice(a, &bytes);
     }
 }
@@ -3084,6 +3099,8 @@ pub fn decodeMenuPatch(
         operation.node.label = (try reader.bytes(64))[0..64].*;
         operation.node.help = (try reader.bytes(64))[0..64].*;
         operation.node.key = (try reader.bytes(32))[0..32].*;
+        operation.node.icon_image_id = try reader.readU32();
+        operation.node.icon_image_generation = try reader.readU32();
         operation.reserved_tail = (try reader.bytes(4))[0..4].*;
         try validateMenuPatchOperation(operation.*);
     }
@@ -3417,6 +3434,68 @@ pub fn decodeMenuHover(data: []const u8) Error!MenuHover {
     return payload;
 }
 
+/// Bounded reverse intent: the user asked to open the menu-bar item `item_id`
+/// whose slot begins at logical `x`.  The backend owns whether a menu opens and
+/// what it contains; the frontend only reports the request.
+pub const MenuOpenRequest = struct {
+    schema: u16 = 1,
+    reserved: u8 = 0,
+    menu_id: u32,
+    menu_generation: u32,
+    item_id: u32,
+    window_id: u64,
+    frame_generation: u32,
+    x: i32,
+    y: i32,
+    reserved_tail: [4]u8 = @splat(0),
+};
+
+pub const menu_open_request_size: usize = menu_hover_size;
+
+pub fn validateMenuOpenRequest(payload: MenuOpenRequest) Error!void {
+    if (payload.schema != 1 or payload.reserved != 0 or
+        !std.mem.allEqual(u8, &payload.reserved_tail, 0) or
+        payload.menu_id == 0 or payload.menu_generation == 0 or
+        payload.item_id == 0 or payload.window_id == 0 or
+        payload.frame_generation == 0 or payload.x < 0 or payload.y < 0)
+        return Error.InvalidMessage;
+}
+
+pub fn encodeMenuOpenRequest(a: std.mem.Allocator, payload: MenuOpenRequest, out: *std.ArrayList(u8)) !void {
+    try validateMenuOpenRequest(payload);
+    var b: [menu_open_request_size]u8 = @splat(0);
+    std.mem.writeInt(u16, b[0..2], payload.schema, .little);
+    b[2] = payload.reserved;
+    b[3] = 0;
+    std.mem.writeInt(u32, b[4..8], payload.menu_id, .little);
+    std.mem.writeInt(u32, b[8..12], payload.menu_generation, .little);
+    std.mem.writeInt(u32, b[12..16], payload.item_id, .little);
+    std.mem.writeInt(u64, b[16..24], payload.window_id, .little);
+    std.mem.writeInt(u32, b[24..28], payload.frame_generation, .little);
+    std.mem.writeInt(i32, b[28..32], @bitCast(payload.x), .little);
+    std.mem.writeInt(i32, b[32..36], @bitCast(payload.y), .little);
+    try out.appendSlice(a, &b);
+}
+
+pub fn decodeMenuOpenRequest(data: []const u8) Error!MenuOpenRequest {
+    if (data.len != menu_open_request_size) return Error.InvalidTable;
+    if (data[3] != 0) return Error.InvalidMessage;
+    const payload: MenuOpenRequest = .{
+        .schema = std.mem.readInt(u16, data[0..2], .little),
+        .reserved = data[2],
+        .menu_id = std.mem.readInt(u32, data[4..8], .little),
+        .menu_generation = std.mem.readInt(u32, data[8..12], .little),
+        .item_id = std.mem.readInt(u32, data[12..16], .little),
+        .window_id = std.mem.readInt(u64, data[16..24], .little),
+        .frame_generation = std.mem.readInt(u32, data[24..28], .little),
+        .x = @bitCast(std.mem.readInt(u32, data[28..32], .little)),
+        .y = @bitCast(std.mem.readInt(u32, data[32..36], .little)),
+        .reserved_tail = data[36..menu_open_request_size][0..4].*,
+    };
+    try validateMenuOpenRequest(payload);
+    return payload;
+}
+
 test "menu patch codecs enforce ordered generation and operations" {
     const a = std.testing.allocator;
     var bytes: std.ArrayList(u8) = .empty;
@@ -3436,6 +3515,8 @@ test "menu patch codecs enforce ordered generation and operations" {
             .flags = MenuNodeFlags.enabled | MenuNodeFlags.visible,
             .depth = 1,
             .label_len = 8,
+            .icon_image_id = 31,
+            .icon_image_generation = 2,
         } },
         .{ .operation = .delete, .node = .{
             .item_id = 22,
@@ -3454,6 +3535,10 @@ test "menu patch codecs enforce ordered generation and operations" {
     try std.testing.expectEqual(operations.len, decoded.operations.len);
     try std.testing.expectEqual(MenuPatchOperationKind.upsert, decoded.operations[0].operation);
     try std.testing.expectEqualStrings("NewFrame", decoded.operations[0].node.label[0..8]);
+    try std.testing.expectEqual(@as(u32, 31), decoded.operations[0].node.icon_image_id);
+    try std.testing.expectEqual(@as(u32, 2), decoded.operations[0].node.icon_image_generation);
+    operations[1].node.icon_image_id = 31;
+    try std.testing.expectError(Error.InvalidMessage, validateMenuPatchOperation(operations[1]));
     try std.testing.expectEqual(MenuPatchOperationKind.delete, decoded.operations[1].operation);
 
     bytes.items[3] = 1;
@@ -3660,6 +3745,35 @@ test "menu hover codecs enforce phase-specific bounded identity" {
     try std.testing.expectError(Error.InvalidMessage, decodeMenuHover(bytes.items));
     std.mem.writeInt(u32, bytes.items[24..28], hover.frame_generation, .little);
     try std.testing.expectError(Error.InvalidTable, decodeMenuHover(bytes.items[0 .. bytes.items.len - 1]));
+
+    // The menu-open request reuses the hover layout without a phase byte.
+    var open_bytes: std.ArrayList(u8) = .empty;
+    defer open_bytes.deinit(a);
+    const open_request: MenuOpenRequest = .{
+        .menu_id = 3,
+        .menu_generation = 4,
+        .item_id = 2,
+        .window_id = 10,
+        .frame_generation = 1,
+        .x = 7,
+        .y = 0,
+    };
+    try encodeMenuOpenRequest(a, open_request, &open_bytes);
+    try std.testing.expectEqual(menu_open_request_size, open_bytes.items.len);
+    try std.testing.expectEqual(open_request, try decodeMenuOpenRequest(open_bytes.items));
+    open_bytes.items[3] = 1;
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuOpenRequest(open_bytes.items));
+    open_bytes.items[3] = 0;
+    std.mem.writeInt(u32, open_bytes.items[12..16], 0, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuOpenRequest(open_bytes.items));
+    std.mem.writeInt(u32, open_bytes.items[12..16], open_request.item_id, .little);
+    std.mem.writeInt(i32, open_bytes.items[28..32], -1, .little);
+    try std.testing.expectError(Error.InvalidMessage, decodeMenuOpenRequest(open_bytes.items));
+    std.mem.writeInt(i32, open_bytes.items[28..32], open_request.x, .little);
+    try std.testing.expectError(
+        Error.InvalidTable,
+        decodeMenuOpenRequest(open_bytes.items[0 .. open_bytes.items.len - 1]),
+    );
 
     const leave: MenuHover = .{
         .phase = .leave,
@@ -6419,7 +6533,7 @@ test "v1 message table is complete canonical and non-overlapping" {
     // This count is the number of assigned IDs in the normative EUP v1
     // message tables.  Extension IDs (0xf000-0xfffe) are valid but are not
     // part of the stable assigned table.
-    try std.testing.expectEqual(@as(usize, 164), known_message_ids.len);
+    try std.testing.expectEqual(@as(usize, 165), known_message_ids.len);
     try std.testing.expect(!knownMessage(Message.invalid));
 
     for (known_message_ids, 0..) |id, i| {
@@ -8340,6 +8454,8 @@ test "menu model round trips bounded UTF-8 tree" {
             .label_len = 4,
             .help_len = 4,
             .key_len = 1,
+            .icon_image_id = 31,
+            .icon_image_generation = 2,
         },
         .{
             .item_id = 21,
@@ -8367,6 +8483,25 @@ test "menu model round trips bounded UTF-8 tree" {
     try std.testing.expectEqual(@as(usize, 2), decoded.nodes.len);
     try std.testing.expectEqualStrings("File", decoded.nodes[0].label[0..4]);
     try std.testing.expectEqualStrings("NewFrame", decoded.nodes[1].label[0..8]);
+    try std.testing.expectEqual(@as(u32, 31), decoded.nodes[0].icon_image_id);
+    try std.testing.expectEqual(@as(u32, 2), decoded.nodes[0].icon_image_generation);
+}
+
+test "menu model rejects partial icon references" {
+    var valid = [_]MenuNode{
+        .{
+            .item_id = 20,
+            .parent_item_id = 0,
+            .kind = .submenu,
+            .flags = MenuNodeFlags.enabled | MenuNodeFlags.visible,
+            .depth = 0,
+            .label_len = 4,
+            .icon_image_id = 31,
+        },
+    };
+    @memcpy(valid[0].label[0..4], "File");
+    const header: MenuModelHeader = .{ .frame_id = 7, .frame_generation = 1, .menu_id = 3, .menu_generation = 1 };
+    try std.testing.expectError(Error.InvalidMessage, validateMenuModelSnapshot(.{ .header = header, .nodes = &valid }));
 }
 
 test "menu model rejects invalid hierarchy and metadata" {
@@ -8664,7 +8799,7 @@ pub const SelectionOwnerSet = struct {
 
 pub const selection_owner_set_header_size: usize = 12;
 
-fn validSelectionTarget(target: []const u8) bool {
+pub fn validSelectionTarget(target: []const u8) bool {
     if (target.len == 0 or target.len > max_selection_target_len) return false;
     for (target) |byte| {
         if (byte <= 0x20 or byte >= 0x7f) return false;

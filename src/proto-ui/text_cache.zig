@@ -8,7 +8,9 @@
 const std = @import("std");
 const renderer = @import("renderer.zig");
 
-pub const max_key_bytes: usize = 120;
+/// The cache key holds one rendered run/row text, which follows the row wire
+/// bound rather than the smaller chrome bound.
+pub const max_key_bytes: usize = 256;
 pub const default_capacity: usize = 64;
 
 pub const Error = error{
@@ -37,14 +39,17 @@ pub const Stats = struct {
 pub const Key = struct {
     device: usize,
     color: renderer.Color,
-    length: u8,
+    /// Font style bits (bold/italic) so a styled glyph never reuses a plain one.
+    style: u8 = 0,
+    length: u16,
     bytes: [max_key_bytes]u8 = undefined,
 
-    pub fn init(device: usize, bytes: []const u8, color: renderer.Color) Error!Key {
+    pub fn init(device: usize, bytes: []const u8, color: renderer.Color, style: u8) Error!Key {
         if (bytes.len == 0 or bytes.len > max_key_bytes) return Error.InvalidCacheKey;
         var key = Key{
             .device = device,
             .color = color,
+            .style = style,
             .length = @intCast(bytes.len),
         };
         @memcpy(key.bytes[0..bytes.len], bytes);
@@ -54,6 +59,7 @@ pub const Key = struct {
     pub fn eql(self: Key, other: Key) bool {
         return self.device == other.device and
             std.meta.eql(self.color, other.color) and
+            self.style == other.style and
             self.length == other.length and
             std.mem.eql(u8, self.bytes[0..self.length], other.bytes[0..other.length]);
     }
@@ -172,18 +178,18 @@ const Recording = struct {
 };
 
 test "cache keys distinguish device color and bounded text" {
-    const key = try Key.init(1, "你好", .{ .r = 1, .g = 2, .b = 3, .a = 4 });
-    try std.testing.expect(key.eql(try Key.init(1, "你好", .{ .r = 1, .g = 2, .b = 3, .a = 4 })));
-    try std.testing.expect(!key.eql(try Key.init(2, "你好", .{ .r = 1, .g = 2, .b = 3, .a = 4 })));
-    try std.testing.expect(!key.eql(try Key.init(1, "你好", .{ .r = 3, .g = 2, .b = 3, .a = 4 })));
-    try std.testing.expectError(Error.InvalidCacheKey, Key.init(1, "", .{ .r = 1, .g = 2, .b = 3 }));
+    const key = try Key.init(1, "你好", .{ .r = 1, .g = 2, .b = 3, .a = 4 }, 0);
+    try std.testing.expect(key.eql(try Key.init(1, "你好", .{ .r = 1, .g = 2, .b = 3, .a = 4 }, 0)));
+    try std.testing.expect(!key.eql(try Key.init(2, "你好", .{ .r = 1, .g = 2, .b = 3, .a = 4 }, 0)));
+    try std.testing.expect(!key.eql(try Key.init(1, "你好", .{ .r = 3, .g = 2, .b = 3, .a = 4 }, 0)));
+    try std.testing.expectError(Error.InvalidCacheKey, Key.init(1, "", .{ .r = 1, .g = 2, .b = 3 }, 0));
     const oversized = [_]u8{0} ** (max_key_bytes + 1);
-    try std.testing.expectError(Error.InvalidCacheKey, Key.init(1, &oversized, .{ .r = 1, .g = 2, .b = 3 }));
+    try std.testing.expectError(Error.InvalidCacheKey, Key.init(1, &oversized, .{ .r = 1, .g = 2, .b = 3 }, 0));
 }
 
 test "cache returns the same texture id and records misses then hits" {
     var cache: Cache(2) = .{};
-    const key = try Key.init(1, "你好 Emacs", .{ .r = 0xe8, .g = 0xee, .b = 0xf8, .a = 255 });
+    const key = try Key.init(1, "你好 Emacs", .{ .r = 0xe8, .g = 0xee, .b = 0xf8, .a = 255 }, 0);
     try std.testing.expect(cache.lookup(key) == null);
     try cache.insert(key, 0x1000, 32, 16, Recording.destroy);
     const hit = cache.lookup(key) orelse return error.TestUnexpectedResult;
@@ -198,9 +204,9 @@ test "cache evicts the least recently used texture through the destroyer" {
     Recording.count = 0;
 
     var cache: Cache(2) = .{};
-    const first = try Key.init(1, "first", .{ .r = 1, .g = 2, .b = 3 });
-    const second = try Key.init(1, "second", .{ .r = 1, .g = 2, .b = 3 });
-    const third = try Key.init(1, "third", .{ .r = 1, .g = 2, .b = 3 });
+    const first = try Key.init(1, "first", .{ .r = 1, .g = 2, .b = 3 }, 0);
+    const second = try Key.init(1, "second", .{ .r = 1, .g = 2, .b = 3 }, 0);
+    const third = try Key.init(1, "third", .{ .r = 1, .g = 2, .b = 3 }, 0);
     try cache.insert(first, 11, 8, 8, Recording.destroy);
     try cache.insert(second, 22, 9, 8, Recording.destroy);
     try std.testing.expect(cache.lookup(first) != null); // make second the LRU entry
@@ -219,7 +225,7 @@ test "cache destroys the old texture when replacing a matching key" {
     Recording.count = 0;
 
     var cache: Cache(2) = .{};
-    const key = try Key.init(1, "replace", .{ .r = 1, .g = 2, .b = 3, .a = 4 });
+    const key = try Key.init(1, "replace", .{ .r = 1, .g = 2, .b = 3, .a = 4 }, 0);
     try cache.insert(key, 11, 8, 8, Recording.destroy);
     try cache.insert(key, 22, 9, 8, Recording.destroy);
     const cached = cache.lookup(key) orelse return error.TestUnexpectedResult;

@@ -2584,6 +2584,11 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 
   init_keyboard ();	/* This too must precede init_sys_modes.  */
   init_display ();	/* Determine terminal type.  Calls init_sys_modes.  */
+#ifdef HAVE_TERMINAL_PROVIDER_EXTENSION
+  /* Generic TPE registration is explicit and environment selected.  No
+     provider is discovered or initialized without this opt-in. */
+  init_terminal_provider ();
+#endif
 #if HAVE_W32NOTIFY
   if (noninteractive)
     init_crit ();	/* w32notify.c needs this in batch mode.  */

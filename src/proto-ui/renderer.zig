@@ -709,7 +709,7 @@ pub const DrawCommand = union(enum) {
     clear: Color,
     fill: struct { rect: LogicalRect, color: Color },
     text: struct { x: f32, y: f32, color: ?Color = null, bytes: []const u8 },
-    unicode_text: struct { x: f32, y: f32, color: Color, bytes: []const u8 },
+    unicode_text: struct { x: f32, y: f32, color: Color, bytes: []const u8, style: u8 = 0 },
     image: struct { rect: LogicalRect, pixels: []const u8, width: u32, height: u32 },
     image_region: struct {
         destination: LogicalRect,
@@ -799,6 +799,8 @@ pub const FaceDecorationStyles = struct {
     overline: FaceLineStyle = .unspecified,
     strike_through: FaceLineStyle = .unspecified,
     box: FaceBoxStyle = .none,
+    /// Real `:box` `:line-width` in pixels; zero keeps the bounded guess.
+    box_width: i32 = 0,
     underline_color: ?Color = null,
     overline_color: ?Color = null,
     strike_color: ?Color = null,
@@ -836,6 +838,24 @@ fn pushFaceBar(bars: *FaceDecorationBars, rect: LogicalRect, color: ?Color) void
     bars.len += 1;
 }
 
+/// Shift a color toward white (positive) or black (negative) so a released or
+/// pressed button box can draw a readable bevel even when its own color is
+/// black, which is what the stock mode line/tool bar `:box` resolves to.
+fn shadeFaceColor(color: Color, amount: i32) Color {
+    const shift = struct {
+        fn clamp(channel: u8, delta: i32) u8 {
+            const value = @as(i32, channel) + delta;
+            return @intCast(@min(255, @max(0, value)));
+        }
+    }.clamp;
+    return .{
+        .r = shift(color.r, amount),
+        .g = shift(color.g, amount),
+        .b = shift(color.b, amount),
+        .a = color.a,
+    };
+}
+
 /// Computes bounded face decoration bars for one diagnostic ASCII glyph run.
 /// These are approximation bars for the current debug renderer, not shaped-text
 /// metrics or full Emacs face rendering.
@@ -864,10 +884,28 @@ pub fn faceDecorationBars(
     }
     if (styles.box != .none) {
         const color = styles.box_color orelse styles.foreground;
-        pushFaceBar(&bars, .{ .x = x, .y = y, .width = width, .height = thickness }, color);
-        pushFaceBar(&bars, .{ .x = x, .y = y + height - thickness, .width = width, .height = thickness }, color);
-        pushFaceBar(&bars, .{ .x = x, .y = y + thickness, .width = thickness, .height = @max(0, height - 2 * thickness) }, color);
-        pushFaceBar(&bars, .{ .x = x + width - thickness, .y = y + thickness, .width = thickness, .height = @max(0, height - 2 * thickness) }, color);
+        const box_thickness: f32 = if (styles.box_width > 0)
+            @min(@as(f32, @floatFromInt(styles.box_width)), @max(1, height * 0.5))
+        else
+            @max(1, height * 0.08);
+        // A released button lights its top/left edges and shades its
+        // bottom/right; a pressed button is the inverse; a plain box is flat.
+        const light = shadeFaceColor(color.?, 96);
+        const dark = shadeFaceColor(color.?, -64);
+        const top_color: ?Color = switch (styles.box) {
+            .released => light,
+            .pressed => dark,
+            else => color,
+        };
+        const bottom_color: ?Color = switch (styles.box) {
+            .released => dark,
+            .pressed => light,
+            else => color,
+        };
+        pushFaceBar(&bars, .{ .x = x, .y = y, .width = width, .height = box_thickness }, top_color);
+        pushFaceBar(&bars, .{ .x = x, .y = y + height - box_thickness, .width = width, .height = box_thickness }, bottom_color);
+        pushFaceBar(&bars, .{ .x = x, .y = y + box_thickness, .width = box_thickness, .height = @max(0, height - 2 * box_thickness) }, top_color);
+        pushFaceBar(&bars, .{ .x = x + width - box_thickness, .y = y + box_thickness, .width = box_thickness, .height = @max(0, height - 2 * box_thickness) }, bottom_color);
     }
     return bars;
 }
@@ -1023,14 +1061,15 @@ pub const DrawList = struct {
     /// Queue bounded UTF-8 text for a backend with real font support.
     /// This stays separate from `drawText` so the existing diagnostic ASCII
     /// renderer cannot silently pretend to support Unicode.
-    pub fn drawUnicodeText(self: *DrawList, x: f32, y: f32, bytes: []const u8, color: Color) !void {
-        if (bytes.len == 0 or bytes.len > 120) return error.InvalidUnicodeText;
+    pub fn drawUnicodeText(self: *DrawList, x: f32, y: f32, bytes: []const u8, color: Color, style: u8) !void {
+        if (bytes.len == 0 or bytes.len > 256) return error.InvalidUnicodeText;
         if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUnicodeText;
         try self.commands.append(self.allocator, .{ .unicode_text = .{
             .x = x,
             .y = y,
             .color = color,
             .bytes = bytes,
+            .style = style,
         } });
         self.stats.commands += 1;
         self.stats.unicode_texts += 1;
@@ -1209,6 +1248,26 @@ test "face decoration bars honor styles and colors" {
         .foreground = .{ .r = 9, .g = 9, .b = 9 },
     });
     try std.testing.expectEqual(@as(usize, 7), boxed.len);
+
+    // A released button box uses its real `:line-width` and draws a light
+    // top/left bevel against a shaded bottom/right, even for a black box.
+    const beveled = faceDecorationBars(0, 0, 40, 20, .{
+        .box = .released,
+        .box_width = 3,
+        .box_color = .{ .r = 0, .g = 0, .b = 0 },
+    });
+    try std.testing.expectEqual(@as(usize, 4), beveled.len);
+    try std.testing.expectEqual(@as(f32, 3), beveled.slice()[0].rect.height);
+    try std.testing.expectEqual(@as(f32, 3), beveled.slice()[2].rect.width);
+    try std.testing.expectEqual(Color{ .r = 96, .g = 96, .b = 96 }, beveled.slice()[0].color);
+    try std.testing.expectEqual(Color{ .r = 0, .g = 0, .b = 0 }, beveled.slice()[1].color);
+    const pressed = faceDecorationBars(0, 0, 40, 20, .{
+        .box = .pressed,
+        .box_width = 2,
+        .box_color = .{ .r = 0, .g = 0, .b = 0 },
+    });
+    try std.testing.expectEqual(Color{ .r = 0, .g = 0, .b = 0 }, pressed.slice()[0].color);
+    try std.testing.expectEqual(Color{ .r = 96, .g = 96, .b = 96 }, pressed.slice()[1].color);
 }
 
 test "explicit damage counters separate submitted and culled commands" {
@@ -1320,11 +1379,11 @@ test "draw list rejects absent oversized and non-ASCII text" {
 test "unicode draw queue accepts bounded UTF-8 separately from ASCII debug text" {
     var list: DrawList = .{ .allocator = std.testing.allocator };
     defer list.deinit();
-    try list.drawUnicodeText(4, 6, "你好 Emacs", .{ .r = 0xf0, .g = 0xf6, .b = 0xff, .a = 255 });
+    try list.drawUnicodeText(4, 6, "你好 Emacs", .{ .r = 0xf0, .g = 0xf6, .b = 0xff, .a = 255 }, 0);
     try std.testing.expectEqual(@as(u64, 1), list.stats.unicode_texts);
     try std.testing.expectEqualStrings("你好 Emacs", list.commands.items[0].unicode_text.bytes);
-    try std.testing.expectError(error.InvalidUnicodeText, list.drawUnicodeText(0, 0, "", .{ .r = 0, .g = 0, .b = 0, .a = 255 }));
-    try std.testing.expectError(error.InvalidUnicodeText, list.drawUnicodeText(0, 0, &.{0xff}, .{ .r = 0, .g = 0, .b = 0, .a = 255 }));
+    try std.testing.expectError(error.InvalidUnicodeText, list.drawUnicodeText(0, 0, "", .{ .r = 0, .g = 0, .b = 0, .a = 255 }, 0));
+    try std.testing.expectError(error.InvalidUnicodeText, list.drawUnicodeText(0, 0, &.{0xff}, .{ .r = 0, .g = 0, .b = 0, .a = 255 }, 0));
 }
 
 test "unicode draws are never culled by an assumed glyph box" {

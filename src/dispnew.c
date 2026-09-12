@@ -3916,6 +3916,10 @@ static void
 update_tty_frame (struct frame *f)
 {
   build_frame_matrix (f);
+#ifdef HAVE_TERMINAL_PROVIDER_EXTENSION
+  if (FRAME_PROVIDER_P (f))
+    make_matrix_current (f);
+#endif
 }
 
 #ifndef HAVE_ANDROID
@@ -4085,22 +4089,28 @@ combine_updates_for_frame (struct frame *f, bool inhibit_scrolling)
   write_matrix (root, inhibit_scrolling, false);
   make_matrix_current (root);
   update_end (root);
+#ifdef HAVE_TERMINAL_PROVIDER_EXTENSION
+  terminal_provider_capture_frame (root);
+#endif
 
-  /* The selected frame determines where the cursor on ttys goes, except
-     when it is a frame that is completely unrelated to the frame being
-     displayed.  This can happen with multi-tty, when the selected frame
-     can be a window-system frame.  */
-  if (frame_ancestor_p (root, SELECTED_FRAME ()))
-    tty_set_cursor (SELECTED_FRAME ());
-  else
-    tty_set_cursor (root);
+  if (!FRAME_PROVIDER_P (root))
+    {
+      /* The selected frame determines where the cursor on ttys goes,
+         except when it is a frame that is completely unrelated to the
+         frame being displayed.  This can happen with multi-tty, when
+         the selected frame can be a window-system frame.  */
+      if (frame_ancestor_p (root, SELECTED_FRAME ()))
+        tty_set_cursor (SELECTED_FRAME ());
+      else
+        tty_set_cursor (root);
 
-  /* If a child is displayed, and the cursor is displayed in another
-     frame, the child might lay above the cursor, so that it appears to
-     "shine through" the child.  Avoid that because it's confusing.  */
-  if (topmost_child)
-    terminal_cursor_magic (root, topmost_child);
-  flush_terminal (root);
+      /* If a child is displayed, and the cursor is displayed in another
+         frame, the child might lay above the cursor, so that it appears
+         to "shine through" the child.  Avoid that because it's confusing.  */
+      if (topmost_child)
+        terminal_cursor_magic (root, topmost_child);
+      flush_terminal (root);
+    }
 
   for (Lisp_Object tail = z_order; CONSP (tail); tail = XCDR (tail))
     {

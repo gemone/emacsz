@@ -647,6 +647,12 @@ struct frame
      the frame has been deleted.  */
   struct terminal *terminal;
 
+#ifdef HAVE_TERMINAL_PROVIDER_EXTENSION
+  /* Generic provider-owned frame state.  Core never dereferences this;
+     the terminal provider registers and releases it. */
+  void *provider_data;
+#endif
+
   /* Device-dependent, frame-local auxiliary data used for displaying
      the contents.  When the frame is deleted, this data is deleted as
      well.  */
@@ -931,6 +937,11 @@ default_pixels_per_inch_y (void)
 /* Test a frame for particular kinds of display methods.  */
 #define FRAME_INITIAL_P(f) ((f)->output_method == output_initial)
 #define FRAME_TERMCAP_P(f) ((f)->output_method == output_termcap)
+#ifdef HAVE_TERMINAL_PROVIDER_EXTENSION
+#define FRAME_PROVIDER_P(f) ((f)->output_method == output_provider)
+#else
+#define FRAME_PROVIDER_P(f) false
+#endif
 #define FRAME_X_P(f) ((f)->output_method == output_x_window)
 #ifndef HAVE_NTGUI
 #define FRAME_W32_P(f) false
@@ -1021,22 +1032,41 @@ default_pixels_per_inch_y (void)
 
 /* Return a pointer to the structure holding information about the
    region of text, if any, that is currently shown in mouse-face on
-   frame F.  We need to define two versions because a TTY-only build
-   does not have FRAME_DISPLAY_INFO.  */
-#ifdef HAVE_WINDOW_SYSTEM
-#ifndef HAVE_ANDROID
-#   define MOUSE_HL_INFO(F)					\
-  (FRAME_WINDOW_P (F)						\
-   ? &FRAME_DISPLAY_INFO (F)->mouse_highlight			\
+   frame F.  We need separate versions because provider and TTY-only
+   builds do not all have FRAME_DISPLAY_INFO.  */
+#if defined (HAVE_WINDOW_SYSTEM) && !defined (HAVE_ANDROID)
+# ifdef HAVE_TERMINAL_PROVIDER_EXTENSION
+#   define MOUSE_HL_INFO(F)\
+  (FRAME_PROVIDER_P (F)\
+   ? ((Mouse_HLInfo *) (F)->provider_data)\
+   : (FRAME_WINDOW_P (F)\
+      ? &FRAME_DISPLAY_INFO (F)->mouse_highlight\
+      : &(F)->output_data.tty->display_info->mouse_highlight))
+# else
+#   define MOUSE_HL_INFO(F)\
+  (FRAME_WINDOW_P (F)\
+   ? &FRAME_DISPLAY_INFO (F)->mouse_highlight\
    : &(F)->output_data.tty->display_info->mouse_highlight)
+# endif
+#elif defined (HAVE_WINDOW_SYSTEM)
+# ifdef HAVE_TERMINAL_PROVIDER_EXTENSION
+#   define MOUSE_HL_INFO(F)\
+  (FRAME_PROVIDER_P (F)\
+   ? ((Mouse_HLInfo *) (F)->provider_data)\
+   : &FRAME_DISPLAY_INFO(F)->mouse_highlight)
+# else
+#   define MOUSE_HL_INFO(F) &FRAME_DISPLAY_INFO(F)->mouse_highlight
+# endif
 #else
-/* There is no "struct tty_output" on Android at all.  */
-# define MOUSE_HL_INFO(F)					\
-  (&FRAME_DISPLAY_INFO(F)->mouse_highlight)
-#endif
-#else
-# define MOUSE_HL_INFO(F)					\
+# ifdef HAVE_TERMINAL_PROVIDER_EXTENSION
+#   define MOUSE_HL_INFO(F)\
+  (FRAME_PROVIDER_P (F)\
+   ? ((Mouse_HLInfo *) (F)->provider_data)\
+   : &(F)->output_data.tty->display_info->mouse_highlight)
+# else
+#   define MOUSE_HL_INFO(F)\
   (&(F)->output_data.tty->display_info->mouse_highlight)
+# endif
 #endif
 
 /* True if frame F is still alive (not deleted).  */

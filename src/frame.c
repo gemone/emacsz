@@ -318,6 +318,10 @@ See also `frame-live-p'.  */)
       return Qhaiku;
     case output_android:
       return Qandroid;
+#ifdef HAVE_TERMINAL_PROVIDER_EXTENSION
+    case output_provider:
+      return terminal_provider_identity (XFRAME (object)->terminal);
+#endif
     default:
       emacs_abort ();
     }
@@ -1787,6 +1791,11 @@ affects all frames on the same terminal device.  */)
       t = the_only_display_info.terminal;
 # endif
   }
+
+#ifdef HAVE_TERMINAL_PROVIDER_EXTENSION
+  if (t && t->type == output_provider)
+    return make_terminal_provider_frame (t, parms);
+#endif
 
   if (!t)
     {

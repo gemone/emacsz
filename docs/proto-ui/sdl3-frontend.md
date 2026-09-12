@@ -1,6 +1,6 @@
 # SDL3 Frontend Design
 
-Status: normative frontend design
+Status: normative frontend design with bounded implementation; final pure-runtime frame pending
 Protocol: EUP v1
 Renderer requirement: software fallback required; GPU acceleration optional
 
@@ -266,6 +266,39 @@ Damage culling keeps Unicode commands conservative rather than estimating
 glyph metrics; it never rejects one from an assumed text box, while the SDL
 clip still bounds pixels.
 
+Faces reach the live text through the window's default face.  The bounded facts
+rows carry no per-line or per-run face, so a window bound by `WINDOW_FACE` to a
+live face draws its body text with that face's foreground, and falls back to the
+draw default when there is no binding, the generation is stale, or the face
+carries no foreground.  `sdl3-face-text-smoke` proves the default fallback, the
+face foreground, and that a replacement generation is honoured on the next
+frame.  The owned live publisher reports the frame's real default face colors as
+bounded `#rrggbb` values in its snapshot; the adapter projects them to a
+generation-qualified `FACE_DEFINE` (the generation advances only when the colors
+change) and re-sends the per-window `WINDOW_FACE` binding after every
+`FRAME_UPDATE`, because an update is authoritative window state and replaces
+that binding.  A literal `#rrggbb` value is passed through unchanged so the
+terminal color model cannot remap a color the frame already stated exactly.
+`sdl3-emacs-face-smoke` proves the round trip end to end: the live scene owns
+the reported face, the live window is bound to it, and the body text is drawn
+with it.  Per-line faces, face merging, overlays, and shaped-text faces remain
+pending.
+
+The cursor honours the same face and a bounded shape interpretation of the
+opaque `cursor_kind`: a solid box, bar, or horizontal bar (whose shape already
+comes from the published cursor geometry), a four-edge hollow outline, or a
+bottom-edge underline, with any unrecognised kind falling back to the solid box
+that the frontend drew before styles existed.  Every shape is drawn inside the
+cursor rectangle the backend validated, and the fill uses the owning window's
+live default-face foreground when one is bound.  `sdl3-cursor-style-smoke`
+proves all five shapes, the unknown-kind fallback, and the face-derived color.
+The producer side now reports the selected window's real `cursor-type` as that
+bounded kind (`t`/`box`→1, `bar`→2, `hbar`→3, `hollow`→4, anything else→1);
+`sdl3-emacs-cursor-smoke` runs the owned publisher with a deterministic `hbar`
+profile and requires the live scene to own `cursor_kind` 3.  Blink state,
+per-window cursor faces, IME-coupled caret behavior, and redisplay-owned cursor
+semantics remain pending.
+
 ### 8.4 Images
 
 Image resources become textures. The frontend honors format, stride, alpha mode, color space, scaling filter, mipmap policy, cache policy, and animation timing.
@@ -393,6 +426,18 @@ cursor at column 8 and still renders `Z`. This verifies restore behavior only;
 it does not generalize prefix handling or claim arbitrary window-command
 support.
 
+W8h-i adds optional `input.keymap_loop_v1`.  When negotiated, the keymap path
+sends bounded canonical key descriptions one event at a time and Emacs owns
+prefix accumulation, active-keymap lookup, command execution, and unknown-sequence
+disposal.  Reverse-input artifacts are serialized so another fact or platform
+event cannot overwrite a pending key.  This supersedes the local `C-x`
+batching path when negotiated; the exact four-command whitelist remains only as
+a rollback path for peers without `input.keymap_loop_v1`.  The graphic smoke
+proves the split through Emacs's active keymaps, while the publisher unit test
+proves both bound and unknown complete sequences clear prefix state.  Bounded
+physical-key coverage, localized input, macros, keyboard-quit UI, and IME remain
+pending.
+
 W8h-g adds window-aware left clicks for the generic pointer path. The Emacs
 publisher performs a bounded pixel hit test over live `window-pixel-edges`,
 selects the clicked window with `norecord`, and converts the point to
@@ -474,6 +519,23 @@ Resize, move, and fullscreen are requests, not commands. Emacs sends authoritati
 
 Touch and pen are protocol-defined but optional implementation capabilities. If unsupported, the frontend must not claim the capability.
 
+`input.touch_bounded_v1` is the first bounded slice: with `input.pointer_v2`
+negotiated, a single SDL finger contact becomes a strict Pointer v2 intent.
+SDL reports finger positions normalized to the window, so the frontend
+converts each contact to a pixel and emits `press` on finger down, `drag` with
+the left mask on finger motion, `release` on finger up, and `cancel` on a
+cancelled contact; press and release carry `clicks=1`.  Non-finite or
+out-of-window coordinates, a zero-sized window, unknown event types, and any
+modifier state are rejected without queue mutation, and a second concurrent
+contact or out-of-order phase is dropped because the delivery journal admits
+one active pointer session.  `sdl3-touch-tap-smoke` seeds synthetic finger
+events and proves the exact phase order, the converted pixel, multi-contact
+rejection, and out-of-range rejection; the same translation runs in the live
+interactive EPXL event loop, and the Emacs-side effect of the resulting Pointer
+v2 intents is already covered by `sdl3-pointer-smoke`.  Multi-touch gesture
+interpretation, pan/pinch/rotate, pressure, pen input, and Emacs-side gesture
+commands remain pending.
+
 ## 11. IME integration
 
 The frontend owns platform IME contact.
@@ -510,6 +572,26 @@ The frontend reports enter, position, leave, drop, cancel, MIME offers, and data
 
 The frontend must not open dropped files or infer Emacs commands.
 
+The bounded slice is implemented as `dnd.bounded_v1`.  SDL reports a drop as an
+ordered begin / position / file-or-text / complete sequence, so a bounded
+tracker accumulates one offer — target `text/plain` for
+`SDL_EVENT_DROP_TEXT`, `text/uri-list` for `SDL_EVENT_DROP_FILE` — plus at most
+256 payload bytes, and on completion enqueues the exact
+`DND_ENTER`/`DND_DROP`/`DND_DATA` triple through the authenticated EPXL journal
+with a synthesized copy action, because SDL does not expose the source's action
+policy.  A payload that does not fit the bounded storage is not reported rather
+than silently truncated, and a drop is only reported while `dnd.bounded_v1` is
+negotiated.  Drag-position feedback is reported as a bounded `DND_POSITION` and
+is best-effort by design: it is enqueued only when the delivery journal is idle,
+so a fast-moving drag can never fill the queue or displace the payload report.
+`sdl3-dnd-drop-smoke` seeds one real SDL drop sequence with two positions,
+proves the negotiated capability, requires exactly one position report (the
+later one is coalesced away while the journal is busy), and requires the owned
+publisher to apply the bounded payload so the republished facts show the
+dropped text.  The frontend still never opens a dropped file: the publisher
+decides what a drop means.  Drag-out, MIME negotiation, multiple offers or
+files, drag leave/cancel, and a request/data handshake remain pending.
+
 ## 13. Widgets
 
 ### 13.1 Rendering modes
@@ -529,11 +611,168 @@ The frontend receives semantic menu model and placement. It handles navigation a
 
 It must not enable/disable items independently.
 
+The bounded slice is implemented: `frontend.menuPopupBounds` is the single
+source of truth for the open popup rectangle and row height, and both the draw
+path and the pointer hit test use it, so a rendered row and a clickable row
+cannot drift apart.  While a popup is open and `widget.menu_result_v1` is
+negotiated, a primary press on a selectable command/checkbox/radio row reports
+`MENU_RESULT`, a press outside the popup reports `MENU_CANCEL(user)`, and
+`Escape` reports `MENU_CANCEL(escape)`; a separator, submenu, disabled, or
+padding row reports nothing, and the matching release is consumed so the click
+never also becomes a text pointer press.  The frontend only reports which
+backend-owned row was chosen; it never enables, disables, reorders, reflows, or
+executes the item itself.  `sdl3-menu-hit-smoke` drives an open model through
+the shared geometry and proves the selected identity, the outside dismissal,
+the Escape cancellation, and that a separator press is inert.  Keyboard
+navigation, streaming hover highlight, submenu traversal, and Emacs command
+execution remain pending.
+
+Popup navigation is implemented over the same shared geometry.  The frontend
+owns one highlight cursor for the open popup (`Scene.menu_highlight_item`), a
+piece of presentation state that is never encoded into EUP and that the draw
+path renders as a highlighted row.  Pointer motion moves the cursor to the
+selectable row under the pointer (or clears it when the pointer leaves the
+rows), and `Up`/`Down` move it to the previous/next selectable row without
+wrapping, skipping separators, submenus, and disabled rows.  Every cursor
+change is reported as exactly one `MENU_HOVER` transition: a `leave` (which
+carries no item identity by wire contract) followed by an `enter` for the new
+row, with the pointer position for a hover transition and the row origin for a
+keyboard transition.  `Enter` chooses the highlighted row as `MENU_RESULT`, and
+motion while a popup is open is consumed so it cannot also become a text
+hover/drag sample behind the popup.  `sdl3-menu-hit-smoke` proves the hover
+sequence, the separator skip, the keyboard walk, and the Enter selection.
+Streaming `move` phases, submenu traversal, and backend-driven highlight
+dispatch remain pending.
+
+Popup rows render the backend-owned item state faithfully.  A stateful row
+reserves a leading marker slot and shifts its label; a selected checkbox draws a
+4x4 square and a selected radio draws a distinct 2x2 dot, while a row the model
+marks as not `enabled` is drawn with a dimmer label color.  A node may also carry a generation-qualified image reference; a complete live
+resource is drawn in that leading slot and shifts its label, while a missing or
+stale resource keeps the text fallback.  The frontend
+only reflects those flags; it never enables, disables, or toggles an item
+itself, and a separator row draws no label at all (the draw list rejects empty
+text, so an open popup containing a separator used to fail the whole render
+pass).  `sdl3-menu-hit-smoke` proves both marker shapes, the shifted labels, the
+dimmed disabled label, and the bright enabled label.  The live publisher now
+supplies those flags from Emacs's real `:button` state through validated
+`kind`/`selected` vectors (`proto-ui-menu-radio-unit`, `proto-ui-unit`); its
+producer unit pins a toggle and two independent radio groups with separator-safe
+state, while Emacs's line-number and line-wrapping radio groups are applied
+through the closed result path and republished (`proto-ui-menu-radio-apply-unit`).  The frontend still only reports
+the chosen backend-owned row and never mutates radio state.  P180 draws the highlighted row's
+backend-owned `MENU_NODE.help` in a bounded ASCII tip using the shared popup
+geometry.  Printable help wraps greedily at whitespace into at most three lines;
+non-ASCII help is suppressed, as is help when the owner has no safe above/below
+space.  Hover timing and platform tooltip behavior are not claimed.
+P182 captures bounded file-backed XBM payloads for live popups and requires a
+complete generation-matched resource in the open smoke; synthetic
+`sdl3-menu-hit-smoke` remains the icon-render evidence, and non-XBM capture and
+full PGTK popup parity remain pending.
+Well-encoded malformed or oversized XBM clears that row's payload and keeps its
+reference for label fallback; invalid base64 or a vector-length mismatch rejects
+the facts snapshot.
+
+`input.pen_bounded_v1` is the pen slice: with `input.pointer_v2` negotiated, the
+pen tip is a left-button producer.  SDL reports pen positions in window
+coordinates (not normalized, unlike touch), so the frontend bounds the point
+directly and maps `SDL_EVENT_PEN_DOWN` to `press`, a motion with the tip down to
+`drag`, a motion with the tip up to `motion` (the same air-hover a mouse
+reports), and `SDL_EVENT_PEN_UP` to `release`.  The eraser tip, barrel buttons,
+pressure axes, tilt, and proximity events produce no intent rather than a
+guessed mapping, and the same translation is wired into the live interactive
+EPXL loop.  `sdl3-pen-tap-smoke` seeds one synthetic pen sequence and proves the
+hover/press/drag/release order, the eraser rejection, and the bounded journal
+ordering.  Pressure, tilt, barrel buttons, drawing surfaces, and Emacs command
+dispatch remain pending.
+
+The menu bar itself is now live.  When the owned publisher reports a
+menu-bar row, it enumerates the frame's real top-level items from
+`menu-bar-keymap` (after the menu filters ran, in display order) and publishes
+their labels as a bounded `MENU_MODEL` whose depth-0 nodes are those items; the
+model survives a `FRAME_UPDATE`, so an unchanged menu bar adds no traffic.  The
+frontend draws that model as a menu-bar row anchored at the frame origin, each
+slot sized by its own label, with the strip height taken from the row the frame
+reserves above the window — the backend owns the labels and their order and the
+frontend never reorders or relabels them.  `sdl3-emacs-menu-bar-smoke` requires
+the live scene to own the real labels in order and the draw list to render each
+of them.
+
+A press on one of those slots is reported, not acted on.  `menuBarLayout` is
+also the single source of truth for the menu-bar hit test, and with
+`widget.menu_open_request_v1` negotiated a primary press on a visible slot sends
+one bounded `MENU_OPEN_REQUEST` naming the backend-owned item id, the model
+identity it was shown from, the owning window, the active frame generation, and
+the logical origin of the slot; the press is consumed so it never becomes window
+pointer input.  The frontend still never opens, reorders, relabels, or executes
+a menu item: `sdl3-emacs-menu-open-smoke` requires exactly one delivered request
+for the pressed item (the real "Edit" slot of a live Emacs menu bar) with no
+leftover journal entry.
+
+The backend answers that request.  The owned publisher resolves the requested
+id back to the real keymap entry, publishes its child rows (real labels and real
+separators, bounded to 24 rows) plus a bounded popup rectangle clamped inside
+the owning window, and the adapter turns them into the same `MENU_MODEL` the bar
+uses plus a `MENU_OPEN` carrying the model generation; the frontend then draws,
+hovers, navigates, and hit-tests the real Emacs menu with no frontend-specific
+policy.  Choosing a row reports `MENU_RESULT`, the publisher closes the menu when
+it consumes that report, and the adapter sends `MENU_CLOSE` so the live popup
+disappears.  `sdl3-emacs-menu-open-smoke` proves the whole loop: the press opens
+the real "Edit" menu (rows including "Undo"), the first selectable row is
+chosen, and the popup closes again.
+
+The choice is applied, not just reported.  When the publisher consumes a
+`MENU_RESULT` it maps the chosen wire id back to the row it published, resolves
+that row's real command from the keymap, and runs it only when the command is in
+`proto-ui--menu-safe-commands` — a closed set of headless-safe editing commands
+(`undo`, `undo-redo`, `mark-whole-buffer`, `keyboard-quit`).  Anything else is
+resolved and recorded but never executed, so an unattended publisher can never
+prompt for input or run an arbitrary command.  The publisher's own smoke setup
+is deliberately outside the undo history, so the real Edit→Undo row can only
+undo what the frontend actually sent.  `sdl3-emacs-menu-apply-smoke` proves it:
+it seeds one bounded edit, opens the real "Edit" menu, chooses "Undo", and
+requires the edit to disappear from the republished facts because the real
+`undo` command ran.  Each live row also carries its real `:enable` state (the
+publisher evaluates the item's form in the selected window, so a row such as
+Cut/Copy arrives disabled without an active mark).  P165 adds the parallel
+bounded `:keys` vector and draws each hint right-aligned in its popup row; P166
+applies `:filter` and `:visible` before the backend publishes rows.  P167
+supports pointer traversal of one-level submenus: the publisher keeps a bounded
+child keymap adapter-local and replaces the popup through the same open action,
+while the frontend reports an existing row request without owning menu state.
+Traversal beyond the bounded depth-four model and non-allowlisted commands remain pending.
+
 ### 13.3 Dialog
 
 The frontend renders modal or non-modal dialogs. Results include button selection, prompt text, file paths, color, font, and custom fields.
 
 File paths are returned as strings. The frontend does not open them.
+
+The bounded slice is implemented for standard buttons: `frontend.dialogLayout`
+is the single source of truth for the dialog box and its button row, and both
+the draw path and the pointer hit test use it.  The backend owns the dialog
+model and its `buttons` policy mask; the frontend presents that fixed policy in
+a canonical order (OK, Cancel, Yes, No, Retry, Close), right-aligned in the box
+and shrunk uniformly when a wide policy would otherwise overflow, so every
+presented button stays inside the box and remains clickable.  With
+`widget.dialog_result_v1` negotiated, a press on a standard button reports
+`DIALOG_RESULT` with the backend identity and no input text, a press elsewhere
+inside the box is consumed without a result, a press outside the box falls
+through to the ordinary pointer path, and `Escape` reports the cancel button
+when the policy offers one (otherwise close).  `sdl3-dialog-hit-smoke` proves
+the button identity, the consumed body click, the outside fall-through, and the
+Escape dismissal.  A prompt dialog tall enough to hold the field also shows a
+bounded ASCII text field: while it is open the field owns SDL text input and
+`Backspace`, so those bytes never reach Emacs as buffer input, and the accepted
+text is submitted only inside the bounded `DIALOG_RESULT` text tail when the
+user chooses a button or presses `Escape`.  The field rejects control bytes,
+DEL, and non-ASCII bytes rather than guessing, stops at its 128-byte capacity
+instead of overflowing, and is cleared whenever the dialog opens, closes, or
+loses its owner window.  `sdl3-dialog-hit-smoke` proves the field rectangle, the
+accepted text, the rejection of control and non-ASCII bytes, the render of the
+typed text, the capacity bound, and the text tail on both the button and Escape
+paths.  Unicode field input, an explicit caret, custom button labels, file,
+color, and font dialogs, and Emacs callback dispatch remain pending.
 
 ### 13.4 Tooltip
 
@@ -542,6 +781,87 @@ Tooltips may be native, overlay windows, or scene overlays. Emacs owns content a
 ### 13.5 Scrollbar
 
 The frontend renders scrollbar state and sends drag/page/step intent. Emacs returns authoritative scroll state through redisplay.
+
+The bounded slice is implemented for the vertical scrollbar.
+`frontend.scrollbarLayout` is the single source of truth for the track and
+thumb rectangles, and both the draw path and the new pointer hit test use it,
+so a drawn thumb and a draggable thumb cannot drift apart.  A primary press on
+the thumb opens a relative drag session that reports pointer deltas; a press on
+the trough above or below the thumb reports one relative page
+(`delta = ∓viewport`) without opening a session; a press outside the track
+falls through to the ordinary pointer path.  The matching release always ends an
+active session, and a motion sample with the primary button no longer held also
+ends it, so a drag cannot keep running after the user releases outside the
+window.  `sdl3-scrollbar-smoke` proves the thumb geometry, the drag delta, the
+drag-session lifecycle, the one-viewport page in both directions, and the
+outside fall-through.  The owned publisher reports the real selected window's
+line count and window start as that state whenever the window reports a
+scroll-bar width, so `sdl3-emacs-scrollbar-smoke` drives a proportional thumb
+computed from a real 30-line buffer scrolled to line 11 through the same
+layout; the smoke samples the state while it holds because the next
+`FRAME_UPDATE` replaces it.  This also fixed the earlier session leak in which
+a touched scrollbar kept treating every later motion as a drag.  Horizontal
+state, arrow-step geometry, and Emacs dispatch remain pending.
+
+The scrollbar is now interactive on the live path.  SDL reports window
+coordinates, so the pointer policy converts once to frame-logical units before
+the hit test and the drag tracker; previously a scaled live window (a TTY
+frame's character grid scaled up to the SDL window) could hit the thumb but
+never open a drag session.  `sdl3-emacs-scrollbar-interaction-smoke` clicks the
+trough below the thumb and then drags the thumb through that path: each event
+becomes one bounded relative scroll intent, the owned publisher moves the real
+`window-start` by that many lines, and the republished state moves the thumb
+from position 10 to 18 (one 8-line page) and then to 22 (a 4-unit drag clamped
+at the end of the scroll range).
+
+The second axis is a mirror of the first.  `WINDOW_SCROLL_STATE`'s second flag
+makes a window's horizontal bar an independent state, with the same fields read
+as columns, a track along the window's bottom edge that stops where the vertical
+bar's column begins, and a thumb drawn from `horizontalScrollbarLayout`; the
+drag tracker remembers its axis, so a horizontal drag reports a
+`WINDOW_SCROLL_REQUEST` with `axis = horizontal` and a trough press pages one
+viewport sideways.  `sdl3-scrollbar-smoke` proves the geometry, hit test, drag
+delta, page delta, and the drawn thumb rectangle, and
+`sdl3-emacs-hscroll-smoke` drags the live thumb ten columns: the publisher
+applies it with `set-window-hscroll` on the real window and the republished
+state shows the offset moving from 5 to 15 columns.
+
+### 13.6 Tool bar
+
+The bounded slice is implemented: `frontend.toolbarLayout` is the single source
+of truth for the tool-bar row and its item slots, and both the draw path and the
+pointer hit test use it.  Visible button and toggle items occupy a slot (a
+separator advances 2 logical pixels and a space 12, matching the draw path);
+`Scene.hitTestToolbar` selects only a visible, enabled button or toggle.  With
+`widget.toolbar_click_v1` negotiated, a primary press on a selectable item
+reports `TOOLBAR_CLICK(press)` and is consumed, and the matching release reports
+`TOOLBAR_CLICK(release)` for the same item while its toolbar generation is still
+live; a stale press whose generation was replaced is dropped instead of
+reporting an item the backend already retired.  Presses on a separator, a
+space, a disabled item, or outside the row are not consumed and fall through to
+the ordinary pointer path.  The frontend reports identity and the current
+pointer coordinates only; it never executes the item or mutates the model.
+`sdl3-toolbar-hit-smoke` proves the press/release pair, the item identity, the
+inert separator, and the stale-generation drop.  Icons, overflow menus,
+orientation, keyboard activation, and Emacs command execution remain pending.
+
+Tool-bar items render their backend-owned icon: when an item references an
+`icon_image_id`/`icon_image_generation` pair that resolves to a complete image
+resource of exactly that generation, the slot draws that image; a missing,
+incomplete, or stale generation falls back to the text label instead of drawing
+a guessed icon.  The frontend never invents an icon, never substitutes a
+different generation, and never keeps a deleted resource alive for the toolbar.
+`sdl3-toolbar-hit-smoke` proves the icon rectangle and pixels for a live
+resource, that the icon replaces the label, and that a stale generation falls
+back to the text label.  Overflow, orientation, item text beside an icon, and
+multi-resolution icon bundles remain pending.
+The bounded model can also come from the live frame: a display-backed publisher
+reports the real `tool-bar-map` items (printable name, bounded key, `:help`, and
+evaluated `:visible`/`:enable`/`:button` state) through the same `TOOLBAR_MODEL`,
+and reports the frame's real `tool-bar` face colors under a reserved face id, so
+the strip and its buttons use that background and the labels its foreground; the
+graphic smoke requires the real items, their drawn labels, and the real-color
+strip.
 
 ## 14. Resource and memory policy
 
@@ -589,6 +909,141 @@ left session is active; release closes that session. Pointer intents use the
 same EPXL sequence and ACK rules. Emacs maps accepted press/release endpoints
 through public `posn-at-x-y` / `posn-point` and republishes the resulting
 point; intermediate drag motion is not text-selection semantics.
+
+Both pointer profiles carry frame-logical coordinates: SDL reports window
+coordinates, and the frontend converts them once so a scaled window sends the
+same units the geometry facts, the scrollbar hit test, and the menu-bar hit test
+use. The publisher then maps every pointer path through the owning window and
+hands `posn-at-x-y` window-relative coordinates, so a click below the reserved
+menu-bar row lands on the row the user clicked rather than being read as a row
+count in window space. Touch and pen keep their own documented coordinate
+spaces, and pixel sub-cell pointer precision is not claimed.
+
+Display-backed frames also publish their real line height, and the adapter uses
+it for row spacing, cursor geometry, and the visible-row cap instead of the
+bounded fifteen-row guess a batch frame needs: a PGTK frame reporting 15-pixel
+lines lays its rows and cursors out at 15 pixels, and the diagnostic mode line
+(15 pixels tall) draws its text at the same rhythm. A batch frame reports a
+one-unit line height, which the adapter treats as "no metrics" and keeps the
+previous layout, and the row count stays capped so the bounded row model does
+not grow.
+
+The same frame reports its real fringe widths, which the adapter publishes as
+the ordinary fringe records: one per nonzero side, spanning the window height
+and filled with the frame's real background color, drawn as edge bars clipped
+to the window (so a drawn bar always matches a validated record). A batch frame
+reports zero-width fringes and publishes none.  The reserved columns inset the
+layout rather than only being painted over: rows start at the left fringe and
+are narrowed by both fringes and the real scroll bar, the cursor is offset the
+same way, and the mode-line/header-line/tab-line records span only that text
+area, so body text and the cursor sit exactly where the real frame draws them.  Fringe bitmaps and draggable fringe
+semantics remain pending.
+
+The adopted font carries a system fallback so scripts it does not cover (CJK and others) render instead of tofu. The text font is also sized from the frame's real font pixel size (published as a bounded string beside the font file), not the row line height.
+The mode line also carries its own per-segment faces: the producer resolves the propertized format-mode-line string into bounded runs and the frontend draws them instead of the single-face text.
+
+The mode-line bar also uses the frame's own mode-line face. The producer reports
+that face's foreground and background, the adapter publishes them under a
+reserved mode-line face id with the usual generation-qualified `FACE_DEFINE`, and
+the draw path uses them for the bar and its text whenever the corresponding half
+is present; without such a face the bounded dark bar and light text stay as the
+fallback. Multiple faces inside one line, per-face attributes, themes, and face
+merging remain pending. The header-line and tab-line aux bars use their own
+faces the same way: the producer reports those faces, the adapter publishes them
+under reserved header-line/tab-line face ids, and the draw path selects the face
+from the record's kind bits (header, tab, active or inactive mode line), falling
+back to the mode-line face. The visible lines can also arrive as bounded
+font-lock runs: the producer resolves each character's face foreground, groups
+adjacent equal colors into at most six runs per row that must cover the whole
+line, and carries each run's row through the wire so the adapter publishes each
+color as a reserved face plus a schema-2 face-bound `GLYPH_RUN` at that row's
+geometry, so the mirror shows real syntax colors for up to eight visible rows
+(twenty-four runs) while the remaining rows keep their single-face text, fonts,
+and shaped text as before. The producer also mirrors up to thirty-two lines of
+each window (each row capped at 256 bytes, above the 120-byte chrome/echo/title
+bound), and the viewport's absolute
+start line is no longer coupled to that line table, so a deeply scrolled window
+still validates. Interior blank lines are kept (a trailing one a region-final
+newline produces is dropped) and an over-long line is truncated to the byte
+bound at a character boundary, so a blank or long line leaves its own row in
+place instead of shifting every row after it; the adapter emits no
+`TEXT_LINE_V2` for a blank row (the wire rejects empty text) but keeps later
+rows' indices. A horizontally scrolled window drops each row's scrolled-off
+display columns (wide-character aware) and starts its runs after that prefix,
+so the mirror shows the same part of the line the real display does.
+The producer walks the window's displayed rows with `vertical-motion`, so a
+logical line the display wraps becomes several mirrored rows (and the runs walk
+the same rows); the cursor's row still comes from the logical line delta.
+A run can also carry a face background when it
+differs from the frame default: the adapter validates it on the same run face
+and the draw path fills that rect before the text, with the shared resolver
+falling back to the default face for an unspecified half. A line with any
+non-ASCII character keeps its plain SDL_ttf text, because the bounded run wire
+is printable-ASCII only and a non-ASCII run would reject the whole snapshot.
+A mixed row's ASCII spans still carry their face colours as *partial* runs,
+which are drawn over the plain text (with `covers_row` false) instead of
+replacing it, so the non-ASCII characters the run wire cannot carry stay
+visible.
+Each run is also clamped to its owning window — a run whose origin is past the
+window edge is skipped and the emitted width is capped so `x + width` never
+exceeds the window — because the run carries window-relative coordinates while
+the scene bounds-checks against the frame, so an unclamped long line would fail
+that check and blank the mirror.
+The live cursor is clamped into its window the same way: a cursor the window
+cannot hold (a short window or a far-right column) keeps the snapshot alive at a
+bounded position instead of failing, though the producer still caps the
+per-window cursor column at nine.
+The scene's tracked cursor is the *active* one, not whichever window was
+emitted last, and the draw path marks a non-selected window's caret hollow
+(four edge bars) as Emacs does for an inactive cursor, keeping the selected
+window's real kind.
+A run can also carry
+`underline`/`strike-through`/`overline`, which the existing
+`faceDecorationBars` path draws as bars under/through/over the run, in the
+face's own decoration color when it names one and the run foreground otherwise.
+A run can also carry `:inverse-video`, which swaps the run's fill and text
+halves instead of being ignored.
+A run can also carry a face `:box`, drawn through the same
+`faceDecorationBars` approximation; the frame's real mode-line and tool-bar
+faces carry a released-button box, so their bars and buttons draw that border at
+the face's real `:line-width`, with a light top/left and shaded bottom/right
+bevel for `released` (the inverse for `pressed`).  The wire requires a box color
+whenever a box is present, so a box that names no color falls back to the face
+foreground exactly as Emacs draws it.
+
+Body rows, fontified runs, the mode line, and the aux lines are drawn with the frame's real font (vertically centred in the row), as do dialogs, the tool bar, tooltips, and the IME boxes, so no mirror text uses the debug font any more. The real menu bar and its bounded popup also use the frame font now, centred in their strip and rows. A bounded P140/P159 extension negotiates alternate font resources and renders a run through the family its face named (the variable-pitch file as family 1 plus up to two more distinct run files), keeping one cached font handle per family.
+The mode line, header line, and tab line each keep their own `format-mode-line` segment faces: the producer emits bounded runs flagged `:mode_line`/`:header_line`/`:tab_line`, the adapter positions each at that aux row's geometry, and a chrome line's plain text is only suppressed by runs of its own kind. The graphic smoke pins an accent face on the header and tab lines and requires each run to reach the draw list in its face color; mixed chrome kinds on one run are rejected.
+Runs name their window, so a split frame colors both windows (up to two inside the bounded run budget). Runs are positioned on the frame's real character cell. A run resolves the overlay-aware face (text property plus the highest-priority overlay, so hl-line/isearch/spell-check tint their runs; the active region is applied by redisplay, not a property, so it travels as the bounded highlight record instead). A run can also carry bold/italic style bits, which select a styled variant of the adopted font (and a style-keyed text-cache entry).
+The frame's echo area is mirrored into the bottom strip below the root window: the producer publishes the current message and the frontend draws it there with the frame font.
+The strip and the message use the frame's real default face colors (background and foreground), falling back to the bounded diagnostic pair when no default face is live; the minibuffer prompt's own face and completion UI remain pending.
+
+The live mouse-face highlight arrives through the same bounded visible-highlight record: the producer resolves the face under the mirror's last pointer sample, walks the contiguous span of that face, and publishes one rectangle per displayed row plus its background, each on its own reserved face id so the rows and the region all coexist in the `(window, face)`-keyed highlight table.  A batch/TTY frame with no `posn-at-point` falls back to the frame's character cell.
+
+The live active region arrives through the same bounded visible-highlight record
+the synthetic mouse highlight uses: the producer walks the displayed rows the
+region touches and reports one rectangle per row (exactly the selected part of
+that row) plus the real `region` face, each on its own reserved face id so the
+`(window, face)`-keyed highlight table keeps them all; a single-line region is
+simply one rectangle. Region shapes beyond one rectangle per displayed row, the
+inactive-region face, and shaped text remain pending.
+
+A split frame also gets its inactive mode line: the
+producer reports the `mode-line-inactive` face, and the draw path picks the
+active or inactive face from each mode-line record's own active flag, so a
+non-selected window's bar no longer looks selected. The cursor and the fringe bars join that table: the
+cursor fill prefers the frame's real `cursor` face background and the fringe
+records carry its real `fringe` face background when the producer reports them,
+falling back to the window colors otherwise. The graphic path also adopts the published line height
+as the diagnostic text font size when it is a plausible font size, reopening the
+font when the size changes, so glyphs fit the rows the frame lays out;
+`PROTO_UI_FONT_SIZE` still overrides it. The frame's real character
+width likewise sizes the cursor: a display-backed frame shows a block cursor
+one character cell wide and one line tall, while a batch frame keeps the
+bounded two-unit bar. A published default font file, carried as a bounded string resource,
+also replaces the bundled candidates for the diagnostic text: the renderer
+copies the path, closes the current font, and prefers the published file when
+opening, keeping `PROTO_UI_FONT_SIZE` and the bundled fallbacks for producers
+that publish nothing.
 
 With both `input.pointer_v2` and `input.pointer_selection_left` negotiated, the
 opt-in `sdl3-pointer-selection-smoke` executes one additional bounded left-drag

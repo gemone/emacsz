@@ -116,7 +116,7 @@ Status meanings:
 
 | Capability | Emacs / adapter / EUP / SDL3 split | PGTK parity gate | Current status |
 |---|---|---|---|
-| Keyboard and keymap | SDL captures physical/text events; adapter delivers intent; Emacs keymap/command loop decides result | modifiers, function keys, `C-x`-style prefix commands, keyboard macros, localized keys | Pending; bounded subset only |
+| Keyboard and keymap | SDL captures physical/text events; adapter delivers intent; Emacs keymap/command loop decides result | modifiers, function keys, `C-x`-style prefix commands, keyboard macros, localized keys | Partial; `input.keymap_loop_v1` resolves prefixes through active keymaps, while full key surface and parity remain pending |
 | Pointer and wheel | SDL translates motion/buttons/wheel; Emacs maps to position/command | click counts, drag, right/middle behavior, modifiers, scroll units | Degraded; bounded left/middle subset |
 | Touch and gestures | SDL captures supported gestures; adapter normalizes intents; Emacs maps commands | PGTK-equivalent touch behavior where platform exposes it | Pending |
 | IME | SDL owns candidate UI/platform connection; EUP carries preedit/candidate geometry; Emacs commits text and supplies cursor rectangle | CJK input, candidate placement, commit, preedit movement | Pending |

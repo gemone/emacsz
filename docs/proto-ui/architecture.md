@@ -1,8 +1,14 @@
 # Proto-UI Architecture
 
-Status: normative design baseline
+Status: normative architecture; bounded adapter/frontend implementation active
 Protocol: EUP v1
-Implementation status: normative design baseline with adapter-first implementation in progress. Historical direct-core runtime edits were rolled back. Current work is confined to the Zig adapter/protocol/frontend, dynamic-module public-API seams, and build glue. The EUP codec, bounded transport/replay, adapter ABI, capability manifest, conservative damage classes, authenticated EPXL input/recovery paths, and SDL3 software/GPU rendering are implemented within their documented bounded scopes. W12c adds a real-PGTK-frame create/render/delete lifecycle bridge; W12d adds strict EUP frame visibility/focus scene state; W12e adds bounded resource payload cache/eviction policy plus strict request/evict wire contracts; W12f adds an optional backward-compatible host frame-state ABI callback. None of these creates output_proto frame ownership, redisplay-owned rendering, full keymaps/IME, complete platform input, or real face/font/image rendering.
+Implementation status: adapter-first implementation is active through the
+documented W-series and P-series bounded slices.  The authoritative current
+feature set is the machine-readable manifest generated from
+`src/proto-ui/capability.zig`, interpreted with
+[`capabilities.md`](capabilities.md).  No implemented slice creates
+`output_proto` frame ownership, redisplay-owned rendering, full keymaps/IME,
+complete platform input, or PGTK parity.
 
 ## 1. Purpose
 

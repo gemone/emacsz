@@ -603,6 +603,7 @@ fn appendJsonString(gpa: std.mem.Allocator, out: *std.ArrayList(u8), value: []co
 pub const FakeHost = struct {
     terminal: TerminalState = .absent,
     terminal_id: u64 = 0,
+    next_terminal_id: u64 = 0,
     terminal_generation: u64 = 0,
     frame_registered: bool = false,
     frame: Identity = .{},
@@ -650,10 +651,12 @@ pub const FakeHost = struct {
         const self: *FakeHost = @ptrCast(@alignCast(context));
         if (invalidIfError(validateTerminalCreate(request)) != .ok)
             return .invalid;
-        if (self.terminal != .absent) return .busy;
+        if (self.terminal == .active or self.terminal == .draining) return .busy;
         if (self.check() != .ok) return .failed;
+        if (self.next_terminal_id == std.math.maxInt(u64)) return .failed;
+        self.next_terminal_id += 1;
         self.terminal = .active;
-        self.terminal_id = 1;
+        self.terminal_id = self.next_terminal_id;
         self.terminal_generation = request.requested_generation;
         result.* = .{ .id = self.terminal_id, .generation = self.terminal_generation };
         return .ok;

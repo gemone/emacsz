@@ -30,6 +30,8 @@ pub const SDL_SCANCODE_UP: i32 = 82;
 pub const SDL_SCANCODE_C: i32 = 6;
 pub const SDL_SCANCODE_V: i32 = 25;
 pub const SDL_SCANCODE_INSERT: i32 = 73;
+pub const SDL_SCANCODE_ESCAPE: i32 = 41;
+pub const SDL_SCANCODE_RETURN: i32 = 40;
 
 pub const max_text_bytes: usize = 120;
 pub const queue_capacity: usize = 32;
@@ -212,6 +214,215 @@ pub fn translatePointerV2(source: PointerSource) ?PointerEventV2 {
         .clicks = source.clicks,
         .modifiers = source.modifiers,
     };
+}
+
+pub const SDL_EVENT_FINGER_DOWN: c_uint = 0x700;
+pub const SDL_EVENT_FINGER_UP: c_uint = 0x701;
+pub const SDL_EVENT_FINGER_MOTION: c_uint = 0x702;
+pub const SDL_EVENT_FINGER_CANCELED: c_uint = 0x703;
+
+pub const TouchSource = struct {
+    event_type: c_uint,
+    /// SDL normalizes finger coordinates to 0..1 inside the window.
+    normalized_x: f32,
+    normalized_y: f32,
+    window_width: i32,
+    window_height: i32,
+    modifiers: u32 = 0,
+};
+
+/// Translate one SDL finger event into a bounded Pointer v2 intent.
+///
+/// Bounded single-contact policy: one finger contact becomes a left-button
+/// press/drag/release (or cancel) at the pixel under the contact, reusing the
+/// strict Pointer v2 transport so Emacs keeps its existing `posn` mapping.
+/// Non-finite or out-of-window normalized coordinates, an invalid window
+/// size, unknown event types, and any modifier state are rejected.  A second
+/// concurrent contact cannot open a second session because the delivery
+/// journal admits only one active pointer session.  Multi-touch gesture
+/// interpretation, pan/pinch/rotate, pressure, and pen input are out of scope
+/// here.
+pub fn translateFinger(source: TouchSource) ?PointerEventV2 {
+    if (source.window_width <= 0 or source.window_height <= 0 or source.modifiers != 0)
+        return null;
+    if (!std.math.isFinite(source.normalized_x) or !std.math.isFinite(source.normalized_y))
+        return null;
+    if (source.normalized_x < 0 or source.normalized_x > 1 or
+        source.normalized_y < 0 or source.normalized_y > 1) return null;
+    const width: f32 = @floatFromInt(source.window_width);
+    const height: f32 = @floatFromInt(source.window_height);
+    // Floor the contact into a pixel and clamp an exact right/bottom edge to
+    // the last addressable pixel.
+    const x: i32 = @intFromFloat(@min(source.normalized_x * width, width - 1));
+    const y: i32 = @intFromFloat(@min(source.normalized_y * height, height - 1));
+    if (x < 0 or x > frontend.max_pointer_coordinate or
+        y < 0 or y > frontend.max_pointer_coordinate) return null;
+    return switch (source.event_type) {
+        SDL_EVENT_FINGER_DOWN => .{
+            .phase = .press,
+            .buttons = pointer_button_left,
+            .x = x,
+            .y = y,
+            .clicks = 1,
+        },
+        SDL_EVENT_FINGER_MOTION => .{
+            .phase = .drag,
+            .buttons = pointer_button_left,
+            .x = x,
+            .y = y,
+        },
+        SDL_EVENT_FINGER_UP => .{
+            .phase = .release,
+            .buttons = pointer_button_left,
+            .x = x,
+            .y = y,
+            .clicks = 1,
+        },
+        SDL_EVENT_FINGER_CANCELED => .{
+            .phase = .cancel,
+            .buttons = 0,
+            .x = x,
+            .y = y,
+        },
+        else => null,
+    };
+}
+
+pub const SDL_EVENT_PEN_DOWN: c_uint = 0x1302;
+pub const SDL_EVENT_PEN_UP: c_uint = 0x1303;
+pub const SDL_EVENT_PEN_MOTION: c_uint = 0x1306;
+
+pub const SDL_PEN_INPUT_DOWN: u32 = 1 << 0;
+pub const SDL_PEN_INPUT_ERASER_TIP: u32 = 1 << 30;
+
+pub const PenSource = struct {
+    event_type: c_uint,
+    /// SDL reports pen positions in window coordinates, not normalized.
+    x: i32,
+    y: i32,
+    pen_state: u32 = 0,
+};
+
+/// Translate one SDL pen event into a bounded Pointer v2 intent.
+///
+/// Bounded policy: the pen tip is a left-button producer, so a tip-down press
+/// becomes `press`, a motion with the tip down becomes `drag`, a motion with
+/// the tip up stays `motion` (the same air-hover a mouse reports), and
+/// `SDL_EVENT_PEN_UP` becomes `release`.  The eraser tip, barrel buttons,
+/// pressure axes, tilt, and proximity events are ignored rather than guessed
+/// at, and an out-of-window coordinate produces no intent.
+pub fn translatePen(source: PenSource) ?PointerEventV2 {
+    if (source.x < 0 or source.y < 0 or
+        source.x > frontend.max_pointer_coordinate or
+        source.y > frontend.max_pointer_coordinate) return null;
+    if (source.pen_state & SDL_PEN_INPUT_ERASER_TIP != 0) return null;
+    const tip_down = source.pen_state & SDL_PEN_INPUT_DOWN != 0;
+    return switch (source.event_type) {
+        SDL_EVENT_PEN_DOWN => .{
+            .phase = .press,
+            .buttons = pointer_button_left,
+            .x = source.x,
+            .y = source.y,
+            .clicks = 1,
+        },
+        SDL_EVENT_PEN_UP => .{
+            .phase = .release,
+            .buttons = pointer_button_left,
+            .x = source.x,
+            .y = source.y,
+            .clicks = 1,
+        },
+        SDL_EVENT_PEN_MOTION => if (tip_down) .{
+            .phase = .drag,
+            .buttons = pointer_button_left,
+            .x = source.x,
+            .y = source.y,
+        } else .{
+            .phase = .motion,
+            .buttons = 0,
+            .x = source.x,
+            .y = source.y,
+        },
+        else => null,
+    };
+}
+
+/// Bounded frontend-owned drag-and-drop report.
+///
+/// Reverse-input storage is fixed-capacity, so one drop is carried as a bounded
+/// target plus a bounded payload rather than the variable-length selection
+/// structures.  The frontend only reports what the platform offered; Emacs
+/// decides the accepted action and data policy.
+pub const max_dnd_target: usize = protocol.max_selection_target_len;
+pub const max_dnd_payload: usize = 256;
+
+pub const DndEnterEvent = struct {
+    drag_id: u32,
+    x: i32,
+    y: i32,
+    target_buf: [max_dnd_target]u8 = @splat(0),
+    target_len: u8 = 0,
+
+    pub fn target(self: *const DndEnterEvent) []const u8 {
+        return self.target_buf[0..self.target_len];
+    }
+
+    pub fn valid(self: DndEnterEvent) bool {
+        return self.drag_id != 0 and
+            validDndPoint(self.x, self.y) and
+            protocol.validSelectionTarget(self.target());
+    }
+};
+
+pub const DndDropEvent = struct {
+    drag_id: u32,
+    x: i32,
+    y: i32,
+
+    pub fn valid(self: DndDropEvent) bool {
+        return self.drag_id != 0 and validDndPoint(self.x, self.y);
+    }
+};
+
+/// Best-effort drag-position feedback.  It shares the bounded identity and
+/// point rules of a drop but carries no payload, because SDL reports positions
+/// continuously while the drag is over the window.
+pub const DndPositionEvent = struct {
+    drag_id: u32,
+    x: i32,
+    y: i32,
+
+    pub fn valid(self: DndPositionEvent) bool {
+        return self.drag_id != 0 and validDndPoint(self.x, self.y);
+    }
+};
+
+pub const DndDataEvent = struct {
+    drag_id: u32,
+    target_buf: [max_dnd_target]u8 = @splat(0),
+    target_len: u8 = 0,
+    payload_buf: [max_dnd_payload]u8 = @splat(0),
+    payload_len: usize = 0,
+
+    pub fn target(self: *const DndDataEvent) []const u8 {
+        return self.target_buf[0..self.target_len];
+    }
+
+    pub fn payload(self: *const DndDataEvent) []const u8 {
+        return self.payload_buf[0..self.payload_len];
+    }
+
+    pub fn valid(self: DndDataEvent) bool {
+        return self.drag_id != 0 and
+            protocol.validSelectionTarget(self.target()) and
+            self.payload_len != 0 and self.payload_len <= max_dnd_payload;
+    }
+};
+
+fn validDndPoint(x: i32, y: i32) bool {
+    return x >= 0 and y >= 0 and
+        x <= frontend.max_pointer_coordinate and
+        y <= frontend.max_pointer_coordinate;
 }
 
 /// Fixed storage keeps reverse-input queue ownership explicit and bounded.
@@ -460,10 +671,13 @@ pub const TextEvent = struct {
 
 pub const ScrollbarDragTracker = struct {
     active: bool = false,
+    horizontal: bool = false,
     window_id: u64 = 0,
     frame_generation: u32 = 0,
     pointer_buttons: u32 = 0,
+    start_x: i32 = 0,
     start_y: i32 = 0,
+    last_x: i32 = 0,
     last_y: i32 = 0,
 
     pub fn hitTestTrack(
@@ -481,24 +695,48 @@ pub const ScrollbarDragTracker = struct {
             y >= owner.y and y < owner.y + owner.height;
     }
 
+    /// Bounded hit test of a horizontal scrollbar track in frame-logical units.
+    pub fn hitTestTrackHorizontal(
+        state: frontend.WindowScrollState,
+        owner: frontend.Window,
+        x: i32,
+        y: i32,
+    ) bool {
+        if (state.flags & frontend.WindowScrollFlags.horizontal_visible == 0 or
+            state.window_id != owner.id or state.track_width == 0 or
+            state.track_width > owner.height or state.content_size <= state.viewport_size)
+            return false;
+        const top = owner.y + owner.height - @as(i32, @intCast(state.track_width));
+        return x >= owner.x and x < owner.x + owner.width and
+            y >= top and y < owner.y + owner.height;
+    }
+
     pub fn begin(
         self: *ScrollbarDragTracker,
         state: frontend.WindowScrollState,
         owner: frontend.Window,
+        horizontal: bool,
         x: i32,
         y: i32,
         buttons: u32,
     ) !void {
         if (self.active) return error.ScrollbarDragActive;
-        if (state.frame_generation == 0 or !hitTestTrack(state, owner, x, y))
+        const on_track = if (horizontal)
+            hitTestTrackHorizontal(state, owner, x, y)
+        else
+            hitTestTrack(state, owner, x, y);
+        if (state.frame_generation == 0 or !on_track)
             return error.NotOnScrollbar;
         if (buttons == 0) return error.InvalidPointerButtons;
         self.* = .{
             .active = true,
+            .horizontal = horizontal,
             .window_id = state.window_id,
             .frame_generation = state.frame_generation,
             .pointer_buttons = buttons,
+            .start_x = x,
             .start_y = y,
+            .last_x = x,
             .last_y = y,
         };
     }
@@ -506,21 +744,25 @@ pub const ScrollbarDragTracker = struct {
     pub fn drag(self: *ScrollbarDragTracker, x: i32, y: i32, buttons: u32) !?protocol.ScrollRequest {
         if (!self.active) return error.ScrollbarDragInactive;
         if (buttons != self.pointer_buttons) return error.PointerButtonsChanged;
-        if (x == std.math.minInt(i32)) return error.InvalidScrollbarPoint;
-        const delta_i64: i64 = @as(i64, y) - @as(i64, self.last_y);
+        if (x == std.math.minInt(i32) or y == std.math.minInt(i32))
+            return error.InvalidScrollbarPoint;
+        const moved = if (self.horizontal) x else y;
+        const last = if (self.horizontal) self.last_x else self.last_y;
+        const delta_i64: i64 = @as(i64, moved) - @as(i64, last);
         if (delta_i64 == 0) return null;
         if (delta_i64 > std.math.maxInt(i32) or delta_i64 < std.math.minInt(i32))
             return error.InvalidScrollDelta;
         const delta: i32 = @intCast(delta_i64);
         const request: protocol.ScrollRequest = .{
             .kind = .relative,
-            .axis = .vertical,
+            .axis = if (self.horizontal) .horizontal else .vertical,
             .window_id = self.window_id,
             .position = 0,
             .delta = delta,
             .frame_generation = self.frame_generation,
         };
         protocol.validateScrollRequest(request) catch return error.InvalidScrollRequest;
+        self.last_x = x;
         self.last_y = y;
         return request;
     }
@@ -535,13 +777,16 @@ pub const ScrollbarDragTracker = struct {
         if (delta == 0) return null;
         const request: protocol.ScrollRequest = .{
             .kind = .relative,
-            .axis = .vertical,
+            .axis = if (self.horizontal) .horizontal else .vertical,
             .window_id = self.window_id,
             .delta = delta,
             .frame_generation = self.frame_generation,
         };
         protocol.validateScrollRequest(request) catch return error.InvalidScrollRequest;
-        self.last_y += delta;
+        if (self.horizontal)
+            self.last_x += delta
+        else
+            self.last_y += delta;
         return request;
     }
 
@@ -568,8 +813,13 @@ pub const TranslatedEvent = union(enum) {
     menu_result: protocol.MenuResult,
     menu_cancel: protocol.MenuCancel,
     menu_hover: protocol.MenuHover,
+    menu_open_request: protocol.MenuOpenRequest,
     toolbar_click: protocol.ToolbarClick,
     dialog_result: protocol.DialogResult,
+    dnd_enter: DndEnterEvent,
+    dnd_drop: DndDropEvent,
+    dnd_position: DndPositionEvent,
+    dnd_data: DndDataEvent,
 };
 
 pub const TextSupport = enum { ascii, unicode };
@@ -694,6 +944,34 @@ pub const Queue = struct {
         self.length += 1;
     }
 
+    pub fn pushDndEnter(self: *Queue, event: DndEnterEvent) !void {
+        if (!event.valid()) return error.InvalidDndEnter;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .dnd_enter = event };
+        self.length += 1;
+    }
+
+    pub fn pushDndDrop(self: *Queue, event: DndDropEvent) !void {
+        if (!event.valid()) return error.InvalidDndDrop;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .dnd_drop = event };
+        self.length += 1;
+    }
+
+    pub fn pushDndPosition(self: *Queue, event: DndPositionEvent) !void {
+        if (!event.valid()) return error.InvalidDndPosition;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .dnd_position = event };
+        self.length += 1;
+    }
+
+    pub fn pushDndData(self: *Queue, event: DndDataEvent) !void {
+        if (!event.valid()) return error.InvalidDndData;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .dnd_data = event };
+        self.length += 1;
+    }
+
     pub fn pushToolbarClick(self: *Queue, event: protocol.ToolbarClick) !void {
         protocol.validateToolbarClick(event) catch return error.InvalidToolbarClick;
         if (self.length == queue_capacity) return error.InputQueueFull;
@@ -705,6 +983,13 @@ pub const Queue = struct {
         protocol.validateMenuHover(event) catch return error.InvalidMenuHover;
         if (self.length == queue_capacity) return error.InputQueueFull;
         self.items[self.length] = .{ .menu_hover = event };
+        self.length += 1;
+    }
+
+    pub fn pushMenuOpenRequest(self: *Queue, event: protocol.MenuOpenRequest) !void {
+        protocol.validateMenuOpenRequest(event) catch return error.InvalidMenuOpenRequest;
+        if (self.length == queue_capacity) return error.InputQueueFull;
+        self.items[self.length] = .{ .menu_open_request = event };
         self.length += 1;
     }
 
@@ -762,8 +1047,10 @@ pub const DeliveryJournal = struct {
     scrollbar_event_negotiated: bool = false,
     menu_result_negotiated: bool = false,
     menu_hover_negotiated: bool = false,
+    menu_open_request_negotiated: bool = false,
     toolbar_click_negotiated: bool = false,
     dialog_result_negotiated: bool = false,
+    dnd_negotiated: bool = false,
     pointer_v2_buttons: u32 = 0,
     pointer_v2_clicks: u8 = 0,
 
@@ -915,6 +1202,30 @@ pub const DeliveryJournal = struct {
         try self.queue.pushDialogResult(event);
     }
 
+    pub fn pushDndEnter(self: *DeliveryJournal, event: DndEnterEvent) !void {
+        if (!self.dnd_negotiated) return error.DndCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushDndEnter(event);
+    }
+
+    pub fn pushDndDrop(self: *DeliveryJournal, event: DndDropEvent) !void {
+        if (!self.dnd_negotiated) return error.DndCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushDndDrop(event);
+    }
+
+    pub fn pushDndPosition(self: *DeliveryJournal, event: DndPositionEvent) !void {
+        if (!self.dnd_negotiated) return error.DndCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushDndPosition(event);
+    }
+
+    pub fn pushDndData(self: *DeliveryJournal, event: DndDataEvent) !void {
+        if (!self.dnd_negotiated) return error.DndCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushDndData(event);
+    }
+
     pub fn pushToolbarClick(self: *DeliveryJournal, event: protocol.ToolbarClick) !void {
         if (!self.toolbar_click_negotiated) return error.ToolbarClickCapabilityNotNegotiated;
         if (self.pointer_active) return error.PointerSessionActive;
@@ -925,6 +1236,13 @@ pub const DeliveryJournal = struct {
         if (!self.menu_hover_negotiated) return error.MenuHoverCapabilityNotNegotiated;
         if (self.pointer_active) return error.PointerSessionActive;
         try self.queue.pushMenuHover(event);
+    }
+
+    pub fn pushMenuOpenRequest(self: *DeliveryJournal, event: protocol.MenuOpenRequest) !void {
+        if (!self.menu_open_request_negotiated)
+            return error.MenuOpenRequestCapabilityNotNegotiated;
+        if (self.pointer_active) return error.PointerSessionActive;
+        try self.queue.pushMenuOpenRequest(event);
     }
 
     /// SDL poll paths use this for incidental platform observations.  The
@@ -1425,6 +1743,136 @@ test "pointer v2 SDL translation folds buttons clicks and modifiers" {
     try std.testing.expect(translatePointerV2(.{ .event_type = SDL_EVENT_MOUSE_BUTTON_DOWN, .sdl_button = 1, .down = false, .clicks = 1, .x = 0, .y = 0 }) == null);
 }
 
+test "bounded finger translation reuses pointer v2 and rejects bad contacts" {
+    const down = translateFinger(.{
+        .event_type = SDL_EVENT_FINGER_DOWN,
+        .normalized_x = 0.5,
+        .normalized_y = 0.25,
+        .window_width = 960,
+        .window_height = 600,
+    }).?;
+    try std.testing.expectEqual(PointerPhaseV2.press, down.phase);
+    try std.testing.expectEqual(pointer_button_left, down.buttons);
+    try std.testing.expectEqual(@as(i32, 480), down.x);
+    try std.testing.expectEqual(@as(i32, 150), down.y);
+    try std.testing.expectEqual(@as(u8, 1), down.clicks);
+    try std.testing.expect(down.valid());
+
+    const drag = translateFinger(.{
+        .event_type = SDL_EVENT_FINGER_MOTION,
+        .normalized_x = 0.5,
+        .normalized_y = 0.5,
+        .window_width = 960,
+        .window_height = 600,
+    }).?;
+    try std.testing.expectEqual(PointerPhaseV2.drag, drag.phase);
+    try std.testing.expectEqual(@as(u8, 0), drag.clicks);
+
+    const release = translateFinger(.{
+        .event_type = SDL_EVENT_FINGER_UP,
+        .normalized_x = 1,
+        .normalized_y = 1,
+        .window_width = 960,
+        .window_height = 600,
+    }).?;
+    try std.testing.expectEqual(PointerPhaseV2.release, release.phase);
+    try std.testing.expectEqual(@as(i32, 959), release.x);
+    try std.testing.expectEqual(@as(i32, 599), release.y);
+
+    const cancel = translateFinger(.{
+        .event_type = SDL_EVENT_FINGER_CANCELED,
+        .normalized_x = 0,
+        .normalized_y = 0,
+        .window_width = 960,
+        .window_height = 600,
+    }).?;
+    try std.testing.expectEqual(PointerPhaseV2.cancel, cancel.phase);
+    try std.testing.expectEqual(@as(u32, 0), cancel.buttons);
+
+    const rejected = [_]TouchSource{
+        .{ .event_type = SDL_EVENT_FINGER_DOWN, .normalized_x = -0.1, .normalized_y = 0.5, .window_width = 960, .window_height = 600 },
+        .{ .event_type = SDL_EVENT_FINGER_DOWN, .normalized_x = 0.5, .normalized_y = 1.5, .window_width = 960, .window_height = 600 },
+        .{ .event_type = SDL_EVENT_FINGER_DOWN, .normalized_x = std.math.nan(f32), .normalized_y = 0.5, .window_width = 960, .window_height = 600 },
+        .{ .event_type = SDL_EVENT_FINGER_DOWN, .normalized_x = 0.5, .normalized_y = 0.5, .window_width = 0, .window_height = 600 },
+        .{ .event_type = SDL_EVENT_FINGER_DOWN, .normalized_x = 0.5, .normalized_y = 0.5, .window_width = 960, .window_height = 600, .modifiers = key_modifier_shift },
+        .{ .event_type = 0, .normalized_x = 0.5, .normalized_y = 0.5, .window_width = 960, .window_height = 600 },
+    };
+    for (rejected) |source| try std.testing.expect(translateFinger(source) == null);
+}
+
+test "bounded pen translation reuses pointer v2 and rejects the eraser" {
+    const press = translatePen(.{
+        .event_type = SDL_EVENT_PEN_DOWN,
+        .x = 12,
+        .y = 4,
+        .pen_state = SDL_PEN_INPUT_DOWN,
+    }).?;
+    try std.testing.expectEqual(PointerPhaseV2.press, press.phase);
+    try std.testing.expectEqual(pointer_button_left, press.buttons);
+    try std.testing.expectEqual(@as(u8, 1), press.clicks);
+    try std.testing.expect(press.valid());
+
+    const hover = translatePen(.{
+        .event_type = SDL_EVENT_PEN_MOTION,
+        .x = 20,
+        .y = 6,
+    }).?;
+    try std.testing.expectEqual(PointerPhaseV2.motion, hover.phase);
+    try std.testing.expectEqual(@as(u32, 0), hover.buttons);
+    try std.testing.expect(hover.valid());
+
+    const drag = translatePen(.{
+        .event_type = SDL_EVENT_PEN_MOTION,
+        .x = 24,
+        .y = 8,
+        .pen_state = SDL_PEN_INPUT_DOWN,
+    }).?;
+    try std.testing.expectEqual(PointerPhaseV2.drag, drag.phase);
+    try std.testing.expectEqual(pointer_button_left, drag.buttons);
+    try std.testing.expect(drag.valid());
+
+    const release = translatePen(.{
+        .event_type = SDL_EVENT_PEN_UP,
+        .x = 24,
+        .y = 8,
+    }).?;
+    try std.testing.expectEqual(PointerPhaseV2.release, release.phase);
+    try std.testing.expect(release.valid());
+
+    const rejected = [_]PenSource{
+        .{ .event_type = SDL_EVENT_PEN_DOWN, .x = -1, .y = 4, .pen_state = SDL_PEN_INPUT_DOWN },
+        .{ .event_type = SDL_EVENT_PEN_DOWN, .x = 4, .y = frontend.max_pointer_coordinate + 1, .pen_state = SDL_PEN_INPUT_DOWN },
+        .{ .event_type = SDL_EVENT_PEN_DOWN, .x = 4, .y = 4, .pen_state = SDL_PEN_INPUT_DOWN | SDL_PEN_INPUT_ERASER_TIP },
+        .{ .event_type = 0x1399, .x = 4, .y = 4, .pen_state = SDL_PEN_INPUT_DOWN },
+    };
+    for (rejected) |source| try std.testing.expect(translatePen(source) == null);
+}
+
+test "bounded finger sessions cannot open a second contact" {
+    var journal: DeliveryJournal = .{};
+    journal.pointer_v2_negotiated = true;
+    const base: TouchSource = .{
+        .event_type = SDL_EVENT_FINGER_DOWN,
+        .normalized_x = 0.5,
+        .normalized_y = 0.5,
+        .window_width = 960,
+        .window_height = 600,
+    };
+    try journal.pushPointerV2(translateFinger(base).?);
+    try std.testing.expectError(
+        error.PointerSessionActive,
+        journal.pushPointerV2(translateFinger(base).?),
+    );
+    try journal.pushPointerV2(translateFinger(.{
+        .event_type = SDL_EVENT_FINGER_UP,
+        .normalized_x = 0.5,
+        .normalized_y = 0.5,
+        .window_width = 960,
+        .window_height = 600,
+    }).?);
+    try std.testing.expect(!journal.pointer_active);
+}
+
 test "pointer journal enforces ordered drag sessions" {
     var journal: DeliveryJournal = .{};
     try std.testing.expectError(error.PointerSessionActive, journal.pushPointer(.{ .phase = .release, .button = 1, .x = 1, .y = 1, .clicks = 1 }));
@@ -1653,6 +2101,35 @@ test "menu hover requires negotiation and validates phase identity" {
     try std.testing.expectError(error.InvalidMenuHover, journal.pushMenuHover(invalid));
 }
 
+test "menu open request requires negotiation and preserves bounded identity" {
+    var journal: DeliveryJournal = .{};
+    const request: protocol.MenuOpenRequest = .{
+        .menu_id = 3,
+        .menu_generation = 1,
+        .item_id = 2,
+        .window_id = 10,
+        .frame_generation = 1,
+        .x = 7,
+        .y = 0,
+    };
+    try std.testing.expectError(
+        error.MenuOpenRequestCapabilityNotNegotiated,
+        journal.pushMenuOpenRequest(request),
+    );
+    journal.menu_open_request_negotiated = true;
+    try journal.pushMenuOpenRequest(request);
+    const sent = (try journal.take()).?;
+    try std.testing.expectEqual(request, sent.event.menu_open_request);
+    try std.testing.expect(journal.acknowledge(sent.sequence));
+
+    var invalid = request;
+    invalid.item_id = 0;
+    try std.testing.expectError(error.InvalidMenuOpenRequest, journal.pushMenuOpenRequest(invalid));
+    invalid.item_id = 2;
+    invalid.x = -1;
+    try std.testing.expectError(error.InvalidMenuOpenRequest, journal.pushMenuOpenRequest(invalid));
+}
+
 test "dialog result requires negotiation and preserves bounded identity" {
     var journal: DeliveryJournal = .{};
     const result: protocol.DialogResult = .{
@@ -1684,6 +2161,66 @@ test "dialog result requires negotiation and preserves bounded identity" {
     try std.testing.expectError(error.InvalidDialogResult, journal.pushDialogResult(invalid));
 }
 
+test "bounded dnd events validate identity payload and negotiation" {
+    var journal: DeliveryJournal = .{};
+    var enter: DndEnterEvent = .{ .drag_id = 7, .x = 4, .y = 6 };
+    @memcpy(enter.target_buf[0..10], "text/plain");
+    enter.target_len = 10;
+    try std.testing.expect(enter.valid());
+    try std.testing.expectError(error.DndCapabilityNotNegotiated, journal.pushDndEnter(enter));
+    journal.dnd_negotiated = true;
+    try journal.pushDndEnter(enter);
+
+    const drop: DndDropEvent = .{ .drag_id = 7, .x = 4, .y = 6 };
+    try journal.pushDndDrop(drop);
+    const position: DndPositionEvent = .{ .drag_id = 7, .x = 8, .y = 10 };
+    try journal.pushDndPosition(position);
+    var bad_position = position;
+    bad_position.y = -1;
+    try std.testing.expectError(error.InvalidDndPosition, journal.pushDndPosition(bad_position));
+
+    var data: DndDataEvent = .{ .drag_id = 7, .payload_len = 5 };
+    @memcpy(data.target_buf[0..10], "text/plain");
+    data.target_len = 10;
+    @memcpy(data.payload_buf[0..5], "hello");
+    try journal.pushDndData(data);
+
+    var empty_payload = data;
+    empty_payload.payload_len = 0;
+    try std.testing.expectError(error.InvalidDndData, journal.pushDndData(empty_payload));
+    var empty_target = data;
+    empty_target.target_len = 0;
+    try std.testing.expectError(error.InvalidDndData, journal.pushDndData(empty_target));
+    var bad_target = data;
+    bad_target.target_buf[0] = ' ';
+    try std.testing.expectError(error.InvalidDndData, journal.pushDndData(bad_target));
+    var zero_drag = drop;
+    zero_drag.drag_id = 0;
+    try std.testing.expectError(error.InvalidDndDrop, journal.pushDndDrop(zero_drag));
+    var bad_point = drop;
+    bad_point.x = -1;
+    try std.testing.expectError(error.InvalidDndDrop, journal.pushDndDrop(bad_point));
+    var oversized = data;
+    oversized.payload_len = max_dnd_payload + 1;
+    try std.testing.expectError(error.InvalidDndData, journal.pushDndData(oversized));
+
+    // The queue owns its copies, so a later mutation cannot change an intent
+    // that is already queued for delivery.
+    @memcpy(data.payload_buf[0..5], "world");
+    const first = (try journal.take()).?;
+    try std.testing.expectEqual(@as(u32, 7), first.event.dnd_enter.drag_id);
+    try std.testing.expectEqualStrings("text/plain", first.event.dnd_enter.target());
+    if (!journal.acknowledge(first.sequence)) return error.UnexpectedAckFailure;
+    const second = (try journal.take()).?;
+    try std.testing.expectEqual(@as(i32, 6), second.event.dnd_drop.y);
+    if (!journal.acknowledge(second.sequence)) return error.UnexpectedAckFailure;
+    const third_position = (try journal.take()).?;
+    try std.testing.expectEqual(@as(i32, 8), third_position.event.dnd_position.x);
+    if (!journal.acknowledge(third_position.sequence)) return error.UnexpectedAckFailure;
+    const third = (try journal.take()).?;
+    try std.testing.expectEqualStrings("hello", third.event.dnd_data.payload());
+}
+
 test "scrollbar drag tracker emits bounded relative requests" {
     const state: frontend.WindowScrollState = .{
         .flags = frontend.WindowScrollFlags.vertical_visible,
@@ -1706,7 +2243,7 @@ test "scrollbar drag tracker emits bounded relative requests" {
     try std.testing.expect(!ScrollbarDragTracker.hitTestTrack(state, owner, 320, 80));
 
     var tracker: ScrollbarDragTracker = .{};
-    try tracker.begin(state, owner, 330, 80, 1);
+    try tracker.begin(state, owner, false, 330, 80, 1);
     try std.testing.expectEqual(@as(?protocol.ScrollRequest, null), try tracker.drag(330, 80, 1));
 
     const first = (try tracker.drag(330, 85, 1)).?;
@@ -1718,6 +2255,38 @@ test "scrollbar drag tracker emits bounded relative requests" {
     tracker.release(1);
     try std.testing.expect(!tracker.active);
     try std.testing.expectError(error.ScrollbarDragInactive, tracker.drag(330, 86, 1));
+}
+
+test "horizontal scrollbar drag tracker reports horizontal deltas" {
+    const state: frontend.WindowScrollState = .{
+        .flags = frontend.WindowScrollFlags.horizontal_visible,
+        .window_id = 10,
+        .frame_generation = 7,
+        .content_size = 2000,
+        .viewport_size = 400,
+        .position = 100,
+        .track_width = 12,
+    };
+    const owner: frontend.Window = .{
+        .id = 10,
+        .frame_id = 7,
+        .x = 40,
+        .y = 30,
+        .width = 300,
+        .height = 500,
+    };
+    try std.testing.expect(ScrollbarDragTracker.hitTestTrackHorizontal(state, owner, 80, 520));
+    try std.testing.expect(!ScrollbarDragTracker.hitTestTrackHorizontal(state, owner, 80, 510));
+    try std.testing.expect(!ScrollbarDragTracker.hitTestTrack(state, owner, 80, 520));
+
+    var tracker: ScrollbarDragTracker = .{};
+    try tracker.begin(state, owner, true, 80, 520, 1);
+    const moved = (try tracker.drag(92, 520, 1)).?;
+    try std.testing.expectEqual(protocol.ScrollRequestKind.relative, moved.kind);
+    try std.testing.expectEqual(protocol.ScrollAxis.horizontal, moved.axis);
+    try std.testing.expectEqual(@as(i32, 12), moved.delta);
+    tracker.release(1);
+    try std.testing.expect(!tracker.active);
 }
 
 test "delivery journal retries the same intent and sequence after reconnect" {

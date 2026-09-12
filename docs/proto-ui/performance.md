@@ -1,7 +1,10 @@
 # Proto-UI Performance Baseline
 
-Status: normative performance design; the opt-in adapter hot-path baseline is
-measured in ReleaseFast and written to `zig-out/proto-ui/benchmark.json`.
+Status: normative performance design with three opt-in machine-readable
+baselines: adapter hot-path work in ReleaseFast, bounded SDL3 renderer-call
+proxies, and a bounded real-Emacs EPXL edit round trip.  Their JSON reports are
+installed under `zig-out/proto-ui/`; none is end-to-end present-latency or
+production GPU-tier evidence.  See section 12 for exact scope and limitations.
 Protocol: EUP v1
 
 ## 1. Goals
@@ -190,9 +193,14 @@ Cache exhaustion triggers eviction or quality fallback, not failure.
 
 ## 9. Instrumentation
 
-W10b-b2a defines bounded glyph-atlas hit/miss/insert/update/eviction counters and
-LRU replacement. These counters are not yet wired to SDL texture uploads or a
-glyph-run renderer. The implemented W10a smoke reports the actual SDL renderer name, negotiated
+The adapter defines bounded glyph/text-cache counter and LRU policies.  The
+SDL atlas page cache now tracks uploads and hits in the render path;
+`sdl3-runtime-bridge-smoke` requires one upload followed by four hits, while
+smoke-level renderer-loss clearing is wired.  The bounded Unicode text cache
+tracks lookups, hits, misses, inserts, updates, evictions, and destroys;
+`sdl3-epxl-unicode-input-smoke` requires observed misses, hits, and no smoke
+evictions.  Production-wide renderer-loss recovery and replacement/eviction
+integration remain pending. The implemented W10a smoke reports the actual SDL renderer name, negotiated
 capability tier, and requested present mode. W10b-a adds frontend
 `presented_frames`, `skipped_frames`, total/last full-frame path nanoseconds, and
 the last monotonic present timestamp. W10b-b1 adds accumulated clear, fill, and
@@ -200,7 +208,7 @@ debug-text command counters from a reusable adapter-owned draw list. These are
 lifecycle, pacing, and command-mix diagnostics, not the GPU benchmark evidence
 required for a Tier 1/2 performance claim.
 
-### 9.1 Backend counters
+### 9.1 Target backend counters
 
 ```text
 redisplay_finish_to_encode_start_ns
@@ -217,7 +225,10 @@ dropped_diagnostic_count
 input_translation_ns
 ```
 
-### 9.2 Frontend counters
+These are normative regression targets for the complete runtime path, not a
+claim that every field is currently emitted.
+
+### 9.2 Target frontend counters
 
 ```text
 receive_to_apply_start_ns
@@ -236,6 +247,14 @@ evicted_resource_count
 scene_object_count
 memory_usage
 ```
+
+The currently wired frontend diagnostics are bounded `FrameCounters`: presented
+and skipped frames, clear/fill/debug-text/Unicode/atlas-glyph command counts,
+last frame and present timings, damage-class and unchanged-frame counts,
+cursor/text/region/explicit clip outcomes, and scroll-copy counts and planned
+bytes. Cache-specific hit/miss evidence is emitted by the smoke paths described
+above. Separate GPU timestamps, backend-side timing fields, memory peaks, and
+complete regression counters remain target work.
 
 ### 9.3 End-to-end timestamps
 
@@ -341,10 +360,11 @@ Each gate must emit machine-readable results, not only prose.
 
 ## 12. Report format
 
-Every performance run records:
+Every performance report is machine-readable and identifies the protocol,
+measurement scope, workload, iteration/warm-up policy, and pass/fail result.
+A complete runtime record additionally includes:
 
 ```text
-protocol version
 renderer tier
 transport type
 host profile
@@ -361,7 +381,10 @@ atlas hit rate
 damage coverage
 ```
 
-Machine-readable output is required.
+The current reports intentionally differ by measured layer; the W14-specific
+schemas below identify exactly which subset each benchmark emits.  Fields that
+do not apply to a layer must be explicit `null` values or be absent from that
+layer's documented schema, rather than being inferred as zero.
 
 The current W14-a adapter baseline covers the protocol, transport, adapter
 fixture size, scale, workload, iteration count, latency percentiles, bandwidth,
@@ -402,6 +425,28 @@ renderer-call workload proxies only: they do not perform real typing, scrolling,
 or resizing, generate Emacs input, run core redisplay, exercise Emacs end-to-end,
 collect GPU timestamps, compare PGTK, provide host-independent regression
 evidence, or support a real Emacs performance-improvement claim.
+
+W14-d adds the first benchmark that drives a real Emacs process,
+`zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true
+sdl3-epxl-roundtrip-bench`.  It starts the owned public-facts publisher, moves
+the point off `point-min`, then alternates one `backspace` and one bounded ASCII
+`x` insertion over 32 measured steps with 2 warm-up steps.  Every step is a
+strictly one-in-flight authenticated EPXL round trip, so the installed
+`zig-out/proto-ui/sdl3-epxl-roundtrip-benchmark.json` records two
+nearest-rank latency series with p50/p95/p99/mean: intent-wire-write start to
+EPXL control-ACK read completion, and the same start to receipt of the next
+`FRAME_UPDATE` bytes.  The `--visible-edit-publisher` profile makes the
+publisher apply both actions at window point, so each step produces a real fact
+change and therefore a real frame update; that profile is enabled only by
+`--emacs-epxl-bench`.  The report also records submitted/acked intent counts,
+`input_lost`, and the operation sequence.
+The benchmark deliberately records `output_proto:false`,
+`redisplay_owned_rendering:false`, `end_to_end_present_latency:false`,
+`pgtk_comparison:false`, and `host_independent_regression:false`: it measures
+the bounded public-facts bridge and a Debug-build local socket, not core
+redisplay, renderer present, GPU timestamps, or PGTK parity.  The frontend
+drains the remaining frames after the last sample so the publisher ends through
+its own bounded publish window instead of being killed mid-session.
 
 ## 13. Correctness precedence
 

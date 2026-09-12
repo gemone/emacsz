@@ -196,9 +196,11 @@ Current and target options:
 | `-Dproto-ui=true` | Adapter protocol/ABI, conformance, replay, and optional frontend smokes | Implemented in bounded slices |
 | `proto-ui-host-contract` step | Generate and audit the source-authoritative registration decision | Implemented; R7 is approved for policy/candidate selection only and runtime unavailable |
 | `proto-ui-r7-proposal` step | Generate and audit the pure-SDL3 R7 registration proposal | Implemented; proposal records the approved policy decision and runtime is unavailable |
-| `proto-ui-tpe-registration` step | Validate the canonical provider descriptor, exact `PureRuntimeHostV1` shape, fake-core state transitions, quarantine, retention, and rollback policy | Implemented as adapter-only TP2 policy; TP1 dispatch, production registration, and runtime remain absent |
+| `proto-ui-tpe-registration` step | Validate the canonical provider descriptor, exact `PureRuntimeHostV1` shape, fake-core state transitions, quarantine, retention, and rollback policy | Implemented as adapter-only TP2 policy; production registration and runtime remain absent |
+| `proto-ui-tpe-core` step | Compile and test an owned generic provider registry for table validation, unique identity, bounded registration, generations, and terminal lifecycle dispatch | Implemented |
+| `proto-ui-tpe-headless` step | Explicitly register one generic `output_provider` terminal in Emacs, verify `proto` identity, and clean it up | Implemented only with `-Dproto-ui-runtime=true`; no SDL frame or production runtime |
 | `proto-ui-pgtk-parity-plan` step | Generate and audit the planned PGTK-to-Proto differential matrix | Implemented as planning policy; all 48 cases remain planned and parity is not implemented |
-| `proto-ui-protocol-coverage` step | Audit every assigned EUP message ID against its implementation status | Implemented; 164 codecs implemented, 0 partial, and 0 planned |
+| `proto-ui-protocol-coverage` step | Audit every assigned EUP message ID against its implementation status | Implemented; 165 codecs implemented, 0 partial, and 0 planned |
 | `session` module | Standard EUP setup/control codecs, setup state machine, Scene control integration, automatic frontend PONG, and EPXL transport for every standard control | Implemented as bounded adapter-first protocol coverage; full Emacs runtime ownership remains pending |
 | `proto-ui-runtime-host` step | Validate the five-group versioned `PureRuntimeHostV1` ABI with a fake host | ABI conformance implemented; registration is absent and runtime remains fail closed |
 | `proto-ui-runtime-host-abi` step | Generate, compile, and conformance-test the C projection of `PureRuntimeHostV1` | Implemented; generated header is installed under `zig-out/include/proto-ui` and remains unlinked from Emacs |
@@ -355,18 +357,22 @@ reviewed, versioned registration contract to exist without implicit runtime.
 `proto-ui-r8-readiness` makes this gate executable.  Its normal pass result
 means the audit successfully proved that R8 is still blocked and no inherited
 source edits are declared.  `-Dr8-entry-gate=true proto-ui-r8-readiness` is the
-negative launch check: it returns `r8_host_adapter_linkage_or_registration_missing` until the
+negative launch check: it returns `r8_first_frame_and_redisplay_missing` until the
 source-authoritative readiness record, approved R7 decision, selected host
-adapter, linkage, and registration agree.
+adapter, linkage, headless terminal registration, a real SDL frame, and
+redisplay capture agree.
 
 W12n now prepares the linkage evidence without activating it.
 `src/proto-ui/runtime_host_adapter_lib.zig` builds a host-audit candidate shared
 artifact, installed for the native host as
 `zig-out/lib/libproto-ui-runtime-host-adapter.so` (Zig selects the host-platform
 suffix and Windows DLL/import-library forms).  It validates a caller-supplied
-`PureRuntimeHostV1` table, rejects a null table, and refuses adapter creation
-with a fail-closed status.  The build probe verifies the exported ABI version,
-table size, null-table rejection, and blocked creation.
+`PureRuntimeHostV1` table, rejects a null table, and supports an explicit,
+validated adapter session for fake/host-table lifecycle audits.  The session can
+create, activate, drain, destroy, and recreate adapter-owned terminals; cleanup is idempotent and terminal IDs are not reused.  It still has no Emacs registration path, so runtime availability
+remains fail-closed.  The build probe verifies the exported ABI version, table
+size, null-table rejection, blocked no-table creation, terminal lifecycle/recreation, ID retention, and
+the invariant that Emacs is not registered.
 `zig-out/proto-ui/r8_adapter_linkage.json` records the build artifact ID,
 injection point, ABI version/table size, and a canonical SHA-256 inventory of
 all five callback groups and 27 operations.  It also reports an empty
@@ -401,7 +407,7 @@ When the entry gate is satisfied, implement R8 in these verifiable slices:
 |---|---|
 | R8a terminal registration | A reviewed terminal callback creates and deletes one `output_proto` terminal with no frame; cleanup is idempotent |
 | R8b frame handoff | Emacs creates one real frame whose `window-system` reports `proto`; SDL3 owns the visible surface |
-| R8c display capture | One authoritative buffer/window/frame update reaches EUP and renders; no frontend state authority |
+| R8c display capture | First slice done: a selected provider frame sends a nonempty desired-matrix frame/run/cursor snapshot and SDL3 reports one applied frame update; no frontend state authority. Faces, shaping, images, lifecycle, and input parity remain open |
 | R8d input loop | Keyboard, pointer, wheel, focus, and resize round trips return completion through the host input callbacks |
 | R8e lifecycle containment | Disconnect, malformed EUP, GPU loss, frontend exit, and explicit shutdown leave Emacs operable |
 

@@ -53,6 +53,29 @@ pub const Row = struct {
     }
 };
 
+/// Bounded cursor-shape interpretation of the opaque `CURSOR_UPDATE` kind.
+///
+/// The wire field stays opaque in the protocol; the frontend renders the shapes
+/// the bounded Emacs cursor types need and falls back to the filled box for any
+/// unrecognised value, which is also the pre-style behaviour.
+pub const cursor_kind_box: u8 = 1;
+pub const cursor_kind_bar: u8 = 2;
+pub const cursor_kind_hbar: u8 = 3;
+pub const cursor_kind_hollow: u8 = 4;
+pub const cursor_kind_underline: u8 = 5;
+
+pub const CursorShape = enum { box, bar, hbar, hollow, underline };
+
+pub fn cursorShape(kind: u8) CursorShape {
+    return switch (kind) {
+        cursor_kind_bar => .bar,
+        cursor_kind_hbar => .hbar,
+        cursor_kind_hollow => .hollow,
+        cursor_kind_underline => .underline,
+        else => .box,
+    };
+}
+
 pub const Cursor = struct {
     window_id: u64,
     x: i32,
@@ -176,12 +199,42 @@ pub const TextLine = struct {
     bytes: [:0]const u8,
 };
 
-pub const max_glyph_text_bytes: usize = 120;
+pub const max_glyph_text_bytes: usize = 256;
+/// Bounded wire text for one displayed mirror row (and the runs on it).  This
+/// is larger than `max_text_columns` (chrome, echo, title, cursor) because a
+/// wide frame's display row can carry far more than 120 cells.
+pub const max_row_columns: usize = 256;
 pub const max_glyph_runs: usize = 64;
 pub const glyph_record_size: usize = 60;
 pub const glyph_delete_record_size: usize = 24;
 pub const glyph_debug_fallback: u16 = 1 << 0;
 pub const glyph_shaped_atlas: u16 = 1 << 1;
+/// Bold/italic style bits a face-bound debug run can carry.
+pub const glyph_bold: u16 = 1 << 2;
+pub const glyph_italic: u16 = 1 << 3;
+pub const glyph_style_mask: u16 = glyph_bold | glyph_italic;
+/// Set when a face-bound run belongs to the window's mode line, not a body row.
+/// A schema-2 run without a chrome bit replaces its row's plain text.
+pub const glyph_mode_line: u16 = 1 << 4;
+/// Set when a face-bound run belongs to the window's header line.
+pub const glyph_header_line: u16 = 1 << 5;
+/// Set when a face-bound run belongs to the window's tab line.
+pub const glyph_tab_line: u16 = 1 << 6;
+/// Set when a face names a real variable-pitch font distinct from the default.
+pub const glyph_variable_font: u16 = 1 << 7;
+/// Set when a body run colours only part of its row: the row keeps its plain
+/// text (which draws the characters the ASCII-only run wire cannot carry) and
+/// the run is drawn over it.
+pub const glyph_partial_body: u16 = 1 << 8;
+/// Two-bit alternate font-family index (0..3) for a face that names a
+/// file-backed font distinct from both the frame default and family 1.
+/// Only meaningful when `glyph_variable_font` is set; zero keeps family 1.
+pub const glyph_font_family_shift: u4 = 9;
+pub const glyph_font_family_mask: u16 = 0b11 << glyph_font_family_shift;
+/// At most one chrome bit marks the aux row a run replaces; none means body.
+pub const glyph_chrome_mask: u16 = glyph_mode_line | glyph_header_line | glyph_tab_line;
+pub const glyph_extra_mask: u16 = glyph_style_mask | glyph_chrome_mask | glyph_variable_font |
+    glyph_partial_body | glyph_font_family_mask;
 pub const shaped_glyph_record_size: usize = 16;
 pub const max_shaped_glyphs: usize = 7;
 
@@ -208,6 +261,23 @@ pub const GlyphRun = struct {
     height: i32,
     text: [:0]u8,
     shaped: bool = false,
+    /// Font style bits (bold/italic) the run's face declared.
+    style: u8 = 0,
+    /// This run replaces its row's plain text.
+    covers_row: bool = false,
+    /// This run belongs to the window's mode line.
+    mode_line: bool = false,
+    /// This run belongs to the window's header line.
+    header_line: bool = false,
+    /// This run belongs to the window's tab line.
+    tab_line: bool = false,
+    /// This run colours only part of its row, so the row's plain text is kept.
+    partial: bool = false,
+    /// Draw this run with the producer's negotiated variable-pitch font.
+    variable_pitch: bool = false,
+    /// Alternate font family: 0 is the frame default, 1 the negotiated
+    /// variable-pitch font, 2/3 the other bounded alternate font files.
+    font_family: u8 = 0,
     shaped_glyphs: [max_shaped_glyphs]ShapedGlyph = undefined,
     shaped_count: usize = 0,
 };
@@ -250,7 +320,8 @@ pub fn encodeGlyphRun(a: std.mem.Allocator, run: GlyphRunWire, out: *std.ArrayLi
     if ((run.schema != 1 and run.schema != 2 and run.schema != 3) or
         run.direction != 1 or run.run_id == 0 or
         run.generation == 0 or run.window_id == 0) return Error.InvalidMessage;
-    if (!shaped_atlas and (run.flags != glyph_debug_fallback or run.font_id != 0 or
+    if (!shaped_atlas and (run.flags & ~(glyph_debug_fallback | glyph_extra_mask) != 0 or
+        run.flags & glyph_debug_fallback == 0 or run.font_id != 0 or
         !validGlyphRunText(run.text))) return Error.InvalidMessage;
     if (shaped_atlas and (run.flags != glyph_shaped_atlas or run.font_id == 0 or
         run.glyph_count == 0 or run.glyph_count > max_shaped_glyphs or
@@ -306,7 +377,10 @@ pub fn decodeGlyphRun(bytes: []const u8) Error!GlyphRunWire {
     if ((schema != 1 and schema != 2 and schema != 3) or direction != 1 or
         std.mem.readInt(u16, header[6..8], .little) != 0) return Error.InvalidVersion;
     if ((schema == 1 and (face_generation != 0 or flags != glyph_debug_fallback)) or
-        (schema == 2 and (face_generation == 0 or flags != glyph_debug_fallback)) or
+        (schema == 2 and (face_generation == 0 or @popCount(flags & glyph_chrome_mask) > 1 or
+            (flags & glyph_partial_body != 0 and flags & glyph_chrome_mask != 0) or
+            flags & ~(glyph_debug_fallback | glyph_extra_mask) != 0 or
+            flags & glyph_debug_fallback == 0)) or
         (schema == 3 and (face_generation == 0 or flags != glyph_shaped_atlas)))
         return Error.InvalidVersion;
     const text: []const u8 = if (schema == 3) &.{} else body;
@@ -329,6 +403,7 @@ pub fn decodeGlyphRun(bytes: []const u8) Error!GlyphRunWire {
     }
     const run: GlyphRunWire = .{
         .schema = schema,
+        .flags = flags,
         .run_id = std.mem.readInt(u32, header[8..12], .little),
         .generation = std.mem.readInt(u32, header[12..16], .little),
         .window_id = std.mem.readInt(u64, header[16..24], .little),
@@ -660,7 +735,9 @@ pub fn decodeFringeUpdate(data: []const u8) Error!FringeUpdate {
 }
 pub const WindowScrollFlags = struct {
     pub const vertical_visible: u8 = 1 << 0;
-    pub const known: u8 = vertical_visible;
+    pub const horizontal_visible: u8 = 1 << 1;
+    pub const orientation: u8 = vertical_visible | horizontal_visible;
+    pub const known: u8 = orientation;
 };
 
 pub const WindowScrollState = struct {
@@ -943,7 +1020,8 @@ pub fn decodeWindowPositionState(data: []const u8) Error!WindowPositionState {
 
 pub const MouseHighlightFlags = struct {
     pub const visible: u8 = 1 << 0;
-    pub const known: u8 = visible;
+    pub const hidden: u8 = 1 << 1;
+    pub const known: u8 = visible | hidden;
 };
 
 pub const MouseHighlightState = struct {
@@ -2742,7 +2820,7 @@ pub fn decodeTextLine(bytes: []const u8) Error!TextLineWire {
 
 pub fn encodeTextLineV2(a: std.mem.Allocator, line: TextLineV2Wire, out: *std.ArrayList(u8)) !void {
     if (line.window_id == 0) return Error.InvalidTable;
-    if (!validBoundedUtf8Text(line.line, max_text_columns)) return Error.InvalidTable;
+    if (!validBoundedUtf8Text(line.line, max_row_columns)) return Error.InvalidTable;
     try putU64(out, a, line.window_id);
     try putU32(out, a, line.row_index);
     try putU32(out, a, @intCast(line.line.len));
@@ -2754,7 +2832,7 @@ pub fn decodeTextLineV2(bytes: []const u8) Error!TextLineV2Wire {
     const length = std.mem.readInt(u32, bytes[12..16], .little);
     if (bytes.len != 16 + length) return Error.InvalidTable;
     const payload = bytes[16..];
-    if (!validBoundedUtf8Text(payload, max_text_columns)) return Error.InvalidTable;
+    if (!validBoundedUtf8Text(payload, max_row_columns)) return Error.InvalidTable;
     return .{
         .window_id = std.mem.readInt(u64, bytes[0..8], .little),
         .row_index = std.mem.readInt(u32, bytes[8..12], .little),
@@ -3680,7 +3758,23 @@ pub const Scene = struct {
     window_tree: ?protocol.WindowTreeSnapshot = null,
     menu_model: ?protocol.MenuModelSnapshot = null,
     menu_open: ?protocol.MenuOpen = null,
+    /// Frontend-local popup highlight cursor.
+    ///
+    /// This is presentation state owned by the frontend: it is never encoded
+    /// into EUP and the backend cannot observe it.  A highlight change is
+    /// reported as `MENU_HOVER` so Emacs can react to navigation, and the draw
+    /// path renders it so keyboard and pointer navigation have visible
+    /// feedback.  It is cleared whenever the popup opens or closes.
+    menu_highlight_item: u32 = 0,
     dialog: ?protocol.DialogState = null,
+    /// Frontend-local prompt text being edited for the open dialog.
+    ///
+    /// Presentation/input state owned by the frontend: it is never encoded into
+    /// EUP except inside the bounded `DIALOG_RESULT` text tail the user
+    /// submits, and the backend cannot observe it before that.  Cleared
+    /// whenever a dialog is opened or closed.
+    dialog_text: [max_dialog_input]u8 = @splat(0),
+    dialog_text_len: u16 = 0,
     toolbar: ?protocol.ToolbarModel = null,
     control: session.Control = .{},
     stats: ApplyStats = .{},
@@ -3764,6 +3858,8 @@ pub const Scene = struct {
         if (self.toolbar) |*model| protocol.freeToolbarModel(self.allocator, model);
         self.toolbar = null;
         self.dialog = null;
+        self.dialog_text_len = 0;
+        self.dialog_text = @splat(0);
         self.control = .{};
         self.image_placement_count = 0;
         self.stats = .{};
@@ -4060,6 +4156,8 @@ pub const Scene = struct {
         if (self.toolbar) |*model| protocol.freeToolbarModel(self.allocator, model);
         self.toolbar = null;
         self.dialog = null;
+        self.dialog_text_len = 0;
+        self.dialog_text = @splat(0);
     }
 
     fn clearGlyphRuns(self: *Scene) void {
@@ -4140,6 +4238,20 @@ pub const Scene = struct {
             .height = wire.height,
             .text = owned,
             .shaped = wire.schema == 3,
+            .style = @intFromBool(wire.flags & glyph_bold != 0) |
+                (@as(u8, @intFromBool(wire.flags & glyph_italic != 0)) << 1),
+            .covers_row = wire.flags & glyph_chrome_mask == 0 and
+                wire.flags & glyph_partial_body == 0,
+            .mode_line = wire.flags & glyph_chrome_mask == glyph_mode_line,
+            .header_line = wire.flags & glyph_chrome_mask == glyph_header_line,
+            .tab_line = wire.flags & glyph_chrome_mask == glyph_tab_line,
+            .partial = wire.flags & glyph_partial_body != 0,
+            .variable_pitch = wire.flags & glyph_variable_font != 0,
+            .font_family = if (wire.flags & glyph_variable_font != 0)
+                1 + @as(u8, @intCast((wire.flags & glyph_font_family_mask) >>
+                    glyph_font_family_shift))
+            else
+                0,
             .shaped_count = wire.glyph_count,
         };
         if (wire.schema == 3) @memcpy(next.shaped_glyphs[0..wire.glyph_count], wire.glyphs[0..wire.glyph_count]);
@@ -4566,7 +4678,11 @@ pub const Scene = struct {
             if (open.window_id == window_id) self.menu_open = null;
         }
         if (self.dialog) |dialog| {
-            if (dialog.window_id == window_id) self.dialog = null;
+            if (dialog.window_id == window_id) {
+                self.dialog = null;
+                self.dialog_text_len = 0;
+                self.dialog_text = @splat(0);
+            }
         }
         var ime_index: usize = 0;
         while (ime_index < self.ime_context_count) {
@@ -4730,7 +4846,10 @@ pub const Scene = struct {
             self.cursors[self.cursor_count] = update.cursor;
             self.cursor_count += 1;
         }
-        self.cursor = update.cursor;
+        // The scene's single "current" cursor is the active one, not whichever
+        // window happened to be emitted last, so the presentation gate, scene
+        // hash, and cursor evidence describe the selected window's caret.
+        if (update.cursor.active) self.cursor = update.cursor;
         self.stats.control_messages += 1;
     }
 
@@ -5002,6 +5121,7 @@ pub const Scene = struct {
             @as(i64, open.y) + open.height > owner.height)
             return Error.InvalidMessage;
         self.menu_open = open;
+        self.menu_highlight_item = 0;
         self.stats.control_messages += 1;
     }
 
@@ -5023,6 +5143,7 @@ pub const Scene = struct {
         _ = findMenuNode(model, close.item_id) orelse
             return Error.ResourceNotLive;
         self.menu_open = null;
+        self.menu_highlight_item = 0;
         self.stats.control_messages += 1;
     }
 
@@ -5226,6 +5347,8 @@ pub const Scene = struct {
                 return Error.StaleGeneration;
         }
         self.dialog = dialog;
+        self.dialog_text_len = 0;
+        self.dialog_text = @splat(0);
         self.stats.control_messages += 1;
     }
 
@@ -5256,6 +5379,8 @@ pub const Scene = struct {
             dialog.window_id != close.window_id)
             return Error.InvalidMessage;
         self.dialog = null;
+        self.dialog_text_len = 0;
+        self.dialog_text = @splat(0);
         self.stats.control_messages += 1;
     }
 
@@ -6629,10 +6754,28 @@ pub const Scene = struct {
         if (!inside(state.rect.x, state.rect.width, owner.width) or
             !inside(state.rect.y, state.rect.height, owner.height))
             return Error.InvalidMessage;
+        if (state.flags & MouseHighlightFlags.hidden != 0) {
+            var index: usize = 0;
+            while (index < self.mouse_highlight_count) {
+                const old = self.mouse_highlights[index];
+                if (old.window_id == state.window_id and old.face_id == state.face_id) {
+                    if (index + 1 < self.mouse_highlight_count) {
+                        std.mem.copyForwards(MouseHighlightState, self.mouse_highlights[index .. self.mouse_highlight_count - 1], self.mouse_highlights[index + 1 ..]);
+                    }
+                    self.mouse_highlight_count -= 1;
+                    continue;
+                }
+                index += 1;
+            }
+            self.stats.control_messages += 1;
+            return;
+        }
         const face = self.faces.lookup(state.face_id) orelse return Error.ResourceNotLive;
         if (face.generation != state.face_generation) return Error.StaleGeneration;
         for (self.mouse_highlights[0..self.mouse_highlight_count], 0..) |*old, index| {
-            if (old.window_id == state.window_id) {
+            // Key by window and face so a live region highlight and a
+            // mouse-face highlight can coexist in the same window.
+            if (old.window_id == state.window_id and old.face_id == state.face_id) {
                 self.mouse_highlights[index] = state;
                 self.stats.control_messages += 1;
                 return;
@@ -6656,7 +6799,11 @@ pub const Scene = struct {
         _ = findWindow(self.windows.items, state.window_id) orelse
             return Error.InvalidMessage;
         for (self.scroll_states.items, 0..) |*old, index| {
-            if (old.window_id == state.window_id) {
+            // Vertical and horizontal bars of one window are independent states.
+            if (old.window_id == state.window_id and
+                old.flags & WindowScrollFlags.orientation ==
+                    state.flags & WindowScrollFlags.orientation)
+            {
                 self.scroll_states.items[index] = state;
                 self.stats.control_messages += 1;
                 return;
@@ -6753,6 +6900,1228 @@ fn findWindow(windows: []const Window, id: u64) ?Window {
         if (window.id == id) return window;
     }
     return null;
+}
+
+/// One menu-bar slot: the backend-owned item identity and the strip rectangle
+/// the frontend lays it out in.
+pub const MenuBarSlot = struct {
+    item_id: u32,
+    x: i32,
+    width: i32,
+    label: []const u8 = &.{},
+};
+
+pub const MenuBarLayout = struct {
+    /// Frame-logical height of the row the frame reserves above its window.
+    strip_height: i32,
+    slots: [protocol.max_menu_nodes]MenuBarSlot = undefined,
+    count: usize = 0,
+    /// Live window the bar belongs to; a popup request names it as the owner.
+    window_id: u64 = 0,
+};
+
+/// Single source of truth for the menu-bar row, shared by the draw path and the
+/// pointer hit test so a rendered slot and a clickable slot cannot drift apart.
+/// The backend owns the labels, their order, and their identity; the frontend
+/// only gives each slot the width its own label needs.
+pub fn menuBarLayout(scene: *const Scene) ?MenuBarLayout {
+    const model = scene.menu_model orelse return null;
+    if (scene.windows.items.len == 0) return null;
+    const owner = scene.windows.items[0];
+    var layout: MenuBarLayout = .{
+        .strip_height = @max(1, owner.y),
+        .window_id = owner.id,
+    };
+    var offset: i32 = 0;
+    for (model.nodes) |*node| {
+        if (node.parent_item_id != 0 or
+            node.flags & protocol.MenuNodeFlags.visible == 0) continue;
+        if (layout.count == protocol.max_menu_nodes) break;
+        const width: i32 = @min(64, 2 + @as(i32, @intCast(node.label_len)));
+        layout.slots[layout.count] = .{
+            .item_id = node.item_id,
+            .x = offset,
+            .width = width,
+            .label = node.label[0..node.label_len],
+        };
+        layout.count += 1;
+        offset += width + 1;
+    }
+    if (layout.count == 0) return null;
+    return layout;
+}
+
+/// Bounded menu-bar hit test in frame-logical space.  The bar is the strip the
+/// frame reserves above its window, so window content never overlaps it.
+pub fn hitTestMenuBar(scene: *const Scene, x: f32, y: f32) ?MenuBarSlot {
+    const layout = menuBarLayout(scene) orelse return null;
+    if (y < 0 or y >= @as(f32, @floatFromInt(layout.strip_height))) return null;
+    for (layout.slots[0..layout.count]) |slot| {
+        const left: f32 = @floatFromInt(slot.x);
+        const right: f32 = @floatFromInt(slot.x + slot.width);
+        if (x >= left and x < right) return slot;
+    }
+    return null;
+}
+
+/// Geometry of the currently open popup menu in frame-logical coordinates.
+///
+/// This is the single source of truth for both the frontend draw path and
+/// pointer hit testing, so a rendered row and a clickable row can never drift
+/// apart.  Returns null when no popup is open, its owner is not live, or it
+/// has no visible child row.
+pub const MenuPopupBounds = struct {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    row_height: f32,
+    child_count: usize,
+};
+
+pub fn menuPopupBounds(scene: *const Scene) ?MenuPopupBounds {
+    const open = scene.menu_open orelse return null;
+    const model = scene.menu_model orelse return null;
+    const owner = findWindow(scene.windows.items, open.window_id) orelse return null;
+    var child_count: usize = 0;
+    for (model.nodes) |*node| {
+        if (node.parent_item_id == open.item_id and
+            node.flags & protocol.MenuNodeFlags.visible != 0) child_count += 1;
+    }
+    if (child_count == 0) return null;
+    const width: f32 = @floatFromInt(open.width);
+    const height: f32 = @floatFromInt(open.height);
+    return .{
+        .x = @floatFromInt(owner.x + open.x),
+        .y = @floatFromInt(owner.y + open.y),
+        .width = width,
+        .height = height,
+        .row_height = height / @as(f32, @floatFromInt(child_count)),
+        .child_count = child_count,
+    };
+}
+
+/// Identity of a popup row the pointer selected.
+pub const MenuHit = struct {
+    menu_id: u32,
+    menu_generation: u32,
+    item_id: u32,
+    window_id: u64,
+    frame_generation: u32,
+};
+
+pub const MenuHitResult = union(enum) {
+    /// A selectable command, checkbox, or radio row under the pointer.
+    item: MenuHit,
+    /// A visible enabled submenu row under the pointer.
+    submenu: MenuHit,
+    /// Inside the popup, but not on a selectable row (separator, disabled
+    /// item, blank padding, or a degenerate row height).
+    inside,
+    /// Outside the popup bounds; the caller may dismiss the menu.
+    outside,
+};
+
+/// Bounded hit test of the open popup in the frame's logical coordinate space.
+///
+/// The frontend only reports which backend-owned row was selected or submenu
+/// was requested; it never enables, disables, reorders, or reflows the model.
+/// A disabled row or separator is reported as `inside` so the caller neither
+/// sends a result nor dismisses the popup.
+/// One row of the open popup in draw order.
+pub const MenuRowSlot = struct {
+    item_id: u32,
+    /// A command, checkbox, or radio stage that is enabled and can be chosen.
+    selectable: bool,
+    /// A visible enabled submenu row that asks the backend to open a child popup.
+    submenu: bool = false,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+};
+
+pub const MenuRows = struct {
+    rows: [protocol.max_menu_nodes]MenuRowSlot = undefined,
+    count: usize = 0,
+};
+
+/// Row geometry of the open popup in the same order the draw path emits it.
+///
+/// This is the single source of truth for popup pointer hit testing and
+/// keyboard navigation: the row index is the drawn row index, and
+/// `selectable` mirrors the fixed menu policy (a separator, submenu, or
+/// disabled row is drawn but cannot be chosen).
+pub fn menuRows(scene: *const Scene) ?MenuRows {
+    const open = scene.menu_open orelse return null;
+    const model = scene.menu_model orelse return null;
+    const bounds = menuPopupBounds(scene) orelse return null;
+    var rows: MenuRows = .{};
+    for (model.nodes) |*node| {
+        if (node.parent_item_id != open.item_id or
+            node.flags & protocol.MenuNodeFlags.visible == 0) continue;
+        if (rows.count == rows.rows.len) break;
+        const enabled = node.flags & protocol.MenuNodeFlags.enabled != 0;
+        const selectable = enabled and switch (node.kind) {
+            .command, .checkbox, .radio => true,
+            .separator, .submenu => false,
+        };
+        rows.rows[rows.count] = .{
+            .item_id = node.item_id,
+            .selectable = selectable,
+            .submenu = enabled and node.kind == .submenu,
+            .x = bounds.x,
+            .y = bounds.y + @as(f32, @floatFromInt(rows.count)) * bounds.row_height,
+            .width = bounds.width,
+            .height = bounds.row_height,
+        };
+        rows.count += 1;
+    }
+    if (rows.count == 0) return null;
+    return rows;
+}
+
+/// Move the frontend popup highlight to the next (`delta > 0`) or previous
+/// (`delta < 0`) selectable row without wrapping.  When no highlight is set,
+/// the first or last selectable row is chosen.  Returns true when the
+/// highlight changed, so the caller can report exactly one hover transition.
+pub fn menuMoveHighlight(scene: *Scene, delta: i32) bool {
+    const rows = menuRows(scene) orelse return false;
+    if (delta == 0) return false;
+    var current: ?usize = null;
+    var first: ?usize = null;
+    var last: ?usize = null;
+    for (rows.rows[0..rows.count], 0..) |slot, index| {
+        if (!slot.selectable and !slot.submenu) continue;
+        if (first == null) first = index;
+        last = index;
+        if (slot.item_id == scene.menu_highlight_item) current = index;
+    }
+    const anchor = current orelse {
+        const target = if (delta > 0) first orelse return false else last orelse return false;
+        scene.menu_highlight_item = rows.rows[target].item_id;
+        return true;
+    };
+    var next: ?usize = null;
+    if (delta > 0) {
+        var index = anchor + 1;
+        while (index < rows.count) : (index += 1) {
+            if (rows.rows[index].selectable or rows.rows[index].submenu) {
+                next = index;
+                break;
+            }
+        }
+    } else {
+        var index = anchor;
+        while (index > 0) {
+            index -= 1;
+            if (rows.rows[index].selectable or rows.rows[index].submenu) {
+                next = index;
+                break;
+            }
+        }
+    }
+    const target = next orelse return false;
+    const item_id = rows.rows[target].item_id;
+    if (item_id == scene.menu_highlight_item) return false;
+    scene.menu_highlight_item = item_id;
+    return true;
+}
+
+/// Slot of the currently highlighted selectable row, or null when the
+/// highlight is unset or no longer identifies a selectable row.
+pub fn menuHighlightSlot(scene: *const Scene) ?MenuRowSlot {
+    if (scene.menu_highlight_item == 0) return null;
+    const rows = menuRows(scene) orelse return null;
+    for (rows.rows[0..rows.count]) |slot| {
+        if (slot.item_id == scene.menu_highlight_item and
+            (slot.selectable or slot.submenu)) return slot;
+    }
+    return null;
+}
+
+pub const menu_help_tip_max_lines: usize = 3;
+pub const menu_help_tip_char_width: f32 = 7;
+
+pub const MenuHelpTip = struct {
+    x: f32,
+    y: f32,
+    width: f32,
+    line_height: f32,
+    lines: [menu_help_tip_max_lines][]const u8,
+    line_count: usize,
+
+    pub fn height(self: MenuHelpTip) f32 {
+        return @floatFromInt(@as(i32, @intCast(self.line_count)) * @as(i32, @intFromFloat(self.line_height)));
+    }
+};
+
+fn wrapMenuHelpAscii(help: []const u8, max_columns: usize) ?[menu_help_tip_max_lines][]const u8 {
+    if (help.len == 0 or max_columns == 0) return null;
+    for (help) |char| {
+        if (char < 0x20 or char > 0x7e) return null;
+    }
+    var lines: [menu_help_tip_max_lines][]const u8 = @splat(&.{});
+    var line_count: usize = 0;
+    var start: ?usize = null;
+    var end: usize = 0;
+    var iterator = std.mem.tokenizeScalar(u8, help, ' ');
+    while (iterator.next()) |word| {
+        const word_start = word.ptr - help.ptr;
+        const word_end = word_start + word.len;
+        if (word.len > max_columns) return null;
+        if (start) |current_start| {
+            if (word_end - current_start <= max_columns) {
+                end = word_end;
+                continue;
+            }
+            if (line_count == lines.len) return null;
+            lines[line_count] = help[current_start..end];
+            line_count += 1;
+            start = word_start;
+            end = word_end;
+        } else {
+            start = word_start;
+            end = word_end;
+        }
+    }
+    if (start) |current_start| {
+        if (line_count == lines.len) return null;
+        lines[line_count] = help[current_start..end];
+        line_count += 1;
+    }
+    if (line_count == 0) return null;
+    return lines;
+}
+
+/// Geometry and backend-owned text for the highlighted popup row's help.
+///
+/// ASCII help wraps at whitespace into at most three rows using the frame-owner
+/// edge for safe panel width.  Non-ASCII help is suppressed until real glyph
+/// metrics wrap it.  The tip is drawn only when the wrapped panel fits above or
+/// below the popup.  This is frontend rendering of already-validated
+/// `MENU_NODE.help`; it does not add hover timing or a platform tooltip policy.
+pub fn menuHelpTip(scene: *const Scene) ?MenuHelpTip {
+    const open = scene.menu_open orelse return null;
+    const model = scene.menu_model orelse return null;
+    const owner = findWindow(scene.windows.items, open.window_id) orelse return null;
+    const bounds = menuPopupBounds(scene) orelse return null;
+    const slot = menuHighlightSlot(scene) orelse return null;
+    var help: []const u8 = &.{};
+    for (model.nodes) |*node| {
+        if (node.parent_item_id != open.item_id or node.item_id != slot.item_id) continue;
+        help = node.help[0..node.help_len];
+        break;
+    }
+    if (help.len == 0) return null;
+    const height = bounds.row_height;
+    if (height <= 0) return null;
+    const left: f32 = @floatFromInt(owner.x);
+    const right: f32 = @floatFromInt(owner.x + owner.width);
+    if (bounds.x < left or bounds.x >= right) return null;
+    const panel_width = right - bounds.x;
+    const available_text_width = panel_width - 8;
+    if (available_text_width <= 0) return null;
+    const max_columns: usize = @intFromFloat(@divTrunc(available_text_width, menu_help_tip_char_width));
+    const wrapped = wrapMenuHelpAscii(help, max_columns) orelse return null;
+    const top: f32 = @floatFromInt(owner.y);
+    const bottom: f32 = @floatFromInt(owner.y + owner.height);
+    const line_count: usize = blk: {
+        var count: usize = 0;
+        for (wrapped) |line| {
+            if (line.len == 0) break;
+            count += 1;
+        }
+        break :blk count;
+    };
+    const tip: MenuHelpTip = .{
+        .x = bounds.x,
+        .y = 0,
+        .width = panel_width,
+        .line_height = height,
+        .lines = wrapped,
+        .line_count = line_count,
+    };
+    const above_y = bounds.y - tip.height() - 1;
+    const below_y = bounds.y + bounds.height + 1;
+    if (above_y >= top) {
+        var result = tip;
+        result.y = above_y;
+        return result;
+    }
+    if (below_y + tip.height() <= bottom) {
+        var result = tip;
+        result.y = below_y;
+        return result;
+    }
+    return null;
+}
+
+pub const ScrollbarPart = enum { thumb, trough_above, trough_below };
+
+test "menu help tip uses highlighted row and fits above the popup" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(update);
+    var nodes = [_]protocol.MenuNode{
+        .{ .item_id = 20, .parent_item_id = 0, .kind = .submenu, .flags = protocol.MenuNodeFlags.enabled | protocol.MenuNodeFlags.visible, .depth = 0, .label_len = 4 },
+        .{ .item_id = 21, .parent_item_id = 20, .kind = .command, .flags = protocol.MenuNodeFlags.enabled | protocol.MenuNodeFlags.visible, .depth = 1, .label_len = 4, .help_len = 14 },
+        .{ .item_id = 22, .parent_item_id = 20, .kind = .command, .flags = protocol.MenuNodeFlags.enabled | protocol.MenuNodeFlags.visible, .depth = 1, .label_len = 4 },
+    };
+    @memcpy(nodes[0].label[0..4], "Menu");
+    @memcpy(nodes[1].label[0..4], "Undo");
+    @memcpy(nodes[1].help[0..14], "Undo last rows");
+    @memcpy(nodes[2].label[0..4], "Redo");
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeMenuModelSnapshot(a, .{
+        .header = .{ .frame_id = 7, .frame_generation = 1, .menu_id = 3, .menu_generation = 1 },
+        .nodes = &nodes,
+    }, &payload);
+    const model_message = try windowLifecycleMessage(a, protocol.Message.menu_model, 3, 7, payload.items);
+    defer a.free(model_message);
+    try scene.apply(model_message);
+    payload.clearRetainingCapacity();
+    try protocol.encodeMenuOpen(a, .{
+        .menu_id = 3,
+        .menu_generation = 1,
+        .item_id = 20,
+        .window_id = 100,
+        .frame_generation = 1,
+        .x = 16,
+        .y = 32,
+        .width = 48,
+        .height = 20,
+    }, &payload);
+    const open_message = try windowLifecycleMessage(a, protocol.Message.menu_open, 4, 7, payload.items);
+    defer a.free(open_message);
+    try scene.apply(open_message);
+    try std.testing.expect(menuMoveHighlight(&scene, 1));
+    try std.testing.expectEqual(@as(u32, 21), scene.menu_highlight_item);
+    const tip = menuHelpTip(&scene) orelse return error.TestExpectedMenuHelp;
+    try std.testing.expectEqualStrings("Undo", tip.lines[0]);
+    try std.testing.expectEqualStrings("last", tip.lines[1]);
+    try std.testing.expectEqualStrings("rows", tip.lines[2]);
+    try std.testing.expect(tip.y < 32 and tip.y + tip.height() <= 32);
+    scene.menu_open = null;
+    try std.testing.expect(menuHelpTip(&scene) == null);
+}
+
+/// Vertical scrollbar geometry in frame-logical coordinates.
+///
+/// This is the single source of truth for the SDL scrollbar draw path and
+/// pointer hit testing, so a drawn thumb and a draggable thumb cannot drift
+/// apart.  Returns null when the window is not live or has no visible vertical
+/// scrollbar.
+pub const ScrollbarLayout = struct {
+    window_id: u64,
+    frame_generation: u32,
+    content_size: u32,
+    viewport_size: u32,
+    track_x: f32,
+    track_y: f32,
+    track_width: f32,
+    track_height: f32,
+    thumb_y: f32,
+    thumb_height: f32,
+};
+
+pub fn scrollbarLayout(scene: *const Scene, window_id: u64) ?ScrollbarLayout {
+    const owner = findWindow(scene.windows.items, window_id) orelse return null;
+    for (scene.scroll_states.items) |state| {
+        if (state.window_id != window_id) continue;
+        if (state.flags & WindowScrollFlags.vertical_visible == 0) continue;
+        const track_width: f32 = @floatFromInt(state.track_width);
+        const track_height: f32 = @floatFromInt(owner.height);
+        const track_x: f32 = @floatFromInt(owner.x + owner.width - @as(i32, @intCast(state.track_width)));
+        const track_y: f32 = @floatFromInt(owner.y);
+        const scrollable = state.content_size - state.viewport_size;
+        const ratio: f32 = if (scrollable > 0)
+            @as(f32, @floatFromInt(state.position)) / @as(f32, @floatFromInt(scrollable))
+        else
+            0;
+        const thumb_height: f32 = track_height *
+            (@as(f32, @floatFromInt(state.viewport_size)) / @as(f32, @floatFromInt(state.content_size)));
+        return .{
+            .window_id = window_id,
+            .frame_generation = state.frame_generation,
+            .content_size = state.content_size,
+            .viewport_size = state.viewport_size,
+            .track_x = track_x,
+            .track_y = track_y,
+            .track_width = track_width,
+            .track_height = track_height,
+            .thumb_y = track_y + (track_height - thumb_height) * ratio,
+            .thumb_height = thumb_height,
+        };
+    }
+    return null;
+}
+
+pub const ScrollbarHit = struct {
+    layout: ScrollbarLayout,
+    part: ScrollbarPart,
+};
+
+/// Bounded hit test of a visible vertical scrollbar in frame-logical space.  A
+/// scrollbar with nothing to scroll is not interactive.
+pub fn hitTestScrollbar(scene: *const Scene, x: f32, y: f32) ?ScrollbarHit {
+    for (scene.scroll_states.items) |state| {
+        const layout = scrollbarLayout(scene, state.window_id) orelse continue;
+        if (layout.content_size <= layout.viewport_size) continue;
+        if (x < layout.track_x or x >= layout.track_x + layout.track_width or
+            y < layout.track_y or y >= layout.track_y + layout.track_height) continue;
+        const part: ScrollbarPart = if (y < layout.thumb_y)
+            .trough_above
+        else if (y >= layout.thumb_y + layout.thumb_height)
+            .trough_below
+        else
+            .thumb;
+        return .{ .layout = layout, .part = part };
+    }
+    return null;
+}
+
+/// Horizontal scrollbar geometry in frame-logical coordinates, the mirror of
+/// `ScrollbarLayout` on the second axis.  The record's `track_width` is the bar
+/// thickness and the sizes are columns, so a drawn thumb and a draggable thumb
+/// still share one geometry source.
+pub const HorizontalScrollbarLayout = struct {
+    window_id: u64,
+    frame_generation: u32,
+    content_size: u32,
+    viewport_size: u32,
+    track_x: f32,
+    track_y: f32,
+    track_width: f32,
+    track_height: f32,
+    thumb_x: f32,
+    thumb_width: f32,
+};
+
+pub fn horizontalScrollbarLayout(scene: *const Scene, window_id: u64) ?HorizontalScrollbarLayout {
+    const owner = findWindow(scene.windows.items, window_id) orelse return null;
+    for (scene.scroll_states.items) |state| {
+        if (state.window_id != window_id) continue;
+        if (state.flags & WindowScrollFlags.horizontal_visible == 0) continue;
+        // The corner belongs to the vertical bar, exactly as a real frame lays
+        // the two bars out.
+        var vertical_width: f32 = 0;
+        for (scene.scroll_states.items) |other| {
+            if (other.window_id != window_id) continue;
+            if (other.flags & WindowScrollFlags.vertical_visible == 0) continue;
+            vertical_width = @floatFromInt(other.track_width);
+            break;
+        }
+        const track_height: f32 = @floatFromInt(state.track_width);
+        const track_width: f32 = @as(f32, @floatFromInt(owner.width)) - vertical_width;
+        if (!(track_width > 0)) continue;
+        const track_x: f32 = @floatFromInt(owner.x);
+        const track_y: f32 = @as(f32, @floatFromInt(owner.y + owner.height)) - track_height;
+        const scrollable = state.content_size - state.viewport_size;
+        const ratio: f32 = if (scrollable > 0)
+            @as(f32, @floatFromInt(state.position)) / @as(f32, @floatFromInt(scrollable))
+        else
+            0;
+        const thumb_width: f32 = track_width *
+            (@as(f32, @floatFromInt(state.viewport_size)) / @as(f32, @floatFromInt(state.content_size)));
+        return .{
+            .window_id = window_id,
+            .frame_generation = state.frame_generation,
+            .content_size = state.content_size,
+            .viewport_size = state.viewport_size,
+            .track_x = track_x,
+            .track_y = track_y,
+            .track_width = track_width,
+            .track_height = track_height,
+            .thumb_x = track_x + (track_width - thumb_width) * ratio,
+            .thumb_width = thumb_width,
+        };
+    }
+    return null;
+}
+
+pub const HorizontalScrollbarPart = enum { thumb, trough_left, trough_right };
+
+pub const HorizontalScrollbarHit = struct {
+    layout: HorizontalScrollbarLayout,
+    part: HorizontalScrollbarPart,
+};
+
+/// Bounded hit test of a visible horizontal scrollbar in frame-logical space.
+pub fn hitTestHorizontalScrollbar(scene: *const Scene, x: f32, y: f32) ?HorizontalScrollbarHit {
+    for (scene.scroll_states.items) |state| {
+        const layout = horizontalScrollbarLayout(scene, state.window_id) orelse continue;
+        if (layout.content_size <= layout.viewport_size) continue;
+        if (x < layout.track_x or x >= layout.track_x + layout.track_width or
+            y < layout.track_y or y >= layout.track_y + layout.track_height) continue;
+        const part: HorizontalScrollbarPart = if (x < layout.thumb_x)
+            .trough_left
+        else if (x >= layout.thumb_x + layout.thumb_width)
+            .trough_right
+        else
+            .thumb;
+        return .{ .layout = layout, .part = part };
+    }
+    return null;
+}
+
+pub fn hitTestOpenMenu(scene: *const Scene, x: f32, y: f32) ?MenuHitResult {
+    const open = scene.menu_open orelse return null;
+    const owner = findWindow(scene.windows.items, open.window_id) orelse return null;
+    if (!owner.visible) return .outside;
+    const bounds = menuPopupBounds(scene) orelse return null;
+    if (x < bounds.x or y < bounds.y or
+        x >= bounds.x + bounds.width or y >= bounds.y + bounds.height)
+        return .outside;
+    if (bounds.row_height <= 0) return .inside;
+    const row_float = (y - bounds.y) / bounds.row_height;
+    const row: usize = @intFromFloat(row_float);
+    if (row >= bounds.child_count) return .inside;
+    const rows = menuRows(scene) orelse return .inside;
+    if (row >= rows.count) return .inside;
+    const slot = rows.rows[row];
+    if (slot.submenu) return .{ .submenu = .{
+        .menu_id = open.menu_id,
+        .menu_generation = open.menu_generation,
+        .item_id = slot.item_id,
+        .window_id = open.window_id,
+        .frame_generation = open.frame_generation,
+    } };
+    if (!slot.selectable) return .inside;
+    return .{ .item = .{
+        .menu_id = open.menu_id,
+        .menu_generation = open.menu_generation,
+        .item_id = slot.item_id,
+        .window_id = open.window_id,
+        .frame_generation = open.frame_generation,
+    } };
+}
+
+/// Frame-logical origin for a backend submenu popup: the row's right edge.
+/// The backend owns replacement policy; this is only the requested placement.
+pub fn menuSubmenuOrigin(scene: *const Scene, item_id: u32) ?struct { x: i32, y: i32 } {
+    const open = scene.menu_open orelse return null;
+    const owner = findWindow(scene.windows.items, open.window_id) orelse return null;
+    const rows = menuRows(scene) orelse return null;
+    for (rows.rows[0..rows.count]) |slot| {
+        if (slot.item_id != item_id or !slot.submenu) continue;
+        const x: i32 = @intFromFloat(slot.x + slot.width);
+        const y: i32 = @intFromFloat(slot.y);
+        if (x < owner.x or y < owner.y) return null;
+        return .{ .x = x - owner.x, .y = y - owner.y };
+    }
+    return null;
+}
+
+/// One clickable tool-bar item rectangle in frame-logical coordinates.
+pub const ToolbarSlot = struct {
+    /// Index into `scene.toolbar.?.items`.
+    item_index: usize,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+};
+
+/// Tool-bar geometry for the active frame's first window.
+///
+/// This is the single source of truth for the SDL tool-bar draw path and
+/// pointer hit testing.  Separators and spaces advance the layout but are not
+/// clickable, so they occupy no slot.
+pub const ToolbarLayout = struct {
+    row_x: f32,
+    row_y: f32,
+    row_width: f32,
+    row_height: f32,
+    slots: [protocol.max_toolbar_items]ToolbarSlot = undefined,
+    slot_count: usize = 0,
+};
+
+pub fn toolbarLayout(scene: *const Scene) ?ToolbarLayout {
+    const model = scene.toolbar orelse return null;
+    if (scene.windows.items.len == 0) return null;
+    const owner = scene.windows.items[0];
+    var layout: ToolbarLayout = .{
+        .row_x = @floatFromInt(owner.x),
+        .row_y = @floatFromInt(owner.y + 16),
+        .row_width = @floatFromInt(owner.width),
+        .row_height = 24,
+    };
+    var offset: f32 = 4;
+    for (model.items, 0..) |*item, index| {
+        if (item.flags & protocol.ToolbarItemFlags.visible == 0) continue;
+        if (item.kind == .separator or item.kind == .space) {
+            offset += if (item.kind == .separator) 2 else 12;
+            continue;
+        }
+        if (layout.slot_count == protocol.max_toolbar_items) break;
+        layout.slots[layout.slot_count] = .{
+            .item_index = index,
+            .x = layout.row_x + offset,
+            .y = layout.row_y + 2,
+            .width = 48,
+            .height = 20,
+        };
+        layout.slot_count += 1;
+        offset += 52;
+    }
+    return layout;
+}
+
+/// Identity of a tool-bar item the pointer selected.
+pub const ToolbarHit = struct {
+    toolbar_id: u32,
+    toolbar_generation: u32,
+    item_id: u32,
+    window_id: u64,
+    frame_generation: u32,
+};
+
+/// Bounded hit test of the tool bar in the frame's logical coordinate space.
+///
+/// Only a visible, enabled button or toggle row is selectable; a separator, a
+/// space, or a disabled item returns null.  The frontend reports the identity
+/// only and never executes the item or mutates the model.
+pub fn hitTestToolbar(scene: *const Scene, x: f32, y: f32) ?ToolbarHit {
+    const model = scene.toolbar orelse return null;
+    const owner = if (scene.windows.items.len != 0) scene.windows.items[0] else return null;
+    const layout = toolbarLayout(scene) orelse return null;
+    for (layout.slots[0..layout.slot_count]) |slot| {
+        if (x < slot.x or y < slot.y or
+            x >= slot.x + slot.width or y >= slot.y + slot.height) continue;
+        const item = model.items[slot.item_index];
+        if (item.flags & protocol.ToolbarItemFlags.enabled == 0) return null;
+        return .{
+            .toolbar_id = model.header.toolbar_id,
+            .toolbar_generation = model.header.toolbar_generation,
+            .item_id = item.item_id,
+            .window_id = owner.id,
+            .frame_generation = model.header.frame_generation,
+        };
+    }
+    return null;
+}
+
+/// Bounded prompt text capacity.  It matches the `DIALOG_RESULT` text tail, so
+/// anything the field accepts can always be submitted.
+pub const max_dialog_input: usize = 128;
+
+/// Append printable ASCII to the frontend prompt field.
+///
+/// The field is bounded, printable, and ASCII-only: control bytes, DEL, and
+/// non-ASCII bytes are rejected rather than guessed at, and the field stops at
+/// capacity instead of overflowing.  Returns the number of bytes accepted.
+pub fn dialogAppendInput(scene: *Scene, bytes: []const u8) usize {
+    var accepted: usize = 0;
+    for (bytes) |byte| {
+        if (byte < 0x20 or byte > 0x7e) continue;
+        if (scene.dialog_text_len == max_dialog_input) break;
+        scene.dialog_text[scene.dialog_text_len] = byte;
+        scene.dialog_text_len += 1;
+        accepted += 1;
+    }
+    return accepted;
+}
+
+/// Delete the last prompt byte.  Returns true when the field changed.
+pub fn dialogBackspace(scene: *Scene) bool {
+    if (scene.dialog_text_len == 0) return false;
+    scene.dialog_text_len -= 1;
+    scene.dialog_text[scene.dialog_text_len] = 0;
+    return true;
+}
+
+pub fn dialogInput(scene: *const Scene) []const u8 {
+    return scene.dialog_text[0..scene.dialog_text_len];
+}
+
+pub const dialog_button_width: f32 = 48;
+pub const dialog_button_height: f32 = 18;
+pub const dialog_button_gap: f32 = 4;
+pub const dialog_button_margin: f32 = 4;
+
+/// One standard dialog button rectangle in frame-logical coordinates.
+pub const DialogButtonSlot = struct {
+    button: protocol.DialogResultButton,
+    /// Canonical ASCII label for the fixed standard-button presentation.
+    label: []const u8,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+};
+
+/// Dialog box plus its standard button row.
+///
+/// This is the single source of truth for the SDL dialog draw path and pointer
+/// hit testing.  The backend owns the dialog model and its button policy mask;
+/// the frontend only presents that fixed policy in a canonical order.
+pub const DialogLayout = struct {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    buttons: [6]DialogButtonSlot = undefined,
+    button_count: usize = 0,
+};
+
+const DialogButtonSpec = struct {
+    mask: u16,
+    button: protocol.DialogResultButton,
+    label: []const u8,
+};
+
+const dialog_button_order = [_]DialogButtonSpec{
+    .{ .mask = protocol.DialogButtons.ok, .button = .ok, .label = "OK" },
+    .{ .mask = protocol.DialogButtons.cancel, .button = .cancel, .label = "Cancel" },
+    .{ .mask = protocol.DialogButtons.yes, .button = .yes, .label = "Yes" },
+    .{ .mask = protocol.DialogButtons.no, .button = .no, .label = "No" },
+    .{ .mask = protocol.DialogButtons.retry, .button = .retry, .label = "Retry" },
+    .{ .mask = protocol.DialogButtons.close, .button = .close, .label = "Close" },
+};
+
+pub fn dialogLayout(scene: *const Scene) ?DialogLayout {
+    const dialog = scene.dialog orelse return null;
+    const owner = findWindow(scene.windows.items, dialog.window_id) orelse return null;
+    var layout: DialogLayout = .{
+        .x = @floatFromInt(owner.x + dialog.x),
+        .y = @floatFromInt(owner.y + dialog.y),
+        .width = @floatFromInt(dialog.width),
+        .height = @floatFromInt(dialog.height),
+    };
+    var count: usize = 0;
+    for (dialog_button_order) |entry| {
+        if (dialog.buttons & entry.mask != 0) count += 1;
+    }
+    if (count == 0) return layout;
+    // Shrink the standard buttons when a wide policy does not fit so every
+    // presented button stays inside the box and therefore remains clickable.
+    const group_gap = @as(f32, @floatFromInt(count - 1)) * dialog_button_gap;
+    const available = @max(0, layout.width - 2 * dialog_button_margin);
+    const slot_width = @max(
+        1,
+        @min(dialog_button_width, (available - group_gap) / @as(f32, @floatFromInt(count))),
+    );
+    const group_width = @as(f32, @floatFromInt(count)) * slot_width + group_gap;
+    const start_x = layout.x + layout.width - dialog_button_margin - group_width;
+    const row_y = @max(
+        layout.y + dialog_button_margin,
+        layout.y + layout.height - dialog_button_margin - dialog_button_height,
+    );
+    var index: usize = 0;
+    for (dialog_button_order) |entry| {
+        if (dialog.buttons & entry.mask == 0) continue;
+        layout.buttons[index] = .{
+            .button = entry.button,
+            .label = entry.label,
+            .x = start_x + @as(f32, @floatFromInt(index)) * (slot_width + dialog_button_gap),
+            .y = row_y,
+            .width = slot_width,
+            .height = dialog_button_height,
+        };
+        index += 1;
+    }
+    layout.button_count = index;
+    return layout;
+}
+
+pub const dialog_field_y_offset: f32 = 20;
+pub const dialog_field_height: f32 = 8;
+
+pub const DialogFieldRect = struct {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+};
+
+/// Bounded prompt text-field rectangle inside the dialog.
+///
+/// Returns null when the open dialog is not a prompt, has no owner, or is too
+/// short to hold the field without drawing outside its own box.
+pub fn dialogFieldRect(scene: *const Scene) ?DialogFieldRect {
+    const dialog = scene.dialog orelse return null;
+    if (dialog.kind != .prompt) return null;
+    const layout = dialogLayout(scene) orelse return null;
+    if (layout.width <= 8) return null;
+    const y = layout.y + dialog_field_y_offset;
+    if (y + dialog_field_height > layout.y + layout.height) return null;
+    return .{
+        .x = layout.x + 4,
+        .y = y,
+        .width = layout.width - 8,
+        .height = dialog_field_height,
+    };
+}
+
+/// Identity of the dialog button the pointer selected.
+pub const DialogHit = struct {
+    dialog_id: u32,
+    dialog_generation: u32,
+    window_id: u64,
+    frame_generation: u32,
+    button: protocol.DialogResultButton,
+};
+
+pub const DialogHitResult = union(enum) {
+    button: DialogHit,
+    /// Inside the box but not on a button; the caller consumes the click so it
+    /// cannot fall through to the text underneath.
+    inside,
+    /// Outside the box entirely.
+    outside,
+};
+
+/// Bounded hit test of the open dialog in the frame's logical coordinate space.
+pub fn hitTestDialog(scene: *const Scene, x: f32, y: f32) ?DialogHitResult {
+    const dialog = scene.dialog orelse return null;
+    const layout = dialogLayout(scene) orelse return null;
+    if (x < layout.x or y < layout.y or
+        x >= layout.x + layout.width or y >= layout.y + layout.height)
+        return .outside;
+    for (layout.buttons[0..layout.button_count]) |slot| {
+        if (x < slot.x or y < slot.y or
+            x >= slot.x + slot.width or y >= slot.y + slot.height) continue;
+        return .{ .button = .{
+            .dialog_id = dialog.dialog_id,
+            .dialog_generation = dialog.dialog_generation,
+            .window_id = dialog.window_id,
+            .frame_generation = dialog.frame_generation,
+            .button = slot.button,
+        } };
+    }
+    return .inside;
+}
+
+/// Keyboard dismissal for an open dialog: the cancel button when the backend
+/// policy offers one, otherwise close.  A dialog with neither gets none.
+pub fn dialogEscapeButton(dialog: protocol.DialogState) ?protocol.DialogResultButton {
+    if (dialog.buttons & protocol.DialogButtons.cancel != 0) return .cancel;
+    if (dialog.buttons & protocol.DialogButtons.close != 0) return .close;
+    return null;
+}
+
+test "dialog layout and hit test stay on one geometry source" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var state: protocol.DialogState = .{
+        .kind = .confirm,
+        .dialog_id = 80,
+        .dialog_generation = 1,
+        .window_id = 100,
+        .frame_generation = 1,
+        .x = 8,
+        .y = 8,
+        .width = 64,
+        .height = 32,
+        .title_len = 7,
+        .text_len = 6,
+        .buttons = protocol.DialogButtons.yes | protocol.DialogButtons.no,
+    };
+    @memcpy(state.title[0..7], "Confirm");
+    @memcpy(state.text[0..6], "Delete");
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeDialogState(a, state, &payload);
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.dialog_open, 3, 7, payload.items);
+        defer a.free(message);
+        try scene.apply(message);
+    }
+
+    const layout = dialogLayout(&scene) orelse return error.TestExpectedDialogLayout;
+    try std.testing.expectEqual(@as(f32, 8), layout.x);
+    try std.testing.expectEqual(@as(f32, 8), layout.y);
+    try std.testing.expectEqual(@as(usize, 2), layout.button_count);
+    // Two 48-pixel buttons do not fit a 64-pixel box, so each shrinks to 26 and
+    // the row stays inside: 8 + 64 - 4 - (26 + 4 + 26) = 12, then 12 + 30 = 42.
+    try std.testing.expectEqual(@as(f32, 26), layout.buttons[0].width);
+    try std.testing.expectEqual(@as(f32, 12), layout.buttons[0].x);
+    try std.testing.expectEqual(@as(f32, 42), layout.buttons[1].x);
+    try std.testing.expectEqual(protocol.DialogResultButton.yes, layout.buttons[0].button);
+    try std.testing.expectEqual(protocol.DialogResultButton.no, layout.buttons[1].button);
+    try std.testing.expectEqualStrings("Yes", layout.buttons[0].label);
+
+    const yes = hitTestDialog(&scene, 20, 20) orelse return error.TestExpectedDialogHit;
+    switch (yes) {
+        .button => |hit| {
+            try std.testing.expectEqual(protocol.DialogResultButton.yes, hit.button);
+            try std.testing.expectEqual(@as(u32, 80), hit.dialog_id);
+            try std.testing.expectEqual(@as(u64, 100), hit.window_id);
+            try std.testing.expectEqual(@as(u32, 1), hit.frame_generation);
+        },
+        else => return error.TestExpectedDialogButton,
+    }
+    switch (hitTestDialog(&scene, 20, 10) orelse return error.TestExpectedDialogHit) {
+        .inside => {},
+        else => return error.TestExpectedDialogInside,
+    }
+    switch (hitTestDialog(&scene, 200, 200) orelse return error.TestExpectedDialogHit) {
+        .outside => {},
+        else => return error.TestExpectedDialogOutside,
+    }
+    // Yes/No offers no keyboard dismissal.
+    try std.testing.expect(dialogEscapeButton(state) == null);
+    var with_cancel = state;
+    with_cancel.buttons = protocol.DialogButtons.ok | protocol.DialogButtons.cancel;
+    try std.testing.expectEqual(protocol.DialogResultButton.cancel, dialogEscapeButton(with_cancel).?);
+    var close_only = state;
+    close_only.buttons = protocol.DialogButtons.close;
+    try std.testing.expectEqual(protocol.DialogResultButton.close, dialogEscapeButton(close_only).?);
+    var ok_only = state;
+    ok_only.buttons = protocol.DialogButtons.ok;
+    try std.testing.expect(dialogEscapeButton(ok_only) == null);
+}
+
+test "tool bar layout and hit test stay on one geometry source" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var toolbar_items: [4]protocol.ToolbarItem = undefined;
+    var model = protocol.toolbarModelFixture(&toolbar_items);
+    model.header.frame_id = 7;
+    model.header.frame_generation = 1;
+    // The fixture's third slot must be a disabled button so the hit test can
+    // prove that a drawn row is not selectable, and the fourth a separator.
+    toolbar_items[2] = .{
+        .item_id = 42,
+        .kind = .button,
+        .flags = protocol.ToolbarItemFlags.visible,
+        .label_len = 3,
+    };
+    @memcpy(toolbar_items[2].label[0..3], "Off");
+    toolbar_items[3] = .{
+        .item_id = 43,
+        .kind = .separator,
+        .flags = protocol.ToolbarItemFlags.visible,
+    };
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeToolbarModel(a, model, &payload);
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.toolbar_model, 3, 7, payload.items);
+        defer a.free(message);
+        try scene.apply(message);
+    }
+
+    const layout = toolbarLayout(&scene) orelse return error.TestExpectedToolbarLayout;
+    try std.testing.expectEqual(@as(usize, 3), layout.slot_count);
+    try std.testing.expectEqual(@as(f32, 0), layout.row_x);
+    try std.testing.expectEqual(@as(f32, 16), layout.row_y);
+    try std.testing.expectEqual(@as(f32, 4), layout.slots[0].x);
+    try std.testing.expectEqual(@as(f32, 56), layout.slots[1].x);
+    try std.testing.expectEqual(@as(f32, 108), layout.slots[2].x);
+    try std.testing.expectEqual(@as(usize, 0), layout.slots[0].item_index);
+    try std.testing.expectEqual(@as(usize, 2), layout.slots[2].item_index);
+
+    const hit = hitTestToolbar(&scene, 30, 26) orelse return error.TestExpectedToolbarHit;
+    try std.testing.expectEqual(@as(u32, 40), hit.item_id);
+    try std.testing.expectEqual(@as(u32, 9), hit.toolbar_id);
+    try std.testing.expectEqual(@as(u64, 100), hit.window_id);
+    try std.testing.expectEqual(@as(u32, 1), hit.frame_generation);
+    try std.testing.expectEqual(@as(u32, 41), hitTestToolbar(&scene, 80, 26).?.item_id);
+    // A drawn-but-disabled row, the separator, and the gaps are not selectable.
+    try std.testing.expect(hitTestToolbar(&scene, 120, 26) == null);
+    try std.testing.expect(hitTestToolbar(&scene, 170, 26) == null);
+    try std.testing.expect(hitTestToolbar(&scene, 30, 96) == null);
+    try std.testing.expect(hitTestToolbar(&scene, 30, 16) == null);
+}
+
+test "open menu hit test maps rows to backend-owned items" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var nodes = [_]protocol.MenuNode{
+        .{
+            .item_id = 20,
+            .parent_item_id = 0,
+            .kind = .submenu,
+            .flags = protocol.MenuNodeFlags.enabled | protocol.MenuNodeFlags.visible,
+            .depth = 0,
+            .label_len = 4,
+        },
+        .{
+            .item_id = 21,
+            .parent_item_id = 20,
+            .kind = .command,
+            .flags = protocol.MenuNodeFlags.enabled | protocol.MenuNodeFlags.visible,
+            .depth = 1,
+            .label_len = 3,
+        },
+        .{
+            .item_id = 22,
+            .parent_item_id = 20,
+            .kind = .separator,
+            .flags = protocol.MenuNodeFlags.visible,
+            .depth = 1,
+            .label_len = 0,
+        },
+        .{
+            .item_id = 23,
+            .parent_item_id = 20,
+            .kind = .command,
+            .flags = protocol.MenuNodeFlags.visible,
+            .depth = 1,
+            .label_len = 3,
+        },
+        .{
+            .item_id = 24,
+            .parent_item_id = 20,
+            .kind = .command,
+            .flags = 0,
+            .depth = 1,
+            .label_len = 3,
+        },
+    };
+    @memcpy(nodes[0].label[0..4], "File");
+    @memcpy(nodes[1].label[0..3], "New");
+    @memcpy(nodes[3].label[0..3], "Dis");
+    @memcpy(nodes[4].label[0..3], "Hid");
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeMenuModelSnapshot(a, .{
+        .header = .{ .frame_id = 7, .frame_generation = 1, .menu_id = 3, .menu_generation = 1 },
+        .nodes = &nodes,
+    }, &payload);
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.menu_model, 3, 7, payload.items);
+        defer a.free(message);
+        try scene.apply(message);
+    }
+    payload.clearRetainingCapacity();
+    try protocol.encodeMenuOpen(a, .{
+        .menu_id = 3,
+        .menu_generation = 1,
+        .item_id = 20,
+        .window_id = 100,
+        .frame_generation = 1,
+        .x = 16,
+        .y = 16,
+        .width = 48,
+        .height = 32,
+    }, &payload);
+    {
+        const message = try windowLifecycleMessage(a, protocol.Message.menu_open, 4, 7, payload.items);
+        defer a.free(message);
+        try scene.apply(message);
+    }
+
+    const bounds = menuPopupBounds(&scene) orelse return error.TestExpectedMenuBounds;
+    try std.testing.expectEqual(@as(f32, 16), bounds.x);
+    try std.testing.expectEqual(@as(f32, 16), bounds.y);
+    try std.testing.expectEqual(@as(usize, 3), bounds.child_count);
+    try std.testing.expect(@abs(bounds.row_height - 32.0 / 3.0) < 0.001);
+
+    const first = hitTestOpenMenu(&scene, 20, 17) orelse return error.TestExpectedMenuHit;
+    switch (first) {
+        .item => |item| {
+            try std.testing.expectEqual(@as(u32, 21), item.item_id);
+            try std.testing.expectEqual(@as(u32, 3), item.menu_id);
+            try std.testing.expectEqual(@as(u32, 1), item.menu_generation);
+            try std.testing.expectEqual(@as(u64, 100), item.window_id);
+            try std.testing.expectEqual(@as(u32, 1), item.frame_generation);
+        },
+        else => return error.TestExpectedMenuHitItem,
+    }
+    switch (hitTestOpenMenu(&scene, 20, 27) orelse return error.TestExpectedMenuHit) {
+        .inside => {},
+        else => return error.TestExpectedMenuInside,
+    }
+    switch (hitTestOpenMenu(&scene, 20, 47) orelse return error.TestExpectedMenuHit) {
+        .inside => {},
+        else => return error.TestExpectedMenuInside,
+    }
+    switch (hitTestOpenMenu(&scene, 90, 90) orelse return error.TestExpectedMenuHit) {
+        .outside => {},
+        else => return error.TestExpectedMenuOutside,
+    }
+    try std.testing.expect(hitTestOpenMenu(&scene, 20, 16) != null);
+
+    // The drawn rows and the navigation rows are the same list: the separator
+    // and the disabled command are drawn but not selectable, and the hidden
+    // item is neither.
+    const rows = menuRows(&scene) orelse return error.TestExpectedMenuRows;
+    try std.testing.expectEqual(@as(usize, 3), rows.count);
+    try std.testing.expectEqual(@as(u32, 21), rows.rows[0].item_id);
+    try std.testing.expect(rows.rows[0].selectable);
+    try std.testing.expectEqual(@as(u32, 22), rows.rows[1].item_id);
+    try std.testing.expect(!rows.rows[1].selectable);
+    try std.testing.expectEqual(@as(u32, 23), rows.rows[2].item_id);
+    try std.testing.expect(!rows.rows[2].selectable);
+    try std.testing.expectEqual(@as(f32, 16), rows.rows[0].y);
+    try std.testing.expectEqual(@as(f32, 16), rows.rows[0].x);
+}
+
+test "submenu rows report backend-owned open requests" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var nodes = [_]protocol.MenuNode{
+        .{ .item_id = 20, .parent_item_id = 0, .kind = .submenu, .flags = protocol.MenuNodeFlags.enabled | protocol.MenuNodeFlags.visible, .depth = 0, .label_len = 4 },
+        .{ .item_id = 21, .parent_item_id = 20, .kind = .submenu, .flags = protocol.MenuNodeFlags.enabled | protocol.MenuNodeFlags.visible, .depth = 1, .label_len = 6 },
+        .{ .item_id = 22, .parent_item_id = 20, .kind = .command, .flags = protocol.MenuNodeFlags.enabled | protocol.MenuNodeFlags.visible, .depth = 1, .label_len = 4 },
+    };
+    @memcpy(nodes[0].label[0..4], "File");
+    @memcpy(nodes[1].label[0..6], "Sorted");
+    @memcpy(nodes[2].label[0..4], "Open");
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeMenuModelSnapshot(a, .{
+        .header = .{ .frame_id = 7, .frame_generation = 1, .menu_id = 3, .menu_generation = 1 },
+        .nodes = &nodes,
+    }, &payload);
+    const model = try windowLifecycleMessage(a, protocol.Message.menu_model, 3, 7, payload.items);
+    defer a.free(model);
+    try scene.apply(model);
+    payload.clearRetainingCapacity();
+    try protocol.encodeMenuOpen(a, .{ .menu_id = 3, .menu_generation = 1, .item_id = 20, .window_id = 100, .frame_generation = 1, .x = 8, .y = 8, .width = 40, .height = 20 }, &payload);
+    const open = try windowLifecycleMessage(a, protocol.Message.menu_open, 4, 7, payload.items);
+    defer a.free(open);
+    try scene.apply(open);
+
+    switch (hitTestOpenMenu(&scene, 20, 13) orelse return error.TestExpectedMenuHit) {
+        .submenu => |hit| try std.testing.expectEqual(@as(u32, 21), hit.item_id),
+        else => return error.TestExpectedMenuSubmenu,
+    }
+    const origin = menuSubmenuOrigin(&scene, 21) orelse return error.TestExpectedSubmenuOrigin;
+    try std.testing.expectEqual(@as(i32, 48), origin.x);
+    try std.testing.expectEqual(@as(i32, 8), origin.y);
 }
 
 fn rectInFrame(rect: Rect, header: protocol.FrameUpdateHeader) bool {
@@ -9052,6 +10421,39 @@ test "window scroll state validates geometry and upserts per window" {
     try scene.apply(delete);
     try std.testing.expectEqual(@as(usize, 1), scene.scroll_states.items.len);
     try std.testing.expectEqual(@as(u64, 100), scene.scroll_states.items[0].window_id);
+
+    // A horizontal bar of the same window is an independent state, so both
+    // orientations coexist without one replacing the other.
+    const horizontal: WindowScrollState = .{
+        .flags = WindowScrollFlags.horizontal_visible,
+        .window_id = 100,
+        .frame_generation = 1,
+        .content_size = 2000,
+        .viewport_size = 400,
+        .position = 400,
+        .track_width = 12,
+    };
+    payload.clearRetainingCapacity();
+    try encodeWindowScrollState(a, horizontal, &payload);
+    const horizontal_message = try windowLifecycleMessage(a, protocol.Message.scrollbar_state, 8, 7, payload.items);
+    defer a.free(horizontal_message);
+    try scene.apply(horizontal_message);
+    try std.testing.expectEqual(@as(usize, 2), scene.scroll_states.items.len);
+    const horizontal_layout = horizontalScrollbarLayout(&scene, 100) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(f32, 48), horizontal_layout.track_y);
+    // The vertical bar's 12-wide column is excluded from the horizontal track.
+    try std.testing.expectEqual(@as(f32, 68), horizontal_layout.track_width);
+    try std.testing.expectEqual(@as(f32, 12), horizontal_layout.track_height);
+    try std.testing.expect(@abs(horizontal_layout.thumb_x - 13.6) <= 0.001);
+    try std.testing.expect(@abs(horizontal_layout.thumb_width - 13.6) <= 0.001);
+    const horizontal_hit = hitTestHorizontalScrollbar(&scene, 20, 50) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(HorizontalScrollbarPart.thumb, horizontal_hit.part);
+    const left_hit = hitTestHorizontalScrollbar(&scene, 4, 50) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(HorizontalScrollbarPart.trough_left, left_hit.part);
+    try std.testing.expect(scrollbarLayout(&scene, 100) != null);
 
     var invalid = state;
     invalid.position = 1601;
@@ -11563,6 +12965,47 @@ fn glyphRunDeleteMessage(
 
 test "glyph run debug fallback codec is exact and bounded" {
     const a = std.testing.allocator;
+    var styled: std.ArrayList(u8) = .empty;
+    defer styled.deinit(a);
+    try encodeGlyphRun(a, .{
+        .schema = 2,
+        .flags = glyph_debug_fallback | glyph_bold | glyph_italic,
+        .run_id = 7,
+        .generation = 1,
+        .window_id = 9,
+        .row_index = 0,
+        .face_id = 3,
+        .face_generation = 2,
+        .x = 0,
+        .y = 0,
+        .width = 8,
+        .height = 8,
+        .text = "x",
+    }, &styled);
+    const styled_decoded = try decodeGlyphRun(styled.items);
+    try std.testing.expectEqual(glyph_debug_fallback | glyph_bold | glyph_italic, styled_decoded.flags);
+    try std.testing.expectEqualStrings("x", styled_decoded.text);
+
+    var variable: std.ArrayList(u8) = .empty;
+    defer variable.deinit(a);
+    try encodeGlyphRun(a, .{
+        .schema = 2,
+        .flags = glyph_debug_fallback | glyph_variable_font,
+        .run_id = 8,
+        .generation = 1,
+        .window_id = 9,
+        .row_index = 0,
+        .face_id = 3,
+        .face_generation = 2,
+        .x = 0,
+        .y = 0,
+        .width = 8,
+        .height = 8,
+        .text = "x",
+    }, &variable);
+    const variable_decoded = try decodeGlyphRun(variable.items);
+    try std.testing.expect(variable_decoded.flags & glyph_variable_font != 0);
+
     var wire: std.ArrayList(u8) = .empty;
     defer wire.deinit(a);
     try encodeGlyphRun(a, .{
@@ -11584,6 +13027,49 @@ test "glyph run debug fallback codec is exact and bounded" {
     try std.testing.expectEqualStrings("Emacs text", decoded.text);
     try wire.append(a, 0);
     try std.testing.expectError(Error.InvalidMessage, decodeGlyphRun(wire.items));
+}
+
+test "chrome glyph runs name one aux row and reject mixed kinds" {
+    const a = std.testing.allocator;
+    var wire: std.ArrayList(u8) = .empty;
+    defer wire.deinit(a);
+    try encodeGlyphRun(a, .{
+        .schema = 2,
+        .flags = glyph_debug_fallback | glyph_header_line,
+        .run_id = 1,
+        .generation = 1,
+        .window_id = 100,
+        .row_index = 0,
+        .face_id = 11,
+        .face_generation = 1,
+        .x = 0,
+        .y = 0,
+        .width = 20,
+        .height = 8,
+        .text = "H",
+    }, &wire);
+    const decoded = try decodeGlyphRun(wire.items);
+    try std.testing.expect(decoded.flags & glyph_header_line != 0);
+    try std.testing.expect(decoded.flags & glyph_chrome_mask == glyph_header_line);
+    // Two chrome bits cannot name one aux row.
+    var mixed: std.ArrayList(u8) = .empty;
+    defer mixed.deinit(a);
+    try encodeGlyphRun(a, .{
+        .schema = 2,
+        .flags = glyph_debug_fallback | glyph_mode_line | glyph_tab_line,
+        .run_id = 2,
+        .generation = 1,
+        .window_id = 100,
+        .row_index = 0,
+        .face_id = 11,
+        .face_generation = 1,
+        .x = 0,
+        .y = 0,
+        .width = 20,
+        .height = 8,
+        .text = "T",
+    }, &mixed);
+    try std.testing.expectError(Error.InvalidVersion, decodeGlyphRun(mixed.items));
 }
 
 test "glyph run delete codec is exact identity-shaped" {

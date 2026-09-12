@@ -6119,7 +6119,7 @@ realize_default_face (struct frame *f)
 	ASET (lface, LFACE_FOREGROUND_INDEX, XCDR (color));
       else if (FRAME_WINDOW_P (f))
 	return false;
-      else if (FRAME_INITIAL_P (f) || is_tty_frame (f))
+      else if (FRAME_INITIAL_P (f) || is_tty_frame (f) || FRAME_PROVIDER_P (f))
 	ASET (lface, LFACE_FOREGROUND_INDEX, build_string (unspecified_fg));
       else
 	emacs_abort ();
@@ -6134,7 +6134,7 @@ realize_default_face (struct frame *f)
 	ASET (lface, LFACE_BACKGROUND_INDEX, XCDR (color));
       else if (FRAME_WINDOW_P (f))
 	return false;
-      else if (FRAME_INITIAL_P (f) || is_tty_frame (f))
+      else if (FRAME_INITIAL_P (f) || is_tty_frame (f) || FRAME_PROVIDER_P (f))
 	ASET (lface, LFACE_BACKGROUND_INDEX, build_string (unspecified_bg));
       else
 	emacs_abort ();
@@ -6245,7 +6245,7 @@ realize_face (struct face_cache *cache, Lisp_Object attrs[LFACE_VECTOR_SIZE],
 
   if (FRAME_WINDOW_P (cache->f))
     face = realize_gui_face (cache, attrs);
-  else if (is_tty_frame (cache->f))
+  else if (is_tty_frame (cache->f) || FRAME_PROVIDER_P (cache->f))
     face = realize_tty_face (cache, attrs);
   else if (FRAME_INITIAL_P (cache->f))
     {

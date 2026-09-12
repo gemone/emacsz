@@ -59,8 +59,8 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | Automated W3c frame smoke | Rolled back with runtime integration |
 | `output_proto` terminal | Rolled back with runtime integration |
 | Redisplay capture | Rolled back; adapter ABI v1 contract only |
-| Resource model | Bounded identity, payload-cache/eviction, and request/evict wire contract; actual resource payload/render model not implemented |
-| SDL3 frontend | Partial: EUP replay/live rendering, renderer tiers, damage classes, bounded facts, ASCII/key/pointer/wheel/clipboard bridges, and EPXL recovery; no redisplay streaming, full keyboard/keymap/IME input, faces, fonts, images, widgets, or production frame ownership |
+| Resource model | Bounded identity, payload-cache/eviction, request/evict, string/face/font/image define-data-delete, snapshot restore, and bounded live file-backed XBM menu payload; redisplay-owned capture, recovery activation, and full resource parity pending |
+| SDL3 frontend | Partial: EUP replay/live rendering, renderer tiers, damage classes, bounded facts, ASCII/key-v2/text/pointer/wheel/clipboard/selection/DND bridges, Unicode font cache, face/font/image resources, menu/toolbar/dialog/scrollbar state and bounded interactions, and EPXL recovery; no redisplay streaming, full keyboard/keymap/IME input, production frame ownership, or PGTK parity |
 | Bounded real-frame lifecycle bridge | Implemented by W12c: one real PGTK observation frame and one EUP/SDL3 frame are created, rendered, and deleted |
 | Final real `output_proto` SDL3 Emacs frame | Not achieved |
 | Pure SDL3 PGTK-parity target | Normative target documented; runtime and parity not implemented |
@@ -73,7 +73,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P6-prep reverse input bridge | Implemented for bounded SDL key/text intents through PureRuntimeHostV1 delivery/result/completion; not keymap/command parity |
 | P7-prep visibility/focus bridge | Implemented for cached host state and EUP state message conformance; real platform/Emacs round trips pending |
 | P8-prep lifecycle bridge | Implemented for heartbeat, flush, diagnostic, and cancel-all through PureRuntimeHostV1; real host lifecycle still pending |
-| Protocol coverage manifest | Implemented for all 164 assigned EUP IDs: 164 implemented codecs, 0 partial, and 0 planned; prevents an unclassified or overclaimed protocol table |
+| Protocol coverage manifest | Implemented for all 165 assigned EUP IDs: 165 implemented codecs, 0 partial, and 0 planned; prevents an unclassified or overclaimed protocol table |
 | Protocol coverage gate | Implemented as `proto-ui-protocol-coverage`; deterministic artifact and boundary dependency |
 | P12-prep EUP session setup | Implemented standard HELLO/HELLO_ACK/SESSION_READY/READY_ACK codecs and bounded state machine; not yet wired to EPXL transport |
 | P12-prep EUP session control | Implemented all eight standard-control codecs, automatic PONG, Scene integration, and EPXL transport for every control, including fatal VERSION_MISMATCH |
@@ -84,7 +84,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | P12-prep frame z-order | Implemented operation codec, relative-frame validation, Scene state, and SDL always-on-top probe; bottom/relative stacking and redisplay adaptation pending |
 | P12-prep frame parent | Implemented nullable parent/modal codec, child/active-parent identity validation, Scene state, and SDL unparent probe; linked/modal child windows pending |
 | P12-prep window patch | Implemented bounded geometry/parent/visibility/face/depth patch with cycle and depth validation; zones/scroll pending |
-| P12-prep cursor update | Implemented dedicated cursor codec, Scene owner/geometry validation, and SDL render evidence; cursor styles/IME pending |
+| P12-prep cursor update | Implemented dedicated cursor codec, Scene owner/geometry validation, bounded cursor styles, and SDL render evidence; IME-coupled caret and redisplay cursor semantics pending |
 | P14-prep continuous capture generations | Implemented monotonic host-capture reuse from `captured` to `capturing`, atomic observation reset, stale-generation rejection, monotonic encoded/accepted `FRAME_UPDATE` identity, host-flush-bound `FLUSH` emission, and frame-lifetime render hints; no real Emacs host |
 | P15-prep terminal runtime service | Implemented `proto-ui-terminal-service` for fake-host create/activate/drain/delete orchestration with no-reuse registry IDs, drain retry, rollback-pending cleanup, and strict identity validation; no Emacs terminal linkage/registration |
 | P16-prep host adapter selection | Implemented the versioned pure-SDL3 `output_proto` candidate as selected by the approved, metadata-complete R7 decision; machine-readable gate records no activation, linkage, registration, or runtime |
@@ -153,6 +153,7 @@ glue.  Intrusive changes to inherited GNU Emacs C source are prohibited; see
 | W8g2 publisher Elisp resource and atomic facts | Approved |
 | W8g3 manual authenticated EPXL session | Implemented; bounded bridge, not `output_proto` |
 | W8h-h SDL3 committed Unicode input lifecycle | Approved |
+| W18 SDL3 interactive completion | In progress; current bridge aggregate gate passes, manual usable-session and pure-runtime gates pending |
 | W9g2 bounded viewport facts | Approved |
 | W10b-b2a bounded glyph-atlas policy | Approved |
 | W10c-a damage classification baseline | Approved |
@@ -255,6 +256,7 @@ Acceptance:
 
 ```sh
 zig build -Dproto-ui=true proto-ui-unit
+zig build -Dproto-ui=true -Dproto-ui-runtime=true -Dsdl3-frontend=true proto-ui-tpe-input
 ```
 
 Review gates:
@@ -539,7 +541,7 @@ Implemented:
 2. The decoder validates little-endian layout, CRC-32C integrity, reserved
    flags, unsupported transport features, trailing bytes, canonical section
    ordering, extension ranges, and untrusted allocation bounds.
-3. A canonical-table test pins the 164 assigned IDs from the normative
+3. A canonical-table test pins the 165 assigned IDs from the normative
    protocol tables and rejects unknown mapped classes, disorder, and the
    invalid sentinel.
 
@@ -2314,6 +2316,36 @@ zig build -Dproto-ui=true proto-ui-boundary --summary all
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-pointer-middle-paste-smoke --summary all
 ```
 
+### W9q — Bounded touch contact (approved)
+
+Goal: add the smallest SDL3 platform-input slice for touch without a new wire
+record or any multi-touch, gesture, pressure, or pen claim.
+
+1. Add optional, negotiable, degraded `input.touch_bounded_v1`, evidenced by
+   `sdl3-touch-tap-smoke`; it requires `input.pointer_v2` and the negotiation
+   drops it from the effective set when that transport is absent.
+2. Reuse the strict Pointer Event v2 record, delivery journal, EPXL ACK flow,
+   and the existing public `posn-at-x-y` / `posn-point` mapping. Add no wire
+   record and no new reverse-intent kind.
+3. Convert one real `SDL_EVENT_FINGER_DOWN` / `FINGER_MOTION` / `FINGER_UP` /
+   `FINGER_CANCELED` contact from SDL's window-normalized coordinates to a
+   pixel and emit `press` / `drag` (left mask) / `release` / `cancel`; press
+   and release carry `clicks=1`.
+4. Reject non-finite or out-of-window normalized coordinates, a zero-sized
+   window, unknown event types, and any modifier state before queue mutation.
+   A second concurrent contact or an out-of-order phase is dropped because the
+   journal admits exactly one active pointer session.
+5. Wire the same translation into the live interactive EPXL event loop so a
+   real contact reaches Emacs, not only the smoke harness.
+
+Acceptance:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true proto-ui-boundary --summary all
+zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-touch-tap-smoke --summary all
+```
+
 ### W9l — Public point and dynamic cursor (approved)
 
 Goal: replace the fixed facts-profile cursor with public Emacs point observation
@@ -3347,10 +3379,10 @@ symbol so the linker includes the selected archive member, and
 `linked_not_registered`; R8 remains blocked because the adapter is never called,
 never initialized at load time, and no `output_proto` terminal is registered.
 The opt-in `-Dr8-entry-gate=true proto-ui-r8-readiness` form is the negative
-launch gate: it fails with `r8_host_adapter_linkage_or_registration_missing`
+launch gate: it fails with `r8_first_frame_and_redisplay_missing`
 until registration and all remaining source conditions are ready.
 
-##### R8-b registration-seam design (normative; not implemented)
+##### R8-b registration-seam design and opt-in headless TPE slice
 
 R8-b defines the Terminal Provider Extension (TPE) in
 [`registration-seam.md`](registration-seam.md).  TPE separates one generic
@@ -3360,11 +3392,15 @@ provider/core ABI tables, GC-safe opaque provider storage, exact activation
 and reverse rollback order, first real `window-system=proto` frame checks,
 performance budgets, and the TP0-TP10 work split.
 
-TPE is intentionally not implemented in the current branch.  The selected
-adapter is at most `linked_not_registered`; registration requires a separate
-reviewed core-extension exception or upstream acceptance.  TP1 is not
-authorized by this branch.  Output-method aliasing, startup constructors,
-dynamic-module access to internal symbols, and symbol interposition are
+Production TPE now has one narrow opt-in exception under
+`-Dproto-ui-runtime=true`: a generic `output_provider` terminal classification,
+opaque provider slots, and explicit environment-selected headless registration.
+It adds no per-backend `output_proto` cases, does not alias PGTK/TTY, does not
+initialize at load time, and is absent from default builds.  The default/default
+symbol audit and `proto-ui-tpe-headless` live gate are the isolation and
+behavior evidence.  `proto-ui-tpe-core` separately pins the owned registry ABI
+and lifecycle mechanics.  Output-method aliasing, startup constructors,
+dynamic-module access to internal symbols, and symbol interposition remain
 forbidden.
 
 ##### R8-c TP2 registration-policy conformance (adapter-only)
@@ -3377,11 +3413,13 @@ shape (64-byte aggregate table, five groups, 27 operations), explicit forward
 registration states, duplicate/invalid-transition rejection, failure
 quarantine, generation retention, and idempotent reverse rollback order.
 
-The manifest reports `tp1_core_dispatch_absent=true`, `registered=false`,
-`runtime_available=false`, and no terminal registration or Emacs call path.
-The default build remains disabled; `-Dproto-ui-runtime=true` may link the R8
-candidate but TP2 does not call, initialize, or register it.  TP1 remains
-unauthorized, R8 remains blocked, and SDL3 cannot open an Emacs frame yet.
+The TP2 policy manifest itself remains adapter-only and reports
+`runtime_available=false`; it does not describe the separate live TP1 slice.
+The default build remains disabled.  With explicit
+`-Dproto-ui-runtime=true`, `proto-ui-tpe-headless` registers one generic
+`output_provider` terminal, verifies `(terminal-live-p ...)=proto`, and cleans
+it up.  This is not an SDL frame: R8 remains blocked until TP4/TP5 provide the
+real frame and redisplay-owned capture.
 
 1. Implement child and tooltip frame protocol.
 2. Implement multi-frame focus isolation.
@@ -3471,7 +3509,8 @@ Review gates:
 Goal: measure the documented adapter and renderer baselines; performance
 improvement requires a separate end-to-end comparison.
 
-Status: W14-a, W14-b, and W14-c renderer-proxy work are complete; full W14
+Status: W14-a, W14-b, W14-c renderer-proxy, and W14-d EPXL round-trip work are
+complete; full W14
 parity remains partial.  `proto-ui-bench` is an opt-in, adapter-only
 ReleaseFast baseline that installs `zig-out/proto-ui/benchmark.json`.
 It covers EUP `FRAME_UPDATE` encoding, envelope/payload decode and validation,
@@ -3495,7 +3534,19 @@ iterations, nearest-rank latency, FPS, command/frame totals, and explicit
 original window state afterward.  These are frontend renderer-call workload
 proxies only, not real typing/scroll/resize, Emacs input, core redisplay,
 end-to-end Emacs work, GPU timestamps, PGTK comparison, or host-independent
-regression evidence.  Frame creation, real typing,
+regression evidence.  W14-d adds `sdl3-epxl-roundtrip-bench`: it starts the
+owned public-facts publisher, moves the point off `point-min`, then alternates
+one backspace and one bounded ASCII insertion at window point, one intent in
+flight per step, and installs
+`zig-out/proto-ui/sdl3-epxl-roundtrip-benchmark.json` with nearest-rank
+intent-to-control-ACK and intent-to-next-`FRAME_UPDATE` latency percentiles,
+submitted/acked counts, and `input_lost`.  Its `--visible-edit-publisher`
+profile (enabled only by `--emacs-epxl-bench`) applies both actions at window
+point so every step produces a real fact change and frame update.  It is a
+Debug-build, local-socket bounded public-facts-bridge diagnostic: it does not
+run core redisplay, renderer present, real typing in a normal buffer, GPU
+timestamps, PGTK comparison, end-to-end latency, or host-independent
+regression.  Frame creation, real typing,
 scroll, resize, faces, fonts, images, widgets, multi-frame, comprehensive
 renderer tiers, and optimization work remain W14 follow-up work.
 
@@ -3505,7 +3556,7 @@ Tasks:
 2. Benchmark frame creation, typing, scroll, resize, faces, fonts, images, widgets, and multi-frame. *(W14-b covers a bounded SDL3 full-draw/unchanged-skip renderer baseline; W14-c covers deterministic renderer-call typing/scroll/resize proxies; full backend workloads remain pending, and resize geometry setup is outside the timed renderer call.)*
 3. Add allocation counters. *(W14-a records measurable per-operation allocation counts.)*
 4. Add bandwidth counters. *(W14-a records bytes/op and MiB/s for adapter paths.)*
-5. Add latency percentiles. *(W14-a records p50/p95/p99 and mean; W14-b/W14-c reuse nearest-rank summaries for SDL renderer-call paths.)*
+5. Add latency percentiles. *(W14-a records p50/p95/p99 and mean; W14-b/W14-c reuse nearest-rank summaries for SDL renderer-call paths; W14-d records nearest-rank ACK and next-frame-update percentiles for the bounded EPXL edit path.)*
 6. Tune damage merging.
 7. Tune glyph atlas.
 8. Tune transport slab reuse.
@@ -3668,10 +3719,6 @@ P11 image presentation adds complete RGBA8 resource rendering to the SDL
 diagnostic bridge.  It uses nearest scaling, rejects incomplete resources, and
 does not implement production image decoding, animation, cache eviction, or
 redisplay-owned placement.
-P11 image presentation adds complete RGBA8 resource rendering to the SDL
-diagnostic bridge.  It uses nearest scaling, rejects incomplete resources, and
-does not implement production image decoding, animation, cache eviction, or
-redisplay-owned placement.
 P11 window-tree preparation adds a strict `WINDOW_TREE_SNAPSHOT` v1 codec and
 Scene-owned complete-tree validation for hierarchy, selected/visible state,
 depth, and bounds. Window-management commands and rendering parity remain
@@ -3684,7 +3731,13 @@ P9 geometry preparation adds `refreshFrameGeometry`, authoritative frame
 bounds, and observation validation in `runtime_bridge`; real monitor and scale
 events remain pending.
 P29 protocol coverage remains source-authoritative for every assigned EUP ID;
-current counts are 164 implemented codecs, 0 partial, and 0 planned.
+current counts are 165 implemented codecs, 0 partial, and 0 planned.
+
+W8h-i advances keyboard compatibility with `input.keymap_loop_v1`: reverse input
+is serialized, Emacs accumulates bounded canonical prefix sequences, active
+keymaps resolve commands, and unknown complete sequences clear pending state.
+This is compatibility progress through the current diagnostic bridge, not pure
+`output_proto` runtime parity.
 P12 session-setup preparation adds concrete standard EUP HELLO, HELLO_ACK,
 SESSION_READY, and READY_ACK codecs with a bounded frontend state machine.  The
 authenticated EPXL handshake remains the current transport path.
@@ -3810,8 +3863,7 @@ P20 scroll-copy preparation adds a 32-byte `SCROLL_RUN` payload for
 full-window-width vertical bands.  `Scene` validates source and destination
 bands against the active owner and retains at most 32 runs until the next
 authoritative update.  `renderer.planScrollCopy` computes overlap and estimated
-RGBA upload bytes; actual SDL copy execution and redisplay-owned scroll capture
-remain pending.
+RGBA upload bytes; redisplay-owned scroll capture remains pending.
 The SDL runtime smoke executes the planned copy by snapshotting the source band
 into a scratch target and drawing that snapshot to the destination.  It records
 planned bytes, submitted copy commands, and presents the retained output without
@@ -3917,6 +3969,284 @@ document and by the W16 final scenario.  The distinguishing R8 evidence is a rea
 frame, redisplay, resource, input, and desktop-integration paths require no
 GDK/GTK initialization.
 
+P84 popup-menu interaction preparation adds `Scene.menuPopupBounds` as the single geometry source shared by the SDL popup draw path and a new pointer hit test, plus `Scene.hitTestOpenMenu`.  While a popup is open and `widget.menu_result_v1` is negotiated, a primary press on a selectable command/checkbox/radio row reports `MENU_RESULT` with the exact menu/generation/item/window/frame identity, a press outside the popup reports `MENU_CANCEL(user)`, and `Escape` reports `MENU_CANCEL(escape)`; separator, submenu, disabled, and padding rows report nothing, and the matching release is consumed so the click never also becomes a text pointer press.  `sdl3-menu-hit-smoke` drives one open model through the shared geometry and proves the selected identity, the outside dismissal, the Escape cancellation, and the inert separator.  The frontend never enables, disables, reorders, reflows, or executes an item, and no keyboard menu navigation, streaming hover highlight, submenu traversal, or Emacs command execution is claimed.
+P85 tool-bar interaction preparation adds `Scene.toolbarLayout` as the single geometry source shared by the SDL tool-bar draw path and `Scene.hitTestToolbar`, which also fixes tool-bar items being drawn at an absolute x that ignored the owning window origin.  Visible button and toggle items occupy slots (separators advance 2 logical pixels, spaces 12); only a visible enabled button or toggle is selectable.  With `widget.toolbar_click_v1` negotiated, a primary press on a selectable item reports `TOOLBAR_CLICK(press)` and is consumed, the matching release reports `TOOLBAR_CLICK(release)` for the same item while its toolbar generation is still live, and a press whose generation was replaced is dropped; presses on a separator, a space, a disabled item, or outside the row fall through to the ordinary pointer path.  `sdl3-toolbar-hit-smoke` drives one model through the shared layout and proves the press/release pair, the item identity, the inert separator, and the stale-generation drop.  The frontend never executes an item or mutates the model, and no icon rendering, overflow policy, orientation, keyboard activation, or Emacs command execution is claimed.
+P86 dialog-interaction preparation adds `Scene.dialogLayout` as the single geometry source shared by the SDL dialog draw path and `Scene.hitTestDialog`.  The backend-owned `buttons` policy mask is presented in a canonical order (OK, Cancel, Yes, No, Retry, Close), right-aligned inside the box and shrunk uniformly when a wide policy would otherwise overflow so every presented button stays inside the box and remains clickable; the draw path now renders that button row.  With `widget.dialog_result_v1` negotiated, a press on a standard button reports `DIALOG_RESULT` with the exact dialog/generation/window/frame identity and no input text, a press elsewhere inside the box is consumed without a result, a press outside the box falls through to the ordinary pointer path, and `Escape` reports cancel when the policy offers one (otherwise close).  `sdl3-dialog-hit-smoke` drives one dialog through the shared layout and proves the button identity, the consumed body click, the outside fall-through, and the Escape dismissal.  Text input fields, custom or unicode button labels, file/color/font dialogs, and Emacs callback dispatch are not claimed.
+P87 bounded drag-and-drop receive preparation adds negotiable degraded `dnd.bounded_v1` and the first SDL drop mapping.  A bounded frontend tracker follows SDL's ordered begin/position/file-or-text/complete sequence, accumulates one offer (`text/plain` for `SDL_EVENT_DROP_TEXT`, `text/uri-list` for `SDL_EVENT_DROP_FILE`) plus at most 256 payload bytes, and on completion enqueues the exact `DND_ENTER`/`DND_DROP`/`DND_DATA` triple through the authenticated EPXL journal with a synthesized copy action, because SDL does not expose the drag source's action policy.  The frontend reports only; the owned publisher validates and applies the bounded payload, and the runner never opens a dropped file.  An oversized payload, an unnegotiated peer, and an event for another window produce no intent.  `sdl3-dnd-drop-smoke` seeds one real SDL drop sequence, requires the negotiated capability, and requires the republished facts to show the applied bounded text.  Drag-out, MIME negotiation, multiple offers or files, drag positions, drag cancel, and any general DND parity are not claimed.
+P88 popup-navigation preparation adds `Scene.menuRows`, `Scene.menuMoveHighlight`, and `Scene.menuHighlightSlot` over the existing single popup geometry source, plus a frontend-owned highlight cursor `Scene.menu_highlight_item` that is presentation state only, is never encoded into EUP, and is cleared whenever the popup opens or closes.  Pointer motion moves the cursor to the selectable row under the pointer and is consumed so it cannot become a text hover/drag sample; Up/Down move the cursor to the previous/next selectable row without wrapping, skipping separators, submenus, and disabled rows; Enter chooses the highlighted row as `MENU_RESULT`.  Every cursor change is reported as exactly one `MENU_HOVER` transition — a `leave` with no item identity followed by an `enter` for the new row, carrying the pointer position for hover and the row origin for the keyboard — and the draw path renders the highlighted row.  `sdl3-menu-hit-smoke` proves the three-step hover sequence, the separator skip, the keyboard walk, and the Enter selection.  Streaming `move` phases, submenu traversal, backend-driven highlight dispatch, and Emacs command execution are not claimed.
+P89 vertical-scrollbar interaction preparation adds `Scene.scrollbarLayout` and `Scene.hitTestScrollbar` as the single geometry source shared by the SDL track/thumb draw path and pointer hit testing, and fixes the previous session leak in which a touched scrollbar kept treating every later motion as a drag.  A primary press on the thumb opens a relative drag session that reports pointer deltas; a press on the trough above or below the thumb reports one relative page (`delta = ∓viewport`) without opening a session; a press outside the track falls through to the ordinary pointer path; the matching release ends an active session, and a motion sample whose primary button is no longer held also ends it.  A scrollbar with nothing to scroll is not interactive, and the hit test resolves the owning window from the scroll state instead of assuming the first window.  `sdl3-scrollbar-smoke` drives one state through the shared geometry and proves the thumb rectangle, the drag delta, the session lifecycle, both page directions, and the outside fall-through.  Horizontal state, arrow-step geometry, dedicated `SCROLLBAR_EVENT` routing for these interactions, and Emacs dispatch are not claimed.
+P90 bounded pen preparation adds negotiable degraded `input.pen_bounded_v1`, gated on `input.pointer_v2` and adding no wire record.  SDL reports pen positions in window coordinates (not normalized), so the frontend bounds the point directly and maps the pen tip to the strict Pointer v2 payload: `SDL_EVENT_PEN_DOWN` to `press`, a motion with the tip down to `drag`, a motion with the tip up to `motion` (the same air hover a mouse reports), and `SDL_EVENT_PEN_UP` to `release`, with `clicks=1` on press and release.  The eraser tip, barrel buttons, pressure/tilt axes, proximity events, out-of-window coordinates, and unknown event types produce no intent, and the same translation is wired into the live interactive EPXL loop.  `sdl3-pen-tap-smoke` seeds one synthetic sequence and proves the hover/press/drag/release order, the eraser rejection, and the bounded journal ordering.  Pressure, tilt, barrel buttons, drawing surfaces, and Emacs command dispatch are not claimed.
+P91 popup item-state rendering makes the SDL popup row draw reflect the backend-owned menu model.  A checkbox or radio row reserves a leading marker slot, draws the selection marker only when the model's `selected` flag is set, and shifts its label past that slot; a row the model does not mark `enabled` is drawn with a dimmer label color; and a separator row draws no label at all, which also fixed a latent crash in which an open popup containing a separator failed the whole render pass because the draw list rejects empty text.  The frontend only reflects those flags and never enables, disables, or toggles an item.  `sdl3-menu-hit-smoke` now asserts the marker rectangle, the shifted checkbox label, the dimmed disabled label, and the bright enabled label alongside its hit-test, hover, keyboard-navigation, and Enter-selection evidence.  Submenu traversal, radio grouping semantics, item icons, and Emacs command execution are not claimed.
+P92 tool-bar icon rendering makes a tool-bar slot draw the backend-owned image resource.  When an item references an `icon_image_id`/`icon_image_generation` pair that resolves to a complete image resource of exactly that generation, the slot draws that image through the existing draw-list image command; a missing, incomplete, or stale generation falls back to the text label rather than drawing a guessed icon, so the frontend never invents an icon, never substitutes a different generation, and never keeps a deleted resource alive for the toolbar.  `sdl3-toolbar-hit-smoke` defines one 2x2 icon resource, asserts the exact icon rectangle and pixels for the live item, asserts the icon replaces that item's label, and asserts that an item referencing a stale generation still draws its text label.  Overflow, orientation, item text beside an icon, multi-resolution icon bundles, and Emacs command execution are not claimed.
+P93 bounded prompt-field preparation adds `Scene.dialogAppendInput`, `Scene.dialogBackspace`, `Scene.dialogInput`, and `Scene.dialogFieldRect` plus the frontend-local field state `Scene.dialog_text`/`dialog_text_len`, which is presentation/input state never encoded into EUP except inside the bounded `DIALOG_RESULT` text tail the user submits.  A prompt dialog whose box is tall enough shows a bounded ASCII field: while it is open the field owns SDL text input and Backspace, so those bytes never reach Emacs as buffer input; accepted bytes are limited to printable ASCII and to the 128-byte capacity that matches the result tail, and the field is cleared whenever the dialog opens, closes, or loses its owner window.  Both the standard-button press and the Escape dismissal carry the current field text in that tail.  `sdl3-dialog-hit-smoke` proves the field rectangle, the accepted text, the control/non-ASCII rejection, the rendered typed text, the capacity bound, and the text tail on the button and Escape paths.  Unicode field input, an explicit caret, custom or unicode button labels, file/color/font dialogs, and Emacs callback dispatch are not claimed.
+P94 bounded drag-position feedback and idle-journal coalescing adds `DndPositionEvent` plus the `DND_POSITION` wire path (input event, `sendDeliveryEvent` encoding, publisher acceptance, and a bounded `dnd-position` artifact), and introduces a single `journalIdle` boundary used by every best-effort observation: idle v2 pointer hover, pen air hover, and drag position feedback are enqueued only when the bounded delivery journal has no in-flight intent and an empty queue, so continuous observation can never fill the queue and turn a fast pointer, pen hover, or a slow backend into a session failure.  Ordered press/drag/release and every payload report stay exact, while the previously rejected `DND_POSITION` message type is now accepted by the publisher instead of failing the session.  `sdl3-dnd-drop-smoke` seeds two positions and proves exactly one bounded position report is delivered (the later one is coalesced away while the journal is busy) while the drop payload still reaches Emacs and the republished facts show the applied text.  Drag-out, MIME negotiation, multiple offers or files, drag leave/cancel, and a request/data handshake are not claimed.
+P95 window default-face text preparation makes the live text honor the face a window is bound to.  The bounded facts rows carry no per-line or per-run face, so a window with a live `WINDOW_FACE` binding draws its body text with that face's foreground, and falls back to the draw default when there is no binding, the generation is stale, or the face carries no foreground; the unicode text path uses the same color instead of its former hardcoded value.  A single `windowFaceForeground` helper resolves the binding so the fallback rule lives in one place.  `sdl3-face-text-smoke` builds one live frame with a body text line plus an explicit `FACE_DEFINE`/`WINDOW_FACE` pair and proves the default fallback, the face foreground, and that a replacement generation is honoured on the next frame.  Per-line faces, face merging, overlays, derived faces, shaped-text faces, and PGTK face parity are not claimed.
+P96 live default-face publication extends the public-facts snapshot with optional bounded `foreground`/`background` `#rrggbb` values taken from the frame's real default face.  A literal `#rrggbb` attribute is passed through unchanged so the terminal color model cannot remap a color the frame already stated exactly, while a named attribute still resolves through `color-values`; an unusable or unspecified value is omitted so the frontend keeps its own draw default.  The adapter parses the pair, projects a generation-qualified `FACE_DEFINE` whose generation only advances when the reported colors change, and re-sends the per-window `WINDOW_FACE` binding after every `FRAME_UPDATE`, because an update is authoritative window state that replaces that binding.  Publisher shutdown is also made tolerant of a read-side close at the interactive smoke deadline, which previously surfaced as `PublisherFailed` when the extra face traffic shifted the close timing.  `sdl3-emacs-face-smoke` runs the owned publisher and requires the live SDL scene to own the reported face, bind the live window to it, and draw the body text with that foreground, sampling the binding while it holds.  Per-line faces, face merging, overlays, derived faces, shaped-text faces, and PGTK face parity are not claimed.
+P97 bounded cursor-style preparation gives the opaque `CURSOR_UPDATE` v1 `cursor_kind` a frontend rendering interpretation through a single `drawCursor` helper.  Kinds 1/2/3 (and any unrecognised value, preserving the pre-style behaviour) draw the solid box/bar/horizontal bar whose shape already comes from the published cursor geometry; kind 4 draws a four-edge hollow outline; kind 5 draws a bottom-edge underline.  Every shape is emitted inside the cursor rectangle the backend validated, so a style can never widen the work beyond the validated cursor geometry, and the fill uses the owning window's live default-face foreground through the existing `windowFaceForeground` helper, falling back to the previous cursor color when no face is bound.  `sdl3-cursor-style-smoke` drives one `CURSOR_UPDATE` per kind and proves the fill counts per shape, the unknown-kind fallback, and the face-derived color.  Publishing Emacs's real `cursor-type`, blink state, per-window cursor faces, IME-coupled caret behavior, and redisplay-owned cursor semantics are not claimed.
+P98 live cursor-type publication extends the public-facts snapshot with a bounded `cursor_kind` taken from the selected window's real `cursor-type` (`t`/`box`→1, `bar`→2, `hbar`→3, `hollow`→4, and any other value, including an unspecified one,→1) and threads it through `FrameFacts`/`SnapshotWire` into both cursor encoders, which previously hardcoded the solid box.  The publisher pins `hbar` under the smoke profile so the value is deterministic, and `sdl3-emacs-cursor-smoke` runs the owned publisher and requires the live SDL scene to own `cursor_kind` 3 and render the horizontal-bar shape alongside the ongoing frame updates.  Blink state, per-window cursor faces, IME-coupled caret behavior, and redisplay-owned cursor semantics are not claimed.
+P99 live window scroll-state publication extends the public-facts snapshot with an optional bounded scroll-bar width, total buffer line count, and lines-above-window-start count per window state.  When the reported width is nonzero the adapter projects one `WINDOW_SCROLL_STATE` per such window, clamps the position into `content - viewport` so a window start past the bounded text can never produce an out-of-range record, and re-sends the state after every `FRAME_UPDATE` because an authoritative update replaces the table.  The publisher takes the content size and position from the real `(point-max)` line number and the real `window-start`, and only pins the track width under the smoke profile because a batch Emacs frame reports no scroll bars; `sdl3-emacs-scrollbar-smoke` requires the live SDL scene to sample a proportional thumb for a real 30-line buffer scrolled to line 11.  Horizontal state, arrow-step geometry, and core-owned scroll dispatch are not claimed.
+P100 closes the live scrollbar loop in both directions.  The frontend's scrollbar policy previously compared raw SDL window coordinates against frame-logical geometry, so a scaled live window (a TTY frame's character grid scaled up to the SDL window) could hit the thumb but never open a drag session; it now converts once to frame-logical units before the hit test and before the drag tracker, and the motion path converts the same way so a drag delta is a logical unit.  On the producer side the publisher consumes a delivered `scroll-request`/`scrollbar-event` artifact and moves the named window's real `window-start` by the bounded line count (relative) or to the bounded line offset (absolute), keeping point inside the window afterwards; unknown kinds, axes, windows, and unbounded numbers are ignored rather than guessed.  `sdl3-emacs-scrollbar-interaction-smoke` presses the trough below the thumb and then drags the thumb through that path; the republished facts must show the real window scrolled from position 10 to 18 (one 8-line page) and then to 22 (a 4-unit drag clamped at the scroll range end).  Horizontal scroll, arrow-step geometry, non-line scroll units, and full core dispatch are not claimed.
+P101 adds the horizontal scrollbar as a bounded mirror of the vertical one.  `WINDOW_SCROLL_STATE`'s second flag is `horizontal_visible`; the state's sizes are columns and its `track_width` is the bar thickness, `Scene` upserts one state per window *and orientation* so both bars coexist, and `horizontalScrollbarLayout`/`hitTestHorizontalScrollbar` mirror the vertical geometry source, with the track stopping where the window's vertical bar column begins so the corner stays unambiguous.  The drag tracker records its axis and reports `axis = horizontal` deltas; a horizontal trough press pages one viewport sideways.  The publisher reports the widest visible line and the real `window-hscroll` as that state and applies a delivered horizontal intent with `set-window-hscroll` (absolute position or bounded relative delta), while unknown kinds/axes/windows and unbounded numbers are still ignored.  `sdl3-scrollbar-smoke` proves both orientations' geometry, hit tests, drag deltas, page deltas, and the drawn thumb rectangles, and `sdl3-emacs-hscroll-smoke` drags the live thumb ten columns and requires the republished state to show the offset moving from 5 to 15.  Arrow-step geometry, sub-cell or pixel scroll units, and redisplay-owned scroll semantics are not claimed.
+P102 publishes the real menu bar.  The owned publisher enumerates the frame's live `menu-bar-keymap` (the post-filter, display-ordered keymap), reads each item's label from its `menu-item` or prompt string, skips the fallback click handler and any label this bounded publisher cannot express (non-string, empty, over 64 bytes, non-printable, or beyond eight items), and reports the labels as a bounded facts array.  The adapter validates and owns that array and projects it as a `MENU_MODEL` whose depth-0 nodes are those items, sent only when the labels differ from the model already in the scene because the model survives an authoritative `FRAME_UPDATE`; the generation advances only on a real change.  The SDL draw path anchors that model as a menu-bar row at the frame origin, sizes each slot from its own label, and takes the strip height from the row the frame reserves above its window, so the backend keeps owning the labels and their order while the frontend only lays them out.  `sdl3-emacs-menu-bar-smoke` requires the live scene to own the real labels in order (File, Edit, Options, Buffers, Tools, Help) and the draw list to render each of them.  Menu opening, submenus, item enabling/filters, `MENU_RESULT` dispatch, and command execution are not claimed: there is no reverse menu-open intent yet.
+P103 adds a bounded reverse menu-open intent.  `MENU_OPEN_REQUEST` v1 is an exact 40-byte message sharing the menu-hover layout without its phase: schema, reserved bytes, menu id, menu generation, the pressed item id, the owning window id, the active frame generation, and the logical origin of the pressed slot.  Validation requires nonzero identity and generation fields and nonnegative coordinates, and the message travels in the negotiated acknowledged `DeliveryJournal` queue with EPXL admission on the publisher side, exactly like the other widget intents.  `frontend.menuBarLayout` (which the draw path already used) became the shared menu-bar geometry source, so the new `hitTestMenuBar` and the rendered row cannot drift apart; with `widget.menu_open_request_v1` negotiated a primary press on a visible slot is consumed and reported, and the frontend still never opens, reorders, relabels, or executes an item.  `sdl3-emacs-menu-open-smoke` presses the real "Edit" slot of a live Emacs menu bar and requires exactly one delivered request naming that item, its slot origin, and the owning window with an empty journal.  The publisher only records the request today, so opening a backend menu, publishing its popup, submenus, item enabling, and command dispatch are not claimed.
+P104 makes that reverse intent open a real menu.  The publisher keeps a bounded open-menu state: on a valid request it resolves the menu id back to the same display-ordered `menu-bar-keymap` entry list the bar labels come from, walks that entry's keymap into at most 24 child rows (real labels, separators reduced to the bounded `--` marker, anything unexpressible skipped), computes a popup rectangle whose width fits its widest row and whose origin is the requested slot, and reports the rows and rectangle in the public facts snapshot; consuming a `menu-result` or `menu-cancel` artifact clears that state again.  The adapter validates the open state (bounded id, window, geometry, and rows), projects it as child nodes under the pressed item in the same `MENU_MODEL` the bar uses — regenerated only when the nodes actually differ, because the model survives a `FRAME_UPDATE` — and then sends a `MENU_OPEN` naming that generation with the rectangle clamped inside the owning window; when the producer reports no open menu it sends `MENU_CLOSE` with the live model identity instead.  `sdl3-emacs-menu-open-smoke` presses the real "Edit" slot, requires the live scene to own real child rows (including "Undo"), chooses the first selectable row so the frontend reports `MENU_RESULT`, and requires the popup to close again.  Subsequent milestones close item enabling and `:keys` publication; submenu traversal, filters, and command execution are not claimed at P104.
+P105 applies the chosen row.  `proto-ui--menu-children` now also returns a parallel vector of bounded command names (taken from each row's `menu-item` command or vector command slot, and skipped when the name is not a plain symbol), kept adapter-local so it is never published; when the publisher consumes a `MENU_RESULT` it maps the chosen wire id back to that row and runs the command only when it is a member of the closed `proto-ui--menu-safe-commands` set (`undo`, `undo-redo`, `mark-whole-buffer`, `keyboard-quit`), wrapped so a failing command cannot kill the publisher loop.  Anything outside the set is resolved and recorded but never executed, so an unattended publisher can never prompt for input or run an arbitrary command.  The publisher's own probe setup is also placed outside the undo history, so the real Edit→Undo row can only undo what the frontend actually sent.  `sdl3-emacs-menu-apply-smoke` seeds one bounded edit, opens the real "Edit" menu, chooses the first selectable row, and requires the edit to disappear from the republished facts because the real `undo` command ran.  Submenu traversal and non-allowlisted commands are not claimed; the live rows' real `:enable` state is carried by P162 and their `:keys` hints by P165.
+P106 adds a display-backed publisher profile.  A new `--graphic-frame-publisher` switch makes the publisher start Emacs without `--batch` (keeping `-Q`) so it opens its own PGTK/X frame from the inherited display; the frontend forwards a display/locale environment map to the publisher process, which previously ran with an empty environment and therefore could not pass a display on to Emacs at all, and the batch publisher also gained `-Q` now that HOME is forwarded.  The real frame is what makes `format-mode-line` (always empty in a batch frame), the real scroll-bar width, and other display-only facts observable, so the diagnostic mode-line draw threshold drops from sixteen to eight pixels: a real fifteen-pixel mode line draws its text while one- and two-pixel diagnostic bars stay textless.  `sdl3-emacs-graphic-smoke` requires the live scene to own the real mode line (text, height, and a text draw command) and a real scroll-bar width, and prints a bounded `skipped` result when no DISPLAY/WAYLAND_DISPLAY exists so headless jobs do not fail.  Fringe, divider, mouse-face, and font publication from the graphic frame are not claimed.
+P107 unifies the pointer coordinate space.  The frontend now converts SDL window coordinates to frame-logical units before building a pointer or pointer-v2 press/motion/release intent, matching the geometry facts and the scrollbar and menu-bar hit tests, and the publisher maps every pointer path through `proto-ui--pointer-window-at` (only the generic profile did before), using window-relative coordinates for `posn-at-x-y`.  Without the mapping a press below the reserved menu-bar row was read as a window-space row count, and with the P103 menu-bar press handler a synthetic press at the frame origin was consumed by the menu bar instead of reaching the pointer path.  The pointer smokes now click inside the window body (`y = 12` window pixels, one logical row) with logical columns, and the middle-click-paste evidence accepts a window manager's own point-min markers instead of requiring an exact first line.  Touch and pen coordinate spaces, pixel-accurate sub-cell pointers, and non-TTY geometry parity are not claimed.
+P108 uses the display-backed frame's real line metrics.  The publisher reports the frame's character height as a bounded frame fact (omitted when the frame reports one unit, which is what a batch TTY frame does), the adapter validates it, and row layout now goes through `visibleRowCount`/`visibleRowHeight`/`cursorFitsVertical` with that height: a real line height drives row spacing, cursor placement, cursor fit validation, and the visible-row cap, while a height of zero or one keeps the previous bounded fifteen-row guess unchanged.  The row count stays capped at fifteen, so the bounded row model does not grow, and `sdl3-emacs-graphic-smoke` now also requires the live rows to be spaced by the frame's own line height (the real 15-pixel mode line and the rows share one rhythm) with a `row_height` field in its evidence.  Batch frames, real font families, face-specific line heights, variable-pitch rows, and non-TTY geometry parity are not claimed.
+P109 draws the real fringes.  The publisher reads each window's `window-fringes` widths, bounds them to 64 units, and reports them as `fringe_left`/`fringe_right` window facts only when either is nonzero, so a batch TTY frame (zero-width fringes) publishes nothing new; the adapter validates the pair and, for each nonzero side, appends a `FRINGE_UPDATE` message naming a snapshot-stable bounded id (`200 + window_index * 2 + side`), the whole window height, and the frame's real default background color as the fringe color.  Those records go through the same `Scene` validation and draw path the synthetic fringe slice already used, so a drawn fringe bar and a validated fringe record cannot disagree, and `sdl3-emacs-graphic-smoke` now samples the records while they hold (an authoritative `FRAME_UPDATE` clears them) and requires both sides plus the matching draw commands, reporting `fringe:[8,8]` and `fringe_drawn:true`; the reserved columns also inset the layout, because rows now start at the left fringe and are narrowed by both fringes (and the cursor is offset the same way), so body text and the cursor sit in the text area instead of under a fringe.  Fringe bitmaps, glyphs inside the fringe, face-specific fringe colors, and draggable fringe semantics are not claimed.  P111 uses the real mode-line face colors.  The publisher reports the frame's `mode-line` face `:foreground`/`:background` through the same `proto-ui--face-color` helper (now taking an optional face) and the adapter validates them as `mode_line_foreground`/`mode_line_background`; when either is present it publishes a generation-qualified `FACE_DEFINE` under the reserved `mode_line_face_id` (the generation only advances on a real color change, exactly like the default face).  The diagnostic mode-line draw path resolves that face and uses its background for the bar and its foreground for the text when the corresponding half is present, keeping the bounded diagnostic colors otherwise, so a real PGTK frame's `grey75`-on-`black` mode line reaches the SDL bar.  `sdl3-emacs-graphic-smoke` requires the published mode-line face and a bar fill whose color matches it (`mode_line_face_colors:true`).  Per-face text attributes, multiple faces inside one line, user themes, face merging, and full PGTK face parity are not claimed.  P112 sizes the diagnostic text from the real frame: the text renderer gained a `point_size` field with `adoptLineHeight`/`activePointSize` helpers, the graphic path adopts the published line height whenever it is a plausible font size (8..72) and reopens the font (dropping cached textures) when the size actually changes, and `PROTO_UI_FONT_SIZE` still overrides the adopted value.  `sdl3-emacs-graphic-smoke` requires the renderer's active point size to equal the live row height and reports it as `text_font_size` (15 for the default PGTK frame, matching the 15-pixel rows).  Real font families, font files, per-face sizes, variable-pitch rows, and shaped text are not claimed.  P113 uses the frame's real font file.  The publisher resolves the default face's font object through `font-info`, scans the info vector for the first existing font file (its position varies between builds) and its pixel size, and reports bounded `font_file`/`font_pixel_size` facts; the adapter validates them and publishes the file as a bounded string resource under the reserved `default_font_string_id`, regenerating only when the path changes.  The frontend's text renderer gained `adoptFontFile`/`activeFontFile`: it copies the path, closes the current font, and prefers the published file when opening, falling back to `PROTO_UI_FONT`, then its bundled candidates, so a missing or unopenable file never breaks text.  `sdl3-emacs-graphic-smoke` requires the active font file to equal the published resource and to end in `.ttf`, reporting `font_file` in its evidence.  Per-face fonts and sizes, variable-pitch rows, and shaped text are not claimed.  P114 gives the cursor the frame's real character cell: the publisher reports `frame-char-width` as a bounded `char_width` fact, the adapter validates it and funnels every cursor width through a `cursor_width` helper (the real cell, capped at 64, and never thinner than the two-unit diagnostic bar), and the cursor-fit validation measures the real width so a wide cell cannot push the cursor outside its window.  `sdl3-emacs-graphic-smoke` requires the live cursor to be wider than the diagnostic bar, at most one real cell, and exactly one line tall, reporting `cursor:[8,15]`.  Per-face fonts and sizes, variable-pitch rows, shaped text, and cursor blinking are not claimed.  P115 extends the reserved live-face table: the mode-line publication was refactored into a single `appendReservedFace` helper, and the publisher now also reports the frame's real `cursor` and `fringe` face backgrounds, each projected under its own reserved face id (`cursor_face_id`, `fringe_face_id`) with the same generation-qualified `FACE_DEFINE`.  The cursor fill prefers the published cursor face and falls back to the window's default-face foreground, and the fringe records take the real fringe face background when present (falling back to the default background), so both match what the real frame draws.  `sdl3-emacs-graphic-smoke` requires both reserved faces plus the matching cursor and fringe draw colors.  Per-face fonts and sizes, the scroll-bar face (unspecified in this theme), variable-pitch rows, and shaped text are not claimed.  P117 gives the split mirror its inactive mode line: the publisher reports the frame's `mode-line-inactive` face colors, the adapter publishes them under the reserved `mode_line_inactive_face_id` through the same `appendReservedFace` helper, and `drawDiagnosticWindowLine` selects the face by the record's `mode_line_active` flag (falling back to the active face, then the bounded diagnostic colors).  `sdl3-emacs-graphic-smoke` now pushes a real `C-x 2` key sequence, waits for two mode lines, and requires the inactive window's bar fill to match the published inactive color while the active one still matches the active face, reporting `mode_line_inactive_face_colors`.  Per-face fonts and sizes, header/tab face distinctions, variable-pitch rows, and shaped text are not claimed.  P118 puts the live active region in the mirror: the publisher maps the region's two endpoints through `posn-at-point`/`posn-x-y` (window pixels), requires an active transient mark and visible endpoints, bounds the rectangle, and reports it plus the frame's real `region` face background; the adapter validates the rect, publishes the region face under the reserved `region_face_id`, and reuses the frontend's bounded visible-highlight record (rect plus a live face), so the region travels the same validation, ownership, and draw path as the synthetic mouse highlight, re-sent after each authoritative `FRAME_UPDATE` because that clears the highlight table.  `sdl3-emacs-graphic-smoke` pins one active region in the publisher profile and requires the highlight record and its draw color (`region_highlight:true`).  Mouse-face capture, multi-rectangle or per-line region shapes, and shaped text are not claimed.  P119 adds the manual graphic mirror target: `sdl3-emacs-graphic-interactive` runs the ordinary interactive EPXL session with `--graphic-frame-publisher=true`, so an operator can see the display-backed frame's real mode line and mode-line faces, fonts, fringes, cursor cell, active region, menu bar, and scroll bar mirrored into SDL until the window is closed.  It adds no new protocol surface and no automated assertion; `sdl3-emacs-graphic-smoke` stays the CI-checked proof of the same facts.  P120 colors the visible lines: the publisher resolves each character's face foreground (`get-text-property` plus `face-attribute`, normalized by a shared `proto-ui--bounded-color` helper that `proto-ui--face-color` now shares), groups adjacent equal colors into at most six bounded runs per row, and publishes a row only when its runs cover the whole line, because a row with glyph runs stops drawing its plain text.  Each run carries its row through the wire (P122 raises the bound to eight visible rows and twenty-four runs), the adapter validates it, publishes each color under a reserved run face id, and emits schema-2 face-bound `GLYPH_RUN` records at the row's geometry, so the mirror shows real font-lock colors for those lines.  `sdl3-emacs-graphic-smoke` pins three Lisp lines in the publisher profile and requires at least two distinct run colors to reach the draw list and at least three rows with two or more distinct colors, reporting `line_font_lock_runs` and `line_font_lock_row_count`.  P122 then raises the run bound from two rows/six runs to eight rows/twenty-four runs, so the whole eight-line window the publisher reads can carry font-lock colors.  Per-run fonts, bold/italic/underline faces, face merging, and shaped text are not claimed.  P116 reserves the whole text area: rows are now narrowed by the frame's real scroll-bar width as well as both fringes (so body text cannot run under the scroll bar), and the mode-line, header-line, and tab-line records span only that text area, matching where the real frame draws them.  `sdl3-emacs-graphic-smoke` requires the row and mode-line widths to exclude the scroll bar it already checks, reporting `row_width` in its evidence (2556 minus 8/8 fringes and 16 scroll bar).  The bounded status-manifest test's runaway guard also moves from 24 KiB to 32 KiB, because the manifest had grown with the feature set and the old bound forced evidence trimming on every slice.  Per-face fonts and sizes, the scroll-bar face (unspecified in this theme), variable-pitch rows, and shaped text are not claimed.
+
+P139 falls back for scripts the adopted font lacks.  Emacs picks a covering font per character, but the mirror opened only the frame's own font file, so CJK rendered as tofu.  The renderer now opens the first available system fallback (WenQuanYi, Sarasa Gothic, Noto CJK, Unifont, PingFang, Microsoft YaHei/SimSun), attaches it to the adopted font and each styled variant with TTF_AddFallbackFont, and closes it with the font set on size/file change.  `sdl3-emacs-graphic-smoke` requires an installed fallback and that CJK codepoints resolve through it (cjk_fallback, checked with TTF_FontHasGlyph).  Per-character font selection, shaping/BiDi, variable-pitch rows, and shaped text are not claimed.
+P140 opens the first bounded variable-pitch path. The publisher resolves a face's file-backed font, compares it with the frame default, and reports one alternate font resource plus variable_pitch on each run that uses it; the adapter carries a reserved glyph-run flag, and the renderer opens that real SDL_ttf font separately from the default and styled variants while keying its texture cache by the flag. `sdl3-emacs-graphic-smoke` pins DejaVu Serif beside the default Liberation Mono and requires the run to reach the draw list with the alternate-font flag (variable_pitch_font). Per-character font fallback within a run, exact variable metrics/hit testing, shaping/BiDi, and shaped text are not claimed.
+P141 gives the header line and tab line their own segment faces.  Emacs returns those lines from `format-mode-line` with their own face properties too, but the mirror drew one face for each.  The publisher now derives bounded per-segment runs for the mode line, header line, and tab line through one `proto-ui--chrome-runs` helper, marking each run `:mode_line`, `:header_line`, or `:tab_line`; the adapter anchors every chrome run to the window's first row but positions it at that aux row's geometry (header at the window top, tab below the header, mode line at the bottom) and carries a distinct bounded glyph-run flag.  A plain chrome line is only suppressed by runs of its own kind, which also fixes the P138 regression where a mode-line run hid the header and tab text.  `sdl3-emacs-graphic-smoke` pins an accent face on the header and tab lines and requires each run to reach the draw list in its face color (header_line_face_runs, tab_line_face_runs), sampled per applied message because the next authoritative `FRAME_UPDATE` clears the glyph-run table; `proto-ui-unit` pins the wire flags, the mutual exclusivity, and the flat-row chrome anchor.  Mixed chrome kinds on one run are rejected, and per-character header/tab font selection and non-ASCII segments are not claimed.
+P142 mirrors the real tool bar.  Emacs reserves a strip below the menu bar for the frame's `tool-bar-map`, but the mirror only had a synthetic tool-bar model.  The publisher now enumerates the real keymap with `map-keymap` in display order and reports one bounded item per binding: a separator or space, or a button/toggle carrying its printable name, a bounded command key, its `:help` text, and the item's real `:visible`/`:enable`/`:button` state evaluated in the selected window exactly as the frame's own tool bar evaluates them (so the bounded publisher never guesses a hidden or disabled item).  The adapter validates the items (bounded label/help/key, the tool-bar kind/flags invariants), publishes them through the existing `TOOLBAR_MODEL` under one adapter-owned id whose generation only advances when the items change, and the SDL draw path renders the real labels; a batch frame with no tool-bar lines publishes nothing.  `sdl3-emacs-graphic-smoke` requires the live bounded model (thirteen items for the stock `-Q` tool bar) and that at least four of its labels reach the draw list (tool_bar, tool_bar_items), and `proto-ui-unit` pins the bounded parse and the separator-label rejection.  Real tool-bar icons, overflow, orientation, and exact PGTK tool-bar geometry (the mirror still draws the strip through the diagnostic toolbar layout) are not claimed.
+P143 puts the tool bar on the frame's real colors.  The mirror drew the tool-bar strip with bounded diagnostic colors, but Emacs's `tool-bar` face is a real `black`-on-`grey75` released-button face.  The publisher reports the frame's `tool-bar` face `:foreground`/`:background` (only while the frame has tool-bar lines), the adapter validates them and publishes a generation-qualified `FACE_DEFINE` under a reserved `tool_bar_face_id` through the same `appendReservedFace` helper the other live faces use, and the SDL draw path uses the background for the strip and its buttons and the foreground for the labels, keeping the bounded diagnostic colors otherwise.  `sdl3-emacs-graphic-smoke` requires the published face and a strip/slot fill in its real color (tool_bar_face_colors), and `proto-ui-unit` pins the bounded color parse.  The diagnostic tool-bar placement (the strip still overlaps the window's top strip because the mirror has no per-chrome geometry), box/border styles, icons, and exact PGTK tool-bar parity are not claimed.
+P144 carries the real `:box` face decoration.  Emacs gives the default mode-line face a `(:line-width -1 :style released-button)` box (and the tool-bar face a `(:line-width 1 :style released-button)` one), but the run publisher only resolved underline/strike-through/overline and inverse-video, so the mirror drew no box at all.  The publisher now resolves a face's `:box` (with its color when it names one) and folds it into the run grouping key, and reports the mode-line and tool-bar faces' bounded box style; the adapter validates both (the wire requires a box color whenever a box is present, and a box that names no color falls back to the face foreground exactly as Emacs draws it) and publishes them through the existing `FaceDecorations`/`appendReservedFace` path onto the reserved run faces and the reserved mode-line/tool-bar faces, and the SDL draw path renders them through the existing `faceDecorationBars` box approximation on the run rects, the mode-line/header/tab bars, and the tool-bar buttons.  `sdl3-emacs-graphic-smoke` requires the real released-button box on the mode-line and tool-bar faces and a drawn tool-bar button border (mode_line_box, tool_bar_box), and `proto-ui-unit` pins the bounded parse and both rejections.  Full PGTK box parity is not claimed.
+P145 stops a non-ASCII line from breaking the whole mirror.  The bounded run wire carries only printable ASCII (`validGlyphRunText` and the adapter's `isPrintableAscii` gate), but the publisher emitted a run for every character, so a single non-ASCII character in any visible line (CJK, accented letters, smart quotes, emoji) produced a non-ASCII run that the adapter rejected, failing the whole snapshot parse, which the live bridge reports as `NoEmacsFacts` and leaves the mirror blank (this turn reproduces that exact failure in `sdl3-emacs-graphic-smoke` before the fix).  The publisher now requires a printable-ASCII row and chrome line before publishing runs, so a line with any other character keeps its plain-text path — which the mirror already draws through SDL_ttf with the system font fallback (P129/P139) — instead of failing.  `sdl3-emacs-graphic-smoke` pins a CJK line among the visible font-lock rows and requires the mirror to still publish and draw that line as plain text (non_ascii_text), and `proto-ui-unit` pins the ASCII-only run contract.  Runs for mixed-ASCII lines (ASCII spans keep colors while non-ASCII falls back), shaping/BiDi, and per-character fonts are not claimed.
+P146 stops a long line from breaking a narrow mirror.  The adapter emits glyph runs in window-relative coordinates (the draw path adds the window origin), but the scene validated a run's `x + width` against the whole frame's logical width.  A line wider than the window (a URL, minified code, or any long line in a frame narrower than the run's pixel width, with the publisher's line cap at 120 bytes ≈ 960 px) therefore failed that bounds check and rejected the entire snapshot, blanking the mirror exactly like P145's non-ASCII run (this turn reproduces it in `proto-ui-unit` with a 120-column run in a 600-pixel frame).  The adapter now clamps each run to the owning window: it skips a run whose origin is past the window edge and caps the emitted width so `x + width` never exceeds the window, which also keeps the fill, box, and damage geometry inside the window.  `proto-ui-unit` pins the clamped result, and the full smoke sweep stays green.  Truncation versus continuation of the overflowing text (the mirror still draws the full run text, which can overflow the window edge) and per-window clipping of the drawn glyphs are not claimed.
+P147 hardens the cursor the same way.  The adapter used to reject the whole snapshot when a cursor did not fit its window (`fringe_left + column * 8 + cursor_width > window.width`, or a cursor line past the visible rows, which also failed `cursorFitsVertical`), the same fail-blank mode as P146's long line.  It now clamps the cursor's line and column into the owning window instead of failing, so a short window or a far-right column keeps the snapshot alive and the mirror shows a bounded cursor; the parse-level contract checks (line >= 1, column <= 120) are unchanged.  `proto-ui-unit` pins both a narrow window (the previous `InvalidCursorFacts` expectation becomes a clamped column-0 cursor) and a real column reaching the cursor rect.  The publisher still bounds the per-window cursor column at nine — raising that bounded diagnostic cap changed the pointer/menu/scrollbar interaction smokes' behaviour, so it is left as-is and recorded as a limitation rather than a fix — so exact cursor column, `window-hscroll`-adjusted cursor placement, and cursor blinking are not claimed.
+P148 tracks the right cursor.  `applyCursorUpdate` set the scene's single "current" cursor on every update, so in a split frame it ended up as whichever window was emitted last — often an inactive one — and the presentation gate (`gate.observeScene`), scene hash, and cursor evidence all described the wrong caret; the graphic smoke only passed because its size/color assertions happened to hold for either window.  The scene now sets `self.cursor` only for the active cursor, and the SDL draw path draws a non-selected window's caret hollow (the four one-unit edge bars) exactly as Emacs draws an inactive cursor while the selected window keeps its real kind, and it skips an invisible cursor.  `sdl3-emacs-graphic-smoke` splits the frame and requires the tracked cursor to be the active one with a solid rect plus a hollow inactive caret (inactive_cursor_hollow).  Smoke-side, this also confirmed that the publisher's per-window cursor column cap cannot be raised without perturbing the pointer/menu/scrollbar interaction smokes (retested after this fix), so it stays at nine.  Per-window inactive cursor shapes beyond the hollow box, cursor blinking, and `cursor-in-non-selected-windows` policy are not claimed.
+P149 keeps the mirrored rows aligned.  The publisher built its line list with `split-string ... t`, which drops empty elements, and additionally dropped any line past the 120-byte wire bound, so a blank line or an over-long line vanished from the list and every following row shifted up out of alignment with the real display (and the cursor's line index moved with them, because the cursor line is derived from logical line numbers while the row list lost an entry).  The publisher now keeps interior blank lines — dropping only a trailing empty element that a region-final newline produces — and truncates an over-long line to the wire bound at a character boundary instead of dropping it.  The adapter, in turn, must skip emitting a `TEXT_LINE_V2` record for a blank row because `validBoundedUtf8Text` rejects empty text, while still advancing the row index for every later line, so a blank line leaves a blank row rather than a gap.  `sdl3-emacs-graphic-smoke` pins an over-long line and a blank line in the runs profile and requires both the truncated row and the row that follows the blank to stay aligned (row_alignment).  Wrapped (visual-line) rows, and mirroring a line past the 120-byte bound in full rather than truncating it, are not claimed.
+P150 mirrors horizontal scrolling.  The mirror only reflected `window-hscroll` in the scrollbar state; the row text and font-lock runs always started at display column zero, so whenever Emacs auto-scrolled a long line (`auto-hscroll-mode` is on by default) the mirror showed the wrong part of the line — a common case given a long URL or log line.  The publisher now drops each row's scrolled-off display columns before emitting its text and starts each row's runs after the scrolled-off prefix (a wide-character-aware `proto-ui--column-index` finds the character boundary, since a wide character advances by its own display width), and it subtracts the hscroll amount from the cursor column before the existing nine-column cap.  `sdl3-emacs-hscroll-smoke` drags the real horizontal bar to `window-hscroll` 15 and requires the base `visible ASCII textZ` line to be mirrored as its remaining `extZ` (text_trimmed), proving both the row trim and that short rows shift with the display.  Wrapped (visual-line) rows, hscroll-aware cursor placement beyond the bounded column cap, and mirroring a line past the 120-byte bound in full are not claimed.
+P151 mirrors displayed rows, wrapping included.  The mirror's rows were the buffer's logical lines, but with `truncate-lines` off (the default) Emacs wraps a long line across several display rows, so a wrapped line appeared as one mirrored row carrying only its first 120 bytes and the mirror's rows no longer matched the display.  The publisher now walks the window's displayed rows with `vertical-motion` inside the window (`proto-ui--visual-line-spans`, bounded to 32 rows, stopping before each newline so a row's text is exactly what the display draws) and emits one mirrored row per display row; `proto-ui--display-lines` feeds both the flat text and each window's rows, and the font-lock run walk uses the same `vertical-motion` step so the runs line up with the rows they color.  `sdl3-emacs-graphic-smoke` pins a 1000-character line (wider than the frame's window) and requires the mirror to hold several rows of its wrapped text (wrapped_rows), while the over-long-line and blank-line pins keep their alignment.  The cursor's row still comes from the logical line delta rather than the display walk — switching it to `count-screen-lines` moved the caret onto a wrapped continuation row and broke the interactive window-navigation/window-restore smokes, so it was reverted and recorded as a limitation — and mirroring a displayed row past the 120-byte bound in full is likewise not claimed.
+P152 colours mixed ASCII/non-ASCII lines.  The bounded run wire carries only printable ASCII, so a row with any non-ASCII character kept no font-lock colours at all (P145 made it fall back to plain text).  A run can now mark itself *partial* (`glyph_partial_body`): it colours an ASCII span of a row without replacing that row's plain text, so the draw path keeps the plain text (which carries the characters the run wire cannot) and draws the partial runs over it.  The publisher emits partial runs for a mixed row's ASCII spans, positioned by display column (a wide character advances the column by two, and the run-tracking accumulates `string-width` per character), and only a row with no resolvable colour still fails back to plain text; the adapter carries the bounded partial bit and keeps `covers_row` false for it.  `sdl3-emacs-graphic-smoke` pins `你好 note4` (a non-ASCII span plus a keyword-coloured ASCII span) and requires both the plain text and a partial run (line_font_lock_run_mixed).  Shaped text/BiDi, runs spanning a substitution, and per-character fonts are not claimed.
+P153 mirrors a full wide row.  The bounded row text was capped at 120 bytes, a bound shared with the mode line, echo, title, and cursor, so on a wide frame — a maximized window on a large display with a small font is easily 200+ columns, and this container's frame is 315 columns — the mirror showed only the first 120 cells of every (wrapped or not) row.  The row text and the runs over it now share a separate, larger `max_row_columns` (256 bytes) bound: the publisher truncates at 256, the facts validators accept rows and runs up to 256, the `TEXT_LINE_V2` codec encodes/decodes 256, the SDL_ttf draw path accepts 256 bytes, and the text-texture cache key holds 256 (its length field moved from u8 to u16 — a 256-byte key would otherwise panic).  The chrome/echo/title/cursor bound stays at 120, so those stay small.  `sdl3-emacs-graphic-smoke` requires a mirrored row longer than 120 bytes (row_bound_256) when the window is wider than 120 cells, and its over-long-line pin still truncates rows past the new bound; the pins are ordered so that wrapping cannot push the coloured rows out of the bounded run budget on a narrow display.  Rows wider than 256 cells, the display-row cursor on wrapped rows, and shaped text/BiDi are not claimed.
+P155 corrects two placement details.  The run walk advanced the display row with `(vertical-motion 1)`, which always uses the SELECTED window's geometry, while the mirrored-row walk passed the window; in an unbalanced split the runs would wrap at the selected window's width and drift out of alignment with the rows they colour, so both walks now pass the window (`(vertical-motion 1 window)`).  Second, the adapter placed a cursor column on a hardcoded eight-unit cell (`fringe + column * 8`) even when the frame reported a different `char_width`, so a wider cell misplaced the caret; the placement and fit arithmetic now use the frame's real cell (`cursorCellWidth`), with `proto-ui-unit` pinning a ten-unit cell (column twenty -> x 200).  The window split smokes also asserted the caret's absolute `x == 8`, which is the frame's fringe width and so display-dependent (this environment's frame reports a one-pixel fringe); they now require the caret at the start of the selected window's first line (`x <= 16`, `y == 0`) with the window and text checks unchanged, so the smoke sweep stays green on any display.
+P156 puts the echo area on the frame's real colors.  The mirror reserved the frame's bottom strip for `current-message` but painted it with bounded diagnostic colors (a dark strip and yellow text), so a message on a light PGTK frame was drawn in colors the real frame never uses.  The echo strip now fills with the frame's published default face background and draws the message with its default face foreground (falling back to the diagnostic pair when no default face is live), which is what the real minibuffer/echo area shows for a plain message.  `sdl3-emacs-graphic-smoke` requires the drawn echo text to carry that default-face color (`echo_face_color`).  The active minibuffer prompt's own face, completion UI, multi-line echo, and message-specific faces are not claimed.
+P157 makes a multi-line region a set of rows instead of one box.  The active region is applied by redisplay rather than by a property (a probe shows `get-char-property` returns nil for marked text), and the publisher reported its two endpoints as a single bounding rectangle, so a region spanning several lines collapsed to a narrow band that matches neither the first line nor the last.  The publisher now walks the displayed rows the region touches (`end-of-visual-line` per row) and reports one bounded rectangle per row covering exactly the selected part of that row; the adapter validates up to eight of them, publishes the region color under a bounded block of reserved face ids (the first keeps `region_face_id`), and emits one bounded highlight record per row, which is what the frontend's `(window, face)`-keyed highlight table draws.  `sdl3-emacs-graphic-smoke` pins a three-line region on plain rows (so it cannot disturb the font-lock pins) and requires more than one region record plus the region color in the draw list (region_rects).  Per-line region shapes beyond one rectangle per displayed row, the inactive-region face, and shaped text are not claimed.
+P158 fixes the EPXL ACK-loss recovery handshake.  The recovery smoke's first session deliberately discards the reverse-input ACK, so session one's reconnect re-sends the still-pending input with its original wire sequence; `awaitFrameAck` recognised that retransmission, ACKed it, and then `return`ed from the whole wait instead of `continue`ing, leaving the frontend's separate frame ACK unread.  The next snapshot message then read that stale ACK, failed its sequence match with `ExpectedAck`, and aborted the publisher, which surfaced on the frontend as `EndOfStream` inside `recoverLiveScene` (the registered `sdl3-epxl-recovery-smoke` step failed deterministically with exactly that pair).  The dedup branch now `continue`s, exactly like the new-input branch a few lines below, so the frame ACK is still consumed and the recovered session applies the retried `X` (`XEmacs Proto-UI`).  `sdl3-epxl-recovery-smoke` now passes instead of failing; the resync, gap-recovery, facts, and live smokes are unaffected because a single session never retransmits an input.
+P159 carries more than one alternate font family per snapshot.  The publisher already named each run's file-backed font (`:font_file`), but the adapter dropped it while parsing and kept only the single negotiated `variable_font_file`, so a second distinct family (a serif run beside a sans run, or any face that names its own font) was drawn with family 1's file.  The adapter now groups the distinct run font files that are neither the frame default nor the negotiated variable-pitch file into a bounded pair of extra families (`max_alt_font_families`), publishes each as a reserved string resource (`variable_font_string_id + 1`, `+ 2`), and sets a two-bit glyph-run family field (`glyph_font_family_shift`) where family 1 keeps the existing `glyph_variable_font` flag, so a publisher that only sends `variable_pitch` still resolves to family 1.  The frontend stores the family on the scene run, and the renderer keeps one alternate font handle per family, keying its texture cache by the full style/family byte so two families never share a texture; a family beyond the bound stays family 1 rather than failing the snapshot (the same never-blank-the-mirror rule as P145/P146).  `proto-ui-unit` pins two distinct alternate files as families `0/1/2/3` with three published resources, and `sdl3-emacs-graphic-smoke` reports the live `font_families` count (one on this theme, where only the serif variable-pitch face differs from the default).  Per-character selection *within* a run, a family reachable only through an unresolvable symbolic font, exact variable metrics, and shaping/BiDi are not claimed.
+P138 keeps the mode line's own segment faces.  format-mode-line returns the mode-line string with its face properties (the default frame's buffer id carries mode-line-buffer-id, bold) but the mirror drew one face.  The publisher resolves those per-segment faces into bounded runs marked :mode_line, the adapter emits them as glyph runs anchored to the window's first row but positioned at the mode-line geometry, and a new bounded glyph-run flag keeps them from suppressing the row's plain text.  The frontend skips the single-face mode-line text when runs exist and the bounded run total moves from 24 to 32.  `sdl3-emacs-graphic-smoke` requires a bold mode-line run (mode_line_face_runs).  Header/tab-line segments, variable-pitch rows, per-character font selection within a run, and shaped text are not claimed.
+P137 mirrors the echo area.  The real frame reserves a bottom strip for the minibuffer (the root window's bottom 15 pixels) that the mirror left empty.  The publisher reports current-message as a bounded :echo string, the adapter publishes it as a reserved string resource (echo_string_id), and the frontend draws it in that strip with the frame font.  The graphic smoke pins a deterministic message and requires the resource and its drawn text (echo_area) and proto-ui-unit covers the parse and resource publication.  The active minibuffer prompt face, completion UI, multi-line echo, and shaped text are not claimed.
+P136 resolves the live mouse-face highlight.  The publisher records the last pointer sample the frontend sends, resolves get-char-property point mouse-face at that glyph, and reports a bounded highlight plus the face's real background; the adapter publishes it under a reserved mouse-face face id and the frontend keys highlights by (window, face) so the region and mouse-face highlights coexist.  A new `sdl3-emacs-mouse-smoke` drives a real synthetic pointer motion at the first body row and requires the highlight (mouse_face).  mouse-face text properties do not survive redisplay, so the smoke pins an overlay (as buttons/links do), and the highlight arrives as its own message so the smoke samples it per applied message.
+P135 colors every visible window.  The publisher only resolved runs for the selected window, so after C-x 2 the other window stayed plain.  Each run now names its window, the publisher emits runs for up to two windows inside the same bounded budget, and the adapter maps each window's rows into the scene's flat row table (base row plus local row) so the glyph runs validate against the right window.  `sdl3-emacs-graphic-smoke` requires a run for the non-first window after the split (line_font_lock_multi_window) and `proto-ui-unit` pins the flat-row mapping.  More than two windows, variable-pitch rows, and shaped text are not claimed.
+P134 positions font-lock runs on the frame's real character cell.  The run x and width used a hardcoded eight-unit cell, which only matches the default theme; the adapter now uses the published char_width (falling back to eight), so a frame with a different cell width keeps its runs aligned.  `proto-ui-unit` pins a ten-unit cell and requires the emitted glyph run to start at column x 10 with the matching width.  Variable-pitch rows, per-character font selection within a run, and shaped text are not claimed.
+P133 resolves overlay-aware faces.  The run publisher read the face text property, which misses overlays; it now uses get-char-property, so the highest-priority overlay face wins.  That picks up hl-line, isearch, and spell-check (the active region is NOT a text/overlay property — `get-char-property` returns nil for marked text — so the region is carried by the bounded highlight rectangle instead).  Because a row can carry more distinct faces, the bounded runs-per-line cap moves from six to eight, still inside the twenty-four-run snapshot bound.  `sdl3-emacs-graphic-smoke` pins an overlay face and requires its color to reach a run (line_font_lock_run_overlay).  Face merging beyond Emacs's own resolved face, mouse-face, and shaped text are not claimed.
+P132 puts the remaining chrome on the real font.  Dialogs, the tool-bar strip, tooltips, and the IME preedit/candidate boxes now draw through a shared drawLabel helper that centres the frame font in the widget band, so the mirror no longer emits SDL eight-pixel debug text at all.  The synthetic widget smokes were updated to the font-backed command, keeping the suppression and non-ASCII-filter assertions.
+P131 renders per-run bold and italic.  The publisher resolves :weight (semi-bold and heavier) and :slant (italic/oblique) per character and folds both into the run key; the adapter carries the style as two bounded glyph-run flag bits, the frontend keeps them on the scene run, and the text renderer opens and caches a styled variant of the adopted font with TTF_SetFontStyle and keys the text cache by style so a bold glyph never reuses a plain texture.  `sdl3-emacs-graphic-smoke` pins a bold-italic span and requires the run to reach the draw list with style bits set (line_font_lock_run_style).  Variable-pitch rows, per-character font selection within a run, and shaped text are not claimed.
+P130 puts the menu chrome on the real font.  The real menu-bar labels and the bounded popup rows draw through the adopted SDL_ttf font, centred in their strip/row, instead of the eight-pixel debug font; `sdl3-emacs-menu-bar-smoke` requires each real label to reach the draw list as font-backed text (font_backed) and the runtime-bridge menu/patch scans were updated.  Dialogs, the tool bar, and tooltips still use the bounded debug font.
+P129 draws the mirror text with the frame's real font.  Body rows, fontified runs, the mode line, and header/tab lines now emit font-backed text vertically centred in the row with the adopted font's real height (TTF_GetFontHeight), instead of SDL's eight-pixel debug font; the non-ASCII path is unchanged.  `sdl3-emacs-graphic-smoke` requires a plain body row to reach the draw list as font-backed text (body_text_font).  The menu bar, dialogs, tool bar, and tooltips still use the bounded debug font, and bold/italic weight and slant, variable-pitch rows, shaping, and the real tool bar are not claimed.
+P128 sizes the mirror text from the frame's real font pixel size.  The publisher already reported font_pixel_size but the adapter only validated it; the renderer sized text from the line height, so glyphs were one size too large for the row.  The adapter now publishes the size as a second bounded string resource beside the font file (default_font_size_string_id), the frontend parses and adopts it as the text point size, and the line height remains the fallback.  `sdl3-emacs-graphic-smoke` requires the active point size to equal the published pixel size and not exceed the row height (text_font_size 13 with row_height 15).
+P127 honours :inverse-video.  The publisher resolves the flag per character and folds it into the run key; the adapter validates it and publishes it on the reserved run face, and the glyph-run draw path swaps the fill and text halves (fill with the face foreground, draw the text with the face background).  `sdl3-emacs-graphic-smoke` pins an :inverse-video span and requires the swapped foreground fill (`line_font_lock_run_inverse`).  Bold/italic weight and slant, wave/dotted underline styles, face merging, and shaped text are not claimed.
+P126 carries the real decoration colors.  The publisher resolves a face's :underline/:strike-through/:overline color (a plain #rrggbb or the :color of a spec such as (:color "red" :style wave)) and folds it into the run key; the adapter validates the three colors and publishes FaceStyle.color with an explicit underline_color/strike_color/overline_color, so the existing faceDecorationBars path draws each bar in the face's own color instead of the run foreground.  `sdl3-emacs-graphic-smoke` pins a #00a0a0 underline and requires the matching bar fill.  Bold/italic weight and slant, wave/dotted underline styles, face merging, and shaped text are not claimed.
+P125 mirrors a real screenful of window text.  The publisher sends up to thirty-two lines per window (each still capped at 120 bytes) and the adapter accepts the same bound; the viewport check no longer couples the window's absolute start line to the line table, so a deeply scrolled window still validates.  The diagnostic scrollbar keeps its line-derived viewport, and the scrollbar/interaction smokes pin a 200-line buffer with a 32-line viewport (page 10 to 42, drag 42 to 46).  `sdl3-emacs-graphic-smoke` requires at least twenty-four mirrored lines and reports `mirrored_lines` (30).  Full-screen redisplay capture, variable-height rows, and folding are not claimed.
+P124 carries per-run face decorations.  The publisher resolves each character's :underline, :strike-through, and :overline (with the default-face fallback) and folds them into the run grouping key, so a decorated span splits a run; the adapter validates the three flags and publishes them as FaceStyle.single on the same reserved run face.  The renderer's existing faceDecorationBars path already drew those styles for glyph runs, so no draw or protocol change was needed.  `sdl3-emacs-graphic-smoke` pins an underlined span and requires a matching bar fill (`line_font_lock_run_decorations`).  Bold/italic weight and slant, face merging, and shaped text are not claimed.
+P123 carries per-run face backgrounds.  A run background is published only when it differs from the frame default, so a plain line keeps its single-face text; the adapter validates the extra background half, publishes it on the same reserved run face, and the existing glyph-run draw path fills that rect before the text.  The shared resolver also falls back to the default face for an unspecified foreground/background, so a background-only face still contributes its own foreground.  `sdl3-emacs-graphic-smoke` pins a `#204060` background on the runs-smoke comment spans and requires the matching fill (`line_font_lock_run_backgrounds`).  Bold/italic/underline, face merging, and shaped text are not claimed.
+P121 gives the aux lines their own faces.  The mirror already drew the header line and tab line, but both used the mode-line face colors.  The publisher now reports the frame's real `header-line` and `tab-line` face foreground/background through the same `proto-ui--face-color` helper, the adapter validates them and publishes each under its own reserved face id (`header_line_face_id`, `tab_line_face_id`), and `drawDiagnosticWindowLine` picks the face from the record kind bits (header / tab / active-inactive mode line) with the mode-line face as the fallback.  `sdl3-emacs-graphic-smoke` pins a header line and a tab line in the publisher profile and requires both aux records plus their own face-colored bars, reporting `header_line_face_colors` and `tab_line_face_colors`.  Header/tab items, mouse faces, and PGTK parity are not claimed.
+
+P160 makes the mouse-face highlight a set of rows instead of one cell.  The publisher reported only the character cell under the mirror's pointer, so a `mouse-face` span covering several displayed rows (a button, a link, or any multi-line overlay) drew a single rect that matched neither end.  The publisher now finds the contiguous `mouse-face` span around the pointer (bounded to 400 characters each way), walks the displayed rows it touches, and reports one bounded rectangle per row — the same shape as the P157 region — falling back to the frame's character cell when a batch/TTY frame has no `posn-at-point` and no visual-line layout; the adapter validates up to eight rectangles, publishes the background under a reserved mouse-rect face block (`mouse_rect_face_base_id`, keeping `mouse_face_id` for the first), and emits one bounded highlight record per rectangle.  `sdl3-emacs-mouse-smoke` now pins a mouse-face overlay that spans three displayed rows and requires three highlight records (`mouse_rects`:3).  Arbitrary region/mouse-face shapes (a rect that is not the union of whole-row slices), the inactive-region face, and shaped text are not claimed.
+
+P161 draws the real `:box` bevel and thickness.  The protocol's face payload already carried a bounded `box_line_width`, but the adapter never set it (the wire requires a box color whenever the width is non-zero) and `faceDecorationBars` drew all four border bars in one color at a guessed `height * 0.08` thickness, so the released-button mode-line/tool-bar border was a flat hairline.  The publisher now resolves each face's `:box` `:line-width` (an integer or a horizontal/vertical cons; a negative width is relative to the frame's own border, so its magnitude is the bounded stand-in) into a 1..8 pixel width, the adapter publishes it on the face payload (defaulting the box color to the face foreground when the box names none, which the wire already required) and folds it into the generation check, and the renderer uses that width and draws a bevel — top/left lightened by 96, bottom/right darkened by 64 for `released`, the inverse for `pressed`, flat for `simple` — derived from the box color so a black box still shows a readable edge.  `sdl3-emacs-graphic-smoke` requires a real box width on both chrome faces and two distinct tool-bar border colors (`tool_bar_box_bevel`, `tool_bar_box_width`:1).  Exact PGTK bevel geometry (Emacs's own highlight/shadow faces, rounded corners) remains pending.
+
+P162 carries each live menu row's real `:enable` state.  The publisher resolved a menu item's label and command but never its `:enable` form, so the mirror drew every popup row enabled — Cut/Copy/Clear appeared available with no active mark.  `proto-ui--menu-children` now also returns a parallel enable vector, evaluating each item's `:enable` form in the selected window through the same safe evaluator the tool bar uses (an absent form means enabled, an erroring form stays disabled), and the open-menu facts carry it; the adapter validates the parallel vector (absent means every row enabled, a mismatched length is rejected), projects a disabled row as a `MENU_MODEL` node without `MenuNodeFlags.enabled`, and the existing popup draw path dims it while `menuRows` skips it as non-selectable.  `sdl3-emacs-menu-open-smoke` requires the real Edit menu's mark-dependent rows to arrive disabled (`popup_enable_state`:true), and the apply smoke still chooses "Undo" when the seeded edit makes it enabled.  Subsequent milestones close `:filter`/`:visible`; submenu traversal remains pending.
+
+P163 gives line runs face-aware pixel advances.  The adapter previously derived every run origin and width from the frame's character cell, so a variable-pitch run had the right font but the wrong geometry.  The publisher now measures each printable ASCII character with `string-pixel-width` against its resolved face and accumulates bounded text-relative `pixel_x` and `pixel_width` for body and chrome runs; the adapter validates the fields as a pair, prefers them after the left fringe, and retains the cell calculation when absent.  `sdl3-emacs-graphic-smoke` requires the variable run's drawn rectangle to equal the published metrics (`variable_pitch_metrics:true`).  These are unshaped, per-character advances; kerning, BiDi, complete glyph runs, and exact hit testing are not claimed.
+
+P164 aligns the cursor with P163's run geometry.  Cursor placement previously
+remained `column × char_width`, so a caret in a variable-pitch run stayed at the
+monospace position even after the run itself was drawn at its measured pixels.
+The adapter now locates the body run covering the cursor on the same displayed
+window row; when that run has the bounded producer pair, it maps the cursor
+column across the run's pixel width and uses that origin, while rows without a
+matching run retain the cell fallback.  `proto-ui-unit` pins a variable-pitch
+run at x=17/width=23 and requires the cursor at column 3 to land at x=28.
+This is bounded run-space placement, not exact shaped-text hit testing,
+wrapped-line cursor geometry, kerning, or BiDi.
+
+P165 publishes and renders real menu key hints.  The publisher resolves each
+popup row's explicit string `:keys` property, falling back to the first
+`where-is-internal` binding for the row's command, then keeps only a bounded
+printable key description.  The open-menu facts carry the parallel vector, the
+adapter validates a non-empty vector against the row count and stores each key
+on its `MENU_MODEL` node, and the popup draw path right-aligns the hint with the
+row label.  `proto-ui-unit` pins the real Edit-menu keys and rejects a
+mismatched vector; `sdl3-emacs-menu-open-smoke` requires a key in the live model
+and its matching command in the popup draw list (`popup_key_hint`:true).
+Subsequent milestones close `:filter`/`:visible`; submenu traversal remains pending.
+
+P166 applies real menu visibility and filters before row enumeration.  The
+publisher resolves both raw `menu-item` bindings and the normalized forms Emacs
+returns from keymap traversal, applies `:filter` first, then evaluates a present
+`:visible` form in the selected window.  A filter may replace the binding (which
+therefore feeds safe-command resolution and `where-is-internal` key lookup) or
+return nil to remove the row; an erroring filter removes the row.  Absent
+`:visible` remains visible, and nil-bound separators survive unless a filter or
+visibility form removes them.  `proto-ui-unit` now runs the
+`proto-ui-menu-filter-unit` producer fixture across visible, hidden, separator,
+filtered, filter-removed, and erroring rows.
+
+P167 adds bounded one-level pointer traversal into real submenus.  The open-menu
+facts now carry a parallel submenu vector and, for a nested popup, the parent id
+and label.  The adapter projects the requested submenu row as the parent of
+bounded depth-2 children so the existing `MENU_OPEN`/`MENU_MODEL` contract stays
+unchanged.  The frontend identifies an enabled submenu row in the same popup hit
+test used by drawing and navigation, then reports a normal negotiated
+`MENU_OPEN_REQUEST` whose origin is that row’s right edge.  The publisher keeps
+submenu keymaps adapter-local and replaces the popup through the same open
+action.  `proto-ui-menu-submenu-unit` pins producer replacement, `proto-ui-unit`
+pins nested facts and frontend hit/origin geometry, and the existing live menu
+round trip remains green.  P168 completes one-level activation: an enabled
+submenu row is highlighted by hover or Up/Down, motion/Enter reports the same
+backend-owned open request as clicking it, and `sdl3-menu-hit-smoke` requires
+both request paths.  P169 generalizes publisher state into a bounded selected
+path: each ancestor is projected as a hidden submenu node, row IDs are
+depth-specific, and traversal follows the existing protocol limit of four row
+depths.  `proto-ui-menu-submenu-unit` now requires two successive selections
+and the facts/model unit pins a depth-three ancestor chain.  Paths beyond that
+wire bound and full PGTK popup parity remain pending.  P170 publishes real
+stateful row state: the producer evaluates `:button` `:toggle`/`:radio` forms
+for both raw and normalized menu rows, sends bounded parallel `kind` and
+`selected` vectors, and the adapter validates mismatched/unknown values before
+projecting checkbox/radio kinds and selected flags; separators project as
+visible-only.  `proto-ui-menu-radio-unit`
+covers on/off producer state; the facts/model unit covers checkbox, selected and
+unselected radio, an unaffected command row, and vector rejection.  P171 adds
+Emacs's line-number radio commands to the closed result allowlist and
+`proto-ui-menu-radio-apply-unit` proves that choosing Absolute closes the
+popup, runs the backend command, and republishes the same group with Relative
+selected on the next choice.  The frontend still never mutates selection.
+General radio grouping, icons, and full PGTK popup parity remain pending.
+P172 refreshes the authoritative current-step list, records that bounded cursor
+styles are now implemented, and replaces stale absolute-pixel input/edit gate
+assertions with semantic text/row checks so they remain valid across real frame
+character cells.  This is documentation/gate consistency; no producer or
+frontend state semantics changed.
+
+P173 extends stateful popup coverage to independent radio groups and gives the
+SDL draw path a distinct radio indicator.  The producer self-test now covers a
+selected toggle, two on/off radio groups, and a normalized separator in the same
+bounded `kind`/`selected` vectors; the smoke walks through a radio row and still
+proves both Enter-on-command and Enter-on-submenu behavior.  Popup rows now use
+the shared geometry for stable origins: checkboxes keep their 4x4 square, while
+a selected radio row draws a 2x2 dot.  The frontend continues to publish only
+backend-owned state and never derives or mutates group selection.  Icons and
+full PGTK popup parity remain pending.  P174 adds Emacs's line-wrapping radio commands to the closed result
+allowlist and extends `proto-ui-menu-radio-apply-unit` to choose Visual Wrap,
+then Truncate, proving that two independent radio groups apply through the same
+bounded path and republish their backend-owned selections.  Arbitrary commands
+remain rejected.  P175 adds bounded menu icon references to `MENU_MODEL` and `MENU_PATCH`
+schema 2.  Each non-separator node may name one generation-qualified existing
+image resource; partial references and separator icons are rejected, and patch
+delete operations must clear both fields.  The SDL popup draw path
+draws a complete live resource in the leading slot, shifts its label, and falls
+back to the label for missing/stale resources.  The menu smoke now carries a
+2x2 resource and requires the exact pixels (`menu_icon`:true).  Live producer
+extraction from Emacs `:image` forms and full icon parity remain pending.  P176 is documentation/gate consistency: it refreshes the runbook's menu
+evidence to P168-P175, removes stale popup claims, and updates the capability
+summary for distinct markers and icon fallback.  P177 publishes each row's bounded printable `:help` as an eighth parallel
+producer vector, owns and validates it in the adapter facts, and stores it on
+`MENU_NODE.help`; the live Edit-menu smoke requires help on the Undo row
+(`popup_help`:true).  Help rendering/tooltip policy is not claimed.  P178 extracts two more parallel vectors from real menu `:image` specs: the bounded resource id is the spec hash normalized to a nonzero `u32` and its generation is 1; invalid or absent images are empty references.  Facts validates the parallel vectors, rejects length mismatches, and projects both fields onto `MENU_NODE`; `proto-ui-menu-icon-unit` pins two distinct specs plus a plain row.  This is reference extraction only—live `IMAGE_DEFINE` payload capture remains pending, so real menus safely fall back to labels until that resource arrives.  P179 initially rendered the highlighted row's already-validated help as a bounded frontend tip.  A shared `menuHelpTip` source placed a one-row panel above the popup when the owner has room, otherwise below it, and suppresses it when neither fits; it reuses popup geometry rather than inventing a second hit/render rectangle.  Its frontend unit pinned text and containment, `sdl3-menu-hit-smoke` proves the drawn tip, and the live Edit-menu smoke then required the drawn Undo help (`popup_help` plus rendered text).  Hover timing, wrapping, and platform tooltip parity were pending.
+
+P180 wraps already-validated popup help greedily at ASCII whitespace into at
+most three rows within the owner-derived safe width.  Non-printable, non-ASCII,
+and oversized-word help is suppressed, and the tip's above/below fit uses the
+actual row count.  The frontend unit pins multi-row wrap and containment, while
+`sdl3-menu-hit-smoke` proves multiline rendering and the live smoke proves the
+representation; a live popup with no help that fits is correctly suppressed.
+Hover timing and platform tooltip parity remain pending.
+
+P181 is documentation/gate consistency for that rendering change.  The
+synthetic menu fixture remains the proof that wrapped help reaches the draw
+list; the live gate proves the producer published bounded help and no longer
+claims a rendered tip when P180 correctly suppresses it.  The capability
+manifest now names fixture-proven wrapping separately from live payload
+capture and pending hover timing.  No EUP schema, producer vector, or frontend
+state semantics changed.
+
+P182 captures bounded live menu icon payloads for real file-backed XBM specs
+only.  The producer sends base64 bytes up to the 4096-byte resource bound,
+facts validates base64/XBM structure and dimensions, decodes it to RGBA8, and
+emits the existing generation-qualified `IMAGE_DEFINE`/`IMAGE_DATA` pair before
+the menu model.  Well-encoded malformed or oversized payloads safely fall back
+to labels.  The
+live Edit-menu smoke appends one structurally valid `gnus-pointer.xbm` row
+after the stock rows and
+requires a nonzero icon reference backed by a complete, generation-correct
+resource.  Other image formats, generated icons, and full image parity remain
+pending.
+
+P183 is documentation/gate consistency for that payload capture.  It places
+P182 in the milestone sequence, keeps renderer evidence in the synthetic
+`sdl3-menu-hit-smoke`, and scopes the live gate to a complete generation-matched
+scene resource rather than a separate live draw assertion.  It also rechecks
+that the appended fixture does not disturb the Undo-first apply path, and
+refreshes the authoritative status rows that still denied bounded faces, fonts,
+images, and widgets.  No EUP schema, producer vector, parser, or frontend state
+semantics changed.
+
+P184 pins the malformed-XBM fallback boundary.  A well-encoded payload that
+passes the bounded facts wire but fails XBM structure validation produces only
+the menu model/open pair: no partial image resource is emitted, the
+generation-qualified row reference remains intact, and the absent resource
+drives the existing frontend label fallback.  Base64-invalid and length-mismatch
+inputs remain hard wire errors.
+
+P185 extends that boundary to the payload-size trust boundary.  A well-encoded
+payload larger than 4096 decoded bytes is now dropped per row instead of failing
+the whole menu snapshot; its nonzero generation-qualified reference survives and
+the absent resource selects the existing label fallback.  Invalid base64 and
+mismatched producer vectors remain hard errors.  This makes the documented
+oversized-payload behavior true at the adapter trust boundary.
+
+P186 is the protocol-accounting companion to P184/P185: the normative EPXL
+public-facts wording now names the bounded `icon_payloads` vector, its exact
+length/base64 requirements, the per-row malformed-XBM and oversized-payload
+fallbacks, and the emitted image-resource pair.  No runtime behavior changed.
+
+P187 rebasines full-Emacs compatibility away from command whitelists.  The
+transitional `C-x` whitelist remains rollback-only; the forward path is a
+display-frame keymap loop in which SDL emits canonical key events, Emacs's own
+command loop consumes `unread-command-events`, and keymaps, prefix arguments,
+recursive commands, and mode-specific bindings remain owned by Emacs.
+
+P188 lands the first R8c slice over Terminal Provider Extension.  A selected
+provider frame now enters redisplay, realizes TTY-compatible default faces,
+captures its desired glyph matrix, and sends one bounded EUP frame update to
+SDL3.  The `proto-ui-tpe-frame` gate requires a nonempty row/run snapshot and
+SDL3 reports one applied frame update and returns the provider capture acknowledgement.  This is display capture only:
+general keymaps, shaped Unicode, faces beyond the default matrix transport,
+BiDi, images, resource lifecycle, and full input remain open.  The legacy
+`C-x` command translator is not on the provider path and is not compatibility
+evidence.
+
+P190 expands the R8d packet from keyboard-only to a fixed 48-byte surface input
+envelope with release state and frame pixel coordinates.  SDL mouse buttons map
+to standard down/up mouse events, vertical and horizontal motion maps to wheel
+events, focus transitions map to focus events, close requests map to
+`delete-frame`, and motion updates provider pointer state through the standard
+`mouse_position_hook`.  ACK multiplexing now stores input packets encountered
+while waiting for a frame acknowledgement instead of rejecting the frame.  The
+provider closes quietly when the Emacs side drops the socket.  The
+`proto-ui-tpe-input` gate now checks a physical key, mouse press/release, and
+vertical wheel through normal `read-event`.
+
+P191 adds native window resize to the same real input path.  SDL sends input
+kind 10 with pixel geometry; the adapter-owned `read_socket_hook` invokes
+standard delayed `change_frame_size` path.  TPE snapshots now maintain one monotonic provider-session sequence and emit frame creation only for the first redisplay.
+The gate verifies a 1200×760 SDL resize through the resulting Emacs frame
+geometry and then redraws through the provider snapshot path.  Provider
+mouse-face/highlight, IME, and scrollbar routing remain separate work.
+
+P192 upgrades ACK multiplexing from one deferred packet to a bounded 16-packet
+queue and makes SDL text-input commit iterate every validated UTF-8 scalar.  The
+provider sends each non-ASCII scalar as a standard multibyte keystroke; no
+intermediate command table filters the result.  The input gate now proves an
+`é` plus CJK `中` commit both reach normal `read-event` after resize packets.
+Composed preedit rendering, candidate windows, dead-key state, and full IME
+platform integration remain separate work.  Provider mouse-face/highlight and
+scrollbar routing also remain separate work.
+
+P189 starts R8d with a real provider input loop, not a command whitelist.  SDL3
+remains alive after the first frame and emits fixed `TPEINP1` packets; the
+adapter-owned provider terminal installs `read_socket_hook`, registers the
+surface fd with the keyboard waiter, parses packets nonblockingly, and stores
+standard `input_event`s for Emacs's normal command loop.  The first slice covers
+printable keys, Unicode text codepoints, navigation/editing keys, and Shift,
+Control, Alt, Super, and Meta state.  Mouse, wheel, focus, resize, drop,
+multi-chord completion, IME composition, and provider shutdown/error cleanup are
+still open; this does not claim full compatibility.
+
 ## 4. Build/test surface
 
 Build options:
@@ -3931,32 +4261,33 @@ Current steps:
 ```sh
 zig build -Dproto-ui=true proto-ui-unit
 zig build -Dproto-ui=true proto-ui-abi
+zig build -Dproto-ui=true proto-ui-status
+zig build -Dproto-ui=true proto-ui-protocol-coverage
 zig build -Dproto-ui=true proto-ui-conformance
 zig build -Dproto-ui=true proto-ui-fuzz
 zig build -Dproto-ui=true proto-ui-boundary
 zig build -Dproto-ui=true proto-ui-boundary-audit
+zig build -Dproto-ui=true proto-ui-recovery-diff
+zig build -Dproto-ui=true proto-ui-compat
+zig build -Dproto-ui=true proto-ui-isolation-audit
 zig build -Dproto-ui=true -Dmodules=true proto-ui-module-smoke
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-smoke
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-live-smoke
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-facts-smoke
 zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-resync-smoke
-zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-input-smoke
-zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-edit-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-epxl-unicode-input-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-menu-open-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-menu-apply-smoke
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-cursor-smoke
 zig build -Dsdl3-frontend=true sdl3-ui-smoke
 zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-ui-smoke
 zig build -Dproto-ui=true -Dsdl3-frontend=true sdl3-renderer-smoke
 ```
 
-Planned steps:
-
-```sh
-zig build -Dproto-ui=true proto-ui-roundtrip
-zig build -Dproto-ui=true proto-ui-replay-test
-zig build -Dproto-ui=true proto-ui-diff
-zig build -Dproto-ui=true proto-ui-live-recovery-test
-```
-
-Step names may be adjusted during W1/W2, but each listed verification must have a final equivalent.
+Future workstreams may name acceptance commands before those commands exist
+(as W15/W16 already do).  Such names are design placeholders, not current
+gates; when a workstream lands, either implement that exact step or replace it
+with a concrete equivalent and move it into the current step list.
 
 ## 5. Documentation tasks
 
@@ -3974,8 +4305,8 @@ Step names may be adjusted during W1/W2, but each listed verification must have 
 | Protocol schema examples | Done (adapter-only) |
 | User runbook | Done for current bounded smoke scope; update with each runtime milestone |
 | Output-proto runtime bridge and first-frame task split | Done as normative design; implementation gated by the host extension contract |
-| Troubleshooting guide | Pending final runtime/interactive milestone |
-| Final capability status report | Pending W12/W16 |
+| Troubleshooting guide | Done for current bounded smokes; final runtime/interactive troubleshooting pending |
+| Final capability status report | Current bounded manifest and matrix are done; final W12/W16 report pending |
 
 ## 6. Risk register
 
@@ -4005,3 +4336,53 @@ The overall objective is done only when:
 8. Replay, conformance, fuzz, and smoke tests pass.
 9. Documentation includes final status and known limitations.
 10. No known path allows frontend failure to crash or stall Emacs.
+
+## W18 — SDL3 interactive completion
+
+Status: in progress.  This milestone turns the many bounded proofs into one
+usable acceptance path while keeping the pure-runtime boundary explicit.
+
+### W18.1 — Usable diagnostic bridge
+
+`zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true
+sdl3-emacs-graphic-interactive --auto-quit-ms=0` must remain open for ordinary
+interaction against one display-backed Emacs frame.  The acceptance pass is:
+
+1. ASCII and CJK text insertion through the keyboard/IME commit paths.
+2. General prefix commands through `input.keymap_loop_v1`, not a frontend
+   command whitelist.
+3. Split, navigate, resize, scroll, and delete windows.
+4. Pointer selection, wheel scrolling, menu selection, and clipboard paste.
+5. Focus, resize, title, mode line, cursor, face, font, and CJK rendering
+   remain synchronized until frontend shutdown.
+
+The existing external PGTK/display-backed bridge is diagnostic evidence only;
+it does **not** satisfy the pure-runtime completion rule.
+
+### W18.2 — Pure `output_proto` gate (current target)
+
+This milestone is implementation-first: bounded bridge coverage is evidence, not
+progress by itself.  The opt-in TPE slice now clears TP1/TP3 at headless
+terminal scope: `proto-ui-tpe-headless` creates, identifies, and cleans a real
+generic terminal in Emacs.  W18.2 is now blocked specifically at TP4/TP5: one
+SDL3-owned `window-system = proto` frame and redisplay-owned capture.  The
+remaining order is TP4 real frame lifecycle, TP5 redisplay capture, TP6
+returned input, then TP7-TP10 resource/platform/parity/performance completion.  No PGTK fallback, whitelist,
+symbol wrapping, or scattered inherited-C policy edits are allowed; any TP1 core
+seam must be generic, opt-in, reviewed, and rollback-safe.
+
+### W18.3 — Aggregate gate
+
+Current minimum aggregate:
+
+```sh
+zig build -Dproto-ui=true proto-ui-unit --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-graphic-smoke --summary all
+zig build -Dproto-ui=true -Dmodules=true -Dsdl3-frontend=true sdl3-emacs-acceptance --summary all
+```
+
+`sdl3-emacs-acceptance` currently composes window split, navigation, restore,
+and pointer selection.  Expand it to include the Unicode/IME, scrolling, and
+menu gates as their build-graph scopes permit.  Passing this slice proves the
+current bridge only; W18.1 manual interaction and W18.2 pure runtime remain
+required for the final goal.

@@ -48,10 +48,13 @@ pub const Feature = enum {
     input_key_full_v2,
     input_key_command_v1,
     input_composite_key_command_v1,
+    input_keymap_loop_v1,
     input_pointer_bounded,
     input_pointer_v2,
     input_pointer_selection_left,
     input_pointer_middle_paste,
+    input_touch_bounded_v1,
+    input_pen_bounded_v1,
     input_wheel_line,
     platform_focus_window_events,
     platform_monitor_events,
@@ -60,6 +63,7 @@ pub const Feature = enum {
     clipboard_ascii_bounded,
     clipboard_text_unicode,
     clipboard_primary_selection_bounded,
+    dnd_bounded_v1,
     selection_primary_ownership_v1,
     selection_primary_transfer_v1,
     damage_retained_clip,
@@ -101,6 +105,7 @@ pub const Feature = enum {
     widget_menu_open_close_v1,
     widget_menu_result_v1,
     widget_menu_hover_v1,
+    widget_menu_open_request_v1,
     widget_menu_patch_v1,
     widget_toolbar_model_v1,
     widget_toolbar_click_v1,
@@ -180,10 +185,13 @@ pub const Feature = enum {
             .input_key_full_v2 => "input.key_full_v2",
             .input_key_command_v1 => "input.key_command_v1",
             .input_composite_key_command_v1 => "input.composite_key_command_v1",
+            .input_keymap_loop_v1 => "input.keymap_loop_v1",
             .input_pointer_bounded => "input.pointer_bounded",
             .input_pointer_v2 => "input.pointer_v2",
             .input_pointer_selection_left => "input.pointer_selection_left",
             .input_pointer_middle_paste => "input.pointer_middle_paste",
+            .input_touch_bounded_v1 => "input.touch_bounded_v1",
+            .input_pen_bounded_v1 => "input.pen_bounded_v1",
             .input_wheel_line => "input.wheel_line",
             .platform_focus_window_events => "platform.focus_window_events",
             .platform_monitor_events => "platform.monitor_events",
@@ -192,6 +200,7 @@ pub const Feature = enum {
             .clipboard_ascii_bounded => "clipboard.ascii_bounded",
             .clipboard_text_unicode => "clipboard.text_unicode",
             .clipboard_primary_selection_bounded => "clipboard.primary_selection_bounded",
+            .dnd_bounded_v1 => "dnd.bounded_v1",
             .selection_primary_ownership_v1 => "selection.primary_ownership_v1",
             .selection_primary_transfer_v1 => "selection.primary_transfer_v1",
             .damage_retained_clip => "damage.retained_clip",
@@ -233,6 +242,7 @@ pub const Feature = enum {
             .widget_menu_open_close_v1 => "widget.menu_open_close_v1",
             .widget_menu_result_v1 => "widget.menu_result_v1",
             .widget_menu_hover_v1 => "widget.menu_hover_v1",
+            .widget_menu_open_request_v1 => "widget.menu_open_request_v1",
             .widget_menu_patch_v1 => "widget.menu_patch_v1",
             .widget_toolbar_model_v1 => "widget.toolbar_model_v1",
             .widget_toolbar_click_v1 => "widget.toolbar_click_v1",
@@ -362,18 +372,21 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .session_control_v1, .status = .implemented, .evidence = "proto-ui-unit terminal states and sdl3-live-smoke EPXL transport for all eight controls, including automatic PONG and fatal VERSION_MISMATCH" },
     .{ .feature = .transport_epxl_local, .status = .implemented, .evidence = "sdl3-live-smoke" },
     .{ .feature = .session_resync, .status = .implemented, .evidence = "sdl3-epxl-resync-smoke" },
-    .{ .feature = .frame_facts_profile, .status = .degraded, .evidence = "sdl3-epxl-facts-smoke" },
+    .{ .feature = .frame_facts_profile, .status = .degraded, .evidence = "sdl3-epxl-facts-smoke, plus a display-backed frame's real line metrics, displayed (wrapped) rows on a raised 256-byte row bound, non-ASCII line fallback with mixed-line partial runs, row-aligned blank lines, a default-face echo strip, and window-clamped long-line runs and cursor (sdl3-emacs-graphic-smoke; proto-ui-unit)" },
     .{ .feature = .text_ascii_bounded, .status = .degraded, .evidence = "sdl3-epxl-input-smoke" },
     .{ .feature = .input_text_ascii, .status = .degraded, .evidence = "sdl3-epxl-input-smoke" },
     .{ .feature = .input_text_unicode, .status = .degraded, .evidence = "sdl3-epxl-unicode-input-smoke" },
     .{ .feature = .input_key_bounded, .status = .degraded, .evidence = "sdl3-epxl-edit-smoke" },
     .{ .feature = .input_key_full_v2, .status = .degraded, .evidence = "sdl3-epxl-key-v2-smoke" },
     .{ .feature = .input_key_command_v1, .status = .degraded, .evidence = "sdl3-key-modifier-smoke" },
-    .{ .feature = .input_composite_key_command_v1, .status = .degraded, .evidence = "sdl3-emacs-window-split-smoke observes C-x 2; sdl3-emacs-window-navigation-smoke observes C-x 3 and C-x o from the exact whitelist" },
+    .{ .feature = .input_composite_key_command_v1, .status = .degraded, .evidence = "sdl3-emacs-window-split-smoke observes C-x 2; sdl3-emacs-window-navigation-smoke observes C-x 3 and C-x o through the rollback-only command translator; not provider input parity" },
+    .{ .feature = .input_keymap_loop_v1, .status = .degraded, .evidence = "sdl3-emacs-graphic-smoke serializes bounded reverse input and resolves accumulated canonical key sequences through active keymaps on a display frame; proto-ui-unit clears bound and unknown complete prefix state" },
     .{ .feature = .input_pointer_bounded, .status = .degraded, .evidence = "sdl3-pointer-smoke" },
     .{ .feature = .input_pointer_v2, .status = .degraded, .evidence = "sdl3-pointer-v2-smoke" },
     .{ .feature = .input_pointer_selection_left, .status = .degraded, .evidence = "sdl3-pointer-selection-smoke" },
     .{ .feature = .input_pointer_middle_paste, .status = .degraded, .evidence = "sdl3-pointer-middle-paste-smoke" },
+    .{ .feature = .input_touch_bounded_v1, .status = .degraded, .evidence = "sdl3-touch-tap-smoke" },
+    .{ .feature = .input_pen_bounded_v1, .status = .degraded, .evidence = "sdl3-pen-tap-smoke" },
     .{ .feature = .input_wheel_line, .status = .degraded, .evidence = "sdl3-wheel-smoke" },
     .{ .feature = .platform_focus_window_events, .status = .degraded, .evidence = "sdl3-focus-window-smoke" },
     .{ .feature = .platform_monitor_events, .status = .degraded, .evidence = "sdl3-monitor-change-smoke negotiated monitor transport" },
@@ -382,65 +395,67 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .clipboard_ascii_bounded, .status = .degraded, .evidence = "sdl3-clipboard-smoke" },
     .{ .feature = .clipboard_text_unicode, .status = .degraded, .evidence = "sdl3-clipboard-unicode-smoke" },
     .{ .feature = .clipboard_primary_selection_bounded, .status = .degraded, .evidence = "sdl3-primary-selection-roundtrip-smoke" },
+    .{ .feature = .dnd_bounded_v1, .status = .degraded, .evidence = "sdl3-dnd-drop-smoke" },
     .{ .feature = .selection_primary_ownership_v1, .status = .degraded, .evidence = "sdl3-selection-owner-smoke negotiated set/clear state" },
     .{ .feature = .selection_primary_transfer_v1, .status = .degraded, .evidence = "sdl3-selection-transfer-smoke bounded request/data completion" },
     .{ .feature = .damage_retained_clip, .status = .degraded, .evidence = "sdl3-pointer-smoke and sdl3-epxl-interactive-smoke" },
-    .{ .feature = .scroll_copy_policy, .status = .degraded, .evidence = "proto-ui-unit vertical scroll codec and copy-plan metrics; SDL retained-frame copy pending" },
+    .{ .feature = .scroll_copy_policy, .status = .degraded, .evidence = "proto-ui-unit vertical scroll codec and copy-plan metrics, plus scratch-target SDL retained-frame copy execution (sdl3-runtime-bridge-smoke); redisplay ownership and GPU batching pending" },
     .{ .feature = .renderer_sdl3, .status = .degraded, .evidence = "sdl3-renderer-smoke" },
-    .{ .feature = .render_unicode_text_v1, .status = .degraded, .evidence = "sdl3-epxl-unicode-input-smoke SDL_ttf-backed bounded UTF-8 line" },
+    .{ .feature = .render_unicode_text_v1, .status = .degraded, .evidence = "sdl3-epxl-unicode-input-smoke SDL_ttf-backed bounded UTF-8 line, plus a real frame's line height and font file (sdl3-emacs-graphic-smoke)" },
     .{ .feature = .window_tree_snapshot_v1, .status = .degraded, .evidence = "proto-ui-unit" },
-    .{ .feature = .window_lifecycle_v1, .status = .degraded, .evidence = "proto-ui-unit bounded create/delete and dependent-state rejection; patch/zones pending" },
-    .{ .feature = .window_patch_v1, .status = .degraded, .evidence = "proto-ui-unit bounded geometry/parent/visibility/face/depth patch; zones/scroll pending" },
+    .{ .feature = .window_lifecycle_v1, .status = .degraded, .evidence = "proto-ui-unit bounded create/delete and dependent-state rejection; patches and zones are separate features, while full lifecycle parity is pending" },
+    .{ .feature = .window_patch_v1, .status = .degraded, .evidence = "proto-ui-unit bounded geometry/parent/visibility/face/depth patch; zones, scroll, and mouse highlights are separate features, while full window parity is pending" },
     .{ .feature = .window_geometry_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded content/body geometry and body-boundary render; full zone/layout parity pending" },
     .{ .feature = .window_zones_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded disjoint zones and boundary render; redisplay-owned layout and full PGTK parity pending" },
     .{ .feature = .window_position_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded diagnostic buffer/start/point state; buffer text, layout, and full point semantics pending" },
-    .{ .feature = .window_mode_line_bounded_v1, .status = .degraded, .evidence = "proto-ui-unit public observation/scene validation and SDL diagnostic bar; items, faces, mouse, redisplay ownership, and parity pending" },
-    .{ .feature = .window_header_line_bounded_v1, .status = .degraded, .evidence = "proto-ui-unit public observation/scene validation and SDL diagnostic bar; items, faces, mouse, redisplay ownership, and parity pending" },
-    .{ .feature = .window_tab_line_bounded_v1, .status = .degraded, .evidence = "proto-ui-unit public observation/scene validation and SDL diagnostic bar; items, faces, mouse, redisplay ownership, and parity pending" },
+    .{ .feature = .window_mode_line_bounded_v1, .status = .degraded, .evidence = "proto-ui-unit validation and SDL bar, plus a display-backed frame's mode line with active/inactive face colors, per-segment mode/header/tab runs, and its real released-button box (sdl3-emacs-graphic-smoke); mouse and redisplay ownership pending" },
+    .{ .feature = .window_header_line_bounded_v1, .status = .degraded, .evidence = "proto-ui-unit public observation/scene validation and SDL diagnostic bar; real header-line face colors published and drawn (sdl3-emacs-graphic-smoke); items, mouse, redisplay ownership, parity pending" },
+    .{ .feature = .window_tab_line_bounded_v1, .status = .degraded, .evidence = "proto-ui-unit public observation/scene validation and SDL diagnostic bar; real tab-line face colors published and drawn (sdl3-emacs-graphic-smoke); items, mouse, redisplay ownership, parity pending" },
     .{ .feature = .resource_icon_standalone_v1, .status = .degraded, .evidence = "proto-ui-unit complete RGBA8 icon define/delete with Scene image-resource ownership and frame-icon reuse; multi-resolution and animated icons pending" },
-    .{ .feature = .ime_context_lifecycle_v1, .status = .degraded, .evidence = "proto-ui-unit attach/detach/focus/cursor/reset wire and Scene validation; platform IME, composition, commit, and candidates pending" },
-    .{ .feature = .ime_policy_surrounding_v1, .status = .degraded, .evidence = "proto-ui-unit allowed-input policy and bounded surrounding-text Scene state; platform backend, preedit, commit, and candidates pending" },
-    .{ .feature = .ime_reverse_wire_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded attached/detached/preedit/commit/surrounding/delete/candidate/cancel codecs, Scene preedit/candidate/commit state and bounded ASCII preedit/candidate overlays; platform backend, core text application, full candidate lists, and Unicode preedit rendering pending" },
-    .{ .feature = .window_face_state_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded default-face state/background render; full core-owned face semantics pending" },
-    .{ .feature = .cursor_update_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke; cursor style/IME integration pending" },
-    .{ .feature = .render_glyph_face_debug_v2, .status = .degraded, .evidence = "sdl3-runtime-bridge-smoke" },
+    .{ .feature = .ime_context_lifecycle_v1, .status = .degraded, .evidence = "proto-ui-unit attach/detach/focus/cursor/reset wire and Scene validation; platform IME and composition pending, while bounded commit report state exists without core text application" },
+    .{ .feature = .ime_policy_surrounding_v1, .status = .degraded, .evidence = "proto-ui-unit allowed-input policy and bounded surrounding-text Scene state; platform backend, preedit, commit, candidates pending" },
+    .{ .feature = .ime_reverse_wire_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke attached/detached/preedit/commit/surrounding/delete/candidate/cancel codecs, Scene preedit/candidate/commit state and ASCII overlays; platform backend, text application, full candidate lists, Unicode preedit rendering pending" },
+    .{ .feature = .window_face_state_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded default-face state/background render; core face semantics pending" },
+    .{ .feature = .cursor_update_v1, .status = .degraded, .evidence = "proto-ui-unit and runtime-bridge, plus a real frame's cell/cursor face and cursor placement on that real cell, active-cursor tracking, and hollow inactive carets (sdl3-emacs-graphic-smoke); bounded cursor-kind rendering is proven by sdl3-cursor-style-smoke, while IME-coupled caret and redisplay-owned semantics are pending" },
+    .{ .feature = .render_glyph_face_debug_v2, .status = .degraded, .evidence = "sdl3-runtime-bridge-smoke, plus a real frame's bounded font-lock runs with per-run face backgrounds, colored decorations, inverse-video, bold/italic, and overlay-aware faces (sdl3-emacs-graphic-smoke)" },
     .{ .feature = .render_image_debug_v1, .status = .degraded, .evidence = "sdl3-runtime-bridge-smoke" },
     .{ .feature = .render_glyph_run_debug_v1, .status = .degraded, .evidence = "sdl3-glyph-run-smoke" },
     .{ .feature = .render_flush_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke; redisplay-owned flush emission pending" },
     .{ .feature = .render_hint_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke; renderer pacing integration pending" },
     .{ .feature = .render_update_boundary_v1, .status = .degraded, .evidence = "proto-ui-unit strict BEGIN/END nesting, generation, and close validation; redisplay wiring pending" },
     .{ .feature = .frame_border_style_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke; window-manager border semantics pending" },
-    .{ .feature = .window_fringe_style_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke; bitmap glyphs and draggable fringe semantics pending" },
+    .{ .feature = .window_fringe_style_v1, .status = .degraded, .evidence = "proto-ui-unit, runtime-bridge, and real display-backed fringe widths (sdl3-emacs-graphic-smoke); monochrome bitmap patterns are a separate feature, while color/alpha bitmaps and draggable semantics are pending" },
     .{ .feature = .window_divider_style_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke; draggable divider semantics pending" },
-    .{ .feature = .window_scrollbar_state_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke dedicated 0x0940 state, Scene upsert, and vertical thumb render; horizontal state and full scrollbar policy pending" },
-    .{ .feature = .window_scroll_request_v1, .status = .degraded, .evidence = "proto-ui-unit and EPXL negotiated absolute/relative intents for the existing 0x0309 contract only; SDL hit testing and core dispatch pending" },
+    .{ .feature = .window_scrollbar_state_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke 0x0940 state, per-orientation upsert and vertical/horizontal thumb render, plus the live publisher's real line count/widest-line/hscroll and hscroll-trimmed rows (sdl3-emacs-scrollbar-smoke, sdl3-emacs-hscroll-smoke); full policy pending" },
+    .{ .feature = .window_scroll_request_v1, .status = .degraded, .evidence = "proto-ui-unit 0x0309 intents with SDL trough paging and thumb drag on both axes through the scaled pointer path and publisher application to the real window-start or window-hscroll (sdl3-emacs-scrollbar-interaction-smoke, sdl3-emacs-hscroll-smoke); arrow steps and full core dispatch pending" },
     .{ .feature = .window_scrollbar_event_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-live-smoke dedicated 0x0941 negotiated DeliveryJournal/EPXL transport; complete interaction and core dispatch pending" },
-    .{ .feature = .window_mouse_highlight_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded visible mouse-face rect; Emacs mouse-face semantics pending" },
+    .{ .feature = .window_mouse_highlight_v1, .status = .degraded, .evidence = "proto-ui-unit and runtime-bridge bounded visible rect, plus the live active region as one rectangle per displayed row, with the live mouse-face highlight (sdl3-emacs-graphic-smoke, sdl3-emacs-mouse-smoke); full region/mouse-face semantics pending" },
     .{ .feature = .font_descriptor_patch_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded scalar font descriptor patch; real fonts, string/metric patching, and frame font parity pending" },
-    .{ .feature = .fringe_bitmap_resource_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded monochrome bitmap define/delete/render; color bitmaps, bitmap authoring, and full fringe parity pending" },
-    .{ .feature = .widget_tooltip_bounded_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded show/move/hide box; platform positioning policies, Unicode glyphs, and full PGTK tooltip parity pending" },
-    .{ .feature = .widget_menu_model_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded complete menu tree/menu-bar render; open/navigation/result and full menu semantics pending" },
-    .{ .feature = .widget_menu_open_close_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded popup open/close state; navigation, result dispatch, and full menu semantics pending" },
-    .{ .feature = .widget_menu_result_v1, .status = .degraded, .evidence = "proto-ui-unit bounded result/cancel intent codec and negotiated queue; Emacs command dispatch and EPXL end-to-end pending" },
-    .{ .feature = .widget_menu_hover_v1, .status = .degraded, .evidence = "proto-ui-unit bounded enter/move/leave intent codec and negotiated queue; SDL hit testing and menu-highlight/core dispatch pending" },
-    .{ .feature = .widget_menu_patch_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke ordered upsert/delete patch with strict generation/hierarchy checks; full menu patch policy pending" },
-    .{ .feature = .widget_toolbar_model_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded complete toolbar model and diagnostic render; icons, moves, and full toolbar policy pending" },
-    .{ .feature = .widget_toolbar_click_v1, .status = .degraded, .evidence = "proto-ui-unit bounded press/release intent codec and negotiated queue; SDL hit testing and Emacs command dispatch pending" },
+    .{ .feature = .fringe_bitmap_resource_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke monochrome bitmap define/delete/render; color bitmaps, authoring, fringe parity pending" },
+    .{ .feature = .widget_tooltip_bounded_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke box; platform positioning, Unicode glyphs, PGTK parity pending" },
+    .{ .feature = .widget_menu_model_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke menu-bar render, the live publisher's real menu-bar-keymap labels (sdl3-emacs-menu-bar-smoke), open-menu child rows (sdl3-emacs-menu-open-smoke), schema-2 menu icon references with resource-backed rendering plus bounded live producer capture of file-backed XBM payloads, malformed-XBM and oversized-payload fallback and P180 bounded ASCII help-tip wrapping/rendering (proto-ui-unit, sdl3-menu-hit-smoke); non-XBM payload capture pending" },
+    .{ .feature = .widget_menu_open_close_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded popup open/close state; separate hover and result features prove bounded navigation and safe-set execution, while full menu semantics are pending" },
+    .{ .feature = .widget_menu_result_v1, .status = .degraded, .evidence = "proto-ui-unit bounded result/cancel codec and queue plus live resolution and safe-set execution (sdl3-emacs-menu-apply-smoke); line-number and line-wrapping radio groups allowlisted; arbitrary commands pending" },
+    .{ .feature = .widget_menu_hover_v1, .status = .degraded, .evidence = "proto-ui-unit bounded enter/move/leave intent codec and negotiated queue, plus SDL hit testing and frontend highlight dispatch; core dispatch, streaming move phases, and hover timing pending" },
+    .{ .feature = .widget_menu_open_request_v1, .status = .degraded, .evidence = "proto-ui-unit open-request codec and queue, SDL menu-bar hit test, and the publisher's real submenu rows, key hints and help metadata with popup close (sdl3-emacs-menu-open-smoke); bounded submenus are proven, while deeper paths and tooltip render timing are pending" },
+    .{ .feature = .widget_menu_patch_v1, .status = .degraded, .evidence = "proto-ui-unit and runtime-bridge ordered upsert/delete patch with strict generation checks; policy pending" },
+    .{ .feature = .widget_toolbar_model_v1, .status = .degraded, .evidence = "proto-ui-unit and runtime-bridge toolbar model/render, plus a display-backed frame's real tool-bar items and tool-bar face colors mirrored live (sdl3-emacs-graphic-smoke); real tool-bar icons, dedicated moves, and policy pending" },
+    .{ .feature = .widget_toolbar_click_v1, .status = .degraded, .evidence = "proto-ui-unit press/release intent codec and queue, plus SDL hit testing (sdl3-toolbar-hit-smoke); Emacs dispatch and full tool-bar parity pending" },
     .{ .feature = .widget_toolbar_patch_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke ordered upsert/delete patch with strict generation checks; moves, icons, and full toolbar policy pending" },
-    .{ .feature = .widget_dialog_model_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded message/prompt/confirm model and diagnostic box render; native dialogs, file/color/font dialogs, and full Emacs callback parity pending" },
-    .{ .feature = .widget_dialog_result_v1, .status = .degraded, .evidence = "proto-ui-unit bounded result intent codec and negotiated queue; SDL hit testing and Emacs callback dispatch pending" },
+    .{ .feature = .widget_dialog_model_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded message/prompt/confirm model and diagnostic render with the standard button row plus a bounded ASCII prompt field (sdl3-dialog-hit-smoke); native/file/color/font dialogs and Emacs callback parity pending" },
+    .{ .feature = .widget_dialog_result_v1, .status = .degraded, .evidence = "proto-ui-unit result intent codec and queue, plus SDL hit testing (sdl3-dialog-hit-smoke); Emacs callback dispatch and complete dialog parity pending" },
     .{ .feature = .frame_output_proto, .status = .pending, .evidence = "W12/W16 real proto frame acceptance pending" },
-    .{ .feature = .frame_patch_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke bounded atomic visibility/focus/opacity/decoration/scale patch; title, geometry, monitor, z-order, and full frame-state snapshot pending" },
-    .{ .feature = .frame_snapshot_core_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke atomic core visibility/focus/opacity/decoration/scale/geometry/fullscreen/maximize snapshot; title/icon/monitor/z-order/parent and full frame parameters pending" },
+    .{ .feature = .frame_patch_v1, .status = .degraded, .evidence = "proto-ui-unit and runtime-bridge visibility/focus/opacity/decoration/scale patch; title, geometry, monitor, and z-order are separate bounded messages, while complete frame semantics and redisplay adaptation are pending" },
+    .{ .feature = .frame_snapshot_core_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke visibility/focus/opacity/decoration/scale/geometry/fullscreen/maximize snapshot; title, icon, monitor, z-order, and parent have separate bounded messages, while full parameters and redisplay adaptation are pending" },
     .{ .feature = .frame_lifecycle, .status = .degraded, .evidence = "proto-ui-unit frame lifecycle contract and sdl3-frame-smoke" },
     .{ .feature = .frame_visibility_focus_contract, .status = .degraded, .evidence = "proto-ui-unit" },
-    .{ .feature = .frame_title_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke" },
-    .{ .feature = .frame_alpha_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke" },
-    .{ .feature = .frame_decorations_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke" },
-    .{ .feature = .frame_scale_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke" },
-    .{ .feature = .frame_fullscreen_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke" },
-    .{ .feature = .frame_monitor_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke" },
-    .{ .feature = .frame_maximize_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke" },
+    .{ .feature = .frame_title_v1, .status = .degraded, .evidence = "proto-ui-unit and runtime-bridge" },
+    .{ .feature = .frame_alpha_v1, .status = .degraded, .evidence = "proto-ui-unit and runtime-bridge" },
+    .{ .feature = .frame_decorations_v1, .status = .degraded, .evidence = "proto-ui-unit and runtime-bridge" },
+    .{ .feature = .frame_scale_v1, .status = .degraded, .evidence = "proto-ui-unit and runtime-bridge" },
+    .{ .feature = .frame_fullscreen_v1, .status = .degraded, .evidence = "proto-ui-unit and runtime-bridge" },
+    .{ .feature = .frame_monitor_v1, .status = .degraded, .evidence = "proto-ui-unit and runtime-bridge" },
+    .{ .feature = .frame_maximize_v1, .status = .degraded, .evidence = "proto-ui-unit and runtime-bridge" },
     .{ .feature = .frame_present_feedback_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke codec/counter conformance; core consumer pending" },
     .{ .feature = .frame_geometry_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke; core-owned platform geometry pending" },
     .{ .feature = .frame_icon_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke RGBA icon surface; taskbar/app-icon parity pending" },
@@ -450,13 +465,13 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .resource_generation_contract, .status = .degraded, .evidence = "proto-ui-unit resource generation contract" },
     .{ .feature = .resource_payload_eviction_contract, .status = .degraded, .evidence = "proto-ui-unit" },
     .{ .feature = .resource_string_v1, .status = .degraded, .evidence = "proto-ui-unit" },
-    .{ .feature = .resource_face_v1, .status = .degraded, .evidence = "proto-ui-unit" },
+    .{ .feature = .resource_face_v1, .status = .degraded, .evidence = "proto-ui-unit, plus a real frame's reserved mode-line/cursor/fringe faces (sdl3-emacs-graphic-smoke)" },
     .{ .feature = .resource_face_patch_v1, .status = .degraded, .evidence = "proto-ui-unit bounded color patch and strict generation replacement; full face attributes pending" },
     .{ .feature = .face_decoration_bars_v1, .status = .degraded, .evidence = "proto-ui-unit policy bars and sdl3-runtime-bridge-smoke face background; shaped text/font metrics pending" },
     .{ .feature = .resource_font_v1, .status = .degraded, .evidence = "proto-ui-unit" },
     .{ .feature = .resource_font_metrics_v1, .status = .degraded, .evidence = "proto-ui-unit bounded metrics patch and strict generation replacement; real font metrics pending" },
     .{ .feature = .resource_image_v1, .status = .degraded, .evidence = "proto-ui-unit" },
-    .{ .feature = .glyph_atlas_v1, .status = .degraded, .evidence = "proto-ui-unit atlas codec/Scene state; texture upload and shaped rendering pending" },
+    .{ .feature = .glyph_atlas_v1, .status = .degraded, .evidence = "proto-ui-unit atlas codec/Scene state; texture upload, shaping pending" },
     .{ .feature = .shaped_atlas_glyph_run_v3, .status = .degraded, .evidence = "proto-ui-unit shaped run validation/Scene state and SDL atlas-backed rendering; full shaping/BiDi pending" },
     .{ .feature = .runtime_shaped_run_capture_v1, .status = .degraded, .evidence = "PureRuntimeHostV1 shaped-run observation and bridge emission; real Emacs redisplay capture pending" },
     .{ .feature = .atlas_glyph_render_v1, .status = .degraded, .evidence = "sdl3-runtime-bridge-smoke ASCII atlas-glyph fallback; shaping and full glyph parity pending" },
@@ -567,6 +582,14 @@ pub fn negotiate(backend: Set, frontend: Set) Error!Negotiated {
     }
     if (!effective.contains(.input_pointer_selection_left))
         effective.bits[@intFromEnum(Feature.input_pointer_middle_paste)] = false;
+    // A finger contact is only a producer for the strict Pointer v2 payload;
+    // do not advertise touch translation without that transport.
+    if (!effective.contains(.input_pointer_v2))
+        effective.bits[@intFromEnum(Feature.input_touch_bounded_v1)] = false;
+    // A pen contact is likewise only a producer for the strict Pointer v2
+    // payload.
+    if (!effective.contains(.input_pointer_v2))
+        effective.bits[@intFromEnum(Feature.input_pen_bounded_v1)] = false;
     // PRIMARY text reuses the bounded clipboard text admission path; the
     // Unicode bit remains an independent upgrade on top of this prerequisite.
     if (!effective.contains(.clipboard_ascii_bounded))
@@ -583,6 +606,11 @@ pub fn negotiate(backend: Set, frontend: Set) Error!Negotiated {
     // transport and the already-bounded single-command path.
     if (!effective.contains(.input_key_command_v1))
         effective.bits[@intFromEnum(Feature.input_composite_key_command_v1)] = false;
+    // The general keymap loop still needs authenticated KEY_EVENT v2 and the
+    // existing command-execution admission prerequisites.
+    if (!effective.contains(.input_key_full_v2) or
+        !effective.contains(.input_key_command_v1))
+        effective.bits[@intFromEnum(Feature.input_keymap_loop_v1)] = false;
     for (feature_descriptors) |item| {
         if (item.feature.required() and !effective.contains(item.feature))
             return Error.MissingRequiredCapability;
@@ -715,7 +743,9 @@ test "status manifest is complete and generated JSON is bounded" {
     defer json.deinit(gpa);
     try writeStatusManifest(gpa, &json);
     try std.testing.expect(json.items.len > 100);
-    try std.testing.expect(json.items.len < 24 * 1024);
+    // The manifest has grown with the feature set; the bound is a runaway
+    // guard, not a target, so it leaves headroom for the next real features.
+    try std.testing.expect(json.items.len < 32 * 1024);
     try std.testing.expect(std.mem.indexOf(u8, json.items, "\"name\":\"resource.v1\"") != null);
 }
 
@@ -895,6 +925,22 @@ test "composite command execution remains opt-in beyond single keys" {
     try std.testing.expect(!transport_missing.effective.contains(.input_composite_key_command_v1));
 }
 
+test "keymap loop requires the v2 command transport" {
+    const all = backendSupported();
+    const negotiated = try negotiate(all, all);
+    try std.testing.expect(negotiated.effective.contains(.input_keymap_loop_v1));
+
+    var no_command = all;
+    no_command.bits[@intFromEnum(Feature.input_key_command_v1)] = false;
+    const effective = try negotiate(all, no_command);
+    try std.testing.expect(!effective.effective.contains(.input_keymap_loop_v1));
+
+    var no_v2 = all;
+    no_v2.bits[@intFromEnum(Feature.input_key_full_v2)] = false;
+    const transport_missing = try negotiate(all, no_v2);
+    try std.testing.expect(!transport_missing.effective.contains(.input_keymap_loop_v1));
+}
+
 test "left pointer selection remains optional for v2-only peers" {
     const all = backendSupported();
     const negotiated = try negotiate(all, all);
@@ -906,6 +952,29 @@ test "left pointer selection remains optional for v2-only peers" {
     const effective = try negotiate(all, transport_only);
     try std.testing.expect(effective.effective.contains(.input_pointer_v2));
     try std.testing.expect(!effective.effective.contains(.input_pointer_selection_left));
+}
+
+test "bounded touch remains optional and pointer-v2-gated" {
+    const all = backendSupported();
+    try std.testing.expect(all.contains(.input_touch_bounded_v1));
+    try std.testing.expect(all.contains(.input_pen_bounded_v1));
+    const negotiated = try negotiate(all, all);
+    try std.testing.expect(negotiated.effective.contains(.input_pointer_v2));
+    try std.testing.expect(negotiated.effective.contains(.input_touch_bounded_v1));
+    try std.testing.expect(negotiated.effective.contains(.input_pen_bounded_v1));
+
+    var no_pointer_v2 = all;
+    no_pointer_v2.bits[@intFromEnum(Feature.input_pointer_v2)] = false;
+    const pointer_missing = try negotiate(all, no_pointer_v2);
+    try std.testing.expect(!pointer_missing.effective.contains(.input_touch_bounded_v1));
+    try std.testing.expect(!pointer_missing.effective.contains(.input_pen_bounded_v1));
+
+    var touch_only = all;
+    touch_only.bits[@intFromEnum(Feature.input_touch_bounded_v1)] = false;
+    const touch_missing = try negotiate(all, touch_only);
+    try std.testing.expect(touch_missing.effective.contains(.input_pointer_v2));
+    try std.testing.expect(!touch_missing.effective.contains(.input_touch_bounded_v1));
+    try std.testing.expect(touch_missing.effective.contains(.input_pen_bounded_v1));
 }
 
 test "middle paste remains optional and selection-gated" {

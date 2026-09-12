@@ -18,6 +18,8 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <config.h>
 
+#include <stdio.h>
+
 #include "lisp.h"
 #include "character.h"
 #include "frame.h"
@@ -326,6 +328,62 @@ create_terminal (enum output_method type, struct redisplay_interface *rif)
 /* Low-level function to close all frames on a terminal, remove it
    from the terminal list and free its memory.  */
 
+#ifdef HAVE_TERMINAL_PROVIDER_EXTENSION
+static intmax_t provider_frame_count;
+
+Lisp_Object
+make_terminal_provider_frame (struct terminal *terminal, Lisp_Object params)
+{
+  if (!terminal || terminal->type != output_provider || !terminal->name)
+    error ("Invalid terminal provider");
+
+  struct frame *f = make_frame (true);
+  Lisp_Object frame;
+  XSETFRAME (frame, f);
+  Vframe_list = Fcons (frame, Vframe_list);
+  frame_set_id_from_params (f, params);
+  char name[24];
+  snprintf (name, sizeof (name), "F%"PRIdMAX, ++provider_frame_count);
+  fset_name (f, build_string (name));
+  SET_FRAME_VISIBLE (f, true);
+
+  f->output_method = output_provider;
+  f->terminal = terminal;
+  f->terminal->reference_count++;
+  f->provider_data = NULL;
+
+  FRAME_FOREGROUND_PIXEL (f) = FACE_TTY_DEFAULT_FG_COLOR;
+  FRAME_BACKGROUND_PIXEL (f) = FACE_TTY_DEFAULT_BG_COLOR;
+#ifdef HAVE_WINDOW_SYSTEM
+  f->vertical_scroll_bar_type = vertical_scroll_bar_none;
+  f->horizontal_scroll_bars = false;
+#endif
+
+  FRAME_MENU_BAR_LINES (f) = NILP (Vmenu_bar_mode) ? 0 : 1;
+  FRAME_TAB_BAR_LINES (f) = NILP (Vtab_bar_mode) ? 0 : 1;
+  FRAME_LINES (f) = FRAME_LINES (f) - FRAME_MENU_BAR_LINES (f)
+    - FRAME_TAB_BAR_LINES (f);
+  FRAME_MENU_BAR_HEIGHT (f) = FRAME_MENU_BAR_LINES (f) * FRAME_LINE_HEIGHT (f);
+  FRAME_TAB_BAR_HEIGHT (f) = FRAME_TAB_BAR_LINES (f) * FRAME_LINE_HEIGHT (f);
+  FRAME_TEXT_HEIGHT (f) = FRAME_TEXT_HEIGHT (f) - FRAME_MENU_BAR_HEIGHT (f)
+    - FRAME_TAB_BAR_HEIGHT (f);
+
+  adjust_frame_size (f, 80, 25 - FRAME_TOP_MARGIN (f), 5, 0,
+                     Qterminal_frame);
+  adjust_frame_glyphs (f);
+  if (!noninteractive)
+    init_frame_faces (f);
+  fset_face_hash_table (f, Fcopy_hash_table (XFRAME (selected_frame)->face_hash_table));
+
+  f->can_set_window_size = true;
+  f->after_make_frame = true;
+  if (!terminal_provider_attach_frame (terminal, f->id))
+    error ("Terminal provider could not attach frame");
+
+  return frame;
+}
+#endif
+
 void
 delete_terminal (struct terminal *terminal)
 {
@@ -474,6 +532,10 @@ return values.  */)
       return Qhaiku;
     case output_android:
       return Qandroid;
+#ifdef HAVE_TERMINAL_PROVIDER_EXTENSION
+    case output_provider:
+      return terminal_provider_identity (t);
+#endif
     default:
       emacs_abort ();
     }

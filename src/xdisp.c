@@ -18007,6 +18007,10 @@ redisplay_internal (void)
 		  STOP_POLLING;
 
 		  update_frame (f, false);
+#ifdef HAVE_TERMINAL_PROVIDER_EXTENSION
+		  if (FRAME_PROVIDER_P (f))
+		    terminal_provider_capture_frame (f);
+#endif
 		  /* On some platforms (at least MS-Windows), the
 		     scroll_run_hook called from scrolling_window
 		     called from update_frame could set the frame's
@@ -35468,6 +35472,14 @@ draw_row_with_mouse_face (struct window *w, int start_x, struct glyph_row *row,
 			  int start_hpos, int end_hpos,
 			  enum draw_glyphs_face draw)
 {
+#ifdef HAVE_TERMINAL_PROVIDER_EXTENSION
+  if (FRAME_PROVIDER_P (XFRAME (w->frame)))
+    {
+      row->mouse_face_p = draw == DRAW_MOUSE_FACE
+			 || draw == DRAW_IMAGE_RAISED;
+      return;
+    }
+#endif
 #ifdef HAVE_WINDOW_SYSTEM
   if (FRAME_WINDOW_P (XFRAME (w->frame)))
     {
@@ -37042,6 +37054,13 @@ note_fringe_highlight (struct frame *f, Lisp_Object window, int x, int y,
    for the mouse coordinates, and activate help echo (tooltips).
    X and Y can be negative or out of range.  */
 
+#ifdef HAVE_TERMINAL_PROVIDER_EXTENSION
+#define FRAME_MOUSE_CURSOR(F, FIELD) \
+  (FRAME_PROVIDER_P (F) ? No_Cursor : FRAME_OUTPUT_DATA (F)->FIELD)
+#else
+#define FRAME_MOUSE_CURSOR(F, FIELD) FRAME_OUTPUT_DATA (F)->FIELD
+#endif
+
 void
 note_mouse_highlight (struct frame *f, int x, int y)
 {
@@ -37125,41 +37144,41 @@ note_mouse_highlight (struct frame *f, int x, int y)
       switch (part)
 	{
 	case INTERNAL_BORDER_NONE:
-	  if (cursor != FRAME_OUTPUT_DATA (f)->nontext_cursor)
+	  if (cursor != FRAME_MOUSE_CURSOR (f, nontext_cursor))
 	    /* Reset cursor.  */
-	    cursor = FRAME_OUTPUT_DATA (f)->nontext_cursor;
+	    cursor = FRAME_MOUSE_CURSOR (f, nontext_cursor);
 	  break;
 	case INTERNAL_BORDER_LEFT_EDGE:
-	  cursor = FRAME_OUTPUT_DATA (f)->left_edge_cursor;
+	  cursor = FRAME_MOUSE_CURSOR (f, left_edge_cursor);
 	  break;
 	case INTERNAL_BORDER_TOP_LEFT_CORNER:
-	  cursor = FRAME_OUTPUT_DATA (f)->top_left_corner_cursor;
+	  cursor = FRAME_MOUSE_CURSOR (f, top_left_corner_cursor);
 	  break;
 	case INTERNAL_BORDER_TOP_EDGE:
-	  cursor = FRAME_OUTPUT_DATA (f)->top_edge_cursor;
+	  cursor = FRAME_MOUSE_CURSOR (f, top_edge_cursor);
 	  break;
 	case INTERNAL_BORDER_TOP_RIGHT_CORNER:
-	  cursor = FRAME_OUTPUT_DATA (f)->top_right_corner_cursor;
+	  cursor = FRAME_MOUSE_CURSOR (f, top_right_corner_cursor);
 	  break;
 	case INTERNAL_BORDER_RIGHT_EDGE:
-	  cursor = FRAME_OUTPUT_DATA (f)->right_edge_cursor;
+	  cursor = FRAME_MOUSE_CURSOR (f, right_edge_cursor);
 	  break;
 	case INTERNAL_BORDER_BOTTOM_RIGHT_CORNER:
-	  cursor = FRAME_OUTPUT_DATA (f)->bottom_right_corner_cursor;
+	  cursor = FRAME_MOUSE_CURSOR (f, bottom_right_corner_cursor);
 	  break;
 	case INTERNAL_BORDER_BOTTOM_EDGE:
-	  cursor = FRAME_OUTPUT_DATA (f)->bottom_edge_cursor;
+	  cursor = FRAME_MOUSE_CURSOR (f, bottom_edge_cursor);
 	  break;
 	case INTERNAL_BORDER_BOTTOM_LEFT_CORNER:
-	  cursor = FRAME_OUTPUT_DATA (f)->bottom_left_corner_cursor;
+	  cursor = FRAME_MOUSE_CURSOR (f, bottom_left_corner_cursor);
 	  break;
 	default:
 	  /* This should not happen.  */
-	  if (cursor != FRAME_OUTPUT_DATA (f)->nontext_cursor)
-	    cursor = FRAME_OUTPUT_DATA (f)->nontext_cursor;
+	  if (cursor != FRAME_MOUSE_CURSOR (f, nontext_cursor))
+	    cursor = FRAME_MOUSE_CURSOR (f, nontext_cursor);
 	}
 
-      if (cursor != FRAME_OUTPUT_DATA (f)->nontext_cursor)
+      if (cursor != FRAME_MOUSE_CURSOR (f, nontext_cursor))
 	{
 	  /* Do we really want a help echo here?  */
 	  help_echo_string = build_string ("drag-mouse-1: resize frame");
@@ -37181,7 +37200,7 @@ note_mouse_highlight (struct frame *f, int x, int y)
      buffer.  */
   if (EQ (window, f->menu_bar_window))
     {
-      cursor = FRAME_OUTPUT_DATA (f)->nontext_cursor;
+      cursor = FRAME_MOUSE_CURSOR (f, nontext_cursor);
       goto set_cursor;
     }
 #endif
@@ -37193,9 +37212,9 @@ note_mouse_highlight (struct frame *f, int x, int y)
     {
       note_tab_bar_highlight (f, x, y);
       if (tab_bar__dragging_in_progress)
-	  cursor = FRAME_OUTPUT_DATA (f)->hand_cursor;
+	  cursor = FRAME_MOUSE_CURSOR (f, hand_cursor);
       else
-	cursor = FRAME_OUTPUT_DATA (f)->nontext_cursor;
+	cursor = FRAME_MOUSE_CURSOR (f, nontext_cursor);
       goto set_cursor;
     }
   else
@@ -37214,7 +37233,7 @@ note_mouse_highlight (struct frame *f, int x, int y)
   if (EQ (window, f->tool_bar_window))
     {
       note_tool_bar_highlight (f, x, y);
-      cursor = FRAME_OUTPUT_DATA (f)->nontext_cursor;
+      cursor = FRAME_MOUSE_CURSOR (f, nontext_cursor);
       goto set_cursor;
     }
 #endif
@@ -37228,7 +37247,7 @@ note_mouse_highlight (struct frame *f, int x, int y)
 #ifdef HAVE_WINDOW_SYSTEM
       if (part == ON_LEFT_MARGIN || part == ON_RIGHT_MARGIN)
 	{
-	  cursor = FRAME_OUTPUT_DATA (f)->nontext_cursor;
+	  cursor = FRAME_MOUSE_CURSOR (f, nontext_cursor);
 	  /* Show non-text cursor (Bug#16647).  */
 	  goto set_cursor;
 	}
@@ -37240,13 +37259,13 @@ note_mouse_highlight (struct frame *f, int x, int y)
 #ifdef HAVE_WINDOW_SYSTEM
   if (part == ON_VERTICAL_BORDER)
     {
-      cursor = FRAME_OUTPUT_DATA (f)->horizontal_drag_cursor;
+      cursor = FRAME_MOUSE_CURSOR (f, horizontal_drag_cursor);
       help_echo_string = build_string ("drag-mouse-1: resize");
       goto set_cursor;
     }
   else if (part == ON_RIGHT_DIVIDER)
     {
-      cursor = FRAME_OUTPUT_DATA (f)->horizontal_drag_cursor;
+      cursor = FRAME_MOUSE_CURSOR (f, horizontal_drag_cursor);
       help_echo_string = build_string ("drag-mouse-1: resize");
       goto set_cursor;
     }
@@ -37255,22 +37274,22 @@ note_mouse_highlight (struct frame *f, int x, int y)
 	|| minibuf_level
 	|| NILP (Vresize_mini_windows))
       {
-	cursor = FRAME_OUTPUT_DATA (f)->vertical_drag_cursor;
+	cursor = FRAME_MOUSE_CURSOR (f, vertical_drag_cursor);
 	help_echo_string = build_string ("drag-mouse-1: resize");
 	goto set_cursor;
       }
     else
-      cursor = FRAME_OUTPUT_DATA (f)->nontext_cursor;
+      cursor = FRAME_MOUSE_CURSOR (f, nontext_cursor);
   else if (part == ON_LEFT_FRINGE || part == ON_RIGHT_FRINGE)
     {
-      cursor = FRAME_OUTPUT_DATA (f)->nontext_cursor;
+      cursor = FRAME_MOUSE_CURSOR (f, nontext_cursor);
       note_fringe_highlight (f, window, x, y, part);
     }
   else if (part == ON_VERTICAL_SCROLL_BAR
 	   || part == ON_HORIZONTAL_SCROLL_BAR)
-    cursor = FRAME_OUTPUT_DATA (f)->nontext_cursor;
+    cursor = FRAME_MOUSE_CURSOR (f, nontext_cursor);
   else
-    cursor = FRAME_OUTPUT_DATA (f)->text_cursor;
+    cursor = FRAME_MOUSE_CURSOR (f, text_cursor);
 #endif
 
   /* Are we in a window whose display is up to date?
@@ -37361,7 +37380,7 @@ note_mouse_highlight (struct frame *f, int x, int y)
 	    {
 #ifdef HAVE_WINDOW_SYSTEM
 	      if (area != TEXT_AREA)
-		cursor = FRAME_OUTPUT_DATA (f)->nontext_cursor;
+		cursor = FRAME_MOUSE_CURSOR (f, nontext_cursor);
 	      else
 		pointer = Vvoid_text_area_pointer;
 #endif

@@ -134,14 +134,12 @@ const ranges = [_]Range{
     .{ .low = 0x0902, .high = 0x0903, .status = .implemented_codec, .domain = .widget, .family = "menu-open-close", .note = "bounded live-model open/close codecs, exact generation validation, owner bounds, one active popup, authoritative cleanup, and SDL child render evidence; keyboard navigation and result dispatch pending" },
     .{ .low = 0x0904, .high = 0x0905, .status = .implemented_codec, .domain = .widget, .family = "menu-result-cancel", .note = "bounded reverse result/cancel intents with validated identity/window/frame fields and negotiated DeliveryJournal queue; Emacs command execution pending" },
     .{ .low = 0x0906, .high = 0x0906, .status = .implemented_codec, .domain = .widget, .family = "menu-hover", .note = "exact 40-byte enter/move/leave reverse intent with negotiated DeliveryJournal queue and EPXL admission; SDL hit testing, navigation, and core dispatch pending" },
+    .{ .low = 0x0907, .high = 0x0907, .status = .implemented_codec, .domain = .widget, .family = "menu-open-request", .note = "exact 40-byte reverse intent naming the menu-bar item to open and its logical slot origin, with SDL menu-bar hit testing, a negotiated DeliveryJournal queue, and EPXL admission; backend menu opening and popup publication pending" },
     .{ .low = 0x0910, .high = 0x0910, .status = .implemented_codec, .domain = .widget, .family = "toolbar-model", .note = "bounded complete toolbar model with UTF-8 labels, strict item kinds/flags/icon identity, Scene ownership, and SDL render evidence; icons/policy pending" },
     .{ .low = 0x0911, .high = 0x0911, .status = .implemented_codec, .domain = .widget, .family = "toolbar-patch", .note = "exact 44-byte header plus 168-byte ordered upsert/delete operations with strict generation checks, Scene atomic evolution, and SDL render evidence; move operations and full toolbar policy pending" },
     .{ .low = 0x0912, .high = 0x0912, .status = .implemented_codec, .domain = .widget, .family = "toolbar-click", .note = "bounded press/release reverse intent with toolbar/item/window/frame identity and negotiated DeliveryJournal queue; SDL hit testing and Emacs command dispatch pending" },
-    .{ .low = 0x0913, .high = 0x091f, .status = .planned, .domain = .widget, .family = "toolbar-extension", .note = "toolbar menus, overflow, orientation, and advanced item policy pending" },
     .{ .low = 0x0920, .high = 0x0923, .status = .implemented_codec, .domain = .widget, .family = "dialog", .note = "bounded message/prompt/confirm open/update/close/result codecs with owner/generation validation, negotiated result queue, and SDL diagnostic render; native dialogs, file/color/font dialogs, and Emacs callback dispatch pending" },
-    .{ .low = 0x0924, .high = 0x092f, .status = .planned, .domain = .widget, .family = "dialog-extension", .note = "progress, file, color, font, error, and advanced dialog policies pending" },
     .{ .low = 0x0930, .high = 0x0932, .status = .implemented_codec, .domain = .widget, .family = "tooltip", .note = "bounded show/move/hide codec, active frame/window validation, exact-generation lifecycle, authoritative clear, and SDL box/text render; Unicode text state validates but debug glyphs are ASCII-only" },
-    .{ .low = 0x0933, .high = 0x093f, .status = .planned, .domain = .widget, .family = "tooltip-extension", .note = "remaining tooltip positioning, dismissal, input, and accessibility policies pending" },
     .{ .low = 0x0940, .high = 0x0940, .status = .implemented_codec, .domain = .widget, .family = "scrollbar-state", .note = "dedicated authoritative vertical scrollbar state alias over the bounded 48-byte codec with Scene owner/upsert and SDL thumb render; horizontal state pending" },
     .{ .low = 0x0941, .high = 0x0941, .status = .implemented_codec, .domain = .widget, .family = "scrollbar-event", .note = "dedicated bounded absolute/relative event alias over the 40-byte scroll-request codec with negotiated DeliveryJournal and EPXL admission; core dispatch pending" },
     .{ .low = 0x0a00, .high = 0x0a09, .status = .implemented_codec, .domain = .diagnostic, .family = "diagnostics", .note = "bounded performance, timing, bandwidth, resource, damage, latency, desync, trace, and replay codecs; producer/consumer integration pending" },
@@ -312,7 +310,7 @@ test "implemented and planned protocol coverage remain honest" {
     const dnd_enter = entryFor(0x0820) catch unreachable;
     try std.testing.expectEqual(Status.implemented_codec, dnd_enter.status);
     const counts = counters();
-    try std.testing.expectEqual(@as(usize, 164), counts.implemented_codec);
+    try std.testing.expectEqual(@as(usize, 165), counts.implemented_codec);
     try std.testing.expectEqual(@as(usize, 0), counts.partial);
     try std.testing.expectEqual(@as(usize, 0), counts.planned);
     try std.testing.expectError(error.UnknownMessageId, entryFor(0xffff));

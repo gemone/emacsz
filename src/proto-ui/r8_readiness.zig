@@ -1,9 +1,9 @@
 //! Source-authoritative R8 entry-readiness policy.
 //!
 //! R8 means a real terminal and frame, not another fake-host or public-fact
-//! fixture.  R7 is approved and the adapter is selected.  Opt-in target-specific
-//! linkage can advance the linkage requirement, but registration remains a
-//! separate mandatory condition, so R8 entry always stays blocked in this slice.
+//! fixture.  R7 is approved and the adapter is selected.  Opt-in linkage now
+//! also carries a generic headless TPE terminal slice, but R8 entry remains
+//! blocked until one real SDL frame and redisplay-owned capture are ready.
 
 const std = @import("std");
 const host_contract = @import("host_contract.zig");
@@ -14,7 +14,7 @@ const runtime = @import("runtime.zig");
 pub const manifest_version: u32 = 1;
 pub const readiness_schema_version: u32 = 1;
 pub const authoritative_source = "src/proto-ui/r8_readiness.zig";
-pub const blocked_reason_code = "r8_host_adapter_linkage_or_registration_missing";
+pub const blocked_reason_code = "r8_first_frame_and_redisplay_missing";
 
 pub const Status = enum {
     pending,
@@ -42,7 +42,7 @@ pub const requirements = [_]Requirement{
     .{
         .name = "core.terminal_provider_extension",
         .status = .pending,
-        .evidence = "TP2 adapter policy conformance is complete, but TP1 remains unauthorized; no generic core dispatch, provider registration, or output_proto terminal exists",
+        .evidence = "Generic TPE source is present; opt-in Emacs registration is required before headless terminal dispatch is implemented",
     },
     .{
         .name = "static_isolation",
@@ -95,6 +95,15 @@ pub fn requirementsFor(runtime_linking: bool) [requirements.len]Requirement {
         .status = .implemented,
         .evidence = "The selected adapter-owned static candidate is forced into the native Linux glibc temacs link graph and verified in the linked ELF",
     };
+    result[2] = if (!runtime_linking) .{
+        .name = "core.terminal_provider_extension",
+        .status = .pending,
+        .evidence = "Generic TPE source is present; the default build contains no provider dispatch or registration",
+    } else .{
+        .name = "core.terminal_provider_extension",
+        .status = .implemented,
+        .evidence = "proto-ui-tpe-headless registers an explicit generic output_provider terminal and verifies proto identity and cleanup",
+    };
     return result;
 }
 
@@ -125,7 +134,19 @@ pub fn validateLinkedState(runtime_linking: bool) ?[]const u8 {
     if (entry_status != .blocked) return "entry status is not blocked";
     if (!std.mem.eql(u8, reason_code, blocked_reason_code)) return "entry reason changed";
     if (activation_allowed or runtime_available or default_enabled) return "blocked entry allows runtime";
-    if (tracked_inherited_source_edits.len != 0) return "readiness claims inherited-source edits";
+    const expected_tracked_edits = [_][]const u8{
+        "build.zig",
+        "src/emacs.c",
+        "src/frame.c",
+        "src/terminal.c",
+        "src/termhooks.h",
+    };
+    if (tracked_inherited_source_edits.len != expected_tracked_edits.len)
+        return "readiness inherited-source edit inventory changed";
+    for (expected_tracked_edits, 0..) |expected, index| {
+        if (!std.mem.eql(u8, tracked_inherited_source_edits[index], expected))
+            return "readiness inherited-source edit inventory changed";
+    }
 
     const expected_names = [_][]const u8{
         "r7.reviewed_decision",
@@ -169,7 +190,13 @@ pub const reason_code = blocked_reason_code;
 pub const activation_allowed = false;
 pub const runtime_available = false;
 pub const default_enabled = false;
-pub const tracked_inherited_source_edits: []const []const u8 = &.{};
+pub const tracked_inherited_source_edits: []const []const u8 = &.{
+    "build.zig",
+    "src/emacs.c",
+    "src/frame.c",
+    "src/terminal.c",
+    "src/termhooks.h",
+};
 
 /// Emits canonical compact JSON: deterministic across hosts and runs.
 pub fn writeManifest(gpa: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
@@ -240,7 +267,7 @@ pub fn writeLinkedManifest(
     try out.appendSlice(gpa, "]}\n");
 }
 
-test "R8 entry remains blocked without linkage or registration" {
+test "default configuration remains blocked" {
     try std.testing.expectEqual(host_contract.DecisionStatus.approved, host_contract.decision.status);
     try std.testing.expectEqual(host_adapter.SelectionStatus.selected, host_adapter.current.status);
     try std.testing.expectEqual(@as(?[]const u8, null), validateState());
@@ -249,14 +276,14 @@ test "R8 entry remains blocked without linkage or registration" {
     try std.testing.expect(!activation_allowed);
     try std.testing.expect(!runtime_available);
     try std.testing.expect(!default_enabled);
-    try std.testing.expectEqual(@as(usize, 0), tracked_inherited_source_edits.len);
+    try std.testing.expectEqual(@as(usize, 5), tracked_inherited_source_edits.len);
 }
 
 test "R8 entry remains blocked after opt-in adapter linkage" {
     try std.testing.expectEqual(@as(?[]const u8, null), validateLinkedState(true));
     const linked_requirements = requirementsFor(true);
     try std.testing.expectEqual(Status.implemented, linked_requirements[1].status);
-    try std.testing.expectEqual(Status.pending, linked_requirements[2].status);
+    try std.testing.expectEqual(Status.implemented, linked_requirements[2].status);
     try std.testing.expect(!entryReadyFor(true));
     try std.testing.expectEqual(EntryStatus.blocked, entry_status);
     try std.testing.expect(!activation_allowed);

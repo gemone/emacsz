@@ -1,8 +1,12 @@
 # Emacs UI Protocol (EUP) v1
 
-Status: normative protocol design
+Status: normative protocol; adapter codec coverage implemented
 Transport-neutral, little-endian wire protocol
 This document defines the complete v1 message surface and payload semantics.
+The current adapter implements all 165 assigned message IDs as classified
+codecs (`proto-ui-protocol-coverage`: 165 implemented, 0 partial, 0 planned).
+This is codec and bounded-profile coverage, not a claim of production runtime,
+redisplay capture, PGTK parity, or complete semantic implementation.
 
 ## 1. Protocol purpose
 
@@ -608,9 +612,8 @@ nonzero frame ID/generation and the target `u64 window_id`. Presence bits are
 Present geometry values must be nonnegative with positive width/height. A
 present parent must be another live window and must not create a cycle; depth
 must equal parent depth plus one and stay at most eight. The Scene applies the
-patch in place. Zone rectangles are defined by `WINDOW_ZONES` v1; scroll state
-and mouse-highlight records remain separate pending messages, while window
-default-face state is defined by `WINDOW_FACE` v1.
+patch in place. Zone rectangles, scroll state, mouse-highlight records, and
+window default-face state are defined by their separate v1 messages.
 
 #### Window create/delete lifecycle v1 (implemented bounded adapter contract)
 
@@ -655,13 +658,22 @@ derived-face resolution, font shaping, or PGTK face parity.
 #### `WINDOW_SCROLL_STATE` v1 (implemented bounded adapter contract)
 
 `WINDOW_SCROLL_STATE = 0x0308` is an exact 48-byte little-endian scrollbar state
-record. It carries a visibility flag, window id, active-frame generation,
+record. It carries an orientation flag, window id, active-frame generation,
 content/viewport sizes, position, and track width. Unknown flags, reserved
 bytes, viewport zero, content smaller than viewport, position past the scroll
 range, zero/oversized track width, truncation, or stale generation are rejected.
-`Scene` upserts one state per window and SDL renders a proportional vertical
-track/thumb. Drag requests, horizontal scroll, and core-owned scroll semantics
-remain pending.
+The two defined flags are `vertical_visible` and `horizontal_visible`; the
+record's sizes are lines for a vertical bar and columns for a horizontal one,
+and its `track_width` is the bar thickness in both cases. `Scene` upserts one
+state per window *and orientation*, so both bars of a window are independent
+states, and SDL renders a proportional track/thumb for each; a horizontal track
+stops where the window's vertical bar starts, exactly as a real frame lays the
+corner out. The producer side publishes one bounded state per real scroll bar a
+window reports: the vertical state takes its content size and position from the
+real buffer line count and window start (`sdl3-emacs-scrollbar-smoke`), and the
+horizontal state takes its content size and position from the widest visible
+line and the real `window-hscroll` (`sdl3-emacs-hscroll-smoke`). Horizontal
+drag requests and redisplay-owned scroll semantics remain pending.
 
 #### `WINDOW_SCROLL_REQUEST` v1 (implemented bounded adapter contract)
 
@@ -671,8 +683,11 @@ intent.  Layout: schema (`u16=1`), kind, axis, reserved, nonzero window id,
 bytes.  Kind `absolute` requires nonnegative position and zero delta; kind
 `relative` requires nonzero delta and zero position.  Axis is vertical or
 horizontal.  Delivery requires negotiated `window.scroll_request_v1`, while
-actual application remains core-owned.  Horizontal rendering and full scrollbar
-semantics remain pending.
+actual application remains core-owned.  The owned publisher consumes a
+delivered vertical intent and moves the target window's real `window-start` by
+the bounded line count, so a trough page or thumb drag scrolls a real Emacs
+window and the republished state shows it (`sdl3-emacs-scrollbar-interaction-smoke`);
+horizontal rendering and full scrollbar semantics remain pending.
 
 #### `WINDOW_MOUSE_HIGHLIGHT` v1 (implemented bounded adapter contract)
 
@@ -691,9 +706,11 @@ window with a bounded table of 32 states.  Window deletion removes dependent
 states.  Face replacement, generation-advancing patch, and exact-generation
 delete remove dependent states.  An authoritative `FRAME_UPDATE` clears the
 table.  SDL renders a visible highlight with the live face background when that
-face declares one.  This is bounded visual-state evidence only: pointer motion,
-Emacs mouse-face resolution, overlays, derived faces, redisplay-owned capture,
-and complete PGTK parity remain pending.
+face declares one.  This is bounded visual-state evidence only: the
+adapter-owned publisher resolves a live Emacs `mouse-face` span under the
+mirror's pointer into one record per displayed row (`sdl3-emacs-mouse-smoke`),
+while pointer-motion parity, derived faces, redisplay-owned capture, and
+complete PGTK parity remain pending.
 
 ### 11.1 `WINDOW_TREE_SNAPSHOT` v1 (implemented bounded adapter contract)
 
@@ -914,8 +931,16 @@ is rejected without mutating the Scene.
 The cursor must name a live window in the active Scene, have positive width and
 height, and fit entirely inside that window.  A `WINDOW_PATCH` that would move
 the cursor outside its shrunken owner is rejected without changing the window.
-`cursor_kind` is transported as an opaque v1 value; cursor styles, IME-coupled
-caret behavior, and redisplay-owned cursor semantics remain pending.
+`cursor_kind` is transported as an opaque v1 value.  The SDL frontend gives it a
+bounded interpretation for rendering only: kind 1 (and any unrecognised value)
+draws a solid box, 2 and 3 draw the solid bar and horizontal bar the geometry
+already describes, 4 draws a hollow four-edge outline, and 5 draws a bottom-edge
+underline; the cursor fill uses the owning window's live default-face foreground
+when one is bound.  The producer side publishes the selected window's real
+`cursor-type` as this bounded kind (`sdl3-emacs-cursor-smoke`), so the value a
+real Emacs reports reaches the frontend's shape rendering.  Blink state,
+IME-coupled caret behavior, per-window cursor faces, and redisplay-owned cursor
+semantics remain pending.
 
 ### 13.1 `GLYPH_RUN` debug-fallback v1 (implemented bounded adapter contract)
 
@@ -972,6 +997,21 @@ The frontend accepts v2 only when that exact face generation is live.  Redefinin
 or deleting the face removes dependent debug runs.  This remains a diagnostic
 ASCII fallback and does not provide shaped text, BiDi, fonts, atlas rendering, or
 full Emacs face parity.
+
+Within v2, `flags` carries the bounded style and chrome bits: `0x0004`/`0x0008`
+are bold/italic, `0x0010`/`0x0020`/`0x0040` mark a run that replaces the mode
+line, header line, or tab line respectively, and `0x0080` marks a run drawn with
+an alternate font.  `0x0200`/`0x0400` are that alternate font's two-bit family
+index: the value `0` is family 1 (the negotiated variable-pitch font, so a
+publisher that only sets `0x0080` is unchanged), `1` is family 2, and `2` is
+family 3.  `0x0100` marks a *partial body* run: it
+colours an ASCII span of a row without replacing that row's plain text, so a
+row containing characters the ASCII-only run wire cannot carry (non-ASCII text)
+keeps its plain text underneath while its ASCII spans keep their colours.  A run
+may set at most one chrome bit (the decoder rejects two), and a partial bit may
+not be combined with a chrome bit; a run without a chrome or partial bit covers
+its own row's plain text, while a chrome run is anchored to its window's first
+row for validation and positioned at that aux row's geometry.
 
 #### `GLYPH_RUN` v3 — bounded shaped atlas run (implemented adapter contract)
 
@@ -1070,8 +1110,11 @@ geometry, or stale generation is rejected before mutation.
 ### 13.4 `FRINGE_UPDATE` v1 (implemented bounded adapter contract)
 
 `FRINGE_UPDATE = 0x0408` is an exact 40-byte little-endian color-band subset.
-It supports left/right fringe geometry and generation replacement; bitmap glyph
-patterns, scroll semantics, and redisplay-owned fringe capture remain pending.
+It supports left/right fringe geometry and generation replacement.  This update
+path does not itself carry bitmap patterns; separate
+`FRINGE_BITMAP_DEFINE`/`DELETE` resources provide bounded monochrome patterns,
+while color/alpha bitmaps, scroll semantics, and redisplay-owned fringe capture
+remain pending.
 
 | Offset | Size | Field | Rule |
 |---:|---:|---|---|
@@ -1263,7 +1306,7 @@ protocol subset and **not** full Emacs face parity.  Payload layout:
 | 37 | 1 | overline style | same tag space |
 | 38 | 1 | strike-through style | same tag space |
 | 39 | 1 | box style | none=0, simple=1, released=2, pressed=3 |
-| 40 | 4 | `i32` box line width | zero unless box color is present |
+| 40 | 4 | `i32` box line width | the face's real `:box` `:line-width` in pixels (a negative width is relative to the frame border, so its magnitude is the bounded stand-in); zero unless box color is present |
 | 44 | 1 | inverse video | boolean byte, 0 or 1 |
 | 45 | 1 | extend | boolean byte, 0 or 1 |
 | 46 | 4 | `i32` line spacing | signed |
@@ -1610,26 +1653,6 @@ drag_phase hover source
 
 Pointer events include enter, leave, motion, press, release, click, double-click, triple-click, drag, and cancel.
 
-### Bounded primary ownership state v1
-
-`SELECTION_OWNER_SET` (`0x0800`), `SELECTION_OWNER_CLEAR` (`0x0801`), and
-`SELECTION_LOST` (`0x0802`) now have bounded Scene state for primary ownership
-only.  An owner records its generation, owner flags, and up to eight unique
-target offers with priorities; a newer generation replaces it, while clear/lost
-must match the live kind and generation.  The target list is ownership metadata,
-not request/data transfer.  `SELECTION_REQUEST` (`0x0803`), `SELECTION_DATA` (`0x0804`), and
-`SELECTION_ERROR` (`0x0805`) now have bounded Scene transfer state for a live
-primary owner.  A request must name a target offered by the current generation.
-Data/error must match the waiting request ID and generation; data stores at most
-4096 bytes and error stores a bounded UTF-8 reason.  A newer owner set, clear,
-or loss invalidates the transfer.  Negotiated `selection.primary_ownership_v1` can transport bounded set/clear
-ownership transitions over EPXL. Owner-cancelled loss and newer-generation replacement are transported, and an
-exported owner may make the diagnostic SDL frontend claim/release bounded
-PRIMARY text; this is not an external target service. Negotiated `selection.primary_transfer_v1` can
-transport a bounded offered-target request, completed data record, and matched
-error transition into Scene. Platform negotiation, target conversion, and
-Emacs/core application remain pending.
-
 ### Wheel event fields
 
 ```text
@@ -1727,6 +1750,108 @@ item byte lengths is at most 4096 and excludes the four item-framing bytes.
 `kind` must be an assigned input-class message ID and must not be
 `INPUT_BATCH`; nested payload decoding/application is intentionally outside
 this framing codec.
+
+## 16. IME messages
+
+EUP v1 assigns exactly these 19 IME IDs. Concrete payload layouts are defined by
+the bounded IME contracts later in this document.
+
+| ID | Name | Direction | Semantics |
+|---|---|---|---|
+| `0x0700` | `IME_ATTACH` | C→F | Attach a context to a live window |
+| `0x0701` | `IME_DETACH` | C→F | Detach a context |
+| `0x0702` | `IME_FOCUS` | C→F | Set focused state for a context |
+| `0x0703` | `IME_CURSOR_RECT` | C→F | Set the window-relative cursor rectangle |
+| `0x0704` | `IME_ALLOWED_INPUT` | C→F | Replace the bounded input policy mask |
+| `0x0705` | `IME_SURROUNDING_TEXT` | C→F | Replace bounded surrounding text and selection |
+| `0x0706` | `IME_RESET` | C→F | Reset policy and transient IME state |
+| `0x0710` | `IME_ATTACHED` | F→C | Confirm attachment |
+| `0x0711` | `IME_DETACHED` | F→C | Confirm detachment |
+| `0x0712` | `IME_PREEDIT_START` | F→C | Begin a composition |
+| `0x0713` | `IME_PREEDIT_UPDATE` | F→C | Replace bounded composition text and cursor state |
+| `0x0714` | `IME_PREEDIT_END` | F→C | End the composition |
+| `0x0715` | `IME_COMMIT` | F→C | Deliver bounded committed UTF-8 text |
+| `0x0716` | `IME_REQUEST_SURROUNDING` | F→C | Request current surrounding text |
+| `0x0717` | `IME_DELETE_SURROUNDING` | F→C | Delete a bounded surrounding range |
+| `0x0718` | `IME_CANDIDATE_UPDATE` | F→C | Replace bounded candidate/page state |
+| `0x0719` | `IME_CANCEL` | F→C | Cancel the active composition |
+
+
+## 17. Selection, clipboard, and DND messages
+
+EUP v1 assigns exactly these 21 IDs. Concrete v1 payloads use bounded identity,
+generation, target, reason, and byte-table rules; transfer bytes and reasons are
+UTF-8/bounded as required by the Scene contracts.
+
+| ID | Name | Direction | Semantics |
+|---|---|---|---|
+| `0x0800` | `SELECTION_OWNER_SET` | C→F | Establish bounded selection ownership and offers |
+| `0x0801` | `SELECTION_OWNER_CLEAR` | C→F | Clear matching live ownership |
+| `0x0802` | `SELECTION_LOST` | F→C | Report authoritative ownership loss |
+| `0x0803` | `SELECTION_REQUEST` | F→C | Request a currently offered target |
+| `0x0804` | `SELECTION_DATA` | C→F | Answer a matching waiting request |
+| `0x0805` | `SELECTION_ERROR` | C→F | Fail a matching waiting request |
+| `0x0810` | `CLIPBOARD_SET` | C→F | Establish clipboard ownership and offers |
+| `0x0811` | `CLIPBOARD_GET` | F→C | Request clipboard data by target |
+| `0x0812` | `CLIPBOARD_DATA` | C→F | Return matching bounded clipboard data |
+| `0x0813` | `CLIPBOARD_CLEAR` | C→F | Clear matching clipboard ownership |
+| `0x0820` | `DND_ENTER` | F→C | Report drag entry and offers |
+| `0x0821` | `DND_POSITION` | F→C | Report drag position/action |
+| `0x0822` | `DND_LEAVE` | F→C | End a drag without drop |
+| `0x0823` | `DND_DROP` | F→C | Commit a drop at a position |
+| `0x0824` | `DND_CANCEL` | F→C | Cancel an active drag |
+| `0x0825` | `DND_REPLY` | C→F | Answer position/drop negotiation |
+| `0x0826` | `DND_DATA` | F→C | Deliver bounded dropped bytes |
+
+
+### Bounded primary ownership state v1
+
+`SELECTION_OWNER_SET` (`0x0800`), `SELECTION_OWNER_CLEAR` (`0x0801`), and
+`SELECTION_LOST` (`0x0802`) now have bounded Scene state for primary ownership
+only.  An owner records its generation, owner flags, and up to eight unique
+target offers with priorities; a newer generation replaces it, while clear/lost
+must match the live kind and generation.  The target list is ownership metadata,
+not request/data transfer.  `SELECTION_REQUEST` (`0x0803`), `SELECTION_DATA` (`0x0804`), and
+`SELECTION_ERROR` (`0x0805`) now have bounded Scene transfer state for a live
+primary owner.  A request must name a target offered by the current generation.
+Data/error must match the waiting request ID and generation; data stores at most
+4096 bytes and error stores a bounded UTF-8 reason.  A newer owner set, clear,
+or loss invalidates the transfer.  Negotiated `selection.primary_ownership_v1` can transport bounded set/clear
+ownership transitions over EPXL. Owner-cancelled loss and newer-generation replacement are transported, and an
+exported owner may make the diagnostic SDL frontend claim/release bounded
+PRIMARY text; this is not an external target service. Negotiated `selection.primary_transfer_v1` can
+transport a bounded offered-target request, completed data record, and matched
+error transition into Scene. Platform negotiation, target conversion, and
+Emacs/core application remain pending.
+
+## 18. Widget messages
+
+EUP v1 assigns exactly these 24 widget IDs. Models and patches are atomic,
+bounded tables; reverse intents use validated owner/generation identity and the
+negotiated delivery journal where applicable.
+
+| ID | Name | Direction | Semantics |
+|---|---|---|---|
+| `0x0900` | `MENU_MODEL` | C→F | Replace a bounded complete menu tree |
+| `0x0901` | `MENU_PATCH` | C→F | Apply ordered menu upsert/delete operations |
+| `0x0902` | `MENU_OPEN` | C→F | Open a live menu model |
+| `0x0903` | `MENU_CLOSE` | C→F | Close a live menu |
+| `0x0904` | `MENU_RESULT` | F→C | Report an activated menu item |
+| `0x0905` | `MENU_CANCEL` | F→C | Report menu dismissal |
+| `0x0906` | `MENU_HOVER` | F→C | Report menu pointer state |
+| `0x0907` | `MENU_OPEN_REQUEST` | F→C | Request opening a menu-bar item |
+| `0x0910` | `TOOLBAR_MODEL` | C→F | Replace a bounded complete toolbar model |
+| `0x0911` | `TOOLBAR_PATCH` | C→F | Apply ordered toolbar upsert/delete operations |
+| `0x0912` | `TOOLBAR_CLICK` | F→C | Report a toolbar press/release |
+| `0x0920` | `DIALOG_OPEN` | C→F | Open a bounded diagnostic dialog state |
+| `0x0921` | `DIALOG_UPDATE` | C→F | Update a live bounded dialog |
+| `0x0922` | `DIALOG_CLOSE` | C→F | Close a live dialog |
+| `0x0923` | `DIALOG_RESULT` | F→C | Report a dialog button/result selection |
+| `0x0930` | `TOOLTIP_SHOW` | C→F | Show a bounded tooltip for a live owner |
+| `0x0931` | `TOOLTIP_MOVE` | C→F | Move a live tooltip |
+| `0x0932` | `TOOLTIP_HIDE` | C→F | Hide a live tooltip |
+| `0x0940` | `SCROLLBAR_STATE` | C→F | Publish authoritative scrollbar state |
+| `0x0941` | `SCROLLBAR_EVENT` | F→C | Report a bounded scrollbar interaction |
 
 ## 19. Diagnostic messages
 
@@ -1842,13 +1967,13 @@ v1 targets local trusted IPC. Encryption, when present, is a transport property.
 
 ### 27.0 Assigned-message coverage
 
-EUP v1 assigns exactly 164 message IDs.  `proto-ui-protocol-coverage` emits and
+EUP v1 assigns exactly 165 message IDs.  `proto-ui-protocol-coverage` emits and
 audits a source-authoritative manifest for every assigned ID.  The current
 honest classification is:
 
 | Status | IDs | Meaning |
 |---|---:|---|
-| `implemented_codec` | 164 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
+| `implemented_codec` | 165 | Concrete encode/decode plus Scene, bridge, transport, or smoke evidence |
 | `partial` | 0 | Reserved classification: a concrete local path exists but full payload/recovery semantics are absent |
 | `planned` | 0 | Reserved classification: the assigned target protocol is not implemented |
 | `reserved_diagnostic` | 0 | No assigned ID currently receives this classification |
@@ -2176,6 +2301,20 @@ bytes and maps every row index to a row in the same update.  This is not the
 normative `GLYPH_RUN` path and must not be used to claim shaped-text or
 face/font compatibility.
 
+The adapter-owned public-facts `menu_open` object carries three optional
+parallel icon vectors: `icon_ids`, `icon_generations`, and `icon_payloads`.
+When any vector is present it must have exactly one entry per `items` row; icon
+references are complete generation-qualified pairs or absent.  A payload is
+padded standard base64 encoding of ASCII XBM source, with tab, CR, and LF as
+the only permitted C0 characters.  At the facts trust boundary, invalid base64
+or a producer vector of the wrong length rejects the snapshot.  A decoded
+payload over 4096 bytes is cleared per row, as is XBM that is malformed or
+outside the 1..32 by 1..32 dimension bound; the row's reference remains and
+selects the normal missing-resource label fallback.
+Valid payloads are decoded to monochrome RGBA8 and emitted as the existing
+generation-qualified `IMAGE_DEFINE`/`IMAGE_DATA` pair before the menu model.
+Other image encodings are not accepted.
+
 The facts profile also defines the `TEXT_INPUT` payload used by
 `0x0601`: `u32 byte_length` followed by valid UTF-8 bytes without NUL.
 Producers limit the text to 120 bytes; the wire format is unchanged.  The
@@ -2358,9 +2497,11 @@ The envelope frame ID, active frame identity, and `frame_generation` must
 agree. Scene replaces the complete scale/DPI triple only after validation and
 clears it on frame destruction, authenticated resync, or scene teardown. The
 diagnostic SDL bridge reads SDL's per-window display scale for comparison.
-Production redisplay still receives scale and DPI through the `FRAME_UPDATE`
-header; this message does not yet implement monitor migration, live scale
-events, or core-driven resize/layout.
+`FRAME_SCALE` is a snapshot, not a migration command: it does not cause monitor
+migration, live scale events, or core-driven resize/layout. Separate
+`MONITOR_EVENT` and `DPI_EVENT` payloads carry bounded frontend observations;
+production redisplay still receives scale and DPI through the `FRAME_UPDATE`
+header, and redisplay adaptation and Emacs frame migration remain pending.
 
 #### Frame fullscreen state
 
@@ -2407,9 +2548,10 @@ reserved             u32 = 0
 `primary` are invalid. The envelope frame ID, active frame identity, and
 `frame_generation` must agree. Scene stores the complete monitor descriptor and
 clears it on frame destruction, authenticated resync, or scene teardown. The
-diagnostic SDL bridge queries the real SDL display ID and bounds. This does not
-yet implement monitor-change events, frontend-to-core monitor events, display
-hotplug recovery, or redisplay-driven frame migration.
+diagnostic SDL bridge queries the real SDL display ID and bounds. This is
+assignment state, not an event stream. A separately negotiated `MONITOR_EVENT`
+can carry a bounded current-display observation to the publisher, but display
+hotplug recovery and redisplay-driven frame migration remain pending.
 
 #### Frame maximize state
 
@@ -2460,8 +2602,11 @@ rendered line count to the facts-profile row limit. The viewport section is
 validated and committed atomically with the update.
 
 Facts text uses extension section `0x8002` (`TEXT_LINE_V2`). Each record is
-`u64 window_id`, `u32 row_index`, `u32 UTF-8 length`, and UTF-8 bytes. IDs must
-match a live window in the same update and row indexes must match a live row
+`u64 window_id`, `u32 row_index`, `u32 UTF-8 length`, and UTF-8 bytes. A row
+carries up to 256 bytes (the row bound, larger than the 120-byte bound used for
+the mode line, echo, title, cursor column, and the schema-1 legacy text
+section). IDs must match a live window in the same update and row indexes must
+match a live row
 owned by that window. Duplicate `(window_id,row_index)` pairs, invalid UTF-8,
 zero IDs, and reserved trailing bytes are invalid. `0x8000` remains a
 single-window legacy migration section: it is accepted only when the update has
@@ -2660,6 +2805,51 @@ position through public `posn-at-x-y` / `posn-point` and invokes public `yank`
 once.  A middle press, modified chord, double click, other button, active
 session, or paste without prior bounded selection is a no-op.  This is not X11
 PRIMARY, generic mouse yank, or multi-window hit testing.
+
+`input.touch_bounded_v1` is an optional, degraded frontend producer above the
+same unchanged v2 record.  It may be negotiated only by peers that also offer
+`input.pointer_v2`, and it adds no new wire payload.  A single SDL finger
+contact is converted from SDL's window-normalized `0..1` coordinates to a
+pixel and emitted as `press` on finger down, `drag` with the left mask on
+finger motion, `release` on finger up, and the v2 `cancel` phase on a cancelled
+contact; press and release carry `clicks=1`.  Non-finite or out-of-window
+normalized coordinates, a zero-sized window, unknown event types, and any
+modifier state produce no intent.  An out-of-order phase and a second
+concurrent contact are dropped because the bounded delivery journal admits one
+active pointer session, so multi-contact gesture interpretation, pressure,
+pan/pinch/rotate, and pen input remain unclaimed.
+
+`dnd.bounded_v1` is an optional, degraded frontend producer over the existing
+`DND_ENTER` (`0x0820`), `DND_DROP` (`0x0823`), and `DND_DATA` (`0x0826`)
+records and adds no new wire payload.  SDL reports a drop as an ordered
+begin/position/file-or-text/complete sequence; the frontend accumulates one
+bounded offer and at most 256 payload bytes and, on completion, sends the exact
+`ENTER`/`DROP`/`DATA` triple with a synthesized copy action, because SDL does
+not expose the drag source's action policy.  `DND_ENTER` carries a single offer
+whose target is `text/plain` for `SDL_EVENT_DROP_TEXT` and `text/uri-list` for
+`SDL_EVENT_DROP_FILE`; `DND_DROP` carries the same position; `DND_DATA` carries
+the bounded payload.  A payload larger than the bounded storage, a drop while
+the capability is not negotiated, and an event for another window produce no
+intent.  A `SDL_EVENT_DROP_POSITION` while the drag is active additionally
+reports `DND_POSITION` (`0x0821`), carrying the same synthesized copy action and
+the bounded point; that report is best-effort and is enqueued only when the
+bounded delivery journal has no in-flight intent and an empty queue, so
+continuous position feedback can never fill the queue or displace the payload
+report.  Only the receive direction is claimed: drag-out, MIME negotiation,
+multiple offers or files, drag leave/cancel, and a request/data handshake remain
+unclaimed.
+
+`input.pen_bounded_v1` is an optional, degraded frontend producer above the same
+Pointer v2 record and adds no new wire payload.  It may be negotiated only by
+peers that also offer `input.pointer_v2`.  SDL reports pen positions in window
+coordinates, so no normalization is applied: `SDL_EVENT_PEN_DOWN` emits
+`press`, a motion whose pen state has the tip down emits `drag` with the left
+mask, a motion whose tip is up emits `motion` with an empty mask, and
+`SDL_EVENT_PEN_UP` emits `release`; press and release carry `clicks=1`.  An
+out-of-window coordinate, an eraser-tip state, a barrel-button event, a
+pressure/tilt axis event, a proximity event, and an unknown event type produce
+no intent, so pressure, tilt, barrel buttons, drawing surfaces, and Emacs
+command dispatch remain unclaimed.
 
 W9m defines two strict, negotiated platform observation payloads.
 

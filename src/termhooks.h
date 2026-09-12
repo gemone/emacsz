@@ -65,6 +65,7 @@ enum output_method
   output_pgtk,
   output_haiku,
   output_android,
+  output_provider,
 };
 
 /* Input queue declarations and hooks.  */
@@ -514,6 +515,12 @@ struct terminal
 
   /* Unique id for this terminal device. */
   int id;
+
+  /* Generic Terminal Provider Extension state.  Core never dereferences
+     PROVIDER_DATA; the registered provider owns and frees it. */
+  void *provider_data;
+  uint32_t provider_generation;
+  uint32_t provider_reserved;
 
   /* The number of frames that are on this terminal. */
   int reference_count;
@@ -966,6 +973,15 @@ extern struct terminal *create_terminal (enum output_method,
 extern void delete_terminal (struct terminal *);
 extern void delete_terminal_internal (struct terminal *);
 extern Lisp_Object terminal_glyph_code (struct terminal *, int);
+#ifdef HAVE_TERMINAL_PROVIDER_EXTENSION
+extern Lisp_Object terminal_provider_identity (struct terminal *);
+extern bool init_terminal_provider (void);
+extern bool terminal_provider_attach_frame (struct terminal *,
+                                                 EMACS_UINT);
+extern void terminal_provider_capture_frame (struct frame *);
+extern Lisp_Object make_terminal_provider_frame (struct terminal *,
+                                                 Lisp_Object);
+#endif
 
 /* The initial terminal device, created by initial_term_init.  */
 extern struct terminal *initial_terminal;

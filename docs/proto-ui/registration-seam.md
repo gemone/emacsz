@@ -1,6 +1,6 @@
 # Proto-UI Terminal Registration Seam
 
-Status: TP2 adapter policy implemented; TP1 core seam not implemented or authorized
+Status: TP2 adapter policy implemented; TP1 opt-in generic headless terminal implemented; SDL frame, redisplay, and full runtime remain absent
 Protocol: EUP v1
 R8 runtime state: fail closed
 Date: 2026-09-10
@@ -335,9 +335,9 @@ slot, or reused generation fails the gate.
 | Task | Result | Completion evidence |
 |---|---|---|
 | TP0 | Freeze TPE v1 design | This document plus review manifest |
-| TP1 | Generic core provider extension | Minimal upstream proposal, ABI tests, and rollback patch |
+| TP1 | Generic core provider extension | Opt-in generic `output_provider` headless dispatch passes live Emacs gate; upstream proposal and broader rollback patch remain |
 | TP2 | Proto-UI provider adapter | Table validation and fake-core conformance |
-| TP3 | Headless terminal lifecycle | Batch terminal create/activate/delete/recreate |
+| TP3 | Headless terminal lifecycle | Explicit opt-in create/activate/cleanup gate passes; multi-terminal batch and direct recreate dispatch remain |
 | TP4 | Real proto frame lifecycle | `window-system=proto` and SDL frame create/delete |
 | TP5 | Redisplay-owned updates | Atomic rows/cursor/damage EUP updates |
 | TP6 | Input return path | Keyboard/pointer/wheel intents interpreted by Emacs |
@@ -346,8 +346,10 @@ slot, or reused generation fails the gate.
 | TP9 | PGTK differential matrix | All 48 planned cases have implemented/degraded/unsupported status |
 | TP10 | Performance acceptance | Reference-host latency/FPS/CPU/bandwidth budgets pass |
 
-TP1 is not authorized by the current adapter-first default.  It requires a
-separate reviewed exception or acceptance as an upstream extension.  TP2 has a
+TP1 production integration is not authorized by the current adapter-first
+default.  It requires a separate reviewed exception or acceptance as an
+upstream extension.  `proto-ui-tpe-core` is only an owned host-test reference
+slice and does not link into Emacs or alter inherited behavior.  TP2 has a
 bounded adapter-side witness in `proto-ui-tpe-registration`: it validates the
 canonical `proto` descriptor, exact PureRuntimeHostV1 inventory, explicit
 fake-core registration states, quarantine, generation retention, and reverse
@@ -395,15 +397,16 @@ Implemented today:
 * reviewed R7 policy approval;
 * selected pure-SDL3 provider candidate;
 * adapter-only TP2 registration-policy conformance against a fake core;
+* an owned `proto-ui-tpe-core` registry/lifecycle conformance slice;
+* an opt-in generic `output_provider` headless terminal under the runtime build (default-off);
 * opt-in native-glibc target linkage audited as `linked_not_registered`;
 * complete EUP codec/transport/frontend design and bounded bridges.
 
 Not implemented:
 
-* TPE core dispatch;
-* provider registration;
-* `output_proto` terminal;
-* `window-system=proto` frame;
+* full TPE frame/redisplay/input production dispatch;
+* default runtime registration;
+* a real SDL3-owned `window-system=proto` frame;
 * redisplay-owned EUP streaming;
 * PGTK parity;
 * final performance acceptance.
