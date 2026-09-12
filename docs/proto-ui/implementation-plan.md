@@ -4597,3 +4597,9 @@ enter/leave counts, so metadata consumers can observe full transitions rather
 than only the final state.  The input gate drives one enter and one leave and
 requires `(out 1 1)`.  Standard core proximity events, chord state, and drawing
 surfaces remain separate work.
+
+P220 verifies the existing provider keyboard surface without adding a frontend
+whitelist.  SDL scancodes for function and navigation keys are named constants,
+and the real TPE input gate proves that `F12`, `Delete`, `Home`, `PageUp`,
+`PageDown`, `End`, and `Insert` reach Emacs as standard key symbols alongside
+`left`.  Emacs continues to own key-symbol conversion, lookup, and execution.

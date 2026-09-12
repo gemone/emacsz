@@ -30,6 +30,13 @@ pub const SDL_SCANCODE_UP: i32 = 82;
 pub const SDL_SCANCODE_C: i32 = 6;
 pub const SDL_SCANCODE_V: i32 = 25;
 pub const SDL_SCANCODE_INSERT: i32 = 73;
+pub const SDL_SCANCODE_HOME: i32 = 74;
+pub const SDL_SCANCODE_PAGEUP: i32 = 75;
+pub const SDL_SCANCODE_DELETE: i32 = 76;
+pub const SDL_SCANCODE_END: i32 = 77;
+pub const SDL_SCANCODE_PAGEDOWN: i32 = 78;
+pub const SDL_SCANCODE_F1: i32 = 58;
+pub const SDL_SCANCODE_F12: i32 = 69;
 pub const SDL_SCANCODE_ESCAPE: i32 = 41;
 pub const SDL_SCANCODE_RETURN: i32 = 40;
 

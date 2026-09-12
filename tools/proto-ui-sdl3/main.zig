@@ -797,14 +797,14 @@ fn providerEmacsKey(scancode: i32) ?u32 {
         input_policy.SDL_SCANCODE_UP => 0xff52,
         input_policy.SDL_SCANCODE_RIGHT => 0xff53,
         input_policy.SDL_SCANCODE_DOWN => 0xff54,
-        75 => 0xff55,
-        78 => 0xff56,
-        74 => 0xff50,
-        77 => 0xff57,
-        73 => 0xff63,
-        76 => 0xffff,
+        input_policy.SDL_SCANCODE_PAGEUP => 0xff55,
+        input_policy.SDL_SCANCODE_PAGEDOWN => 0xff56,
+        input_policy.SDL_SCANCODE_HOME => 0xff50,
+        input_policy.SDL_SCANCODE_END => 0xff57,
+        input_policy.SDL_SCANCODE_INSERT => 0xff63,
+        input_policy.SDL_SCANCODE_DELETE => 0xffff,
         44 => ' ',
-        58...69 => @intCast(0xffbe + scancode - 58),
+        input_policy.SDL_SCANCODE_F1...input_policy.SDL_SCANCODE_F12 => @intCast(0xffbe + scancode - input_policy.SDL_SCANCODE_F1),
         else => null,
     };
 }
@@ -1196,6 +1196,13 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                 if (std.c.getenv("TPE_INPUT_SMOKE") != null) {
                     var synthetic = keyboardEvent(input_policy.SDL_SCANCODE_LEFT, true, 0);
                     if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
+                    inline for (.{ input_policy.SDL_SCANCODE_F12, input_policy.SDL_SCANCODE_DELETE,
+                        input_policy.SDL_SCANCODE_HOME, input_policy.SDL_SCANCODE_PAGEUP,
+                        input_policy.SDL_SCANCODE_PAGEDOWN, input_policy.SDL_SCANCODE_END,
+                        input_policy.SDL_SCANCODE_INSERT }) |scancode| {
+                        synthetic = keyboardEvent(scancode, true, 0);
+                        if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
+                    }
                     var mouse = mouseButtonEvent(17, 21, input_policy.SDL_EVENT_MOUSE_BUTTON_DOWN, true);
                     mouse.button.timestamp = 1;
                     if (!SDL_PushEvent(&mouse)) return sdlFail("SDL_PushEvent");
