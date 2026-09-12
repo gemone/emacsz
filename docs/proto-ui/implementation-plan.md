@@ -4643,3 +4643,13 @@ registration or after shutdown.  The real SDL frame gate proves the provider
 frame and selected-frame forms are true while the batch initial frame is false.
 General multi-frame lifecycle and platform-frame selection remain separate
 work.
+
+P226 wires active provider frame deletion into the standard terminal lifecycle
+without changing inherited core behavior.  The adapter-owned terminal installs
+`delete-frame` and `delete-terminal` hooks; deleting the surface frame removes
+its keyboard wait descriptor, closes/reaps the SDL frontend, clears adapter
+frame/session state, drains and destroys the adapter session, unregisters the
+provider, and deletes the terminal through the inherited hook.  A real
+`proto-ui-tpe-frame-cleanup` gate proves the frame and terminal are dead while
+the original frame remains live.  Frontend EOF resynchronization remains a
+separate rollback case.

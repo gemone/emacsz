@@ -146,6 +146,9 @@ static bool provider_touch_end (uint32_t id) {
   return true;
 }
 
+static void provider_delete_terminal_hook (struct terminal *terminal);
+static void provider_delete_frame (struct frame *frame);
+
 static Lisp_Object provider_device_for_kind (uint16_t kind) {
   if (kind == 0 || kind == 1)
     return provider_keyboard_device;
@@ -182,6 +185,8 @@ static ProtoUiPureRuntimeStatus host_create_terminal (
   terminal->name = xstrdup ("terminal-provider");
   terminal->kboard = allocate_kboard (Qnil);
   terminal->defined_color_hook = tty_defined_color;
+  terminal->delete_frame_hook = provider_delete_frame;
+  terminal->delete_terminal_hook = provider_delete_terminal_hook;
   if (current_kboard == initial_kboard)
     current_kboard = terminal->kboard;
 
@@ -1101,6 +1106,20 @@ static void shutdown_provider_surface (void) {
   provider_surface_pid = -1;
 }
 
+static void provider_detach_surface (void) {
+  if (provider_surface_fd >= 0)
+    delete_keyboard_wait_descriptor (provider_surface_fd);
+  shutdown_provider_surface ();
+  tpe_host.surface_frame = NULL;
+  tpe_host.frame_identity.id = 0;
+  tpe_host.frame_identity.generation = 0;
+  tpe_host.session_id = 0;
+  reset_mouse_highlight (&tpe_mouse_highlight);
+  tpe_mouse.valid = false;
+  tpe_capture_acknowledged = false;
+  tpe_mouse_highlight_acknowledged = false;
+}
+
 Lisp_Object Fterminal_provider_frame_p (Lisp_Object);
 Lisp_Object Fterminal_provider_title (void);
 Lisp_Object Fterminal_provider_capture_p (void);
@@ -1261,27 +1280,51 @@ static ProtoUiPureRuntimeStatus provider_activate_terminal (
              ? PROTO_UI_RUNTIME_OK : PROTO_UI_RUNTIME_INVALID;
 }
 
+static void provider_delete_frame (struct frame *frame) {
+  if (frame == NULL || tpe_host.surface_frame != frame)
+    return;
+  provider_detach_surface ();
+  frame->provider_data = NULL;
+}
+
 static ProtoUiPureRuntimeStatus provider_delete_terminal (
     void *context, const ProtoUiIdentity *identity) {
   TpeEmacsHost *host = context;
-  if (host->adapter_session == NULL)
+  if (host == NULL || host->adapter_session == NULL ||
+      identity == NULL || identity->id != host->identity.id ||
+      identity->generation != host->identity.generation)
     return PROTO_UI_RUNTIME_INVALID;
   return proto_ui_runtime_host_adapter_session_drain (host->adapter_session);
 }
 
 static ProtoUiTerminalProviderV1 tpe_provider;
 
+static void provider_delete_terminal_hook (struct terminal *terminal) {
+  if (terminal == NULL || tpe_host.terminal_object != terminal)
+    return;
+  provider_detach_surface ();
+  if (tpe_registration != NULL)
+    {
+      (void)proto_ui_tpe_terminal_delete (tpe_registration,
+                                          &tpe_active_terminal);
+      (void)proto_ui_tpe_provider_unregister (tpe_registration);
+      tpe_registration = NULL;
+    }
+  delete_terminal (terminal);
+  tpe_host.terminal_object = NULL;
+  tpe_host.deleted = true;
+  if (tpe_host.adapter_session != NULL)
+    {
+      (void)proto_ui_runtime_host_adapter_session_destroy (
+          tpe_host.adapter_session);
+      tpe_host.adapter_session = NULL;
+    }
+}
+
 static void shutdown_terminal_provider (void) {
   if (tpe_registration == NULL)
     return;
-  shutdown_provider_surface ();
-  (void)proto_ui_tpe_terminal_delete (tpe_registration, &tpe_active_terminal);
-  if (tpe_host.adapter_session != NULL) {
-    (void)proto_ui_runtime_host_adapter_session_destroy (tpe_host.adapter_session);
-    tpe_host.adapter_session = NULL;
-  }
-  (void)proto_ui_tpe_provider_unregister (tpe_registration);
-  tpe_registration = NULL;
+  provider_delete_terminal_hook (tpe_host.terminal_object);
 }
 
 bool init_terminal_provider (void) {
