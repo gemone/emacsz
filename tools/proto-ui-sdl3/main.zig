@@ -304,6 +304,19 @@ const SDL_PenMotionEvent = extern struct {
     y: f32,
 };
 
+const SDL_PenButtonEvent = extern struct {
+    type: c_uint,
+    reserved: c_uint,
+    timestamp: u64,
+    window_id: u32,
+    which: u32,
+    pen_state: u32,
+    x: f32,
+    y: f32,
+    button: u8,
+    down: bool,
+};
+
 const SDL_Event = extern union {
     type: c_uint,
     key: SDL_KeyboardEvent,
@@ -315,6 +328,7 @@ const SDL_Event = extern union {
     finger: SDL_TouchFingerEvent,
     drop: SDL_DropEvent,
     pen: SDL_PenMotionEvent,
+    pbutton: SDL_PenButtonEvent,
     padding: [128]u8,
 };
 
@@ -466,6 +480,23 @@ fn penEvent(event_type: c_uint, x: f32, y: f32, pen_state: u32) SDL_Event {
         .pen_state = pen_state,
         .x = x,
         .y = y,
+    };
+    return event;
+}
+
+fn penButtonEvent(event_type: c_uint, x: f32, y: f32, pen_state: u32, button: u8) SDL_Event {
+    var event: SDL_Event = undefined;
+    event.pbutton = .{
+        .type = event_type,
+        .reserved = 0,
+        .timestamp = 0,
+        .window_id = 0,
+        .which = 1,
+        .pen_state = pen_state,
+        .x = x,
+        .y = y,
+        .button = button,
+        .down = event_type == input_policy.SDL_EVENT_PEN_BUTTON_DOWN,
     };
     return event;
 }
@@ -889,24 +920,34 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                 input_policy.SDL_EVENT_PEN_DOWN,
                 input_policy.SDL_EVENT_PEN_UP,
                 input_policy.SDL_EVENT_PEN_MOTION,
+                input_policy.SDL_EVENT_PEN_BUTTON_DOWN,
+                input_policy.SDL_EVENT_PEN_BUTTON_UP,
                 => {
-                    const eraser = (event.pen.pen_state & input_policy.SDL_PEN_INPUT_ERASER_TIP) != 0;
-                    if (!eraser) {
+                    const is_button = event.type == input_policy.SDL_EVENT_PEN_BUTTON_DOWN or
+                        event.type == input_policy.SDL_EVENT_PEN_BUTTON_UP;
+                    const pen_state = if (is_button) event.pbutton.pen_state else event.pen.pen_state;
+                    const eraser = (pen_state & input_policy.SDL_PEN_INPUT_ERASER_TIP) != 0;
+                    const pen_button = if (is_button) event.pbutton.button else 0;
+                    if (!eraser and pen_button < 3) {
                         var pen_width: c_int = 0;
                         var pen_height: c_int = 0;
                         SDL_GetWindowSize(window, &pen_width, &pen_height);
-                        const valid_pen = (event.pen.window_id == 0 or
-                            event.pen.window_id == SDL_GetWindowID(window)) and
+                        const pen_window_id = if (is_button) event.pbutton.window_id else event.pen.window_id;
+                        const pen_x = if (is_button) event.pbutton.x else event.pen.x;
+                        const pen_y = if (is_button) event.pbutton.y else event.pen.y;
+                        const valid_pen = (pen_window_id == 0 or
+                            pen_window_id == SDL_GetWindowID(window)) and
                             pen_width > 0 and pen_height > 0 and
-                            std.math.isFinite(event.pen.x) and
-                            std.math.isFinite(event.pen.y) and
-                            event.pen.x >= 0 and
-                            event.pen.x < @as(f32, @floatFromInt(pen_width)) and
-                            event.pen.y >= 0 and
-                            event.pen.y < @as(f32, @floatFromInt(pen_height));
+                            std.math.isFinite(pen_x) and
+                            std.math.isFinite(pen_y) and
+                            pen_x >= 0 and
+                            pen_x < @as(f32, @floatFromInt(pen_width)) and
+                            pen_y >= 0 and
+                            pen_y < @as(f32, @floatFromInt(pen_height));
                         if (valid_pen) {
                             const motion = event.type == input_policy.SDL_EVENT_PEN_MOTION;
-                            const release = event.type == input_policy.SDL_EVENT_PEN_UP;
+                            const release = event.type == input_policy.SDL_EVENT_PEN_UP or
+                                event.type == input_policy.SDL_EVENT_PEN_BUTTON_UP;
                             const kind: u16 = if (motion) 4 else 2;
                             const flags: u16 = if (motion)
                                 4
@@ -915,7 +956,8 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                             else
                                 4;
                             const modifiers = providerEmacsModifiers(SDL_GetModState());
-                            try providerSendMouseEvent(kind, flags, modifiers, 0, event.pen.x, event.pen.y, event.pen.timestamp);
+                            const pen_timestamp = if (is_button) event.pbutton.timestamp else event.pen.timestamp;
+                            try providerSendMouseEvent(kind, flags, modifiers, pen_button, pen_x, pen_y, pen_timestamp);
                         }
                     }
                 },
@@ -1178,6 +1220,24 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     );
                     pen.pen.timestamp = 43;
                     if (!SDL_PushEvent(&pen)) return sdlFail("SDL_PushEvent");
+                    var pen_button = penButtonEvent(
+                        input_policy.SDL_EVENT_PEN_BUTTON_DOWN,
+                        60,
+                        40,
+                        input_policy.SDL_PEN_INPUT_BUTTON_1,
+                        1,
+                    );
+                    pen_button.pbutton.timestamp = 44;
+                    if (!SDL_PushEvent(&pen_button)) return sdlFail("SDL_PushEvent");
+                    pen_button = penButtonEvent(
+                        input_policy.SDL_EVENT_PEN_BUTTON_UP,
+                        60,
+                        40,
+                        input_policy.SDL_PEN_INPUT_BUTTON_1,
+                        1,
+                    );
+                    pen_button.pbutton.timestamp = 45;
+                    if (!SDL_PushEvent(&pen_button)) return sdlFail("SDL_PushEvent");
                     var resized = windowEvent(
                         input_policy.SDL_EVENT_WINDOW_RESIZED,
                         SDL_GetWindowID(window),

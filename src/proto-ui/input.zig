@@ -290,9 +290,12 @@ pub fn translateFinger(source: TouchSource) ?PointerEventV2 {
 
 pub const SDL_EVENT_PEN_DOWN: c_uint = 0x1302;
 pub const SDL_EVENT_PEN_UP: c_uint = 0x1303;
+pub const SDL_EVENT_PEN_BUTTON_DOWN: c_uint = 0x1304;
+pub const SDL_EVENT_PEN_BUTTON_UP: c_uint = 0x1305;
 pub const SDL_EVENT_PEN_MOTION: c_uint = 0x1306;
 
 pub const SDL_PEN_INPUT_DOWN: u32 = 1 << 0;
+pub const SDL_PEN_INPUT_BUTTON_1: u32 = 1 << 1;
 pub const SDL_PEN_INPUT_ERASER_TIP: u32 = 1 << 30;
 
 pub const PenSource = struct {

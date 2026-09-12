@@ -4552,3 +4552,12 @@ stable GC-rooted `proto:pen` device identity, and `proto-device-class` reports
 that identity as standard `pen`.  The input gate proves hover, down, inherited
 drag conversion, and `device-class` on both press and drag.  Pen barrel buttons,
 pressure, tilt, proximity, and drawing-surface semantics remain separate work.
+
+P215 closes the first barrel-button slice without changing the canonical TPE
+envelope or introducing a command whitelist.  SDL pen-button down/up events are
+validated against the provider window and bounded coordinates, reject the eraser
+tip, and map barrel buttons one and two directly to standard button code one and
+two; Emacs's inherited conversion therefore reports `down-mouse-2`/`mouse-2`
+while retaining `pen` device attribution.  Barrel buttons three through five,
+chord-state aggregation, pressure, tilt, proximity, and drawing-surface
+semantics remain separate work.
