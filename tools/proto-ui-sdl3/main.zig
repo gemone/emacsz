@@ -833,6 +833,9 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                 input_policy.SDL_EVENT_WINDOW_RESIZED => {
                     try providerSendMouseEvent(10, 0, 0, 0, @floatFromInt(event.window.data1), @floatFromInt(event.window.data2), event.window.timestamp);
                 },
+                input_policy.SDL_EVENT_WINDOW_MOVED => {
+                    try providerSendMouseEvent(11, 0, 0, 0, @floatFromInt(event.window.data1), @floatFromInt(event.window.data2), event.window.timestamp);
+                },
                 input_policy.SDL_EVENT_WINDOW_CLOSE_REQUESTED => {
                     try providerSendMouseEvent(9, 0, 0, 0, 0, 0, event.window.timestamp);
                 },
@@ -926,6 +929,13 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                         0,
                     );
                     if (!SDL_PushEvent(&focus)) return sdlFail("SDL_PushEvent");
+                    var moved = windowEvent(
+                        input_policy.SDL_EVENT_WINDOW_MOVED,
+                        SDL_GetWindowID(window),
+                        31,
+                        17,
+                    );
+                    if (!SDL_PushEvent(&moved)) return sdlFail("SDL_PushEvent");
                 }
             }
 

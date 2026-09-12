@@ -4412,3 +4412,9 @@ gain and loss enter the standard focus-event path, and the gate observes
 `after-focus-change-function` transitions in the expected gained-then-lost
 provider-frame state order.  Platform focus decoration state and multi-frame
 focus arbitration remain separate provider lifecycle work.
+P198 maps SDL3 window moves to Emacs's standard `move-frame` special event.
+The adapter-owned provider updates `left_pos` and `top_pos` from the canonical
+SDL geometry, emits `MOVE_FRAME_EVENT` for the provider frame, and keeps
+`move-frame-functions` as the Lisp-visible extension point.  The input gate
+verifies the resulting `frame-position`; standard special-event dispatch remains
+inherited unchanged from Emacs.

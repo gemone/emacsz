@@ -238,6 +238,16 @@ static bool provider_resize_frame (int width, int height) {
   return true;
 }
 
+static bool provider_move_frame (int x, int y) {
+  struct frame *frame = provider_terminal_frame ();
+  if (!frame || frame->terminal != tpe_host.terminal_object ||
+      frame->terminal->type != output_provider)
+    return false;
+  frame->left_pos = x;
+  frame->top_pos = y;
+  return true;
+}
+
 static bool provider_store_event (uint16_t kind, uint16_t flags,
                                   uint32_t modifiers, uint32_t code,
                                   int32_t x, int32_t y, uint64_t timestamp) {
@@ -306,6 +316,13 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
     }
   else if (kind == 10)
     return provider_resize_frame (x, y);
+  else if (kind == 11)
+    {
+      if (!provider_move_frame (x, y))
+        return false;
+      event.kind = MOVE_FRAME_EVENT;
+      XSETFRAME (event.frame_or_window, provider_frame);
+    }
   else
     return false;
   kbd_buffer_store_event (&event);
