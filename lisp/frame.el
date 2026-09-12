@@ -3073,6 +3073,7 @@ monitors."
 
 (declare-function x-device-class "term/x-win.el" (name))
 (declare-function pgtk-device-class "term/pgtk-win.el" (name))
+(autoload 'proto-device-class "term/proto-win" nil t)
 
 (defun device-class (frame name)
   "Return the class of the device NAME for an event generated on FRAME.
@@ -3129,6 +3130,8 @@ symbols."
            (x-device-class name))
           ((eq frame-type 'pgtk)
            (pgtk-device-class name))
+          ((eq frame-type 'proto)
+           (proto-device-class name))
           (t (cond
               ((not name) nil)
               ((string= name "Virtual core pointer")

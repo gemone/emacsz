@@ -68,6 +68,16 @@ static struct {
   bool valid;
 } tpe_mouse;
 
+static Lisp_Object provider_device_for_kind (uint16_t kind) {
+  if (kind == 0 || kind == 1)
+    return build_string ("proto:keyboard");
+  if (kind >= 15 && kind <= 18)
+    return build_string ("proto:touchscreen");
+  if (kind == 2 || kind == 4 || kind == 5 || kind == 6)
+    return build_string ("proto:mouse");
+  return Qt;
+}
+
 static ProtoUiPureRuntimeStatus unsupported3 (
     void *context, const void *first, const void *second) {
   (void)context; (void)first; (void)second;
@@ -291,6 +301,7 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
   event.code = code;
   event.frame_or_window = selected_frame;
   event.arg = Qnil;
+  event.device = provider_device_for_kind (kind);
 
   if (kind == 0)
     event.kind = code < 0x80 ? ASCII_KEYSTROKE_EVENT : NON_ASCII_KEYSTROKE_EVENT;

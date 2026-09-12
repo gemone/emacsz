@@ -4499,3 +4499,14 @@ standard posns.  The input gate observes ID 7 through begin, update, and normal
 end after the pixel-scroll command.  TPE kind 15 remains reserved for wheel or
 touchpad release; multi-touch list aggregation, pressure, gestures, and
 momentum remain separate work.
+
+P210 gives provider input its own standard device identity.  The TPE adapter
+classifies keyboard, pointer, and touchscreen packets as `proto:keyboard`,
+`proto:mouse`, and `proto:touchscreen`; Emacs's normal event loop publishes that
+identity through `last-event-device`.  The adapter-owned `proto-device-class`
+maps those names to standard `keyboard`, `mouse`, and `touchscreen` classes, and
+`device-class` dispatches to it only for `proto` frames.  The input gate proves
+keyboard, wheel, and touchscreen classification; the wheel consumer remains on
+its existing non-interpolating path because queued smoke input legitimately
+interrupts Emacs's `while-no-input` interpolation.  No
+frontend command whitelist or inherited backend behavior is introduced.
