@@ -4568,3 +4568,13 @@ five, so inherited conversion reports `mouse-2` through `mouse-6` with `pen`
 attribution; zero and unknown future indices remain rejected.  The input gate
 drives all five pairs end to end.  Chord-state aggregation, pressure, tilt,
 proximity, and drawing-surface semantics remain separate work.
+
+P217 captures bounded SDL pen pressure and X/Y tilt without inventing standard
+Emacs input semantics.  The frontend validates the provider window, coordinates,
+axis index, eraser state, and each axis range before sending a pen-axis record;
+invalid hardware events are ignored rather than changing state.  The adapter
+stores pressure (`0..1`) and tilt angles (`-90..90`) in adapter-owned state and
+exposes them read-only through `terminal-provider-pen-axis`; the input gate
+round-trips exact 0.625, -45, and 30 values.  Standard core pressure/tilt
+events, remaining axes, proximity, chord state, and drawing surfaces remain
+separate work.

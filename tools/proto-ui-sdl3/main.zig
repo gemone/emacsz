@@ -317,6 +317,19 @@ const SDL_PenButtonEvent = extern struct {
     down: bool,
 };
 
+const SDL_PenAxisEvent = extern struct {
+    type: c_uint,
+    reserved: c_uint,
+    timestamp: u64,
+    window_id: u32,
+    which: u32,
+    pen_state: u32,
+    x: f32,
+    y: f32,
+    axis: c_uint,
+    value: f32,
+};
+
 const SDL_Event = extern union {
     type: c_uint,
     key: SDL_KeyboardEvent,
@@ -329,6 +342,7 @@ const SDL_Event = extern union {
     drop: SDL_DropEvent,
     pen: SDL_PenMotionEvent,
     pbutton: SDL_PenButtonEvent,
+    paxis: SDL_PenAxisEvent,
     padding: [128]u8,
 };
 
@@ -497,6 +511,23 @@ fn penButtonEvent(event_type: c_uint, x: f32, y: f32, pen_state: u32, button: u8
         .y = y,
         .button = button,
         .down = event_type == input_policy.SDL_EVENT_PEN_BUTTON_DOWN,
+    };
+    return event;
+}
+
+fn penAxisEvent(axis: c_uint, value: f32, x: f32, y: f32, pen_state: u32) SDL_Event {
+    var event: SDL_Event = undefined;
+    event.paxis = .{
+        .type = input_policy.SDL_EVENT_PEN_AXIS,
+        .reserved = 0,
+        .timestamp = 0,
+        .window_id = 0,
+        .which = 1,
+        .pen_state = pen_state,
+        .x = x,
+        .y = y,
+        .axis = axis,
+        .value = value,
     };
     return event;
 }
@@ -963,6 +994,45 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                         }
                     }
                 },
+                input_policy.SDL_EVENT_PEN_AXIS => {
+                    const axis_supported =
+                        (event.paxis.pen_state & input_policy.SDL_PEN_INPUT_ERASER_TIP) == 0 and
+                        event.paxis.axis < 3;
+                    if (axis_supported) {
+                        var pen_width: c_int = 0;
+                        var pen_height: c_int = 0;
+                        SDL_GetWindowSize(window, &pen_width, &pen_height);
+                        const valid_axis = (event.paxis.window_id == 0 or
+                            event.paxis.window_id == SDL_GetWindowID(window)) and
+                            pen_width > 0 and pen_height > 0 and
+                            std.math.isFinite(event.paxis.x) and
+                            std.math.isFinite(event.paxis.y) and
+                            std.math.isFinite(event.paxis.value) and
+                            event.paxis.x >= 0 and
+                            event.paxis.x < @as(f32, @floatFromInt(pen_width)) and
+                            event.paxis.y >= 0 and
+                            event.paxis.y < @as(f32, @floatFromInt(pen_height)) and
+                            switch (event.paxis.axis) {
+                                0 => event.paxis.value >= 0 and event.paxis.value <= 1,
+                                1, 2 => event.paxis.value >= -90 and event.paxis.value <= 90,
+                                else => false,
+                            };
+                        if (valid_axis) {
+                            const axis_bits: i32 = @bitCast(event.paxis.value);
+                            try providerSendInputWithWheelDeltas(
+                                19,
+                                4,
+                                0,
+                                event.paxis.axis,
+                                @intFromFloat(event.paxis.x),
+                                @intFromFloat(event.paxis.y),
+                                event.paxis.timestamp,
+                                axis_bits,
+                                0,
+                            );
+                        }
+                    }
+                },
                 SDL_EVENT_MOUSE_WHEEL => {
                     if (event.wheel.x != 0 or event.wheel.y != 0) {
                         const modifiers = providerEmacsModifiers(SDL_GetModState());
@@ -1259,6 +1329,22 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                         );
                         pen_button.pbutton.timestamp = 47 + pen_button_cycle * 2;
                         if (!SDL_PushEvent(&pen_button)) return sdlFail("SDL_PushEvent");
+                    }
+                    const pen_axes = [_]struct { axis: c_uint, value: f32 }{
+                        .{ .axis = 0, .value = 0.625 },
+                        .{ .axis = 1, .value = -45 },
+                        .{ .axis = 2, .value = 30 },
+                    };
+                    for (pen_axes, 0..) |pen_axis, pen_axis_index| {
+                        var axis_event = penAxisEvent(
+                            pen_axis.axis,
+                            pen_axis.value,
+                            60,
+                            40,
+                            input_policy.SDL_PEN_INPUT_DOWN,
+                        );
+                        axis_event.paxis.timestamp = 56 + pen_axis_index;
+                        if (!SDL_PushEvent(&axis_event)) return sdlFail("SDL_PushEvent");
                     }
                     var resized = windowEvent(
                         input_policy.SDL_EVENT_WINDOW_RESIZED,

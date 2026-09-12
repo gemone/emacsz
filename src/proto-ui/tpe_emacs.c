@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <stdio.h>
+#include <math.h>
 
 #include <signal.h>
 #include <spawn.h>
@@ -72,6 +73,9 @@ static Lisp_Object provider_mouse_device;
 static Lisp_Object provider_touchscreen_device;
 static Lisp_Object provider_pen_device;
 static Lisp_Object provider_motion_device;
+enum { TPE_PEN_AXIS_COUNT = 3 };
+static float provider_pen_axis_value[TPE_PEN_AXIS_COUNT];
+static bool provider_pen_axis_valid[TPE_PEN_AXIS_COUNT];
 
 enum { TPE_TOUCH_DEPTH = 8 };
 typedef struct TpeTouchPoint {
@@ -480,6 +484,21 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
           event.modifiers = flags ? 1 : 0;
           XSETINT (event.arg, code);
         }
+    }
+  else if (kind == 19)
+    {
+      float value;
+      if (code >= TPE_PEN_AXIS_COUNT)
+        return false;
+      memcpy (&value, &wheel_delta_x, sizeof value);
+      if (!isfinite (value))
+        return false;
+      if (code == 0 ? (value < 0.0f || value > 1.0f)
+          : (value < -90.0f || value > 90.0f))
+        return false;
+      provider_pen_axis_value[code] = value;
+      provider_pen_axis_valid[code] = true;
+      return true;
     }
   else if (kind == 12 || kind == 13 || kind == 14)
     {
@@ -1060,6 +1079,7 @@ Lisp_Object Fterminal_provider_title (void);
 Lisp_Object Fterminal_provider_capture_p (void);
 Lisp_Object Fterminal_provider_mouse_face_p (void);
 Lisp_Object Fterminal_provider_mouse_face_debug (void);
+Lisp_Object Fterminal_provider_pen_axis (Lisp_Object);
 
 DEFUN ("terminal-provider-title", Fterminal_provider_title,
        Sterminal_provider_title, 0, 0, 0,
@@ -1093,6 +1113,20 @@ DEFUN ("terminal-provider-mouse-face-p", Fterminal_provider_mouse_face_p,
   (void)
 {
   return tpe_mouse_highlight_acknowledged ? Qt : Qnil;
+}
+
+DEFUN ("terminal-provider-pen-axis", Fterminal_provider_pen_axis,
+       Sterminal_provider_pen_axis, 1, 1, 0,
+       doc: /* Return provider pen AXIS metadata: pressure (0), X tilt (1), or Y tilt (2).  */)
+  (Lisp_Object axis)
+{
+  EMACS_INT index;
+  CHECK_FIXNUM (axis);
+  index = XFIXNUM (axis);
+  if (index < 0 || index >= TPE_PEN_AXIS_COUNT
+      || !provider_pen_axis_valid[index])
+    return Qnil;
+  return make_float ((double)provider_pen_axis_value[index]);
 }
 
 static void provider_mouse_position (struct frame **frame, int insist,
@@ -1226,6 +1260,7 @@ bool init_terminal_provider (void) {
   defsubr (&Sterminal_provider_capture_p);
   defsubr (&Sterminal_provider_mouse_face_p);
   defsubr (&Sterminal_provider_mouse_face_debug);
+  defsubr (&Sterminal_provider_pen_axis);
   tpe_provider = (ProtoUiTerminalProviderV1) {
     1,
     PROTO_UI_TPE_FLAG_GRAPHIC | PROTO_UI_TPE_FLAG_INPUT,
