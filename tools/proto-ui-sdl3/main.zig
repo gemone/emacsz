@@ -785,6 +785,7 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
     var first_snapshot_rendered = false;
     var smoke_hover_resent = false;
     var smoke_window_resent = false;
+    var smoke_maximize_resent = false;
     var draw_list = renderer_policy.DrawList{ .allocator = gpa };
     defer draw_list.deinit();
     var scene = frontend.Scene.init(gpa);
@@ -839,6 +840,9 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                 },
                 input_policy.SDL_EVENT_WINDOW_MINIMIZED, input_policy.SDL_EVENT_WINDOW_RESTORED => {
                     try providerSendMouseEvent(if (event.type == input_policy.SDL_EVENT_WINDOW_MINIMIZED) 12 else 13, 0, 0, 0, 0, 0, event.window.timestamp);
+                },
+                input_policy.SDL_EVENT_WINDOW_MAXIMIZED => {
+                    try providerSendMouseEvent(14, 0, 0, 0, 0, 0, event.window.timestamp);
                 },
                 input_policy.SDL_EVENT_WINDOW_CLOSE_REQUESTED => {
                     try providerSendMouseEvent(9, 0, 0, 0, 0, 0, event.window.timestamp);
@@ -973,6 +977,26 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     0,
                 );
                 if (!SDL_PushEvent(&minimized)) return sdlFail("SDL_PushEvent");
+                var restored = windowEvent(
+                    input_policy.SDL_EVENT_WINDOW_RESTORED,
+                    SDL_GetWindowID(window),
+                    0,
+                    0,
+                );
+                if (!SDL_PushEvent(&restored)) return sdlFail("SDL_PushEvent");
+            }
+            if (std.c.getenv("TPE_INPUT_SMOKE") != null and
+                snapshot_rows > 24 and !smoke_maximize_resent)
+            {
+                smoke_maximize_resent = true;
+                var maximized = windowEvent(
+                    input_policy.SDL_EVENT_WINDOW_MAXIMIZED,
+                    SDL_GetWindowID(window),
+                    0,
+                    0,
+                );
+                if (!SDL_PushEvent(&maximized)) return sdlFail("SDL_PushEvent");
+                SDL_Delay(300);
                 var restored = windowEvent(
                     input_policy.SDL_EVENT_WINDOW_RESTORED,
                     SDL_GetWindowID(window),

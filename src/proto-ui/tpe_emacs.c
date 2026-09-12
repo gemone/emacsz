@@ -41,6 +41,7 @@ typedef struct TpeEmacsHost {
   uint64_t redisplay_generation;
   void *adapter_session;
   bool deleted;
+  bool window_maximized;
 } TpeEmacsHost;
 
 static TpeEmacsHost tpe_host;
@@ -248,13 +249,16 @@ static bool provider_move_frame (int x, int y) {
   return true;
 }
 
-static bool provider_set_frame_window_state (bool visible) {
+static bool provider_set_frame_window_state (bool visible, bool maximized) {
   struct frame *frame = provider_terminal_frame ();
   if (!frame || frame->terminal != tpe_host.terminal_object ||
       frame->terminal->type != output_provider)
     return false;
   SET_FRAME_VISIBLE (frame, visible);
   SET_FRAME_ICONIFIED (frame, visible ? 0 : 1);
+  tpe_host.window_maximized = maximized;
+  store_frame_param (frame, Qfullscreen, maximized ? Qmaximized : Qnil);
+  frame->want_fullscreen = maximized ? FULLSCREEN_MAXIMIZED : FULLSCREEN_NONE;
   return true;
 }
 
@@ -333,12 +337,18 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
       event.kind = MOVE_FRAME_EVENT;
       XSETFRAME (event.frame_or_window, provider_frame);
     }
-  else if (kind == 12 || kind == 13)
+  else if (kind == 12 || kind == 13 || kind == 14)
     {
+      bool was_iconified = provider_frame ? provider_frame->iconified : false;
       if (!provider_frame ||
-          !provider_set_frame_window_state (kind == 13))
+          !provider_set_frame_window_state (kind != 12, kind == 14))
         return false;
-      event.kind = kind == 12 ? ICONIFY_EVENT : DEICONIFY_EVENT;
+      if (kind == 12)
+        event.kind = ICONIFY_EVENT;
+      else if (kind == 13 && was_iconified)
+        event.kind = DEICONIFY_EVENT;
+      else
+        return true;
       XSETFRAME (event.frame_or_window, provider_frame);
     }
   else

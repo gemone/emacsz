@@ -4426,3 +4426,10 @@ after restoration.  The snapshot encoder now tracks the actual mouse-face
 count and a monotonic face generation, preventing stale duplicate deletes from
 killing the provider.  Maximization state and WM decoration parity remain
 separate platform work.
+P200 maps SDL maximize notifications to Emacs's standard `fullscreen` frame
+parameter.  TPE kind 14 stores `maximized` and `FULLSCREEN_MAXIMIZED`; restore
+clears that state and emits `DEICONIFY_EVENT` only when returning from an
+iconified frame, avoiding a duplicate make-visible transition when restoring
+from maximize.  The SDL smoke samples the standard Lisp parameter while
+maximized and requires `nil` after restoration.  Fullscreen modes, tiled
+states, and WM decoration parity remain separate work.
