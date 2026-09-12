@@ -818,8 +818,13 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                 },
                 SDL_EVENT_MOUSE_WHEEL => {
                     const modifiers = providerEmacsModifiers(SDL_GetModState());
-                    const down: u32 = if (event.wheel.y > 0) 1 else 0;
-                    try providerSendMouseEvent(5, 0, modifiers, down, event.wheel.mouse_x, event.wheel.mouse_y, event.wheel.timestamp);
+                    if (event.wheel.y != 0) {
+                        const down: u32 = if (event.wheel.y > 0) 1 else 0;
+                        try providerSendMouseEvent(5, 0, modifiers, down, event.wheel.mouse_x, event.wheel.mouse_y, event.wheel.timestamp);
+                    } else if (event.wheel.x != 0) {
+                        const right: u32 = if (event.wheel.x > 0) 1 else 0;
+                        try providerSendMouseEvent(6, 0, modifiers, right, event.wheel.mouse_x, event.wheel.mouse_y, event.wheel.timestamp);
+                    }
                 },
                 input_policy.SDL_EVENT_WINDOW_FOCUS_GAINED, input_policy.SDL_EVENT_WINDOW_FOCUS_LOST => {
                     const gained = event.type == input_policy.SDL_EVENT_WINDOW_FOCUS_GAINED;
@@ -891,6 +896,10 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     mouse.button.timestamp = 6;
                     if (!SDL_PushEvent(&mouse)) return sdlFail("SDL_PushEvent");
                     var wheel = wheelEvent(0, 1);
+                    if (!SDL_PushEvent(&wheel)) return sdlFail("SDL_PushEvent");
+                    wheel = wheelEvent(-1, 0);
+                    if (!SDL_PushEvent(&wheel)) return sdlFail("SDL_PushEvent");
+                    wheel = wheelEvent(1, 0);
                     if (!SDL_PushEvent(&wheel)) return sdlFail("SDL_PushEvent");
                     var resized = windowEvent(
                         input_policy.SDL_EVENT_WINDOW_RESIZED,

@@ -4391,3 +4391,8 @@ SDL3 physical button IDs map to normal Emacs `mouse-1`, `mouse-2`, and `mouse-3`
 symbols; the input gate exercises middle and right press/release through
 `read-event` with the same keymap and command-loop ownership as the existing
 left-button slice.  Extra provider buttons remain separate compatibility work.
+P194 carries SDL3 horizontal wheel ticks through the same canonical TPE input
+packet path.  Provider `wheel.x` maps to standard Emacs `wheel-left` and
+`wheel-right` events without a provider-side command table; the input gate now
+exercises both directions after vertical wheel delivery.  Momentum, high-
+resolution wheel deltas, and platform-specific acceleration remain separate work.
