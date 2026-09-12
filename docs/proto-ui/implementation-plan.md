@@ -4523,3 +4523,14 @@ input gate now drives IDs 7 and 8 through two begins, one motion, and two ends,
 then requires the inherited conversion to deliver one aggregated update with
 both IDs before either contact is removed.  Pressure, gestures, pen, and Emacs
 gesture commands remain separate work.
+
+P212 completes the provider motion half of standard event attribution.  TPE
+device names are now stable, GC-rooted Lisp strings rather than freshly built
+strings on every packet, and provider mouse motion stores the rooted
+`proto:mouse` identity in the frame's standard `last_mouse_device` slot.  Emacs's
+normal motion reader therefore reports the provider device through
+`last-event-device` just as it does for PGTK/X, while queued keyboard, pointer,
+wheel, and touchscreen events continue using their `input_event.device` values.
+The input gate now checks `device-class` after `track-mouse` receives real
+provider motion.  Platform device enumeration, per-hardware identities, and
+touch/pen motion attribution remain separate work.

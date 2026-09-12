@@ -67,6 +67,9 @@ static struct {
   uint64_t timestamp;
   bool valid;
 } tpe_mouse;
+static Lisp_Object provider_keyboard_device;
+static Lisp_Object provider_mouse_device;
+static Lisp_Object provider_touchscreen_device;
 
 enum { TPE_TOUCH_DEPTH = 8 };
 typedef struct TpeTouchPoint {
@@ -118,11 +121,11 @@ static bool provider_touch_end (uint32_t id) {
 
 static Lisp_Object provider_device_for_kind (uint16_t kind) {
   if (kind == 0 || kind == 1)
-    return build_string ("proto:keyboard");
+    return provider_keyboard_device;
   if (kind >= 15 && kind <= 18)
-    return build_string ("proto:touchscreen");
+    return provider_touchscreen_device;
   if (kind == 2 || kind == 4 || kind == 5 || kind == 6)
-    return build_string ("proto:mouse");
+    return provider_mouse_device;
   return Qt;
 }
 
@@ -296,6 +299,7 @@ static bool provider_update_mouse (int x, int y, uint64_t timestamp,
     {
       MOUSE_HL_INFO (frame)->mouse_face_defer = false;
       frame->mouse_moved = true;
+      frame->last_mouse_device = provider_mouse_device;
       update_mouse_position (frame, x, y);
     }
   else
@@ -1193,6 +1197,15 @@ bool init_terminal_provider (void) {
     return true;
 
   initialize_host_table (&tpe_host);
+  if (NILP (provider_keyboard_device))
+    {
+      provider_keyboard_device = build_string ("proto:keyboard");
+      provider_mouse_device = build_string ("proto:mouse");
+      provider_touchscreen_device = build_string ("proto:touchscreen");
+      staticpro (&provider_keyboard_device);
+      staticpro (&provider_mouse_device);
+      staticpro (&provider_touchscreen_device);
+    }
   Fset (intern_c_string ("frame-background-mode"), Qdark);
   defsubr (&Sterminal_provider_title);
   defsubr (&Sterminal_provider_capture_p);
