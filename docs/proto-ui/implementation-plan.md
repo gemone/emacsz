@@ -4510,3 +4510,16 @@ keyboard, wheel, and touchscreen classification; the wheel consumer remains on
 its existing non-interpolating path because queued smoke input legitimately
 interrupts Emacs's `while-no-input` interpolation.  No
 frontend command whitelist or inherited backend behavior is introduced.
+
+P211 closes the bounded multi-touch update gap without changing the canonical
+48-byte TPE envelope or adding provider-specific event classes.  The adapter
+now owns an insertion-ordered table of at most eight active contact IDs and
+coordinates.  Standard TPE kinds 16-18 add, move, or remove one contact; each
+kind 17 packet is converted into one inherited `TOUCHSCREEN_UPDATE_EVENT` whose
+`arg` contains every active contact.  Unknown motion/end, duplicate begins, and
+a ninth simultaneous contact fail closed, while the SDL frontend continues to
+emit ordinary per-finger lifecycle packets with no command whitelist.  The
+input gate now drives IDs 7 and 8 through two begins, one motion, and two ends,
+then requires the inherited conversion to deliver one aggregated update with
+both IDs before either contact is removed.  Pressure, gestures, pen, and Emacs
+gesture commands remain separate work.

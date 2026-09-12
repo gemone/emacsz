@@ -1072,10 +1072,19 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     touch.finger.finger_id = 7;
                     if (!SDL_PushEvent(&touch)) return sdlFail("SDL_PushEvent");
                     touch = fingerEvent(
+                        input_policy.SDL_EVENT_FINGER_DOWN,
+                        0.75,
+                        0.25,
+                        12,
+                        SDL_GetWindowID(window),
+                    );
+                    touch.finger.finger_id = 8;
+                    if (!SDL_PushEvent(&touch)) return sdlFail("SDL_PushEvent");
+                    touch = fingerEvent(
                         input_policy.SDL_EVENT_FINGER_MOTION,
                         0.5,
                         0.5,
-                        12,
+                        13,
                         SDL_GetWindowID(window),
                     );
                     touch.finger.finger_id = 7;
@@ -1084,10 +1093,19 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                         input_policy.SDL_EVENT_FINGER_UP,
                         0.75,
                         0.75,
-                        13,
+                        14,
                         SDL_GetWindowID(window),
                     );
                     touch.finger.finger_id = 7;
+                    if (!SDL_PushEvent(&touch)) return sdlFail("SDL_PushEvent");
+                    touch = fingerEvent(
+                        input_policy.SDL_EVENT_FINGER_UP,
+                        0.9,
+                        0.9,
+                        15,
+                        SDL_GetWindowID(window),
+                    );
+                    touch.finger.finger_id = 8;
                     if (!SDL_PushEvent(&touch)) return sdlFail("SDL_PushEvent");
                     var resized = windowEvent(
                         input_policy.SDL_EVENT_WINDOW_RESIZED,

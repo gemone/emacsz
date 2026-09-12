@@ -68,6 +68,54 @@ static struct {
   bool valid;
 } tpe_mouse;
 
+enum { TPE_TOUCH_DEPTH = 8 };
+typedef struct TpeTouchPoint {
+  uint32_t id;
+  int x, y;
+} TpeTouchPoint;
+static TpeTouchPoint tpe_touches[TPE_TOUCH_DEPTH];
+static size_t tpe_touch_count;
+
+static TpeTouchPoint *provider_touch_find (uint32_t id) {
+  size_t i;
+  for (i = 0; i < tpe_touch_count; ++i)
+    if (tpe_touches[i].id == id)
+      return &tpe_touches[i];
+  return NULL;
+}
+
+static bool provider_touch_begin (uint32_t id, int x, int y) {
+  TpeTouchPoint *touch;
+  if (provider_touch_find (id) != NULL || tpe_touch_count == TPE_TOUCH_DEPTH)
+    return false;
+  touch = &tpe_touches[tpe_touch_count++];
+  touch->id = id;
+  touch->x = x;
+  touch->y = y;
+  return true;
+}
+
+static bool provider_touch_move (uint32_t id, int x, int y) {
+  TpeTouchPoint *touch = provider_touch_find (id);
+  if (touch == NULL)
+    return false;
+  touch->x = x;
+  touch->y = y;
+  return true;
+}
+
+static bool provider_touch_end (uint32_t id) {
+  TpeTouchPoint *touch = provider_touch_find (id);
+  size_t index, offset;
+  if (touch == NULL)
+    return false;
+  index = (size_t) (touch - tpe_touches);
+  for (offset = index + 1; offset < tpe_touch_count; ++offset)
+    tpe_touches[offset - 1] = tpe_touches[offset];
+  --tpe_touch_count;
+  return true;
+}
+
 static Lisp_Object provider_device_for_kind (uint16_t kind) {
   if (kind == 0 || kind == 1)
     return build_string ("proto:keyboard");
@@ -107,6 +155,7 @@ static ProtoUiPureRuntimeStatus host_create_terminal (
   if (current_kboard == initial_kboard)
     current_kboard = terminal->kboard;
 
+  tpe_touch_count = 0;
   host->terminal_object = terminal;
   host->identity.id = (uint64_t)terminal->id + 1;
   host->identity.generation = request->requested_generation;
@@ -384,7 +433,12 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
     }
   else if (kind >= 16 && kind <= 18)
     {
+      size_t i;
       if (!provider_frame || code == 0)
+        return false;
+      if (kind == 16 ? !provider_touch_begin (code, x, y)
+          : kind == 17 ? !provider_touch_move (code, x, y)
+          : !provider_touch_end (code))
         return false;
       event.frame_or_window = Qnil;
       XSETFRAME (event.frame_or_window, provider_frame);
@@ -398,7 +452,12 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
       else if (kind == 17)
         {
           event.kind = TOUCHSCREEN_UPDATE_EVENT;
-          event.arg = list1 (list3i (x, y, (intmax_t)code));
+          event.arg = Qnil;
+          for (i = tpe_touch_count; i > 0; --i)
+            event.arg = Fcons (list3i (tpe_touches[i - 1].x,
+                                       tpe_touches[i - 1].y,
+                                       (intmax_t)tpe_touches[i - 1].id),
+                               event.arg);
         }
       else
         {
