@@ -288,6 +288,8 @@ pub fn translateFinger(source: TouchSource) ?PointerEventV2 {
     };
 }
 
+pub const SDL_EVENT_PEN_PROXIMITY_IN: c_uint = 0x1300;
+pub const SDL_EVENT_PEN_PROXIMITY_OUT: c_uint = 0x1301;
 pub const SDL_EVENT_PEN_DOWN: c_uint = 0x1302;
 pub const SDL_EVENT_PEN_UP: c_uint = 0x1303;
 pub const SDL_EVENT_PEN_BUTTON_DOWN: c_uint = 0x1304;

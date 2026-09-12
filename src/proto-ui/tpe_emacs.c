@@ -76,6 +76,8 @@ static Lisp_Object provider_motion_device;
 enum { TPE_PEN_AXIS_COUNT = 7 };
 static float provider_pen_axis_value[TPE_PEN_AXIS_COUNT];
 static bool provider_pen_axis_valid[TPE_PEN_AXIS_COUNT];
+static Lisp_Object provider_pen_proximity;
+static size_t provider_pen_proximity_counts[2];
 
 static bool provider_pen_axis_value_valid (uint32_t axis, float value) {
   switch (axis)
@@ -514,6 +516,14 @@ static bool provider_store_event (uint16_t kind, uint16_t flags,
         return false;
       provider_pen_axis_value[code] = value;
       provider_pen_axis_valid[code] = true;
+      return true;
+    }
+  else if (kind == 20)
+    {
+      if (flags > 1)
+        return false;
+      provider_pen_proximity = intern_c_string (flags ? "in" : "out");
+      provider_pen_proximity_counts[flags]++;
       return true;
     }
   else if (kind == 12 || kind == 13 || kind == 14)
@@ -1096,6 +1106,7 @@ Lisp_Object Fterminal_provider_capture_p (void);
 Lisp_Object Fterminal_provider_mouse_face_p (void);
 Lisp_Object Fterminal_provider_mouse_face_debug (void);
 Lisp_Object Fterminal_provider_pen_axis (Lisp_Object);
+Lisp_Object Fterminal_provider_pen_proximity (void);
 
 DEFUN ("terminal-provider-title", Fterminal_provider_title,
        Sterminal_provider_title, 0, 0, 0,
@@ -1143,6 +1154,16 @@ DEFUN ("terminal-provider-pen-axis", Fterminal_provider_pen_axis,
       || !provider_pen_axis_valid[index])
     return Qnil;
   return make_float ((double)provider_pen_axis_value[index]);
+}
+
+DEFUN ("terminal-provider-pen-proximity", Fterminal_provider_pen_proximity,
+       Sterminal_provider_pen_proximity, 0, 0, 0,
+       doc: /* Return provider pen proximity metadata (STATE IN-COUNT OUT-COUNT).  */)
+  (void)
+{
+  return list3 (provider_pen_proximity,
+                make_fixnum ((EMACS_INT)provider_pen_proximity_counts[0]),
+                make_fixnum ((EMACS_INT)provider_pen_proximity_counts[1]));
 }
 
 static void provider_mouse_position (struct frame **frame, int insist,
@@ -1272,11 +1293,13 @@ bool init_terminal_provider (void) {
       staticpro (&provider_motion_device);
     }
   Fset (intern_c_string ("frame-background-mode"), Qdark);
+  staticpro (&provider_pen_proximity);
   defsubr (&Sterminal_provider_title);
   defsubr (&Sterminal_provider_capture_p);
   defsubr (&Sterminal_provider_mouse_face_p);
   defsubr (&Sterminal_provider_mouse_face_debug);
   defsubr (&Sterminal_provider_pen_axis);
+  defsubr (&Sterminal_provider_pen_proximity);
   tpe_provider = (ProtoUiTerminalProviderV1) {
     1,
     PROTO_UI_TPE_FLAG_GRAPHIC | PROTO_UI_TPE_FLAG_INPUT,

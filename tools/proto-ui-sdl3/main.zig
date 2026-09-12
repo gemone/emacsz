@@ -317,6 +317,14 @@ const SDL_PenButtonEvent = extern struct {
     down: bool,
 };
 
+const SDL_PenProximityEvent = extern struct {
+    type: c_uint,
+    reserved: c_uint,
+    timestamp: u64,
+    window_id: u32,
+    which: u32,
+};
+
 const SDL_PenAxisEvent = extern struct {
     type: c_uint,
     reserved: c_uint,
@@ -342,6 +350,7 @@ const SDL_Event = extern union {
     drop: SDL_DropEvent,
     pen: SDL_PenMotionEvent,
     pbutton: SDL_PenButtonEvent,
+    pproximity: SDL_PenProximityEvent,
     paxis: SDL_PenAxisEvent,
     padding: [128]u8,
 };
@@ -994,6 +1003,22 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                         }
                     }
                 },
+                input_policy.SDL_EVENT_PEN_PROXIMITY_IN,
+                input_policy.SDL_EVENT_PEN_PROXIMITY_OUT,
+                => {
+                    if (event.pproximity.which != 0 and
+                        (event.pproximity.window_id == 0 or
+                            event.pproximity.window_id == SDL_GetWindowID(window)))
+                        try providerSendInput(
+                            20,
+                            if (event.type == input_policy.SDL_EVENT_PEN_PROXIMITY_IN) 1 else 0,
+                            0,
+                            event.pproximity.which,
+                            0,
+                            0,
+                            event.pproximity.timestamp,
+                        );
+                },
                 input_policy.SDL_EVENT_PEN_AXIS => {
                     const axis_supported =
                         (event.paxis.pen_state & input_policy.SDL_PEN_INPUT_ERASER_TIP) == 0 and
@@ -1352,6 +1377,22 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                         axis_event.paxis.timestamp = 56 + pen_axis_index;
                         if (!SDL_PushEvent(&axis_event)) return sdlFail("SDL_PushEvent");
                     }
+                    var proximity = SDL_Event{ .pproximity = .{
+                        .type = input_policy.SDL_EVENT_PEN_PROXIMITY_IN,
+                        .reserved = 0,
+                        .timestamp = 63,
+                        .window_id = 0,
+                        .which = 1,
+                    } };
+                    if (!SDL_PushEvent(&proximity)) return sdlFail("SDL_PushEvent");
+                    proximity = SDL_Event{ .pproximity = .{
+                        .type = input_policy.SDL_EVENT_PEN_PROXIMITY_OUT,
+                        .reserved = 0,
+                        .timestamp = 64,
+                        .window_id = 0,
+                        .which = 1,
+                    } };
+                    if (!SDL_PushEvent(&proximity)) return sdlFail("SDL_PushEvent");
                     var resized = windowEvent(
                         input_policy.SDL_EVENT_WINDOW_RESIZED,
                         SDL_GetWindowID(window),

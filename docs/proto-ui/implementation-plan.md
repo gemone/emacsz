@@ -4588,3 +4588,12 @@ distance, rotation, slider, and tangential pressure, and the input gate
 round-trips one exact value from every axis before rejecting index seven.
 Standard core pen-axis events, proximity, chord state, and drawing surfaces
 remain separate work.
+
+P219 captures SDL pen proximity without inventing standard Emacs input
+semantics.  A nonzero pen identity accepted for the provider window transitions
+the bounded state to `in` or `out`; zero identities are ignored.  The
+read-only `terminal-provider-pen-proximity` API returns the current state with
+enter/leave counts, so metadata consumers can observe full transitions rather
+than only the final state.  The input gate drives one enter and one leave and
+requires `(out 1 1)`.  Standard core proximity events, chord state, and drawing
+surfaces remain separate work.

@@ -108,7 +108,7 @@ Unknown optional capabilities are ignored. Unknown required messages trigger con
 | `input.pointer_selection_left` | Optional | adapter/frontend | Pointer events remain observed |
 | `input.pointer_middle_paste` | Optional | adapter/frontend | Requires the completed bounded left-selection evidence |
 | `input.touch_bounded_v1` | Optional | adapter/frontend | Requires negotiated `input.pointer_v2`; multi-touch gestures and pressure stay unclaimed |
-| `input.pen_bounded_v1` | Optional | adapter/frontend | Requires negotiated `input.pointer_v2`; the TPE provider path maps a valid pen tip and all five SDL barrel buttons to standard mouse/drag/button events with `pen` device class, exposes all seven SDL pen axes — pressure, X/Y tilt, distance, rotation, slider, and tangential pressure — as bounded read-only adapter metadata without inventing core input semantics, and leaves the eraser tip, proximity events, and drawing surfaces unclaimed |
+| `input.pen_bounded_v1` | Optional | adapter/frontend | Requires negotiated `input.pointer_v2`; the TPE provider path maps a valid pen tip and all five SDL barrel buttons to standard mouse/drag/button events with `pen` device class, exposes all seven SDL pen axes and proximity enter/leave transitions as bounded read-only adapter metadata without inventing core input semantics, and leaves the eraser tip and drawing surfaces unclaimed |
 | `dnd.bounded_v1` | Optional | adapter/frontend | Negotiated bounded single-offer receive only (≤256 payload bytes) plus best-effort drag-position feedback; drag-out, MIME negotiation, and multi-format drops unavailable |
 | `ime` | Required CJK production | frontend + core | No platform IME |
 | `shared_memory` | Optional | transport | Socket/pipe |
