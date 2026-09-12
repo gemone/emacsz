@@ -1101,12 +1101,25 @@ static void shutdown_provider_surface (void) {
   provider_surface_pid = -1;
 }
 
+Lisp_Object Fterminal_provider_frame_p (Lisp_Object);
 Lisp_Object Fterminal_provider_title (void);
 Lisp_Object Fterminal_provider_capture_p (void);
 Lisp_Object Fterminal_provider_mouse_face_p (void);
 Lisp_Object Fterminal_provider_mouse_face_debug (void);
 Lisp_Object Fterminal_provider_pen_axis (Lisp_Object);
 Lisp_Object Fterminal_provider_pen_proximity (void);
+
+DEFUN ("terminal-provider-frame-p", Fterminal_provider_frame_p,
+       Sterminal_provider_frame_p, 0, 1, 0,
+       doc: /* Return non-nil when FRAME is the active terminal provider surface frame.
+FRAME defaults to the selected frame.  */)
+  (Lisp_Object frame)
+{
+  if (tpe_registration == NULL)
+    return Qnil;
+  struct frame *candidate = decode_live_frame (frame);
+  return candidate == provider_terminal_frame () ? Qt : Qnil;
+}
 
 DEFUN ("terminal-provider-title", Fterminal_provider_title,
        Sterminal_provider_title, 0, 0, 0,
@@ -1294,6 +1307,7 @@ bool init_terminal_provider (void) {
     }
   Fset (intern_c_string ("frame-background-mode"), Qdark);
   staticpro (&provider_pen_proximity);
+  defsubr (&Sterminal_provider_frame_p);
   defsubr (&Sterminal_provider_title);
   defsubr (&Sterminal_provider_capture_p);
   defsubr (&Sterminal_provider_mouse_face_p);

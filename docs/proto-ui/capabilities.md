@@ -218,7 +218,7 @@ Priorities:
 |---|---|---|---|---|---|
 | Terminal creation | `create_terminal(output_pgtk)` | generic `output_provider` with `proto` identity | P0 | Headless implemented | Opt-in TPE gate creates a real Emacs terminal; default builds remain disabled and no SDL frame exists |
 | Terminal deletion | PGTK terminal hooks | EUP session/frame teardown | P0 | Headless cleanup implemented | TPE headless gate drains adapter state and deletes its terminal; frontend disconnect rollback remains pending |
-| Graphic frame predicate | `output_pgtk` frame | `output_proto` frame | P0 | Pending | Headless terminal identity is `proto`, but no frame exists and `make-frame` on provider is not implemented |
+| Graphic frame predicate | `output_pgtk` frame | `output_proto` frame | P0 | Degraded | Adapter-owned `terminal-provider-frame-p` validates the active TPE surface frame and rejects the batch initial frame (`proto-ui-tpe-frame`); general lifecycle and multi-frame selection remain pending |
 | Focus frame | GDK focus | Frontend focus + core state | P0 | Degraded | Strict EUP focus state plus one-frame SDL gained/lost round trip through public Emacs selection and focused fact; no OS focus control or multi-frame parity |
 | Multi-frame | GTK windows | Multiple SDL windows | P1 | Pending | Single SDL facts window and one EUP frame profile |
 | Monitor attributes | GDK monitor | SDL monitor events | P1 | Degraded | EUP `FRAME_MONITOR` v1 owns generation-qualified identity, primary flag, and bounds; negotiated `MONITOR_EVENT` EPXL transport records current SDL bounds, while migration and redisplay adaptation remain pending |

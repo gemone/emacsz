@@ -4634,3 +4634,12 @@ Control, Alt, Super, and Mode to inherited Emacs conversion as `a`, `A`,
 provider modifier bits compose correctly for the common printable command and
 text cases; localized layouts, dead keys, and every modifier combination remain
 separate work.
+
+P225 adds the adapter-owned graphic-frame predicate `terminal-provider-frame-p`.
+Unlike the terminal-level `window-system` identity, it succeeds only for the one
+live frame currently attached to the active TPE provider surface, accepts the
+usual nil/selected-frame convention, and fails safely before provider
+registration or after shutdown.  The real SDL frame gate proves the provider
+frame and selected-frame forms are true while the batch initial frame is false.
+General multi-frame lifecycle and platform-frame selection remain separate
+work.
