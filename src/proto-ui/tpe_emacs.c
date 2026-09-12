@@ -41,6 +41,9 @@ typedef struct TpeEmacsHost {
   uint64_t session_id;
   uint64_t redisplay_generation;
   void *adapter_session;
+  char title[4096];
+  size_t title_length;
+  uint32_t title_generation;
   bool deleted;
   bool window_maximized;
 } TpeEmacsHost;
@@ -524,6 +527,10 @@ typedef struct TpeWireSnapshot {
   size_t face_count;
   const TpeWireHighlight *highlights;
   size_t highlight_count;
+  const unsigned char *title;
+  size_t title_length;
+  uint32_t title_generation;
+  uint32_t title_reserved;
 } TpeWireSnapshot;
 
 extern ProtoUiPureRuntimeStatus proto_ui_tpe_encode_snapshot (
@@ -677,6 +684,23 @@ static size_t tpe_capture_mouse_highlights (struct frame *frame,
   return count;
 }
 
+static void provider_implicitly_set_name (struct frame *frame,
+                                          Lisp_Object arg,
+                                          Lisp_Object oldval) {
+  TpeEmacsHost *host = frame && frame->terminal
+    ? frame->terminal->provider_data : NULL;
+  if (!frame || !host || !STRINGP (arg) || host->surface_frame != frame)
+    return;
+  ptrdiff_t length = SBYTES (arg);
+  if (length <= 0 || length >= (ptrdiff_t)sizeof host->title)
+    return;
+  memcpy (host->title, SSDATA (arg), (size_t)length);
+  host->title_length = (size_t)length;
+  host->title_generation++;
+  fset_name (frame, arg);
+  (void)oldval;
+}
+
 void terminal_provider_capture_frame (struct frame *frame) {
   TpeEmacsHost *host = frame && frame->terminal
     ? frame->terminal->provider_data : NULL;
@@ -768,13 +792,15 @@ void terminal_provider_capture_frame (struct frame *frame) {
     host->redisplay_generation,
     FRAME_PIXEL_WIDTH (frame), FRAME_PIXEL_HEIGHT (frame),
     rows, row_count, runs, run_count, cursor,
-    faces, face_count, highlights, highlight_count
+    faces, face_count, highlights, highlight_count,
+    host->title_length == 0 ? NULL : host->title,
+    host->title_length, host->title_generation, 0
   };
   unsigned char *bytes = NULL;
   size_t length = 0;
   uint32_t wire_length = 0;
-  if (proto_ui_tpe_encode_snapshot (&snapshot, &bytes, &length) != 0 ||
-      length > UINT32_MAX)
+  int encode_status = proto_ui_tpe_encode_snapshot (&snapshot, &bytes, &length);
+  if (encode_status != 0 || length > UINT32_MAX)
     return;
   wire_length = (uint32_t)length;
   unsigned char ack = 0;
@@ -948,6 +974,7 @@ bool terminal_provider_attach_frame (struct terminal *terminal,
   static uint64_t provider_session_counter;
   reset_mouse_highlight (&tpe_mouse_highlight);
   frame->provider_data = &tpe_mouse_highlight;
+  frame->explicit_name = true;
   tpe_host.frame_identity.id = (uint64_t)frame_id;
   tpe_host.frame_identity.generation =
     (uint64_t)terminal->provider_generation;
@@ -964,6 +991,7 @@ bool terminal_provider_attach_frame (struct terminal *terminal,
     }
   terminal->read_socket_hook = provider_read_socket;
   terminal->mouse_position_hook = provider_mouse_position;
+  terminal->implicit_set_name_hook = provider_implicitly_set_name;
   add_keyboard_wait_descriptor (provider_surface_fd);
   return true;
 }

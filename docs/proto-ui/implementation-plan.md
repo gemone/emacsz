@@ -4447,3 +4447,13 @@ existing surface, or receive adapter-owned input/window events.  The frame gate
 rejects the second frame and proves the first owner still captures through the
 standard redisplay path.  Per-window SDL routing remains separate multi-frame
 work.
+
+P203 carries standard Emacs frame titles through the existing generation
+qualified EUP title protocol.  The provider adapter now implements the standard
+implicit frame-name hook, keeps UTF-8 title identity monotonic in TPE snapshots,
+and SDL applies each decoded title to the real window.  The adapter temporarily marks the attached frame explicit so the inherited
+standard title evaluator accepts this new output method without another inherited
+edit.  The frame gate binds `frame-title-format`, requires Emacs's frame name to
+change through normal redisplay, and the SDL process independently verifies both
+Scene and OS window titles.  Explicit title parameter plumbing and generic
+`FRAME_WINDOW_P` recognition remain separate compatibility work.

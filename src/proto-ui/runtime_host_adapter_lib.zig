@@ -247,6 +247,10 @@ pub const TpeWireSnapshot = extern struct {
     face_count: usize,
     highlights: ?[*]const TpeWireHighlight,
     highlight_count: usize,
+    title: ?[*]const u8,
+    title_length: usize,
+    title_generation: u32,
+    title_reserved: u32 = 0,
 };
 
 fn tpeAppendEnvelope(
@@ -298,6 +302,7 @@ export fn proto_ui_tpe_encode_snapshot(
         var next: u64 = 1;
         var last_face_generation: u32 = 0;
         var last_highlight_count: usize = 0;
+        var last_title_generation: u32 = 0;
     };
     const first_snapshot = snapshot.session_id != TpeSnapshotSequenceState.session_id or
         snapshot.frame_generation != TpeSnapshotSequenceState.frame_generation;
@@ -307,6 +312,7 @@ export fn proto_ui_tpe_encode_snapshot(
         TpeSnapshotSequenceState.next = 1;
         TpeSnapshotSequenceState.last_face_generation = 0;
         TpeSnapshotSequenceState.last_highlight_count = 0;
+        TpeSnapshotSequenceState.last_title_generation = 0;
     }
     var sequence: u64 = TpeSnapshotSequenceState.next;
 
@@ -344,6 +350,38 @@ export fn proto_ui_tpe_encode_snapshot(
     if (first_snapshot) {
         tpeAppendEnvelope(&output, protocol.Message.frame_geometry, 0, sequence, snapshot.session_id, snapshot.frame_id, sequence, geometry_payload.items) catch return 2;
         sequence += 1;
+    }
+
+    if (snapshot.title_length > 0 and snapshot.title != null and
+        (first_snapshot or snapshot.title_generation !=
+            TpeSnapshotSequenceState.last_title_generation))
+    {
+        if (snapshot.title_generation == 0 or
+            TpeSnapshotSequenceState.last_title_generation != 0 and
+                snapshot.title_generation <=
+                    TpeSnapshotSequenceState.last_title_generation)
+            return 1;
+        const title_bytes = snapshot.title.?[0..snapshot.title_length];
+        var title_string: std.ArrayList(u8) = .empty;
+        defer title_string.deinit(std.heap.c_allocator);
+        protocol.encodeStringDefine(std.heap.c_allocator, .{
+            .resource_id = 1,
+            .generation = snapshot.title_generation,
+            .bytes = title_bytes,
+        }, &title_string) catch return 2;
+        tpeAppendEnvelope(&output, protocol.Message.string_define, 0, sequence, snapshot.session_id, snapshot.frame_id, sequence, title_string.items) catch return 2;
+        sequence += 1;
+        var title_payload: std.ArrayList(u8) = .empty;
+        defer title_payload.deinit(std.heap.c_allocator);
+        protocol.encodeFrameTitle(std.heap.c_allocator, .{
+            .string_resource_id = 1,
+            .string_generation = snapshot.title_generation,
+            .frame_generation = snapshot.frame_generation,
+        }, &title_payload) catch return 2;
+        tpeAppendEnvelope(&output, protocol.Message.frame_title, 0, sequence, snapshot.session_id, snapshot.frame_id, sequence, title_payload.items) catch return 2;
+        sequence += 1;
+        TpeSnapshotSequenceState.last_title_generation =
+            snapshot.title_generation;
     }
 
     var window_bytes: std.ArrayList(u8) = .empty;
@@ -536,6 +574,71 @@ export fn proto_ui_tpe_free_snapshot(bytes: ?[*]u8, len: usize) void {
     if (bytes) |pointer| std.heap.c_allocator.free(pointer[0..len]);
 }
 
+test "tpe snapshot encoder carries generation-qualified title" {
+    var text = "Emacs".*;
+    var title = "Emacs Proto-UI Title".*;
+    var rows = [_]TpeWireRow{.{ .window_id = 10, .index = 0, .flags = 0, .x = 0, .y = 0, .width = 80, .height = 16, .ascent = 12, .descent = 4, .baseline = 12, .visible_height = 16 }};
+    var runs = [_]TpeWireRun{.{
+        .run_id = 1,
+        .generation = 1,
+        .window_id = 10,
+        .row_index = 0,
+        .face_id = 0,
+        .face_generation = 0,
+        .x = 0,
+        .y = 0,
+        .width = 40,
+        .height = 16,
+        .text_length = 5,
+        .text = undefined,
+    }};
+    @memcpy(runs[0].text[0..5], &text);
+    const snapshot = TpeWireSnapshot{
+        .frame_id = 2,
+        .frame_generation = 1,
+        .session_id = 11,
+        .redisplay_generation = 1,
+        .width = 80,
+        .height = 24,
+        .rows = &rows,
+        .row_count = rows.len,
+        .runs = &runs,
+        .run_count = runs.len,
+        .cursor = .{ .window_id = 10, .x = 0, .y = 0, .width = 8, .height = 16, .kind = 1, .visible = true, .active = true },
+        .faces = &[_]TpeWireFace{},
+        .face_count = 0,
+        .highlights = &[_]TpeWireHighlight{},
+        .highlight_count = 0,
+        .title = &title,
+        .title_length = title.len,
+        .title_generation = 2,
+    };
+    var bytes: ?[*]u8 = null;
+    var len: usize = 0;
+    try std.testing.expectEqual(@as(c_int, 0), proto_ui_tpe_encode_snapshot(&snapshot, &bytes, &len));
+    defer proto_ui_tpe_free_snapshot(bytes, len);
+    var saw_string = false;
+    var saw_title = false;
+    var offset: usize = 0;
+    while (offset < len) {
+        const message_len = std.mem.readInt(u32, bytes.?[offset..][0..4], .little);
+        const payload = try protocol.decodeEnvelope(bytes.?[offset + 4 ..][0..message_len]);
+        if (payload.envelope.message_type == protocol.Message.string_define) {
+            const string = try protocol.decodeStringDefine(payload.bytes);
+            try std.testing.expectEqualStrings("Emacs Proto-UI Title", string.bytes);
+            saw_string = true;
+        }
+        if (payload.envelope.message_type == protocol.Message.frame_title) {
+            const frame_title = try protocol.decodeFrameTitle(payload.bytes);
+            try std.testing.expectEqual(@as(u32, 1), frame_title.string_resource_id);
+            try std.testing.expectEqual(@as(u32, 2), frame_title.string_generation);
+            saw_title = true;
+        }
+        offset += 4 + message_len;
+    }
+    try std.testing.expect(saw_string and saw_title);
+}
+
 test "tpe snapshot encoder emits bounded EUP messages" {
     var text = "Emacs".*;
     var rows = [_]TpeWireRow{.{ .window_id = 10, .index = 0, .flags = 0, .x = 0, .y = 0, .width = 80, .height = 16, .ascent = 12, .descent = 4, .baseline = 12, .visible_height = 16 }};
@@ -572,6 +675,10 @@ test "tpe snapshot encoder emits bounded EUP messages" {
         .face_count = faces.len,
         .highlights = &highlights,
         .highlight_count = highlights.len,
+        .title = null,
+        .title_length = 0,
+        .title_generation = 0,
+        .title_reserved = 0,
     };
     var bytes: ?[*]u8 = null;
     var len: usize = 0;

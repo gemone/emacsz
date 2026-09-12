@@ -880,6 +880,7 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
             gpa.free(bytes);
             snapshot = null;
             length_prefix_read = 0;
+            if (scene.title) |title| SDL_SetWindowTitle(window, title.ptr);
             if (!first_snapshot_rendered) {
                 std.debug.print("sdl3-provider-frame: terminal={d}:{d} frame={d}:{d} surface={d}x{d} rows={d} runs={d} pass\n", .{
                     terminal_id, terminal_generation, frame_id,      frame_generation,
@@ -1019,6 +1020,18 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                 if (!SDL_PushEvent(&close)) return sdlFail("SDL_PushEvent");
             }
         }
+    }
+    if (std.c.getenv("TPE_TITLE_SMOKE")) |expected| {
+        const expected_title = std.mem.span(expected);
+        const window_title = SDL_GetWindowTitle(window);
+        if (scene.title == null or
+            !std.mem.eql(u8, scene.title.?, expected_title) or
+            !std.mem.eql(u8, std.mem.span(window_title), expected_title))
+            return error.ProviderTitleNotApplied;
+        std.debug.print(
+            "sdl3-provider-title: {s} pass\n",
+            .{expected_title},
+        );
     }
 }
 
