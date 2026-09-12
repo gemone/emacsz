@@ -928,7 +928,9 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     const pen_state = if (is_button) event.pbutton.pen_state else event.pen.pen_state;
                     const eraser = (pen_state & input_policy.SDL_PEN_INPUT_ERASER_TIP) != 0;
                     const pen_button = if (is_button) event.pbutton.button else 0;
-                    if (!eraser and pen_button < 3) {
+                    const valid_pen_button = !is_button or
+                        (pen_button >= 1 and pen_button <= 5);
+                    if (!eraser and valid_pen_button) {
                         var pen_width: c_int = 0;
                         var pen_height: c_int = 0;
                         SDL_GetWindowSize(window, &pen_width, &pen_height);
@@ -1238,6 +1240,26 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     );
                     pen_button.pbutton.timestamp = 45;
                     if (!SDL_PushEvent(&pen_button)) return sdlFail("SDL_PushEvent");
+                    inline for (.{ 2, 3, 4, 5 }, 0..) |pen_button_index, pen_button_cycle| {
+                        pen_button = penButtonEvent(
+                            input_policy.SDL_EVENT_PEN_BUTTON_DOWN,
+                            60,
+                            40,
+                            @as(u32, 1) << @intCast(pen_button_index),
+                            pen_button_index,
+                        );
+                        pen_button.pbutton.timestamp = 46 + pen_button_cycle * 2;
+                        if (!SDL_PushEvent(&pen_button)) return sdlFail("SDL_PushEvent");
+                        pen_button = penButtonEvent(
+                            input_policy.SDL_EVENT_PEN_BUTTON_UP,
+                            60,
+                            40,
+                            @as(u32, 1) << @intCast(pen_button_index),
+                            pen_button_index,
+                        );
+                        pen_button.pbutton.timestamp = 47 + pen_button_cycle * 2;
+                        if (!SDL_PushEvent(&pen_button)) return sdlFail("SDL_PushEvent");
+                    }
                     var resized = windowEvent(
                         input_policy.SDL_EVENT_WINDOW_RESIZED,
                         SDL_GetWindowID(window),

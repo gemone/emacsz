@@ -296,6 +296,10 @@ pub const SDL_EVENT_PEN_MOTION: c_uint = 0x1306;
 
 pub const SDL_PEN_INPUT_DOWN: u32 = 1 << 0;
 pub const SDL_PEN_INPUT_BUTTON_1: u32 = 1 << 1;
+pub const SDL_PEN_INPUT_BUTTON_2: u32 = 1 << 2;
+pub const SDL_PEN_INPUT_BUTTON_3: u32 = 1 << 3;
+pub const SDL_PEN_INPUT_BUTTON_4: u32 = 1 << 4;
+pub const SDL_PEN_INPUT_BUTTON_5: u32 = 1 << 5;
 pub const SDL_PEN_INPUT_ERASER_TIP: u32 = 1 << 30;
 
 pub const PenSource = struct {

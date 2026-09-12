@@ -4561,3 +4561,10 @@ two; Emacs's inherited conversion therefore reports `down-mouse-2`/`mouse-2`
 while retaining `pen` device attribution.  Barrel buttons three through five,
 chord-state aggregation, pressure, tilt, proximity, and drawing-surface
 semantics remain separate work.
+
+P216 completes the SDL barrel-button surface.  All five SDL pen-button indices
+are validated fail-closed and pass through as standard button codes one through
+five, so inherited conversion reports `mouse-2` through `mouse-6` with `pen`
+attribution; zero and unknown future indices remain rejected.  The input gate
+drives all five pairs end to end.  Chord-state aggregation, pressure, tilt,
+proximity, and drawing-surface semantics remain separate work.
