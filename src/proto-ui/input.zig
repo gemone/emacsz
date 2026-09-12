@@ -21,6 +21,7 @@ pub const SDL_EVENT_WINDOW_RESTORED: c_uint = 0x20b;
 pub const SDL_EVENT_WINDOW_DISPLAY_CHANGED: c_uint = 0x215;
 pub const SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: c_uint = 0x216;
 
+pub const SDL_SCANCODE_A: i32 = 4;
 pub const SDL_SCANCODE_COPY: i32 = 6;
 pub const SDL_SCANCODE_BACKSPACE: i32 = 42;
 pub const SDL_SCANCODE_SPACE: i32 = 44;

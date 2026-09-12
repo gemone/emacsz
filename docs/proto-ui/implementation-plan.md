@@ -4626,3 +4626,11 @@ keycode for ASCII input and routes all other keys through the existing
 scancode-to-Emacs-keysym mapping.  The real input gate now injects SDL keycodes
 for space, repeated left, and every covered navigation/function key; inherited
 Emacs conversion still observes the expected printable and symbolic sequence.
+
+P224 adds printable-letter modifier coverage to the real TPE input gate.  The
+provider path round-trips unmodified `a`, shifted uppercase `A`, and `c` with
+Control, Alt, Super, and Mode to inherited Emacs conversion as `a`, `A`,
+`C-c`, `A-c`, `s-c`, and `M-c`.  This proves that SDL layout keycodes and
+provider modifier bits compose correctly for the common printable command and
+text cases; localized layouts, dead keys, and every modifier combination remain
+separate work.

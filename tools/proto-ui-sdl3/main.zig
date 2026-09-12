@@ -1192,6 +1192,9 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                 });
                 first_snapshot_rendered = true;
                 if (std.c.getenv("TPE_INPUT_SMOKE") != null) {
+                    const SDL_KEY_A: u32 = 97;
+                    const SDL_KEY_SHIFT_A: u32 = 65;
+                    const SDL_KEY_C: u32 = 99;
                     const SDL_KEY_SPACE: u32 = 32;
                     const SDL_KEY_LEFT: u32 = 0x40000050;
                     const SDL_KEY_F12: u32 = 0x40000045;
@@ -1201,7 +1204,25 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     const SDL_KEY_PAGEDOWN: u32 = 0x4000004e;
                     const SDL_KEY_END: u32 = 0x4000004d;
                     const SDL_KEY_INSERT: u32 = 0x40000049;
-                    var synthetic = keycodeKeyboardEvent(input_policy.SDL_SCANCODE_SPACE, SDL_KEY_SPACE, true, 0);
+                    const printable_cases = [_]struct { scancode: i32, keycode: u32, modifiers: u16 }{
+                        .{ .scancode = input_policy.SDL_SCANCODE_A, .keycode = SDL_KEY_A, .modifiers = 0 },
+                        .{ .scancode = input_policy.SDL_SCANCODE_A, .keycode = SDL_KEY_SHIFT_A, .modifiers = input_policy.sdl_kmod_lshift },
+                        .{ .scancode = input_policy.SDL_SCANCODE_C, .keycode = SDL_KEY_C, .modifiers = input_policy.sdl_kmod_lctrl },
+                        .{ .scancode = input_policy.SDL_SCANCODE_C, .keycode = SDL_KEY_C, .modifiers = input_policy.sdl_kmod_lalt },
+                        .{ .scancode = input_policy.SDL_SCANCODE_C, .keycode = SDL_KEY_C, .modifiers = input_policy.sdl_kmod_lgui },
+                        .{ .scancode = input_policy.SDL_SCANCODE_C, .keycode = SDL_KEY_C, .modifiers = input_policy.sdl_kmod_mode },
+                    };
+                    var synthetic: SDL_Event = undefined;
+                    inline for (printable_cases) |printable_case| {
+                        synthetic = keycodeKeyboardEvent(
+                            printable_case.scancode,
+                            printable_case.keycode,
+                            true,
+                            printable_case.modifiers,
+                        );
+                        if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
+                    }
+                    synthetic = keycodeKeyboardEvent(input_policy.SDL_SCANCODE_SPACE, SDL_KEY_SPACE, true, 0);
                     if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
                     synthetic = keycodeKeyboardEvent(input_policy.SDL_SCANCODE_LEFT, SDL_KEY_LEFT, true, 0);
                     if (!SDL_PushEvent(&synthetic)) return sdlFail("SDL_PushEvent");
