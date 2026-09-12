@@ -4479,6 +4479,10 @@ the canonical 48-byte TPE input envelope.  SDL wheel motion selects the dominant
 standard vertical or horizontal wheel event and carries signed centi-unit X and
 Y deltas together, while the adapter exposes them as the standard wheel-event
 `arg` using the same PGTK sign convention.  The input gate now proves a
-fractional wheel event arrives with exact Lisp deltas; pixel-scroll command
-integration, momentum, page units, and platform acceleration remain separate
-work.
+fractional wheel event arrives with exact Lisp deltas.  P207 closes the
+consumer path: the gate supplies the provider `wheel-down` event to Emacs's
+standard `pixel-scroll-precision` command with interpolation disabled and
+requires the provider window's start or pixel vscroll state to change.  Thus
+provider deltas now reach the normal Elisp scrolling implementation, not merely
+`read-event`.  Momentum, page units, interpolation with platform device state,
+and touchpad stop events remain separate work.

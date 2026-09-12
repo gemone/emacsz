@@ -981,6 +981,8 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     if (!SDL_PushEvent(&wheel)) return sdlFail("SDL_PushEvent");
                     var high_res_wheel = highResolutionWheelEvent(0, -0.5);
                     if (!SDL_PushEvent(&high_res_wheel)) return sdlFail("SDL_PushEvent");
+                    high_res_wheel = highResolutionWheelEvent(0, 0.5);
+                    if (!SDL_PushEvent(&high_res_wheel)) return sdlFail("SDL_PushEvent");
                     var resized = windowEvent(
                         input_policy.SDL_EVENT_WINDOW_RESIZED,
                         SDL_GetWindowID(window),
