@@ -142,8 +142,8 @@ fn freshFinger(io: std.Io, gpa: std.mem.Allocator, cwd: std.Io.Dir, temacs: []co
     var f = stamp.Finger.init("loaddefs");
     // Content, not mtime: the same bootstrap binary/image can be staged or
     // installed again on every build without changing.
-    f.fileContent(io, cwd, gpa, temacs);
-    f.fileContent(io, cwd, gpa, dump);
+    f.fileContent(io, cwd, temacs);
+    f.fileContent(io, cwd, dump);
     f.file(io, cwd, "build-aux/generate-loaddefs.zig");
     f.tree(io, gpa, cwd, "lisp", fingerprintExclude) catch {};
     return f;

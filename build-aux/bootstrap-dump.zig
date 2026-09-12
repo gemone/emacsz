@@ -246,13 +246,13 @@ fn freshFinger(io: std.Io, gpa: std.mem.Allocator, cwd: std.Io.Dir, temacs: []co
     // zig-out/bin on every invocation (and Windows may rewrite it even when
     // identical), so an mtime fingerprint would invalidate the dump stamp
     // forever.  The content hash still detects a backend/ABI flip.
-    f.fileContent(io, cwd, gpa, temacs);
+    f.fileContent(io, cwd, temacs);
     f.file(io, cwd, "build-aux/bootstrap-dump.zig");
     // etc/DOC is rewritten by the UpdateSourceFiles step on every build
     // (the make-docfile Run re-executes and its capture carries a fresh
     // mtime), so fingerprint its CONTENT: an unchanged DOC must not
     // invalidate the dump stamp.
-    f.fileContent(io, cwd, gpa, "etc/DOC");
+    f.fileContent(io, cwd, "etc/DOC");
     f.tree(io, gpa, cwd, "etc/charsets", null) catch {};
     f.tree(io, gpa, cwd, "lisp", isLoaddefsOutput) catch {};
     return f;

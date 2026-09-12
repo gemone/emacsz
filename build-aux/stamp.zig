@@ -105,17 +105,29 @@ pub const Finger = struct {
     /// rewrite on every build through paths the tools cannot make
     /// mtime-stable (e.g. etc/DOC via UpdateSourceFiles).  Content-hash
     /// keeps the stamp fresh across no-op rewrites.
-    pub fn fileContent(self: *Finger, io: std.Io, dir: std.Io.Dir, gpa: std.mem.Allocator, path: []const u8) void {
-        const data = dir.readFileAlloc(io, path, gpa, .limited(64 * 1024 * 1024)) catch {
+    pub fn fileContent(self: *Finger, io: std.Io, dir: std.Io.Dir, path: []const u8) void {
+        var handle = dir.openFile(io, path, .{}) catch {
             self.bytes("\x00missing");
             self.bytes(path);
             return;
         };
-        defer gpa.free(data);
+        defer handle.close(io);
+        var file_reader = handle.reader(io, &.{});
+        var buffer: [64 * 1024]u8 = undefined;
+        var size: u64 = 0;
         self.bytes(path);
-        var n: usize = data.len;
-        self.h.update(std.mem.asBytes(&n));
-        self.h.update(data);
+        while (true) {
+            const count = file_reader.interface.readSliceShort(&buffer) catch {
+                self.bytes("\x00unreadable");
+                self.bytes(path);
+                return;
+            };
+            if (count == 0) break;
+            size += count;
+            self.h.update(buffer[0..count]);
+            if (count < buffer.len) break;
+        }
+        self.h.update(std.mem.asBytes(&size));
     }
 
     pub fn final(self: *Finger) u64 {
