@@ -37,6 +37,7 @@ typedef struct TpeEmacsHost {
   struct terminal *terminal_object;
   ProtoUiIdentity identity;
   ProtoUiIdentity frame_identity;
+  struct frame *surface_frame;
   uint64_t session_id;
   uint64_t redisplay_generation;
   void *adapter_session;
@@ -196,13 +197,23 @@ static bool provider_read_exact (int fd, void *buffer, size_t size) {
 }
 
 static struct frame *provider_terminal_frame (void) {
+  struct frame *frame = tpe_host.surface_frame;
+  if (frame && FRAME_LIVE_P (frame) &&
+      frame->terminal == tpe_host.terminal_object &&
+      frame->terminal->type == output_provider)
+    return frame;
+  return NULL;
+}
+
+static struct frame *provider_frame_by_id (EMACS_UINT frame_id) {
   Lisp_Object tail, frame;
   FOR_EACH_FRAME (tail, frame)
     {
       struct frame *candidate = XFRAME (frame);
       if (FRAME_LIVE_P (candidate) &&
           candidate->terminal == tpe_host.terminal_object &&
-          candidate->terminal->type == output_provider)
+          candidate->terminal->type == output_provider &&
+          candidate->id == frame_id)
         return candidate;
     }
   return NULL;
@@ -671,7 +682,8 @@ void terminal_provider_capture_frame (struct frame *frame) {
     ? frame->terminal->provider_data : NULL;
   if (!frame || !host || host->deleted || host->terminal_object != frame->terminal ||
       host->adapter_session == NULL || provider_surface_fd < 0 ||
-      frame->terminal->type != output_provider)
+      frame->terminal->type != output_provider ||
+      host->surface_frame != frame)
     return;
 
   TpeWireRow rows[256];
@@ -930,8 +942,8 @@ bool terminal_provider_attach_frame (struct terminal *terminal,
       tpe_host.terminal_object != terminal || frame_id == 0 ||
       tpe_host.adapter_session == NULL)
     return false;
-  struct frame *frame = provider_terminal_frame ();
-  if (!frame)
+  struct frame *frame = provider_frame_by_id (frame_id);
+  if (!frame || provider_terminal_frame () != NULL)
     return false;
   static uint64_t provider_session_counter;
   reset_mouse_highlight (&tpe_mouse_highlight);
@@ -941,11 +953,15 @@ bool terminal_provider_attach_frame (struct terminal *terminal,
     (uint64_t)terminal->provider_generation;
   tpe_host.session_id = ((uint64_t)getpid() << 32) |
     (++provider_session_counter & 0xffffffffu);
+  tpe_host.surface_frame = frame;
   if (!launch_provider_surface (tpe_host.identity.id,
                                 tpe_host.identity.generation,
                                 tpe_host.frame_identity.id,
                                 tpe_host.frame_identity.generation))
-    return false;
+    {
+      tpe_host.surface_frame = NULL;
+      return false;
+    }
   terminal->read_socket_hook = provider_read_socket;
   terminal->mouse_position_hook = provider_mouse_position;
   add_keyboard_wait_descriptor (provider_surface_fd);

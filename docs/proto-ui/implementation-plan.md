@@ -4439,3 +4439,11 @@ standard `delete-frame` special event, and requires exactly one event owned by
 the provider frame while that frame remains live and the smoke process exits
 normally.  This prevents a provider close from being swallowed or from killing
 the harness before compatibility assertions run.
+
+P202 makes same-terminal surface ownership explicit and fail-closed.  The first
+provider frame whose SDL surface attaches is bound in the adapter; later provider
+frames on that terminal cannot replace the frame identity, capture through the
+existing surface, or receive adapter-owned input/window events.  The frame gate
+rejects the second frame and proves the first owner still captures through the
+standard redisplay path.  Per-window SDL routing remains separate multi-frame
+work.
