@@ -886,6 +886,39 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     const release: u16 = if (event.type == input_policy.SDL_EVENT_MOUSE_BUTTON_UP) 1 else 0;
                     try providerSendMouseEvent(2, release, modifiers, event.button.button - 1, event.button.x, event.button.y, event.button.timestamp);
                 },
+                input_policy.SDL_EVENT_PEN_DOWN,
+                input_policy.SDL_EVENT_PEN_UP,
+                input_policy.SDL_EVENT_PEN_MOTION,
+                => {
+                    const eraser = (event.pen.pen_state & input_policy.SDL_PEN_INPUT_ERASER_TIP) != 0;
+                    if (!eraser) {
+                        var pen_width: c_int = 0;
+                        var pen_height: c_int = 0;
+                        SDL_GetWindowSize(window, &pen_width, &pen_height);
+                        const valid_pen = (event.pen.window_id == 0 or
+                            event.pen.window_id == SDL_GetWindowID(window)) and
+                            pen_width > 0 and pen_height > 0 and
+                            std.math.isFinite(event.pen.x) and
+                            std.math.isFinite(event.pen.y) and
+                            event.pen.x >= 0 and
+                            event.pen.x < @as(f32, @floatFromInt(pen_width)) and
+                            event.pen.y >= 0 and
+                            event.pen.y < @as(f32, @floatFromInt(pen_height));
+                        if (valid_pen) {
+                            const motion = event.type == input_policy.SDL_EVENT_PEN_MOTION;
+                            const release = event.type == input_policy.SDL_EVENT_PEN_UP;
+                            const kind: u16 = if (motion) 4 else 2;
+                            const flags: u16 = if (motion)
+                                4
+                            else if (release)
+                                5
+                            else
+                                4;
+                            const modifiers = providerEmacsModifiers(SDL_GetModState());
+                            try providerSendMouseEvent(kind, flags, modifiers, 0, event.pen.x, event.pen.y, event.pen.timestamp);
+                        }
+                    }
+                },
                 SDL_EVENT_MOUSE_WHEEL => {
                     if (event.wheel.x != 0 or event.wheel.y != 0) {
                         const modifiers = providerEmacsModifiers(SDL_GetModState());
@@ -1113,6 +1146,38 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     );
                     touch.finger.finger_id = 8;
                     if (!SDL_PushEvent(&touch)) return sdlFail("SDL_PushEvent");
+                    var pen = penEvent(
+                        input_policy.SDL_EVENT_PEN_MOTION,
+                        50,
+                        30,
+                        0,
+                    );
+                    pen.pen.timestamp = 40;
+                    if (!SDL_PushEvent(&pen)) return sdlFail("SDL_PushEvent");
+                    pen = penEvent(
+                        input_policy.SDL_EVENT_PEN_DOWN,
+                        50,
+                        30,
+                        input_policy.SDL_PEN_INPUT_DOWN,
+                    );
+                    pen.pen.timestamp = 41;
+                    if (!SDL_PushEvent(&pen)) return sdlFail("SDL_PushEvent");
+                    pen = penEvent(
+                        input_policy.SDL_EVENT_PEN_MOTION,
+                        60,
+                        40,
+                        input_policy.SDL_PEN_INPUT_DOWN,
+                    );
+                    pen.pen.timestamp = 42;
+                    if (!SDL_PushEvent(&pen)) return sdlFail("SDL_PushEvent");
+                    pen = penEvent(
+                        input_policy.SDL_EVENT_PEN_UP,
+                        60,
+                        40,
+                        0,
+                    );
+                    pen.pen.timestamp = 43;
+                    if (!SDL_PushEvent(&pen)) return sdlFail("SDL_PushEvent");
                     var resized = windowEvent(
                         input_policy.SDL_EVENT_WINDOW_RESIZED,
                         SDL_GetWindowID(window),

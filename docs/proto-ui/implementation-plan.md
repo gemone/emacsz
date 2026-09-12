@@ -4543,3 +4543,12 @@ distance, and button state into `double-down-mouse-1` followed by
 `double-mouse-1`, both reporting `event-click-count` 2.  This proves that provider
 events reach the normal core inference path.  Binding that event to a live command,
 drag/selection behavior, and higher click counts remain separate work.
+
+P214 maps SDL pen-tip lifecycle into the canonical TPE input path.  The frontend
+rejects the eraser tip and invalid pen coordinates, emits hover/down/drag/up
+through the existing 48-byte mouse envelope with a pen flag, and does not add a
+frontend command whitelist.  The adapter marks standard mouse-like input with a
+stable GC-rooted `proto:pen` device identity, and `proto-device-class` reports
+that identity as standard `pen`.  The input gate proves hover, down, inherited
+drag conversion, and `device-class` on both press and drag.  Pen barrel buttons,
+pressure, tilt, proximity, and drawing-surface semantics remain separate work.

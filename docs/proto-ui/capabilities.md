@@ -107,8 +107,8 @@ Unknown optional capabilities are ignored. Unknown required messages trigger con
 | `clipboard` | Required GUI | frontend | Clipboard unavailable |
 | `input.pointer_selection_left` | Optional | adapter/frontend | Pointer events remain observed |
 | `input.pointer_middle_paste` | Optional | adapter/frontend | Requires the completed bounded left-selection evidence |
-| `input.touch_bounded_v1` | Optional | adapter/frontend | Requires negotiated `input.pointer_v2`; multi-touch gestures, pressure, and pen stay unclaimed |
-| `input.pen_bounded_v1` | Optional | adapter/frontend | Requires negotiated `input.pointer_v2`; the eraser tip, barrel buttons, pressure axes, tilt, and proximity events stay unclaimed |
+| `input.touch_bounded_v1` | Optional | adapter/frontend | Requires negotiated `input.pointer_v2`; multi-touch gestures and pressure stay unclaimed |
+| `input.pen_bounded_v1` | Optional | adapter/frontend | Requires negotiated `input.pointer_v2`; the TPE provider path maps a valid pen tip to standard mouse/drag events with `pen` device class, while the eraser tip, barrel buttons, pressure axes, tilt, and proximity events stay unclaimed |
 | `dnd.bounded_v1` | Optional | adapter/frontend | Negotiated bounded single-offer receive only (≤256 payload bytes) plus best-effort drag-position feedback; drag-out, MIME negotiation, and multi-format drops unavailable |
 | `ime` | Required CJK production | frontend + core | No platform IME |
 | `shared_memory` | Optional | transport | Socket/pipe |

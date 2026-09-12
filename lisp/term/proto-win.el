@@ -7,6 +7,7 @@
    ((string= name "proto:keyboard") 'keyboard)
    ((string= name "proto:mouse") 'mouse)
    ((string= name "proto:touchscreen") 'touchscreen)
+   ((string= name "proto:pen") 'pen)
    (t 'core-pointer)))
 
 (provide 'proto-win)
