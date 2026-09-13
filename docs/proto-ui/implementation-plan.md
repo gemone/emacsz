@@ -4653,3 +4653,12 @@ provider, and deletes the terminal through the inherited hook.  A real
 `proto-ui-tpe-frame-cleanup` gate proves the frame and terminal are dead while
 the original frame remains live.  Frontend EOF resynchronization remains a
 separate rollback case.
+
+P227 closes the frontend EOF rollback gap without adding a command whitelist.
+The adapter distinguishes a zero-byte read from the normal nonblocking
+no-input path and reports EOF through the standard `read_socket_hook` failure
+contract, so inherited `gobble-input` deletes the provider terminal through the
+P226 hooks.  A real `proto-ui-tpe-frame-eof` gate exits the SDL frontend after
+its first acknowledged frame, observes the socket EOF, and proves the provider
+frame and terminal are dead while the original Emacs frame remains live.
+Protocol-level reconnect and snapshot resynchronization remain separate work.

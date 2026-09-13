@@ -1498,6 +1498,10 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
             if (!SDL_RenderPresent(renderer)) return sdlFail("SDL_RenderPresent");
             try providerWriteAll("R");
             first_snapshot_rendered = true;
+            if (std.c.getenv("TPE_EOF_SMOKE") != null) {
+                std.debug.print("sdl3-provider-frame-eof: rows={d} runs={d} pass\n", .{ snapshot_rows, snapshot_runs });
+                return;
+            }
             if (std.c.getenv("TPE_INPUT_SMOKE") != null and
                 snapshot_rows > 24 and !smoke_hover_resent)
             {

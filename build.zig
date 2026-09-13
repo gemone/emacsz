@@ -4039,6 +4039,23 @@ pub fn build(b: *std.Build) void {
         );
         tpe_frame_cleanup_step.dependOn(&run_tpe_frame_cleanup_smoke.step);
 
+        const run_tpe_frame_eof_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs",
+            "--batch",
+            "--eval",
+            "(let* ((initial-frame (selected-frame)) (terms (terminal-list)) (terminal (car (last terms))) (frame (make-terminal-frame (list (cons 'terminal terminal))))) (unless (and (frame-live-p frame) (terminal-provider-frame-p frame)) (error \"proto-ui-tpe-frame-eof failed: attach=%S provider=%S\" (frame-live-p frame) (terminal-provider-frame-p frame))) (select-frame frame) (unless (redisplay t) (error \"proto-ui-tpe-frame-eof failed: display=%S\" (redisplay t))) (select-frame initial-frame) (read-event nil nil 2) (unless (and (not (frame-live-p frame)) (null (terminal-live-p terminal)) (= (length (terminal-list)) 1) (frame-live-p initial-frame)) (error \"proto-ui-tpe-frame-eof failed: frame=%S terminal=%S terms=%S initial=%S\" (frame-live-p frame) (terminal-live-p terminal) (terminal-list) (frame-live-p initial-frame))) (princ \"proto-ui-tpe-frame-eof: pass\\n\"))",
+        });
+        run_tpe_frame_eof_smoke.setEnvironmentVariable("TPE_EOF_SMOKE", "1");
+        run_tpe_frame_eof_smoke.setEnvironmentVariable("EMACS_TERMINAL_PROVIDER", "proto");
+        run_tpe_frame_eof_smoke.setCwd(b.path("."));
+        run_tpe_frame_eof_smoke.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |dep| run_tpe_frame_eof_smoke.step.dependOn(dep);
+        const tpe_frame_eof_step = b.step(
+            "proto-ui-tpe-frame-eof",
+            "Recover the original frame after provider frontend EOF",
+        );
+        tpe_frame_eof_step.dependOn(&run_tpe_frame_eof_smoke.step);
+
         const run_tpe_input_smoke = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/emacs",
             "--batch",

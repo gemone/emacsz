@@ -281,6 +281,7 @@ extern ProtoUiPureRuntimeStatus proto_ui_runtime_host_adapter_session_destroy (
 
 static int provider_surface_fd = -1;
 static pid_t provider_surface_pid = -1;
+static bool provider_surface_eof;
 
 static bool provider_read_exact (int fd, void *buffer, size_t size) {
   unsigned char *bytes = buffer;
@@ -578,6 +579,8 @@ static bool provider_read_input_byte (int fd, unsigned char *byte) {
   do
     count = read (fd, byte, 1);
   while (count < 0 && errno == EINTR);
+  if (count == 0)
+    provider_surface_eof = true;
   return count == 1;
 }
 
@@ -646,6 +649,7 @@ static bool launch_provider_surface (uint64_t id, uint64_t generation,
       return false;
     }
   fcntl (fds[0], F_SETFL, fcntl (fds[0], F_GETFL, 0) | O_NONBLOCK);
+  provider_surface_eof = false;
   provider_surface_fd = fds[0];
   provider_surface_pid = pid;
   return true;
@@ -1054,7 +1058,7 @@ static int provider_read_socket (struct terminal *terminal,
         return -2;
       if (!provider_read_input_byte (provider_surface_fd,
                                      packet + tpe_input_length))
-        return events;
+        return provider_surface_eof ? -2 : events;
       tpe_input_length++;
       if (tpe_input_length == 8 && memcmp (packet, "TPEINP1", 8) != 0)
         tpe_input_length = 0;
