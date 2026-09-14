@@ -5621,6 +5621,7 @@ pub const Scene = struct {
     fn applyFontDelete(self: *Scene, payload: protocol.Payload) Error!void {
         const font = try protocol.decodeFontDelete(payload.bytes);
         try self.fonts.delete(&self.resources, font);
+        self.removeGlyphRunsForFont(font.font_id);
         self.stats.control_messages += 1;
     }
 
@@ -16400,6 +16401,63 @@ test "shaped atlas glyph run validates face font and atlas entries" {
     const font_patch = try faceMessage(a, protocol.Message.font_patch, 9, font_patch_payload.items);
     defer a.free(font_patch);
     try scene.apply(font_patch);
+    try std.testing.expectEqual(@as(usize, 0), scene.glyph_runs.items.len);
+
+    var replacement_face_payload: std.ArrayList(u8) = .empty;
+    defer replacement_face_payload.deinit(a);
+    try protocol.encodeFaceDefine(a, .{
+        .face_id = 11,
+        .generation = 3,
+        .presence = .{ .font = true },
+        .font_id = 8,
+        .font_generation = 2,
+    }, &replacement_face_payload);
+    const replacement_face = try faceMessage(a, protocol.Message.face_define, 10, replacement_face_payload.items);
+    defer a.free(replacement_face);
+    try scene.apply(replacement_face);
+
+    var replacement_payload: std.ArrayList(u8) = .empty;
+    defer replacement_payload.deinit(a);
+    try encodeGlyphRun(a, .{
+        .schema = 3,
+        .flags = glyph_shaped_atlas,
+        .run_id = 23,
+        .generation = 3,
+        .window_id = 100,
+        .row_index = 0,
+        .face_id = 11,
+        .face_generation = 3,
+        .font_id = 8,
+        .x = 1,
+        .y = 1,
+        .width = 12,
+        .height = 8,
+        .text = "",
+        .glyphs = glyphs,
+        .glyph_count = 1,
+    }, &replacement_payload);
+    var replacement_envelope: std.ArrayList(u8) = .empty;
+    defer replacement_envelope.deinit(a);
+    try protocol.encodeEnvelope(a, .{
+        .flags = protocol.Flags.debug,
+        .message_type = protocol.Message.glyph_run,
+        .sequence = 11,
+        .ack_sequence = 0,
+        .session_id = 9,
+        .frame_id = 7,
+        .timestamp_ns = 11,
+    }, replacement_payload.items, &replacement_envelope);
+    const replacement_run = try replacement_envelope.toOwnedSlice(a);
+    defer a.free(replacement_run);
+    try scene.apply(replacement_run);
+    try std.testing.expectEqual(@as(usize, 1), scene.glyph_runs.items.len);
+
+    var font_delete_payload: std.ArrayList(u8) = .empty;
+    defer font_delete_payload.deinit(a);
+    try protocol.encodeFontDelete(a, .{ .font_id = 8, .generation = 2 }, &font_delete_payload);
+    const font_delete = try faceMessage(a, protocol.Message.font_delete, 12, font_delete_payload.items);
+    defer a.free(font_delete);
+    try scene.apply(font_delete);
     try std.testing.expectEqual(@as(usize, 0), scene.glyph_runs.items.len);
 }
 

@@ -462,7 +462,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .frame_size_hints_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke min/max/aspect constraints; size increments pending" },
     .{ .feature = .frame_z_order_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke top/always-on-top probe; relative stacking and bottom mapping pending" },
     .{ .feature = .frame_parent_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke nullable-parent unparent probe; linked/modal child windows pending" },
-    .{ .feature = .resource_generation_contract, .status = .degraded, .evidence = "proto-ui-unit resource generation contract" },
+    .{ .feature = .resource_generation_contract, .status = .degraded, .evidence = "proto-ui-unit generation contract; font deletion invalidates dependent shaped glyph runs" },
     .{ .feature = .resource_payload_eviction_contract, .status = .degraded, .evidence = "proto-ui-unit" },
     .{ .feature = .resource_string_v1, .status = .degraded, .evidence = "proto-ui-unit" },
     .{ .feature = .resource_face_v1, .status = .degraded, .evidence = "proto-ui-unit, plus a real frame's reserved mode-line/cursor/fringe faces (sdl3-emacs-graphic-smoke)" },
