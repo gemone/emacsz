@@ -5037,6 +5037,21 @@ pub const Scene = struct {
         }
     }
 
+    fn removeImagePlacementsForImage(
+        self: *Scene,
+        image_id: u32,
+        image_generation: u32,
+    ) void {
+        var write: usize = 0;
+        for (self.image_placements[0..self.image_placement_count]) |placement| {
+            if (placement.image_id == image_id and
+                placement.image_generation == image_generation) continue;
+            self.image_placements[write] = placement;
+            write += 1;
+        }
+        self.image_placement_count = write;
+    }
+
     fn removeFringesForBitmap(self: *Scene, bitmap_id: u32) void {
         var index: usize = 0;
         while (index < self.fringes.items.len) {
@@ -5664,7 +5679,10 @@ pub const Scene = struct {
         else
             0;
         try self.images.define(self.allocator, &self.resources, image);
-        if (had_previous) self.invalidateIconForImageGeneration(image.image_id, previous_generation);
+        if (had_previous) {
+            self.removeImagePlacementsForImage(image.image_id, previous_generation);
+            self.invalidateIconForImageGeneration(image.image_id, previous_generation);
+        }
         self.stats.control_messages += 1;
     }
 
@@ -5677,6 +5695,7 @@ pub const Scene = struct {
     fn applyImageDelete(self: *Scene, payload: protocol.Payload) Error!void {
         const image = try protocol.decodeImageDelete(payload.bytes);
         try self.images.delete(self.allocator, &self.resources, image);
+        self.removeImagePlacementsForImage(image.image_id, image.generation);
         self.invalidateIconForImageGeneration(image.image_id, image.generation);
         self.stats.control_messages += 1;
     }
@@ -15585,6 +15604,86 @@ test "image deletion covers complete and incomplete payloads and cleanup remains
     try std.testing.expectEqual(@as(usize, 0), scene.images.declared_bytes);
     scene.resetForResync();
     scene.deinit();
+}
+
+test "image lifecycle removes placements for replaced and deleted generations" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    const update = try updateMessage(a, 2, 7, 7, 80, 0);
+    defer a.free(update);
+    try scene.apply(create);
+    try scene.apply(update);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeImageDefine(a, frontendImageFixture(30, 1), &payload);
+    const define = try imageMessage(a, protocol.Message.image_define, 3, payload.items);
+    defer a.free(define);
+    try scene.apply(define);
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageData(a, .{
+        .image_id = 30,
+        .generation = 1,
+        .fragment_index = 0,
+        .fragment_count = 1,
+        .bytes = "ABCDEFGHIJKLMNOP",
+    }, &payload);
+    const data = try imageMessage(a, protocol.Message.image_data, 4, payload.items);
+    defer a.free(data);
+    try scene.apply(data);
+    try scene.placeImage(.{
+        .placement_id = 40,
+        .window_id = 100,
+        .image_id = 30,
+        .image_generation = 1,
+        .x = 0,
+        .y = 0,
+        .width = 2,
+        .height = 2,
+        .z_order = 0,
+    });
+    try std.testing.expectEqual(@as(usize, 1), scene.image_placement_count);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageDefine(a, frontendImageFixture(30, 2), &payload);
+    const replacement = try imageMessage(a, protocol.Message.image_define, 5, payload.items);
+    defer a.free(replacement);
+    try scene.apply(replacement);
+    try std.testing.expectEqual(@as(usize, 0), scene.image_placement_count);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageData(a, .{
+        .image_id = 30,
+        .generation = 2,
+        .fragment_index = 0,
+        .fragment_count = 1,
+        .bytes = "ABCDEFGHIJKLMNOP",
+    }, &payload);
+    const replacement_data = try imageMessage(a, protocol.Message.image_data, 6, payload.items);
+    defer a.free(replacement_data);
+    try scene.apply(replacement_data);
+    try scene.placeImage(.{
+        .placement_id = 41,
+        .window_id = 100,
+        .image_id = 30,
+        .image_generation = 2,
+        .x = 0,
+        .y = 0,
+        .width = 2,
+        .height = 2,
+        .z_order = 0,
+    });
+    try std.testing.expectEqual(@as(usize, 1), scene.image_placement_count);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeImageDelete(a, .{ .image_id = 30, .generation = 2 }, &payload);
+    const deleted = try imageMessage(a, protocol.Message.image_delete, 7, payload.items);
+    defer a.free(deleted);
+    try scene.apply(deleted);
+    try std.testing.expectEqual(@as(usize, 0), scene.image_placement_count);
 }
 
 test "image fragment order totals malformed records and limits fail closed" {

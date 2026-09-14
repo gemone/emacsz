@@ -470,7 +470,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .face_decoration_bars_v1, .status = .degraded, .evidence = "proto-ui-unit policy bars and sdl3-runtime-bridge-smoke face background; shaped text/font metrics pending" },
     .{ .feature = .resource_font_v1, .status = .degraded, .evidence = "proto-ui-unit" },
     .{ .feature = .resource_font_metrics_v1, .status = .degraded, .evidence = "proto-ui-unit bounded metrics patch and strict generation replacement; real font metrics pending" },
-    .{ .feature = .resource_image_v1, .status = .degraded, .evidence = "proto-ui-unit" },
+    .{ .feature = .resource_image_v1, .status = .degraded, .evidence = "proto-ui-unit ordered fragments and generation-scoped placement invalidation on replace/delete" },
     .{ .feature = .glyph_atlas_v1, .status = .degraded, .evidence = "proto-ui-unit atlas codec/Scene state; texture upload, shaping pending" },
     .{ .feature = .shaped_atlas_glyph_run_v3, .status = .degraded, .evidence = "proto-ui-unit shaped run validation/Scene state and SDL atlas-backed rendering; full shaping/BiDi pending" },
     .{ .feature = .runtime_shaped_run_capture_v1, .status = .degraded, .evidence = "PureRuntimeHostV1 shaped-run observation and bridge emission; real Emacs redisplay capture pending" },
