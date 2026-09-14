@@ -4077,6 +4077,27 @@ pub fn build(b: *std.Build) void {
         );
         tpe_frame_visibility_step.dependOn(&run_tpe_frame_visibility_smoke.step);
 
+        const run_tpe_frame_focus_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs",
+            "--batch",
+            "-l",
+        });
+        run_tpe_frame_focus_smoke.addFileArg(b.path("test/proto-ui/tpe-frame-focus.el"));
+        run_tpe_frame_focus_smoke.addArgs(&[_][]const u8{
+            "--eval",
+            "(proto-ui-tpe-frame-focus)",
+        });
+        run_tpe_frame_focus_smoke.setEnvironmentVariable("TPE_FOCUS_SMOKE", "1");
+        run_tpe_frame_focus_smoke.setEnvironmentVariable("EMACS_TERMINAL_PROVIDER", "proto");
+        run_tpe_frame_focus_smoke.setCwd(b.path("."));
+        run_tpe_frame_focus_smoke.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |dep| run_tpe_frame_focus_smoke.step.dependOn(dep);
+        const tpe_frame_focus_step = b.step(
+            "proto-ui-tpe-frame-focus",
+            "Observe SDL focus gained and lost as Emacs focus changes",
+        );
+        tpe_frame_focus_step.dependOn(&run_tpe_frame_focus_smoke.step);
+
         const run_tpe_input_smoke = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/emacs",
             "--batch",
