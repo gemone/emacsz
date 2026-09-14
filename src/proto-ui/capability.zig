@@ -448,7 +448,7 @@ pub const feature_descriptors = [_]FeatureDescriptor{
     .{ .feature = .frame_patch_v1, .status = .degraded, .evidence = "proto-ui-unit and runtime-bridge visibility/focus/opacity/decoration/scale patch; title, geometry, monitor, and z-order are separate bounded messages, while complete frame semantics and redisplay adaptation are pending" },
     .{ .feature = .frame_snapshot_core_v1, .status = .degraded, .evidence = "proto-ui-unit and sdl3-runtime-bridge-smoke visibility/focus/opacity/decoration/scale/geometry/fullscreen/maximize snapshot; title, icon, monitor, z-order, and parent have separate bounded messages, while full parameters and redisplay adaptation are pending" },
     .{ .feature = .frame_lifecycle, .status = .degraded, .evidence = "proto-ui-unit frame lifecycle contract and sdl3-frame-smoke" },
-    .{ .feature = .frame_visibility_focus_contract, .status = .degraded, .evidence = "proto-ui-unit" },
+    .{ .feature = .frame_visibility_focus_contract, .status = .degraded, .evidence = "proto-ui-unit; real SDL minimization maps to iconify-frame and frame-visible-p=icon (proto-ui-tpe-frame-visibility)" },
     .{ .feature = .frame_title_v1, .status = .degraded, .evidence = "proto-ui-unit and runtime-bridge" },
     .{ .feature = .frame_alpha_v1, .status = .degraded, .evidence = "proto-ui-unit and runtime-bridge" },
     .{ .feature = .frame_decorations_v1, .status = .degraded, .evidence = "proto-ui-unit and runtime-bridge" },
