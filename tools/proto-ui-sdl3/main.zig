@@ -1522,6 +1522,13 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                     0,
                 );
                 if (!SDL_PushEvent(&minimized)) return sdlFail("SDL_PushEvent");
+                var restored = windowEvent(
+                    input_policy.SDL_EVENT_WINDOW_RESTORED,
+                    SDL_GetWindowID(window),
+                    0,
+                    0,
+                );
+                if (!SDL_PushEvent(&restored)) return sdlFail("SDL_PushEvent");
             }
             if (std.c.getenv("TPE_INPUT_SMOKE") != null and
                 snapshot_rows > 24 and !smoke_window_resent)
