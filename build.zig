@@ -4056,6 +4056,23 @@ pub fn build(b: *std.Build) void {
         );
         tpe_frame_eof_step.dependOn(&run_tpe_frame_eof_smoke.step);
 
+        const run_tpe_frame_visibility_smoke = b.addSystemCommand(&[_][]const u8{
+            "./zig-out/bin/emacs",
+            "--batch",
+            "--eval",
+            "(let* ((initial-frame (selected-frame)) (terms (terminal-list)) (terminal (car (last terms))) (frame (make-terminal-frame (list (cons 'terminal terminal)))) (old-iconify (lookup-key special-event-map [iconify-frame])) (icon-events nil)) (unless (and (frame-live-p frame) (terminal-provider-frame-p frame)) (error \"proto-ui-tpe-frame-visibility failed: attach=%S provider=%S\" (frame-live-p frame) (terminal-provider-frame-p frame))) (select-frame frame) (unless (redisplay t) (error \"proto-ui-tpe-frame-visibility failed: display=%S\" (redisplay t))) (select-frame initial-frame) (define-key special-event-map [iconify-frame] (lambda (event) (interactive \"e\") (push event icon-events))) (let ((deadline (+ (float-time) 3))) (while (and (null icon-events) (< (float-time) deadline)) (read-event nil nil 0.2))) (define-key special-event-map [iconify-frame] old-iconify) (unless (and (equal icon-events (list (list 'iconify-frame (list frame)))) (eq (frame-visible-p frame) (quote icon)) (eq (frame-visible-p initial-frame) t)) (error \"proto-ui-tpe-frame-visibility failed: events=%S visible=%S initial=%S\" icon-events (frame-visible-p frame) (frame-visible-p initial-frame))) (princ \"proto-ui-tpe-frame-visibility: pass\\n\"))",
+        });
+        run_tpe_frame_visibility_smoke.setEnvironmentVariable("TPE_VISIBILITY_SMOKE", "1");
+        run_tpe_frame_visibility_smoke.setEnvironmentVariable("EMACS_TERMINAL_PROVIDER", "proto");
+        run_tpe_frame_visibility_smoke.setCwd(b.path("."));
+        run_tpe_frame_visibility_smoke.step.dependOn(b.getInstallStep());
+        if (sdl3_frontend_dep) |dep| run_tpe_frame_visibility_smoke.step.dependOn(dep);
+        const tpe_frame_visibility_step = b.step(
+            "proto-ui-tpe-frame-visibility",
+            "Observe SDL minimization as Emacs frame invisibility",
+        );
+        tpe_frame_visibility_step.dependOn(&run_tpe_frame_visibility_smoke.step);
+
         const run_tpe_input_smoke = b.addSystemCommand(&[_][]const u8{
             "./zig-out/bin/emacs",
             "--batch",

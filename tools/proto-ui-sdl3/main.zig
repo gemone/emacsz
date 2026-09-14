@@ -923,6 +923,7 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
     var smoke_window_resent = false;
     var smoke_maximize_resent = false;
     var smoke_close_resent = false;
+    var smoke_visibility_requested = false;
     var draw_list = renderer_policy.DrawList{ .allocator = gpa };
     defer draw_list.deinit();
     var scene = frontend.Scene.init(gpa);
@@ -1509,6 +1510,18 @@ fn runProviderFrameSurface(gpa: std.mem.Allocator) !void {
                 SDL_Delay(100);
                 var hover = mouseMotionEvent(2, 0, 0);
                 if (!SDL_PushEvent(&hover)) return sdlFail("SDL_PushEvent");
+            }
+            if (std.c.getenv("TPE_VISIBILITY_SMOKE") != null and
+                snapshot_rows > 0 and !smoke_visibility_requested)
+            {
+                smoke_visibility_requested = true;
+                var minimized = windowEvent(
+                    input_policy.SDL_EVENT_WINDOW_MINIMIZED,
+                    SDL_GetWindowID(window),
+                    0,
+                    0,
+                );
+                if (!SDL_PushEvent(&minimized)) return sdlFail("SDL_PushEvent");
             }
             if (std.c.getenv("TPE_INPUT_SMOKE") != null and
                 snapshot_rows > 24 and !smoke_window_resent)
