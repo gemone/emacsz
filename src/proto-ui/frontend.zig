@@ -4059,6 +4059,7 @@ pub const Scene = struct {
             protocol.Message.image_define => try self.applyImageDefine(payload),
             protocol.Message.image_data => try self.applyImageData(payload),
             protocol.Message.image_delete => try self.applyImageDelete(payload),
+            protocol.Message.resource_evict => try self.applyResourceEvict(payload),
             protocol.Message.resource_snapshot => try self.applyResourceSnapshot(payload),
             protocol.Message.atlas_define => try self.atlases.applyDefine(try protocol.decodeAtlasDefine(payload.bytes)),
             protocol.Message.atlas_page_update => {
@@ -5697,6 +5698,52 @@ pub const Scene = struct {
         try self.images.delete(self.allocator, &self.resources, image);
         self.removeImagePlacementsForImage(image.image_id, image.generation);
         self.invalidateIconForImageGeneration(image.image_id, image.generation);
+        self.stats.control_messages += 1;
+    }
+
+    fn applyResourceEvict(self: *Scene, payload: protocol.Payload) Error!void {
+        const evict = try protocol.decodeResourceEvict(payload.bytes);
+        switch (evict.kind) {
+            .face => try self.faces.delete(&self.resources, .{
+                .face_id = evict.id,
+                .generation = evict.generation,
+            }),
+            .font => try self.fonts.delete(&self.resources, .{
+                .font_id = evict.id,
+                .generation = evict.generation,
+            }),
+            .image => try self.images.delete(self.allocator, &self.resources, .{
+                .image_id = evict.id,
+                .generation = evict.generation,
+            }),
+            .fringe_bitmap => try self.fringe_bitmaps.delete(&self.resources, .{
+                .bitmap_id = evict.id,
+                .generation = evict.generation,
+            }),
+            .string => try self.strings.delete(self.allocator, &self.resources, .{
+                .resource_id = evict.id,
+                .generation = evict.generation,
+            }),
+            .icon => try self.images.delete(self.allocator, &self.resources, .{
+                .image_id = evict.id,
+                .generation = evict.generation,
+            }),
+        }
+        switch (evict.kind) {
+            .face => {
+                self.removeGlyphRunsForFace(evict.id, evict.generation);
+                self.removeWindowFacesForFace(evict.id, evict.generation);
+                self.removeMouseHighlightsForFace(evict.id, evict.generation);
+            },
+            .font => self.removeGlyphRunsForFont(evict.id),
+            .image => {
+                self.removeImagePlacementsForImage(evict.id, evict.generation);
+                self.invalidateIconForImageGeneration(evict.id, evict.generation);
+            },
+            .fringe_bitmap => self.removeFringesForBitmap(evict.id),
+            .icon => self.invalidateIconForImageGeneration(evict.id, evict.generation),
+            .string => {},
+        }
         self.stats.control_messages += 1;
     }
 
@@ -14827,6 +14874,42 @@ test "scene owns replaces looks up and deletes bounded string resources" {
     try std.testing.expectError(Error.ResourceNotLive, scene.apply(duplicate));
     try std.testing.expectEqual(@as(u64, 5), scene.next_sequence.?);
     try std.testing.expectEqual(@as(u64, 1), scene.strings.counters.rejections);
+}
+
+test "resource evict dispatch deletes exact generation and rejects stale" {
+    const a = std.testing.allocator;
+    var scene = Scene.init(a);
+    defer scene.deinit();
+    const create = try createMessage(a, 1, 7, 7);
+    defer a.free(create);
+    try scene.apply(create);
+
+    var payload: std.ArrayList(u8) = .empty;
+    defer payload.deinit(a);
+    try protocol.encodeStringDefine(a, .{ .resource_id = 30, .generation = 4, .bytes = "live" }, &payload);
+    const define = try stringMessage(a, protocol.Message.string_define, 2, payload.items);
+    defer a.free(define);
+    try scene.apply(define);
+
+    payload.clearRetainingCapacity();
+    try protocol.encodeResourceEvict(a, .{
+        .kind = .string,
+        .id = 30,
+        .generation = 3,
+        .reason = .capacity,
+    }, &payload);
+    const stale = try stringMessage(a, protocol.Message.resource_evict, 3, payload.items);
+    defer a.free(stale);
+    try std.testing.expectError(Error.StaleGeneration, scene.apply(stale));
+    try std.testing.expectEqualStrings("live", scene.strings.lookup(30).?.bytes);
+    try std.testing.expectEqual(@as(u64, 3), scene.next_sequence.?);
+
+    payload.items[8] = 4;
+    const evict = try stringMessage(a, protocol.Message.resource_evict, 3, payload.items);
+    defer a.free(evict);
+    try scene.apply(evict);
+    try std.testing.expect(scene.strings.lookup(30) == null);
+    try std.testing.expectEqual(lifecycle.ResourceStatus.deleted, scene.resources.lookup(.string, 30).?.status);
 }
 
 test "scene rejects stale equal and malformed string resources without sequence drift" {
